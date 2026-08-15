@@ -194,9 +194,26 @@ Friend NotInheritable Class NpcSkinLivePreview
         Next
 
         ' Path sets match. Apply each new candidate's TXST/MSWP to its corresponding shape group.
+        '
+        ' ⭐ RESTAURAR ANTES DE RE-APLICAR. `EnsureShapeMaterialResolved` MEMOIZA (MaterialResolver:117:
+        ' si el shape ya tiene material, Return), así que estas shapes traen el material YA MUTADO por el
+        ' render anterior y esto era "override sobre override": todo slot que el TXST NUEVO deje vacío
+        ' conservaba el del skin VIEJO (`TxstSlotDecision` → `skip:empty-path (kept=...)`), y el `path`
+        ' quedaba con el del MSWP anterior. Re-derivar el par autorado y correr la ley completa encima hace
+        ' que el fast path arranque del MISMO estado que el render completo — que es lo único que puede
+        ' sostener el gate A/A.
         Dim totalShapes As Integer = 0
         For Each cand In newCandidates
             Dim shapesForPath = oldGroups(cand.DictKey)
+            For Each sh In shapesForPath
+                If Not NpcMaterialResolver.TryRestoreAuthoredMaterial(sh) Then Return False
+                ' ⛔ El mapa shape→candidate apuntaba al candidate del skin ANTERIOR: los candidates de
+                ' cuerpo del fast path son objetos NUEVOS (ResolveBodySkinCandidates → CollectArmoCandidates)
+                ' y nadie lo reescribía. Con este fix ese mapa pasa a ser la fuente de la ley única del fast
+                ' path (ver los dos bloques de abajo), y además lo lee después NpcFaceTintResolver
+                ' (ApplyMaterialPaletteHairColor). Stale ahí = candidate viejo alimentando reglas nuevas.
+                host.LastRenderData.ShapeCandidate(sh) = cand
+            Next
             _materialResolver.ApplyShapeMaterialOverrides(cand, host.LastRenderedState, shapesForPath)
             totalShapes += shapesForPath.Count
         Next
@@ -207,17 +224,20 @@ Friend NotInheritable Class NpcSkinLivePreview
         ' rendered against the OLD skin still shows the OLD body diffuse on its skin patches
         ' even after the body shape itself updated.
         '
-        ' The render normal does this inside ApplyShapeMaterialOverrides when candidate.Kind=Outfit
-        ' (line ~7375), reading state.SkinFormID via ResolveActorSkinTextureSet. We can't re-call
-        ' ApplyShapeMaterialOverrides on outfit candidates here (we don't have them cached in
-        ' LastRenderData), so we replicate the per-shape texture sub directly.
-        Dim outfitSkinTintShapes = ApplyOutfitSkinTintRefreshAfterBodySkinChange(host)
+        ' El render completo lo hace dentro de ApplyShapeMaterialOverrides cuando candidate.Kind=Outfit,
+        ' leyendo state.SkinFormID vía ResolveActorSkinTextureSet — y acá se llama a ESA MISMA función, con
+        ' los candidates que SÍ están cacheados en renderData.ShapeCandidate. (El comentario que estaba acá
+        ' decía lo contrario —"no los tenemos cacheados, así que replicamos la sustitución a mano"— y era
+        ' falso desde antes de este cambio: la función de head parts de abajo ya los venía leyendo.)
+        Dim outfitSkinTintShapes As Integer = 0
+        If Not TryRefreshOutfitCandidatesAfterBodySkinChange(host, outfitSkinTintShapes) Then Return False
 
         ' Same idea for HeadPart shapes: HDPTs whose CK flag UsesBodyTexture=True read their diffuse
         ' from the body skin TXST, and the ghoul-female head-rear pulls the vanilla-UV body texture
         ' clone. The fast-path must re-derive both against the now-updated state.SkinFormID — otherwise
         ' a ghoul → human skin swap leaves the headRear with the old diffuse.
-        Dim headPartBodyTexShapes = ApplyHeadPartBodyTextureRefreshAfterBodySkinChange(host)
+        Dim headPartBodyTexShapes As Integer = 0
+        If Not TryRefreshHeadPartCandidatesAfterBodySkinChange(host, headPartBodyTexShapes) Then Return False
 
         ' [TEST: fastpath-skin-softlight] Re-bake softlight + face tints after the skin swap.
         ' Original fastpath called RefreshRender (paint-only) and skipped TryApplyBodySkinSoftLight,
@@ -246,44 +266,57 @@ Friend NotInheritable Class NpcSkinLivePreview
                                                          End Sub
         host.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Textures)
         host.PreviewCtl.InvalidateRender()
+
+        ' ⭐ MARCADOR DEL GATE A/A. Sin esta línea no hay forma de saber, leyendo el log, si un cambio de
+        ' piel salió por el fast path o por la recarga completa — y distinguir eso es EXACTAMENTE lo que el
+        ' gate necesita: compara el `[SHAPEMAT-FINAL*]`/`[SHADER-CMP]` de un cambio fast-path contra el de
+        ' un render completo del MISMO estado, y deben ser idénticos. Si la línea no aparece, el cambio se
+        ' fue por `RenderInHostAsync` (EditBody_Form.TriggerSkinChangeReload) y esa corrida NO sirve como
+        ' lado A del gate.
+        If Logger.Enabled Then
+            Dim bodyN = totalShapes, outN = outfitSkinTintShapes, headN = headPartBodyTexShapes
+            Dim oldFid = oldSkinFid, newFid = newSkinFid
+            Logger.LogLazy(Function() $"[SKINFAST] APLICADO skin 0x{oldFid:X8}→0x{newFid:X8} shapes: body={bodyN} outfit={outN} headPart={headN}")
+        End If
         Return True
     End Function
 
-    ''' <summary>Re-apply the per-shape "outfit SkinTint texture sub" to all outfit shapes whose
-    ''' material is SkinTint. Mirrors the inline block in <see cref="ApplyShapeMaterialOverrides"/>
-    ''' (line ~7442) that runs during a full render but only for the outfit candidate currently
-    ''' being processed. Here we run it on every outfit shape already in the model, because the
-    ''' actor's body skin just changed and outfits of any category (Underarmor / Armor / Glove)
-    ''' may have skin-exposed patches that need to follow.
+    ''' <summary>Re-resuelve los candidates de OUTFIT tras un cambio de piel del actor: restaura el material
+    ''' AUTORADO de sus shapes y vuelve a correr <c>ApplyShapeMaterialOverrides</c>, que es la ley completa
+    ''' (MSWP + ColorRemap + OMOD + TXST + tints + sustitución de piel). Hace falta porque un outfit
+    ''' renderizado contra la piel VIEJA sigue mostrando su diffuse en los parches de piel expuesta.
     '''
-    ''' ⭐ RENDER == RENDER: la región de piel sale de la MISMA ley que el render completo,
-    ''' <see cref="NpcMaterialResolver.ResolveSkinRegionForOutfit"/>, alimentada con el candidate del
-    ''' shape (renderData.ShapeCandidate — SÍ está cacheado; el comentario anterior que decía "no
-    ''' tenemos los outfit candidates cacheados" era FALSO, la función de head parts de acá abajo ya
-    ''' lo venía leyendo). Antes se infería por CATEGORÍA (GloveOutfit → Hand, resto → Body): una
-    ''' SEGUNDA ley, mantenida a mano, sobre la misma entrada.
+    ''' ⭐ UNA LEY, UN LUGAR. Acá vivía una RÉPLICA A MANO de la sustitución de piel del render (resolver
+    ''' body/hand TXST, elegir región por shape, cargar el MNAM, `ApplyTextureSetToMaterial`). Se borró: era
+    ''' una segunda copia de la misma ley sobre la misma entrada, y este camino es SÓLO-RENDER e inalcanzable
+    ''' desde el CLI ⇒ el arnés de NIFs es CIEGO a él por definición y el drift no se detectaba.
     '''
-    ''' MEDIDO (--skinregion-diag, exhaustivo sobre el espacio de regiones × Kind × ambos juegos):
-    ''' la vieja heurística coincidía con la ley en TODOS los casos alcanzables — no había defecto
-    ''' de render. La equivalencia no era casualidad: ClassifyShapeCategory y ResolveSkinRegionForOutfit
-    ''' leen el MISMO candidate.SlotMask con las MISMAS máscaras game-aware (BipedSlots.RegionMask), y
-    ''' los predicados de la primera implican los de la segunda. El único punto donde divergen es
-    ''' Kind=Attachment con bits hand+[A] (categoría ArmorOver ⇒ heurística Body, ley Hand), que hoy no
-    ''' ocurre porque los Attachment llevan SlotMask=0 por construcción. Se cambia igual porque esa
-    ''' equivalencia es una cadena de implicaciones frágil: cualquier reordenamiento de las reglas de
-    ''' ClassifyShapeCategory la rompe en silencio, y este camino es SÓLO-RENDER e inalcanzable desde
-    ''' el CLI ⇒ el arnés de NIFs es CIEGO a él por definición. Una ley, un lugar.
-    ''' Returns the shape count touched (for logging).</summary>
-    Private Function ApplyOutfitSkinTintRefreshAfterBodySkinChange(host As NpcRenderHost) As Integer
-        Dim count As Integer = 0
+    ''' ⛔ Se procesa el CANDIDATE COMPLETO, no sólo sus shapes SkinTint: `ApplyShapeMaterialOverrides`
+    ''' razona a nivel candidate (MSWP/ColorRemap/OMOD), así que darle un subconjunto lo haría divergir del
+    ''' render por otro lado. Amplía la superficie respecto de la versión anterior, a propósito.
+    '''
+    ''' ⚠️ Restaurar SIN volver a aplicar deja el shape en crudo, por eso las dos cosas van juntas y
+    ''' cualquier fallo intermedio devuelve False ⇒ el caller cae a la recarga completa, que reconstruye las
+    ''' shapes desde cero (`NpcMeshCollector.LoadNifShapes`) y descarta las medio-restauradas.
+    '''
+    ''' Devuelve False si hay que caer a la recarga completa. <paramref name="touched"/> = shapes tocadas.</summary>
+    Private Function TryRefreshOutfitCandidatesAfterBodySkinChange(host As NpcRenderHost, ByRef touched As Integer) As Boolean
+        touched = 0
         Dim renderData = host.LastRenderData
         Dim state = host.LastRenderedState
-        If renderData Is Nothing OrElse state Is Nothing Then Return 0
+        If renderData Is Nothing OrElse state Is Nothing Then Return False
 
-        ' Resolve body and hand TXSTs once (state.SkinFormID was already updated by the caller).
-        Dim bodyTxst = _materialResolver.ResolveActorSkinTextureSet(state, MainForm.SkinRegion.Body)
-        Dim handTxst = _materialResolver.ResolveActorSkinTextureSet(state, MainForm.SkinRegion.Hand)
-
+        ' ⭐ UNA LEY, UN LUGAR. Acá había una RÉPLICA A MANO del bloque de sustitución de piel del render
+        ' (resolver body/hand TXST, elegir región por shape, cargar el MNAM, ApplyTextureSetToMaterial).
+        ' Eso es una segunda copia de la misma ley, mantenida a mano, sobre la misma entrada — y ya había
+        ' driftado antes. Ahora se restaura el material autorado y se corre `ApplyShapeMaterialOverrides`,
+        ' que ES la ley: MSWP + ColorRemap + OMOD + TXST + tints + sustitución de piel, en el orden del motor.
+        '
+        ' ⛔ POR CANDIDATE COMPLETO, no por el subconjunto SkinTint. `ApplyShapeMaterialOverrides` aplica
+        ' MSWP/ColorRemap/OMOD a nivel CANDIDATE: si se le pasara sólo las shapes SkinTint vería un conjunto
+        ' distinto al del render y el fast path divergiría por otro lado. Sí, esto amplía la superficie
+        ' respecto de la versión anterior — a propósito, y hacia lo que hace el render completo.
+        Dim byCandidate As New Dictionary(Of MainForm.MeshCandidate, List(Of IRenderableShape))()
         For Each shape In renderData.Shapes
             Dim cat As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
             renderData.ShapeCategory.TryGetValue(shape, cat)
@@ -294,42 +327,28 @@ Friend NotInheritable Class NpcSkinLivePreview
                AndAlso cat <> MainForm.ShapeRenderCategory.GloveOutfit _
                AndAlso cat <> MainForm.ShapeRenderCategory.Headwear Then Continue For
 
-            Dim relMat = shape.ShapeMaterial
-            If relMat Is Nothing Then Continue For
-            Dim mat = relMat.material
-            If mat Is Nothing Then Continue For
-            If mat.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.SkinTint Then Continue For
-
-            ' Región = LA LEY del render completo, no una inferencia por categoría. Si el shape no
-            ' tiene candidate (no debería pasar; ShapeCandidate se puebla junto con ShapeCategory),
-            ' ResolveSkinRegionForOutfit(Nothing) ya devuelve Body — su propio default documentado,
-            ' así que no hace falta (ni conviene) un fallback local que sería una tercera regla.
+            ' Sin candidate no hay ley que correr ⇒ recarga completa. Antes acá se toleraba el Nothing
+            ' porque ResolveSkinRegionForOutfit(Nothing) devolvía Body; ahora el candidate ES la entrada
+            ' de todo el pipeline, así que adivinarlo sería inventar un render.
             Dim shapeCand As MainForm.MeshCandidate = Nothing
-            renderData.ShapeCandidate.TryGetValue(shape, shapeCand)
-            ' 'skinRegion' y no 'region': System.Drawing está importado en este archivo y un local
-            ' llamado 'region' shadowea System.Drawing.Region — legal pero confuso al leer.
-            Dim skinRegion = NpcMaterialResolver.ResolveSkinRegionForOutfit(shapeCand)
-            Dim chosenTxst = If(skinRegion = MainForm.SkinRegion.Hand, handTxst, bodyTxst)
-            If chosenTxst Is Nothing Then Continue For
+            If Not renderData.ShapeCandidate.TryGetValue(shape, shapeCand) OrElse shapeCand Is Nothing Then Return False
 
-            ' Same fragment as ApplyShapeMaterialOverrides body — only the diffuse/normal/spec
-            ' get substituted; material params (specular, smoothness, etc.) stay from the NIF.
-            Dim mnamLoaded As Boolean = False
-            If chosenTxst.MaterialPath <> "" Then
-                Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
-                If bgsmMaterial IsNot Nothing Then
-                    mnamLoaded = True
-                    If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
-                    If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
-                    If bgsmMaterial.SmoothSpecTexture <> "" Then mat.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
-                End If
+            Dim bucket As List(Of IRenderableShape) = Nothing
+            If Not byCandidate.TryGetValue(shapeCand, bucket) Then
+                bucket = New List(Of IRenderableShape)()
+                byCandidate(shapeCand) = bucket
             End If
-            ' REGLA 2 (BAKETEST2 N_S/N_S2) — MNAM cargado ⇒ los TX## del TXST NO se aplican encima.
-            ' RENDER == BAKE: idéntico a NpcMaterialResolver.ApplyTextureSetOverrides.
-            If Not mnamLoaded Then NpcMaterialResolver.ApplyTextureSetToMaterial(mat, chosenTxst)
-            count += 1
+            bucket.Add(shape)
         Next
-        Return count
+
+        For Each kv In byCandidate
+            For Each sh In kv.Value
+                If Not NpcMaterialResolver.TryRestoreAuthoredMaterial(sh) Then Return False
+            Next
+            _materialResolver.ApplyShapeMaterialOverrides(kv.Key, state, kv.Value)
+            touched += kv.Value.Count
+        Next
+        Return True
     End Function
 
     ''' <summary>Re-apply body-skin textures to HeadPart shapes when the actor body skin changed via
@@ -338,68 +357,78 @@ Friend NotInheritable Class NpcSkinLivePreview
     ''' against the now-updated state.SkinFormID (shared MainForm helper, gated on the shape's
     ''' candidate). Without this a ghoul → human skin swap leaves the headRear with the OLD diffuse.
     ''' Returns the shape count touched.</summary>
-    Private Function ApplyHeadPartBodyTextureRefreshAfterBodySkinChange(host As NpcRenderHost) As Integer
-        Dim count As Integer = 0
+    Private Function TryRefreshHeadPartCandidatesAfterBodySkinChange(host As NpcRenderHost, ByRef touched As Integer) As Boolean
+        touched = 0
         Dim renderData = host.LastRenderData
         Dim state = host.LastRenderedState
-        If renderData Is Nothing OrElse state Is Nothing Then Return 0
+        If renderData Is Nothing OrElse state Is Nothing Then Return False
 
-        ' HeadParts always pull from the BODY region (not Hand) — by definition they're
-        ' face/headRear/etc., never hands. ResolveActorSkinTextureSet uses the now-updated
-        ' state.SkinFormID so this matches what a full render would produce.
-        Dim bodyTxst = _materialResolver.ResolveActorSkinTextureSet(state, MainForm.SkinRegion.Body)
-        If bodyTxst Is Nothing Then Return 0
-
+        ' ⛔⛔ ACÁ HABÍA UN `If bodyTxst Is Nothing Then Return 0` QUE VOLVÍA ESTE REFRESH INALCANZABLE
+        ' JUSTO EN EL CASO QUE MOTIVÓ TODO ESTO. Con una raza cuyo armature de piel no declara skin TXST
+        ' (UBE: NAM0=NAM1=0), `ResolveActorSkinTextureSet` devuelve Nothing ⇒ early return ⇒ un HDPT con
+        ' UsesBodyTexture=True se quedaba con la diffuse/normal/spec del skin ANTERIOR, y de paso se
+        ' salteaba el clon de head-rear ghoul, que vivía DESPUÉS del return. "Sin TXST" es un RESULTADO
+        ' válido de la resolución, no una condición de salida.
+        '
+        ' Se recorre por CANDIDATE (igual que los outfits) y se incluyen SÓLO los candidates que poseen al
+        ' menos una shape que este refresh debe tocar — UsesBodyTexture o head-rear ghoul: el MISMO conjunto
+        ' de shapes de antes. De esos candidates se toman TODAS sus shapes, por la misma razón que en los
+        ' outfits: `ApplyShapeMaterialOverrides` razona a nivel candidate.
+        '
+        ' ⭐ POR QUÉ AGRUPAR POR CANDIDATE NO ARRASTRA LA CARA — la razón es ESTRUCTURAL, no un dato:
+        ' `ShapeUsesBodyTexture` es por CANDIDATE, no por shape (MainForm :730-736: "True iff the shape's
+        ' owning CANDIDATE had UsesBodyTexture=True"), así que es uniforme dentro de un candidate y no puede
+        ' colar un hermano sin el flag. Y si algún día un HDPT de CARA declara el flag DATA 0x40, esa shape
+        ' entra — y ESTÁ BIEN que entre, porque el render completo también la trataría así (render == render).
+        ' ⛔ NO escribir "la cara no entra porque no lleva UsesBodyTexture": eso describe los datos de hoy y
+        ' se lee como un invariante que no existe.
+        ' Tampoco pisa FaceGen: la textura compuesta no vive en el material (SSE va por `SseFoldedDiffuseKey`
+        ' en MaterialData, FO4 compone en la textura GL keyed por path), y el caller vuelve a correr
+        ' RestoreCapturedDiffusesToPristine + ApplyFaceTintOverlay después de esto.
+        Dim byCandidate As New Dictionary(Of MainForm.MeshCandidate, List(Of IRenderableShape))()
+        Dim needsRefresh As New HashSet(Of MainForm.MeshCandidate)()
         For Each shape In renderData.Shapes
             Dim cat As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
             renderData.ShapeCategory.TryGetValue(shape, cat)
             If cat <> MainForm.ShapeRenderCategory.HeadPart Then Continue For
 
-            Dim relMat = shape.ShapeMaterial
-            If relMat Is Nothing Then Continue For
-            Dim mat = relMat.material
-            If mat Is Nothing Then Continue For
+            Dim usesBody As Boolean = False
+            renderData.ShapeUsesBodyTexture.TryGetValue(shape, usesBody)
 
-            ' Ghoul-female head-rear: re-derive the vanilla-UV body texture clone against the
-            ' now-updated state.SkinFormID and overwrite D/N/S (same single-source helper the full
-            ' render / bake use). Gated on the shape's candidate (HDPT bare-id + race ∈ ghoul set).
             Dim shapeCand As MainForm.MeshCandidate = Nothing
-            renderData.ShapeCandidate.TryGetValue(shape, shapeCand)
-            If shapeCand IsNot Nothing AndAlso NpcMaterialResolver.IsGhoulHeadRearCase(shapeCand.HeadPartHdptFormID, shapeCand.HeadPartType, state) Then
-                _materialResolver.ApplyGhoulHeadRearClonedTextures(shapeCand, state, mat, shape)
-                count += 1
+            If Not renderData.ShapeCandidate.TryGetValue(shape, shapeCand) OrElse shapeCand Is Nothing Then
+                ' Sin candidate no se puede correr la ley. Si la shape NO necesitaba refresh, es inocuo
+                ' saltearla; si SÍ (UsesBodyTexture), bailamos a la recarga completa en vez de aplicarle
+                ' una versión degradada de la regla — que es lo que hacía antes
+                ' (ApplyTextureSetOverrides con isHeadPartTextureSet=False derivado de un candidate nulo).
+                If usesBody Then Return False
                 Continue For
             End If
 
-            Dim usesBody As Boolean = False
-            renderData.ShapeUsesBodyTexture.TryGetValue(shape, usesBody)
-            If Not usesBody Then Continue For
+            Dim bucket As List(Of IRenderableShape) = Nothing
+            If Not byCandidate.TryGetValue(shapeCand, bucket) Then
+                bucket = New List(Of IRenderableShape)()
+                byCandidate(shapeCand) = bucket
+            End If
+            bucket.Add(shape)
 
-            ' ⭐ RENDER == RENDER: exactamente la MISMA llamada que el render completo hace en
-            ' NpcMaterialResolver.ApplyShapeMaterialOverrides para un head part UsesBodyTexture, con la
-            ' MISMA tupla de flags derivada del candidate por las proyecciones compartidas.
-            ' Antes acá se re-implementaba a mano el MNAM y se cerraba con ApplyTextureSetToMaterial
-            ' PELADO (isHeadPartTextureSet=False por default) ⇒ este fast path se salteaba el dispatch
-            ' SSE por shader type autorado (FaceTint → N+_sk+detail, SkinTint → sólo N, resto → nada) y
-            ' el skip de TX07 en SSE. Caso separador: SSE, head part UsesBodyTexture=True, cambio de
-            ' piel por el picker en vez de re-render completo. Es render-contra-render, así que el
-            ' arnés de NIFs es CIEGO a esto por definición.
-            ' ApplyTextureSetOverrides ya hace el MNAM internamente CON la regla medida (split por
-            ' UsesBodyTexture; REGLA 2 BAKETEST2 N_S/N_S2: si el MNAM carga, los TX## no se aplican
-            ' encima), así que la copia a mano sobraba y además era una regla distinta.
-            ' Los dos flags en False NO son un default asumido, están DERIVADOS: el render completo
-            ' resuelve este mismo TXST en el Caso C de ResolveTextureSet (UsesBodyTexture gana sobre
-            ' TNAM), que retorna ANTES de tocar isFaceTextureSource y fo4FaceComposeInputsOnly ⇒ en el
-            ' camino body-skin ambos quedan False.
-            NpcMaterialResolver.ApplyTextureSetOverrides(bodyTxst, relMat, usesBody, shape.NifShape, shape.NifContent,
-                                                         isHeadPartTextureSet:=NpcMaterialResolver.IsHeadPartTextureSetFor(shapeCand),
-                                                         forceDiffuseOnly:=False,
-                                                         fo4FaceComposeInputsOnly:=False)
-            ' alphaTestWriteDecision se OMITE (=Nothing) a propósito: este es el fast path del picker de
-            ' piel, camino de RENDER puro — no escribe NIF. Sin decisión externa la lib se comporta como
-            ' siempre. Pasar False acá sería declarar un veto de bake desde un camino que no hornea.
-            count += 1
+            ' Head-rear ghoul: el clon de textura con UV vanilla lo aplica ApplyShapeMaterialOverrides
+            ' internamente (NpcMaterialResolver :1503), así que acá sólo marca al candidate como "hay que
+            ' re-resolverlo" — no se re-implementa nada.
+            If usesBody OrElse NpcMaterialResolver.IsGhoulHeadRearCase(shapeCand.HeadPartHdptFormID, shapeCand.HeadPartType, state) Then
+                needsRefresh.Add(shapeCand)
+            End If
         Next
-        Return count
+
+        For Each cand In needsRefresh
+            Dim shapesForCand = byCandidate(cand)
+            For Each sh In shapesForCand
+                If Not NpcMaterialResolver.TryRestoreAuthoredMaterial(sh) Then Return False
+            Next
+            _materialResolver.ApplyShapeMaterialOverrides(cand, state, shapesForCand)
+            touched += shapesForCand.Count
+        Next
+        Return True
     End Function
+
 End Class

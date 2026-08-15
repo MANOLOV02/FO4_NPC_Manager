@@ -141,6 +141,24 @@ Public Module BipedSlots
         Return m
     End Function
 
+    ''' <summary>Pliega el <c>BodyPart</c> de una partición BSDismember a su slot BASE: los valores
+    ''' SBP_1xx / SBP_2xx son la misma región biped con prefijo (100 = "editor visible", 200 = variantes),
+    ''' así que 2xx → −200 y 1xx → −100. Es LA ley del plegado y vive acá sola: la escribían a mano dos
+    ''' sitios de <c>NpcMeshCollector</c> (la máscara de particiones del candidate y el de-dup de piel SSE)
+    ''' y ahora es el tercer consumidor (<c>ShapeBipedSlotMask</c>) el que la habría triplicado.
+    '''
+    ''' ⛔ DEVUELVE EL VALOR PLEGADO **SIN FILTRAR** a <c>[30,61]</c>, a propósito. Los dos call sites
+    ''' históricos NO son equivalentes y colapsarlos rompería uno: el de la máscara descarta lo que cae
+    ''' fuera del rango ANTES de setear el bit, mientras que el de-dup de piel SSE mete el valor crudo en su
+    ''' lista y después usa <c>parts.Count = 0</c> como "no clasificable ⇒ conservar la shape". Si esta
+    ''' función filtrara, una malla de piel SSE con TODAS sus particiones fuera de rango pasaría de
+    ''' descartada a renderizada. El filtro es del CALL SITE, no de la ley.</summary>
+    Public Function FoldPartitionBodyPart(bodyPart As Integer) As Integer
+        If bodyPart >= 200 Then Return bodyPart - 200
+        If bodyPart >= 100 Then Return bodyPart - 100
+        Return bodyPart
+    End Function
+
     ''' <summary>Headwear mask game-aware = <see cref="RegionMask"/>(Headwear). FO4 conserva
     ''' <see cref="HEADWEAR_MASK"/>; Skyrim = 30/31/41/42/43 (NO slot 32=cuerpo).</summary>
     Public Function HeadwearMaskForGame() As UInteger

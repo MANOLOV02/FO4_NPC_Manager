@@ -1458,12 +1458,9 @@ Friend NotInheritable Class NpcMeshCollector
                     Dim dism = TryCast(nif.GetBlock(Of NiSkinInstance)(shp.SkinInstanceRef), BSDismemberSkinInstance)
                     If dism Is Nothing OrElse dism.Partitions Is Nothing Then Continue For
                     For Each p In dism.Partitions
-                        Dim v = CInt(p.BodyPart)
-                        If v >= 200 Then
-                            v -= 200
-                        ElseIf v >= 100 Then
-                            v -= 100
-                        End If
+                        ' Ley del plegado: BipedSlots.FoldPartitionBodyPart (una sola sede). El filtro
+                        ' [30,61] es de ESTE call site, no de la ley — ver su doc.
+                        Dim v = BipedSlots.FoldPartitionBodyPart(CInt(p.BodyPart))
                         If v >= 30 AndAlso v <= 61 Then result = result Or (1UI << (v - 30))
                     Next
                 Next
@@ -1664,13 +1661,12 @@ Friend NotInheritable Class NpcMeshCollector
                             Dim dism = TryCast(nif.Blocks(sir.Index), NiflySharp.Blocks.BSDismemberSkinInstance)
                             If dism IsNot Nothing AndAlso dism.Partitions IsNot Nothing Then
                                 For Each p In dism.Partitions
-                                    Dim bp As Integer = CInt(p.BodyPart)
-                                    If bp >= 200 Then           ' fold SBP_2xx/1xx → base slot
-                                        bp -= 200
-                                    ElseIf bp >= 100 Then
-                                        bp -= 100
-                                    End If
-                                    parts.Add(bp)
+                                    ' Ley del plegado: BipedSlots.FoldPartitionBodyPart (una sola sede).
+                                    ' ⛔ ACÁ NO SE FILTRA [30,61], y NO es un olvido: abajo `parts.Count = 0`
+                                    ' significa "no clasificable ⇒ conservar la shape". Filtrar convertiría
+                                    ' una malla con todas sus particiones fuera de rango de DESCARTADA a
+                                    ' RENDERIZADA. Ver la doc de FoldPartitionBodyPart.
+                                    parts.Add(BipedSlots.FoldPartitionBodyPart(CInt(p.BodyPart)))
                                 Next
                             End If
                         End If

@@ -274,6 +274,52 @@ Friend NotInheritable Class NpcMaterialResolver
         End If
     End Sub
 
+    ''' <summary>Devuelve el material del shape a su estado AUTORADO (el del NIF/BGSM), re-derivándolo
+    ''' con <c>Nifcontent_Class_Manolo.GetRelatedMaterial</c> — la MISMA función que llama el ctor de
+    ''' <c>NifRenderableShape</c> (:47), así que el resultado es por construcción idéntico al de un shape
+    ''' recién construido.
+    '''
+    ''' ⭐ POR QUÉ RE-DERIVAR Y NO GUARDAR UN SNAPSHOT: el estado del shape no es el material, es el PAR
+    ''' <c>(path, material)</c> — <c>ShapeMaterialOverrides.ApplyMaterialSwap</c> (:124-125) reescribe LOS
+    ''' DOS. Un snapshot de sólo el material dejaría el `path` del swap anterior, y el MSWP no volvería a
+    ''' matchear (su sustitución es A→B y el path ya diría B) ⇒ el swap se perdería en silencio, con
+    ''' `EnsureShapeMaterialResolved` (:117) memoizando el par inconsistente. `GetRelatedMaterial` devuelve
+    ''' el par entero, así que la re-derivación no tiene ese agujero. De paso evita depender de la fidelidad
+    ''' de <c>FO4UnifiedMaterial_Class.Clone()</c> (que copia el underlying por reflexión + una lista
+    ''' CERRADA de campos del wrapper) y no agrega ningún campo a <c>RelatedMaterial_Class</c>, que es un
+    ''' tipo COMPARTIDO con Wardrobe_Manager.
+    '''
+    ''' ⛔ SE MUTAN LOS DOS CAMPOS DEL WRAPPER EXISTENTE, no se reemplaza el wrapper: hay código que guarda
+    ''' referencias al <c>RelatedMaterial_Class</c> (capas de overlay, <c>Render.vb OverrideRelatedMaterial</c>).
+    ''' Es exactamente el mismo movimiento que ya hace <c>ApplyMaterialSwap</c> en cada render.
+    '''
+    ''' ⛔ SÓLO ES SEGURO SI DESPUÉS CORRE LA LEY COMPLETA (<see cref="ApplyShapeMaterialOverrides"/>): esto
+    ''' borra TODOS los overrides del shape, no sólo el que se quiera recalcular. Restaurar sin re-aplicar
+    ''' deja el shape en crudo.
+    '''
+    ''' Verificado puro: <c>Create_From_Shader</c> construye un BGSM/BGEM nuevo y sólo LEE el shader;
+    ''' <c>EnsureShaderGameType</c> (:3242) sale temprano si el tipo ya está fijado (idempotente); el render
+    ''' no fabrica ni borra bloques del NIF (los 3 call sites de <c>WriteAlphaPropertyToShape</c> son el
+    ''' guardado de WM y <c>Save_To_Shader</c> del bake/export, ninguno en el render).
+    '''
+    ''' False cuando falta NifContent/NifShape/ShapeMaterial o la re-derivación no produce material — el
+    ''' caller DEBE caer a la recarga completa, nunca adivinar.</summary>
+    Friend Shared Function TryRestoreAuthoredMaterial(shape As IRenderableShape) As Boolean
+        If shape Is Nothing Then Return False
+        Dim rel = shape.ShapeMaterial
+        If rel Is Nothing Then Return False
+        Dim nif = shape.NifContent
+        Dim nifShape = shape.NifShape
+        If nif Is Nothing OrElse nifShape Is Nothing Then Return False
+
+        Dim fresh = nif.GetRelatedMaterial(nifShape)
+        If fresh Is Nothing OrElse fresh.material Is Nothing Then Return False
+
+        rel.path = fresh.path
+        rel.material = fresh.material
+        Return True
+    End Function
+
     ''' <summary>Resuelve el TXST del body skin del actor (NPC.WNAM o RACE.WNAM via state.SkinFormID),
     ''' diferenciando por región: BODY (torso/legs) o HAND. El engine in-game sustituye la diffuse
     ''' texture de los shapes con BSLightingShaderType.SkinTint por la del actor — esto permite a
@@ -282,7 +328,14 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' shapes con piel del torso/brazos/legs y la hand (NakedHands ARMA) para shapes en gloves
     ''' con piel expuesta de manos.
     ''' Retorna Nothing si state.SkinFormID no resuelve a un ARMO con ARMA gender-correct válida.</summary>
-    Friend Function ResolveActorSkinTextureSet(state As MainForm.NPCVisualState, region As MainForm.SkinRegion) As TXST_Data
+    ''' <param name="shapeSlotMask">Opcional: bits (slot−30) de las particiones BSDismember del SHAPE que va
+    ''' a recibir la piel (<see cref="ShapeBipedSlotMask"/>). Sólo desempata dentro del conjunto que la ley
+    ''' de región ya aceptó, y sólo en la pasada race-válida — ver <see cref="SelectArmatureForShape"/>.
+    ''' 0 (default) = comportamiento histórico. Los call sites que resuelven 1×candidate (head part
+    ''' UsesBodyTexture, head-rear ghoul) lo dejan en 0 A PROPÓSITO: corren ANTES del loop de shapes y son
+    ''' el camino que consume el BAKE por delegate, así que pasarles máscara cambiaría la salida horneada.</param>
+    Friend Function ResolveActorSkinTextureSet(state As MainForm.NPCVisualState, region As MainForm.SkinRegion,
+                                               Optional shapeSlotMask As UInteger = 0UI) As TXST_Data
         If state Is Nothing OrElse state.SkinFormID = 0UI Then Return Nothing
 
         Dim armo = _ctx.GetParsedArmo(state.SkinFormID)
@@ -306,12 +359,15 @@ Friend NotInheritable Class NpcMaterialResolver
         ' race-válido que cubre la región CIERRA la resolución aunque su TXST sea 0 — no se cae al pass 2.
         For pass As Integer = 0 To 1
             Dim requireRaceMatch As Boolean = (pass = 0)
+
+            ' S = los armatures que cubren la REGIÓN en esta pasada, EN ORDEN DE armo.ArmorAddons.
+            Dim s As New List(Of ARMA_Data)()
             For Each entry In armo.ArmorAddons
-                Dim arma = _ctx.GetParsedArma(entry.ArmaFormID)
-                If arma Is Nothing Then Continue For
+                Dim a = _ctx.GetParsedArma(entry.ArmaFormID)
+                If a Is Nothing Then Continue For
                 If requireRaceMatch AndAlso
-                   Not MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) Then Continue For
-                Dim armaSlot = arma.SlotMask
+                   Not MainForm.ArmorAddonMatchesRace(a, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) Then Continue For
+                Dim armaSlot = a.SlotMask
 
                 Dim matches As Boolean = False
                 Select Case region
@@ -320,61 +376,137 @@ Friend NotInheritable Class NpcMaterialResolver
                     Case MainForm.SkinRegion.Hand
                         matches = (armaSlot And handMask) <> 0UI AndAlso (armaSlot And bodyMask) = 0UI
                 End Select
-                If Not matches Then Continue For
-
-                ' ⭐⭐ EL PRIMER ARMATURE QUE CUBRE LA REGIÓN **ES** EL SELECTOR: acá se DECIDE, no se sigue
-                ' buscando. Ley del motor (getter de skin TXST 0x140a90790 / thunk 0x14004e693, ver
-                ' 23-armor-arma-skin-txst): itera los addons worn, se queda con el que matchea la región y lee
-                ' SU `[arma+sex*8+0x240]`; si ese slot es null, el shape conserva SU PROPIA textura
-                ' (`[prop+0xb0]`). El motor NUNCA cae a OTRO armature buscando uno que sí tenga TXST.
-                '
-                ' ⛔ Acá había `Continue For` y ESE era el bug de UBE (medido 2026-08-15, log + records):
-                ' `00UBE_SkinNaked` (0x0D0144E7) lista 25 armatures; los 3 de UBE (00UBE_NakedTorso/Feet/Hands)
-                ' traen las texturas DENTRO del NIF y dejan NAM0=NAM1=0, así que el scan se los salteaba y
-                ' seguía por los 21 armatures vanilla que el ARMO hereda → devolvía `SkinBodyFemaleChild`
-                ' (0x0007E5CF: `FemaleChild\UpperBodyFemale.dds` + `MaleChild\UpperBodyMale_n/_sk`) y la pintaba
-                ' sobre las UV de UBE en los shapes SkinTint del outfit — encima con normal MSN vanilla sobre un
-                ' mesh `*_tangent_*.nif`. El cuerpo desnudo NO se veía afectado porque ése va por
-                ' `candidate.TextureSetFormID` (=0 ⇒ ApplyTextureSetOverrides hace Return y conserva lo autorado):
-                ' los dos caminos resolvían la piel con reglas distintas y por eso divergían.
-                '
-                ' Barrido old-vs-new sobre TODOS los skin ARMO referenciados por un RACE.WNAM de Skyrim.esm +
-                ' UBE_AllRace.esp: 460 combinaciones (raza × región × sexo), 64 diferencias, y las 64 son del
-                ' ARMO de UBE ⇒ el cambio es INERTE sobre vanilla.
-                '
-                ' Fallback EXACTO del motor (getter 0x140a90790: [arma+sex*8+0x240], null→índice0=NAM0/male):
-                ' female → NAM1, si vacío → NAM0 (male). male → NAM0 (sin fallback a female).
-                ' Confirmado por el bake: BAKETEST2_N_G (0x846) tiene ARMA_G con SÓLO NAM0 y NPC femenino
-                ' → el CK horneó OldHumanMaleHead_* (o sea female cae a NAM0).
-                Dim txstFID = If(state.IsFemale,
-                                 If(arma.FemaleSkinTextureFormID <> 0UI, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID),
-                                 arma.MaleSkinTextureFormID)
-                If txstFID = 0UI Then
-                    If Logger.Enabled Then
-                        Dim aEid0 = arma.EditorID, rFid0 = state.RaceFormID, regL0 = region.ToString()
-                        Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL0}: el armature '{aEid0}' (race del actor 0x{rFid0:X8}) la cubre pero NO declara skin TXST (NAM0=NAM1=0) → SIN sustitución; el shape conserva su textura autorada (ley del motor: selector null ⇒ textura propia)")
-                    End If
-                    Return Nothing
-                End If
-
-                Dim txstRec = _ctx.PluginManager.GetRecord(txstFID)
-                If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then
-                    If Logger.Enabled Then
-                        Dim aEid1 = arma.EditorID, tFid1 = txstFID, regL1 = region.ToString()
-                        Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL1}: el armature '{aEid1}' declara skin TXST 0x{tFid1:X8} pero NO resuelve a un record TXST → SIN sustitución (misma ley que el slot null)")
-                    End If
-                    Return Nothing
-                End If
-
-                If Logger.Enabled AndAlso Not requireRaceMatch Then
-                    Dim aEid = arma.EditorID, rFid = state.RaceFormID
-                    Logger.LogLazy(Function() $"[SKINTXST-RACEFALLBACK] ninguna ARMA race-válida cubrió la región; se acepta '{aEid}' (race del actor 0x{rFid:X8}) — regla BAKETEST2 N_D1/R_D1")
-                End If
-                Return RecordParsers.ParseTXST(txstRec, _ctx.PluginManager)
+                If matches Then s.Add(a)
             Next
+            If s.Count = 0 Then Continue For
+
+            ' ⛔ LA PASADA 2 VA CON MÁSCARA 0, A PROPÓSITO — no es otra ley, es un INPUT declarado.
+            ' La pasada 2 no es la ley del motor: el motor filtra los addons WORN, y que un skin ARMO no
+            ' liste ningún armature para la raza es una configuración rota. La pasada 2 es una heurística
+            ' NUESTRA (regla BAKETEST2 N_D1/R_D1) que ya elige arbitrariamente, así que refinarla con datos
+            ' fieles al motor no la vuelve fiel: la vuelve DISTINTA. Y costaría inercia: medido
+            ' (`sweep_v3.py`, condición suficiente) el desempate cambiaría 6 combinaciones de la pasada 2
+            ' en SSE (0 en FO4), todas en las 3 razas cuyo ARMO no las sirve — `TestRace` de Dawnguard y
+            ' `00UBE_CustomRace01/02`, ninguna con NPC_ que la referencie directo. NO medimos cuál de las
+            ' dos elecciones es mejor; elegimos la INERCIA, y el gate reporta la pasada 2 para el día que
+            ' alguien quiera decidirlo con datos.
+            Dim arma = SelectArmatureForShape(s, If(requireRaceMatch, shapeSlotMask, 0UI))
+
+            ' ⭐⭐ EL ARMATURE ELEGIDO **ES** EL SELECTOR: acá se DECIDE, no se sigue
+            ' buscando. Ley del motor (getter de skin TXST 0x140a90790 / thunk 0x14004e693, ver
+            ' 23-armor-arma-skin-txst): itera los addons worn, se queda con el que matchea la región y lee
+            ' SU `[arma+sex*8+0x240]`; si ese slot es null, el shape conserva SU PROPIA textura
+            ' (`[prop+0xb0]`). El motor NUNCA cae a OTRO armature buscando uno que sí tenga TXST.
+            '
+            ' ⛔ Acá había `Continue For` y ESE era el bug de UBE (medido 2026-08-15, log + records):
+            ' `00UBE_SkinNaked` (0x0D0144E7) lista 25 armatures; los 3 de UBE (00UBE_NakedTorso/Feet/Hands)
+            ' traen las texturas DENTRO del NIF y dejan NAM0=NAM1=0, así que el scan se los salteaba y
+            ' seguía por los 21 armatures vanilla que el ARMO hereda → devolvía `SkinBodyFemaleChild`
+            ' (0x0007E5CF: `FemaleChild\UpperBodyFemale.dds` + `MaleChild\UpperBodyMale_n/_sk`) y la pintaba
+            ' sobre las UV de UBE en los shapes SkinTint del outfit — encima con normal MSN vanilla sobre un
+            ' mesh `*_tangent_*.nif`. El cuerpo desnudo NO se veía afectado porque ése va por
+            ' `candidate.TextureSetFormID` (=0 ⇒ ApplyTextureSetOverrides hace Return y conserva lo autorado):
+            ' los dos caminos resolvían la piel con reglas distintas y por eso divergían.
+            '
+            ' Barrido old-vs-new DE ESTE CAMBIO (el del `Continue For`, no el del desempate per-slot —
+            ' ⛔ no confundir con las cifras de SelectArmatureForShape, que miden OTRA cosa): sobre todos
+            ' los skin ARMO referenciados por un RACE.WNAM de Skyrim.esm + UBE_AllRace.esp, 460
+            ' combinaciones (raza × región × sexo), 64 diferencias, y las 64 son del ARMO de UBE ⇒
+            ' INERTE sobre vanilla.
+            '
+            ' Fallback EXACTO del motor (getter 0x140a90790: [arma+sex*8+0x240], null→índice0=NAM0/male):
+            ' female → NAM1, si vacío → NAM0 (male). male → NAM0 (sin fallback a female).
+            ' Confirmado por el bake: BAKETEST2_N_G (0x846) tiene ARMA_G con SÓLO NAM0 y NPC femenino
+            ' → el CK horneó OldHumanMaleHead_* (o sea female cae a NAM0).
+            Dim txstFID = If(state.IsFemale,
+                             If(arma.FemaleSkinTextureFormID <> 0UI, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID),
+                             arma.MaleSkinTextureFormID)
+            If txstFID = 0UI Then
+                If Logger.Enabled Then
+                    Dim aEid0 = arma.EditorID, rFid0 = state.RaceFormID, regL0 = region.ToString()
+                    Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL0}: el armature '{aEid0}' (race del actor 0x{rFid0:X8}) la cubre pero NO declara skin TXST (NAM0=NAM1=0) → SIN sustitución; el shape conserva su textura autorada (ley del motor: selector null ⇒ textura propia)")
+                End If
+                Return Nothing
+            End If
+
+            Dim txstRec = _ctx.PluginManager.GetRecord(txstFID)
+            If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then
+                If Logger.Enabled Then
+                    Dim aEid1 = arma.EditorID, tFid1 = txstFID, regL1 = region.ToString()
+                    Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL1}: el armature '{aEid1}' declara skin TXST 0x{tFid1:X8} pero NO resuelve a un record TXST → SIN sustitución (misma ley que el slot null)")
+                End If
+                Return Nothing
+            End If
+
+            If Logger.Enabled AndAlso Not requireRaceMatch Then
+                Dim aEid = arma.EditorID, rFid = state.RaceFormID
+                Logger.LogLazy(Function() $"[SKINTXST-RACEFALLBACK] ninguna ARMA race-válida cubrió la región; se acepta '{aEid}' (race del actor 0x{rFid:X8}) — regla BAKETEST2 N_D1/R_D1")
+            End If
+            Return RecordParsers.ParseTXST(txstRec, _ctx.PluginManager)
         Next
 
         Return Nothing
+    End Function
+
+    ''' <summary>Elige, dentro del conjunto <paramref name="candidates"/> que la ley de REGIÓN ya aceptó, el
+    ''' armature cuyo SlotMask intersecta el slot REAL del shape (su partición BSDismember). Desempate, no
+    ''' filtro: el conjunto no se amplía ni se reduce, sólo cambia CUÁL de sus miembros se devuelve.
+    '''
+    ''' Motivo: la región Body de SSE agrupa los slots 32+37+38+40 (<c>BipedSlots.BuildSseRegions</c>), así
+    ''' que sin esto un armature de PIES puede terminar siendo el selector del TXST de un shape de TORSO. El
+    ''' motor no hace eso: su getter de skin TXST filtra los addons worn con un predicado POR SLOT
+    ''' (<c>[arma_subobj+0x40].vfn(0xa8)(slot)</c>).
+    '''
+    ''' ⛔⛔ "EL PRIMERO QUE INTERSECTA" ESTÁ ATADO AL ARNÉS DEL GATE. El barrido de no-regresión enumera
+    ''' bits de slot ÚNICOS, y eso es exhaustivo SÓLO por esta regla: siendo `idx(b)=min{i : S[i] cubre b}`,
+    ''' para cualquier máscara M vale `winner(M) = S[min_{b∈B(M)} idx(b)]` ⇒ los ganadores alcanzables con
+    ''' máscara arbitraria son un SUBCONJUNTO de los alcanzables con un solo bit (probado, y brute-forceado:
+    ''' 428.752 máscaras multi-bit en SSE + 229.616 en FO4, 0 ganadores fuera del set de 1 bit). Si alguien
+    ''' cambia esto a "el que cubre más bits" o "mayor solapamiento", la enumeración por bit único deja de
+    ''' ser exhaustiva y el gate MIENTE EN SILENCIO. Cambiar una obliga a cambiar el otro.
+    '''
+    ''' Inercia MEDIDA hoy (`sweep_v3.py`, condición suficiente, predicado de raza con la cadena RACE.RNAM
+    ''' completa, universo = ARMO por RACE.WNAM ∪ NPC_.WNAM, regiones Body y Hand, ambos sexos):
+    ''' pasada 1 = **516 combinaciones en SSE y 366 en FO4, 0 cambios reales** en las dos. (Conteo verificado
+    ''' contra un arnés independiente del revisor, que dio los mismos 516/366.)
+    '''
+    ''' ⚠️ Esto NO implementa el selector per-slot del motor, sólo se acerca: la REGIÓN del candidate sigue
+    ''' decidiendo el conjunto antes del desempate (el lumping Body-vs-Hand sigue vivo) y la pasada 2 va con
+    ''' máscara 0. No leer esto como "ya está el selector del motor".</summary>
+    ''' <param name="shapeSlotMask">Bits (slot−30) de las particiones del shape; 0 = sin dato ⇒ se conserva
+    ''' el primer cubridor de la región, que es el comportamiento histórico.</param>
+    Friend Shared Function SelectArmatureForShape(candidates As List(Of ARMA_Data), shapeSlotMask As UInteger) As ARMA_Data
+        If candidates Is Nothing OrElse candidates.Count = 0 Then Return Nothing
+        If shapeSlotMask <> 0UI Then
+            For Each a In candidates
+                If (a.SlotMask And shapeSlotMask) <> 0UI Then Return a
+            Next
+        End If
+        Return candidates(0)
+    End Function
+
+    ''' <summary>Máscara (bit i = biped slot 30+i) de las particiones BSDismember del shape. 0 cuando el
+    ''' shape no trae dismember o el NIF no se puede leer — y 0 significa "sin dato", que hace caer a
+    ''' <see cref="SelectArmatureForShape"/> en el comportamiento histórico. El plegado 2xx/1xx→base es la
+    ''' ley compartida <c>BipedSlots.FoldPartitionBodyPart</c>; el filtro [30,61] es de este call site.
+    ''' <para>Usa <c>IRenderableShape.NifSkin</c> —el accesor de la INTERFAZ, que ya hace el deref del skin
+    ''' instance con sus guardas— en vez de re-derefear `NifShape.SkinInstanceRef` sobre `NifContent.Blocks`:
+    ''' mismo argumento que el del fold, no hace falta una tercera copia del mismo deref. Bonus: funciona
+    ''' también para las shapes OSP de Wardrobe_Manager, que implementan la interfaz sin ser NifRenderableShape.</para></summary>
+    Friend Shared Function ShapeBipedSlotMask(shape As IRenderableShape) As UInteger
+        If shape Is Nothing Then Return 0UI
+        Try
+            Dim dism = TryCast(shape.NifSkin, NiflySharp.Blocks.BSDismemberSkinInstance)
+            If dism Is Nothing OrElse dism.Partitions Is Nothing Then Return 0UI
+            Dim m As UInteger = 0UI
+            For Each p In dism.Partitions
+                Dim v = BipedSlots.FoldPartitionBodyPart(CInt(p.BodyPart))
+                If v >= 30 AndAlso v <= 61 Then m = m Or (1UI << (v - 30))
+            Next
+            Return m
+        Catch
+            Return 0UI
+        End Try
     End Function
 
     ''' <summary>Decide qué región de skin (Body vs Hand) corresponde a un Outfit candidate según
@@ -401,13 +533,14 @@ Friend NotInheritable Class NpcMaterialResolver
         Return MainForm.SkinRegion.Body  ' default seguro: si no toca nada conocido (raro), body.
     End Function
 
-    ''' <summary>Proyección candidate → flags de ApplyTextureSetOverrides. Existe para que el RENDER
-    ''' COMPLETO (ApplyShapeMaterialOverrides) y el FAST PATH del picker de piel
-    ''' (NpcSkinLivePreview.ApplyHeadPartBodyTextureRefreshAfterBodySkinChange) deriven los flags con
-    ''' UNA SOLA definición. El fast path llamaba ApplyTextureSetToMaterial pelado (todos los flags en
-    ''' su default False) ⇒ se salteaba el dispatch SSE por shader type autorado y el skip de TX07:
-    ''' RENDER ≠ RENDER. HeadPartTypeFace es Private acá a propósito — replicar la constante en el
-    ''' caller sería recrear el drift.</summary>
+    ''' <summary>Proyección candidate → flags de ApplyTextureSetOverrides.
+    ''' <para>⚠️ Su razón de ser ORIGINAL ya no existe: nació para que el render completo y el fast path del
+    ''' picker de piel derivaran los flags con UNA sola definición, porque el fast path llamaba
+    ''' `ApplyTextureSetToMaterial` pelado (flags en False) y se salteaba el dispatch SSE por shader type y el
+    ''' skip de TX07 ⇒ RENDER ≠ RENDER. Ese fast path se BORRÓ: hoy restaura el material autorado y corre
+    ''' `ApplyShapeMaterialOverrides`, o sea la ley entera, así que ya no deriva flags por su cuenta. La
+    ''' proyección se conserva porque el render completo la usa (:1499) y porque mantiene `HeadPartTypeFace`
+    ''' privado acá — replicar esa constante en un caller sería recrear el drift que la motivó.</para></summary>
     Friend Shared Function IsHeadPartTextureSetFor(candidate As MainForm.MeshCandidate) As Boolean
         Return candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart
     End Function
@@ -1281,11 +1414,14 @@ Friend NotInheritable Class NpcMaterialResolver
         ' con shader SkinTint dentro de un outfit (escote, brazos expuestos) por la del actor's body
         ' skin (race-specific). Sólo aplica a Outfit. HeadParts usan TXST propio del HDPT (o FaceTint
         ' shader para Face). Skin candidates conservan TXST nativo via ARMA.
-        Dim actorBodySkinTxst As TXST_Data = Nothing
-        If candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then
-            Dim region = ResolveSkinRegionForOutfit(candidate)
-            actorBodySkinTxst = ResolveActorSkinTextureSet(state, region)
-        End If
+        ' La REGIÓN sigue saliendo del candidate (ley actual, sin cambios); lo que pasa a ser PER-SHAPE es el
+        ' DESEMPATE dentro del conjunto que esa región acepta — ver SelectArmatureForShape. Memo por máscara
+        ' porque si no se re-caminarían los armatures del ARMO (25 en el de UBE) una vez por shape; los
+        ' shapes de un mismo outfit comparten máscara casi siempre, así que colapsa a una o dos entradas.
+        Dim isOutfitCandidate As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit)
+        Dim outfitSkinRegion As MainForm.SkinRegion = MainForm.SkinRegion.Body
+        If isOutfitCandidate Then outfitSkinRegion = ResolveSkinRegionForOutfit(candidate)
+        Dim skinTxstByShapeMask As New Dictionary(Of UInteger, TXST_Data)()
 
         For Each shape In shapes
             MaterialResolver.EnsureShapeMaterialResolved(shape)
@@ -1415,6 +1551,18 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim palScalePostTxst = material.GrayscaleToPaletteScale
                 Dim shapeNamePre = shape.ShapeName
                 Logger.LogLazy(Function() $"[PALSCALE-POST-TXST] shape='{shapeNamePre}' palColor={palOnPostTxst} palScale={palScalePostTxst:F4} (post TXST/MNAM override)")
+            End If
+
+            ' Piel del actor PARA ESTE SHAPE (ver el memo de arriba): la máscara sale de sus particiones
+            ' BSDismember; 0 (FO4, o shape sin dismember) ⇒ SelectArmatureForShape cae en el primer cubridor
+            ' de la región, que es exactamente el comportamiento histórico.
+            Dim actorBodySkinTxst As TXST_Data = Nothing
+            If isOutfitCandidate Then
+                Dim shapeSlotMask As UInteger = ShapeBipedSlotMask(shape)
+                If Not skinTxstByShapeMask.TryGetValue(shapeSlotMask, actorBodySkinTxst) Then
+                    actorBodySkinTxst = ResolveActorSkinTextureSet(state, outfitSkinRegion, shapeSlotMask)
+                    skinTxstByShapeMask(shapeSlotMask) = actorBodySkinTxst
+                End If
             End If
 
             ' Shape con piel expuesta (shader=SkinTint): sustituir SÓLO sus texturas (diffuse +
