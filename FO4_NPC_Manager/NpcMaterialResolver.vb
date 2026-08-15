@@ -299,9 +299,11 @@ Friend NotInheritable Class NpcMaterialResolver
         ' ARMO de piel (medido con bake controlado). Tiene sentido, el ARMO viene del WNAM ⇒ ES la piel del
         ' actor por construcción. ⛔ Pero el gate no se puede borrar: hay skin ARMO que listan varias ARMA de
         ' body de razas distintas y la primera es la equivocada (un YaoGuai tomaría la de sabueso). De ahí las
-        ' DOS pasadas: la 1 exige race-match y la 2 —solo si la 1 no resolvió— acepta cualquiera de la región.
-        ' Es estrictamente ADITIVA. ⚠️ Subdeterminado con varias ARMA non-matching: toma la primera, sin caso
-        ' vanilla que lo discrimine.
+        ' DOS pasadas: la 1 exige race-match y la 2 —sólo si en la 1 NINGÚN armature race-válido CUBRIÓ LA
+        ' REGIÓN— acepta cualquiera de la región. Es estrictamente ADITIVA. ⚠️ Subdeterminado con varias ARMA
+        ' non-matching: toma la primera, sin caso vanilla que lo discrimine.
+        ' ⛔ "no cubrió la región" ≠ "no trajo TXST": ver el bloque del selector más abajo. Un armature
+        ' race-válido que cubre la región CIERRA la resolución aunque su TXST sea 0 — no se cae al pass 2.
         For pass As Integer = 0 To 1
             Dim requireRaceMatch As Boolean = (pass = 0)
             For Each entry In armo.ArmorAddons
@@ -320,6 +322,26 @@ Friend NotInheritable Class NpcMaterialResolver
                 End Select
                 If Not matches Then Continue For
 
+                ' ⭐⭐ EL PRIMER ARMATURE QUE CUBRE LA REGIÓN **ES** EL SELECTOR: acá se DECIDE, no se sigue
+                ' buscando. Ley del motor (getter de skin TXST 0x140a90790 / thunk 0x14004e693, ver
+                ' 23-armor-arma-skin-txst): itera los addons worn, se queda con el que matchea la región y lee
+                ' SU `[arma+sex*8+0x240]`; si ese slot es null, el shape conserva SU PROPIA textura
+                ' (`[prop+0xb0]`). El motor NUNCA cae a OTRO armature buscando uno que sí tenga TXST.
+                '
+                ' ⛔ Acá había `Continue For` y ESE era el bug de UBE (medido 2026-08-15, log + records):
+                ' `00UBE_SkinNaked` (0x0D0144E7) lista 25 armatures; los 3 de UBE (00UBE_NakedTorso/Feet/Hands)
+                ' traen las texturas DENTRO del NIF y dejan NAM0=NAM1=0, así que el scan se los salteaba y
+                ' seguía por los 21 armatures vanilla que el ARMO hereda → devolvía `SkinBodyFemaleChild`
+                ' (0x0007E5CF: `FemaleChild\UpperBodyFemale.dds` + `MaleChild\UpperBodyMale_n/_sk`) y la pintaba
+                ' sobre las UV de UBE en los shapes SkinTint del outfit — encima con normal MSN vanilla sobre un
+                ' mesh `*_tangent_*.nif`. El cuerpo desnudo NO se veía afectado porque ése va por
+                ' `candidate.TextureSetFormID` (=0 ⇒ ApplyTextureSetOverrides hace Return y conserva lo autorado):
+                ' los dos caminos resolvían la piel con reglas distintas y por eso divergían.
+                '
+                ' Barrido old-vs-new sobre TODOS los skin ARMO referenciados por un RACE.WNAM de Skyrim.esm +
+                ' UBE_AllRace.esp: 460 combinaciones (raza × región × sexo), 64 diferencias, y las 64 son del
+                ' ARMO de UBE ⇒ el cambio es INERTE sobre vanilla.
+                '
                 ' Fallback EXACTO del motor (getter 0x140a90790: [arma+sex*8+0x240], null→índice0=NAM0/male):
                 ' female → NAM1, si vacío → NAM0 (male). male → NAM0 (sin fallback a female).
                 ' Confirmado por el bake: BAKETEST2_N_G (0x846) tiene ARMA_G con SÓLO NAM0 y NPC femenino
@@ -327,10 +349,22 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim txstFID = If(state.IsFemale,
                                  If(arma.FemaleSkinTextureFormID <> 0UI, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID),
                                  arma.MaleSkinTextureFormID)
-                If txstFID = 0UI Then Continue For
+                If txstFID = 0UI Then
+                    If Logger.Enabled Then
+                        Dim aEid0 = arma.EditorID, rFid0 = state.RaceFormID, regL0 = region.ToString()
+                        Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL0}: el armature '{aEid0}' (race del actor 0x{rFid0:X8}) la cubre pero NO declara skin TXST (NAM0=NAM1=0) → SIN sustitución; el shape conserva su textura autorada (ley del motor: selector null ⇒ textura propia)")
+                    End If
+                    Return Nothing
+                End If
 
                 Dim txstRec = _ctx.PluginManager.GetRecord(txstFID)
-                If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then Continue For
+                If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then
+                    If Logger.Enabled Then
+                        Dim aEid1 = arma.EditorID, tFid1 = txstFID, regL1 = region.ToString()
+                        Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL1}: el armature '{aEid1}' declara skin TXST 0x{tFid1:X8} pero NO resuelve a un record TXST → SIN sustitución (misma ley que el slot null)")
+                    End If
+                    Return Nothing
+                End If
 
                 If Logger.Enabled AndAlso Not requireRaceMatch Then
                     Dim aEid = arma.EditorID, rFid = state.RaceFormID
