@@ -2667,6 +2667,79 @@ Public Class MainForm
         Return outList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
     End Function
 
+    ''' <summary>⭐ Predicado del PICKER de Skin Armor (el botón "…" de Edit Body): el ARMO ocupa el slot
+    ''' BODY del juego activo. Deliberadamente MUCHO más laxo que <see cref="SkinArmoQualifies"/>.
+    '''
+    ''' <para>QUÉ ES ESTE BOTÓN: el combo ya es la lista curada (raza + género + TXST de piel); el "…" es
+    ''' la PUERTA DEL CASO EXTREMO, para lo que esa lista deja afuera. Por eso acá no se cura: se muestra
+    ''' todo lo que tenga body y **elige el usuario**. Requisito textual suyo. ⛔ No agregar filtros
+    ''' "inteligentes" acá: se evaluó filtrar por "referenciado como WNAM" (177 filas en SSE / 173 en FO4,
+    ''' semánticamente más lindo) y el usuario lo RECHAZÓ por curar.</para>
+    '''
+    ''' <para>⛔ NO exige raza, ni género, ni TXST de piel: el caso UBE probó que un ARMO de piel legítimo
+    ''' puede no declarar TXST (NAM0=NAM1=0), así que exigirlo escondería justo lo que se quiere elegir.</para>
+    '''
+    ''' <para>⛔ Y NO lleva gate de POWER ARMOR, aunque el render/bake/<c>SkinArmoQualifies</c> sí lo tengan.
+    ''' Se propuso y el usuario lo rechazó con la regla correcta: ese gate NO es data-driven —
+    ''' <see cref="FindArmorTypePowerKeywordFid"/> barre los KYWD comparando el EditorID contra el string
+    ''' literal "ArmorTypePower"— y un match por nombre no decide qué puede elegir el usuario. Consecuencia
+    ''' asumida: en FO4 se listan los 8 ARMO de PA; elegir uno para un NPC no-PA lo deja sin cuerpo, y ése
+    ''' es exactamente el caso extremo que este botón pone en manos del usuario. El gate sigue intacto
+    ''' donde ya vivía.</para>
+    '''
+    ''' <para>Slot BODY **estricto** vía <see cref="BipedSlots.BodySlotBit"/> (SSE 32 / FO4 33), NO
+    ''' <c>RegionMask(Body)</c>: esa unión agrupa Feet/Calves/Tail y Scalp, y MEDIDO deja entrar
+    ''' <c>DremoraBoots</c> y <c>cc_Armor_Power_X01_Helm</c>. Volumen medido con el estricto: 1169/3715 en
+    ''' SSE, 498/1045 en FO4.</para>
+    '''
+    ''' <para>⛔ SIN MEMO, por MEDICIÓN: el gate en frío cuesta 17,5 ms (FO4) / 29,4 ms (SSE) una vez por
+    ''' carga, y con los parses calientes 0,4/1,8 ms — un memo ahorraba 0 ms en FO4 y obligaba a dos reglas
+    ''' extra (no cachear drafts, invalidar al recargar). Lo caro ya lo cachean GetParsedArmo/GetParsedArma.</para>
+    '''
+    ''' <para>Drafts propios DIRTY: siempre True, y detectados por PERTENENCIA a <c>_armoDrafts</c>, ⛔ NO
+    ''' por <c>OutfitDraft.IsDraftFormID</c> — un draft OVERRIDE conserva su FormID REAL, así que el test de
+    ''' forma cubriría sólo la mitad de los casos. Misma regla que "Own ARMO drafts are the user's OWN
+    ''' creations — ALWAYS list them" (GetArmoItemCandidatesWithDrafts).</para></summary>
+    Friend Function ArmoHasBodyArmature(armoFID As UInteger) As Boolean
+        If armoFID = 0UI Then Return False
+
+        Dim armo As ARMO_Data = Nothing
+        Try
+            armo = _ctx.GetParsedArmo(armoFID)
+        Catch
+            Return False
+        End Try
+        If armo Is Nothing Then Return False
+
+        ' Draft propio con cambios sin guardar: siempre listable, aunque todavía no tenga armatures.
+        For Each d In _armoDrafts
+            If d.IsDirty AndAlso d.FormID = armoFID Then Return True
+        Next
+
+        Dim bodyBit As UInteger = BipedSlots.BodySlotBit()
+        If bodyBit = 0UI Then Return False
+
+        ' Unión de los slots de los armatures que RESUELVEN. EffectiveArmaSlotMask ya trae el fallback
+        ' por-addon al ARMO, así que la unión no pierde nada.
+        Dim union As UInteger = 0UI
+        For Each entry In armo.ArmorAddons
+            Dim arma As ARMA_Data = Nothing
+            Try
+                arma = _ctx.GetParsedArma(entry.ArmaFormID)
+            Catch
+                Continue For
+            End Try
+            If arma Is Nothing Then Continue For
+            union = union Or EffectiveArmaSlotMask(arma, armo)
+        Next
+
+        ' Unión 0 (sin addons, o ninguno resolvió) ⇒ vale el BOD2 propio del ARMO. Es exactamente lo que
+        ' hace ComputeArmoEffectiveSlotMaskCore y la ley del bake para el ARMO sin armatures (el render cae
+        ' al mesh fallback ARMO.MOD2, p.ej. robots).
+        If union = 0UI Then Return (armo.SlotMask And bodyBit) <> 0UI
+        Return (union And bodyBit) <> 0UI
+    End Function
+
     ''' <summary>The per-ARMO skin-candidate rule, shared by real records and ARMO drafts so both qualify
     ''' identically. An ARMO is a valid skin for (race, gender) iff: it survives the power-armor gate (no PA
     ''' skin for a non-PA race) AND (ARMO.RNAM matches the race OR some race-valid ARMA child does) AND at least

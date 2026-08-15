@@ -141,6 +141,24 @@ Public Module BipedSlots
         Return m
     End Function
 
+    ''' <summary>Bit del slot BODY **ESTRICTO** del juego activo: SSE slot 32 (bit 2 = <c>&amp;H4</c>),
+    ''' FO4 slot 33 (bit 3 = <c>&amp;H8</c>). Se DERIVA de la misma tabla que todo lo demás — el bit más BAJO
+    ''' cuya región es Body — así que no hay `If juego` ni una constante duplicada que se pueda desincronizar.
+    ''' (En las dos tablas el slot canónico de cuerpo es el miembro más bajo de la región: SSE 32 &lt; 37/38/40,
+    ''' FO4 33 &lt; 52.)
+    ''' <para>⛔ NO confundir con <see cref="RegionMask"/>(Body), que es una UNIÓN pensada para resolver la
+    ''' piel por región y agrupa Feet/Calves/Tail en SSE y Scalp en FO4. Para la pregunta "¿esto es una
+    ''' prenda/cuerpo de TORSO?" esa unión miente: MEDIDO sobre el load order real, con ella entran
+    ''' <c>DremoraBoots</c> (por Feet) y <c>cc_Armor_Power_X01_Helm</c> (por Scalp).</para>
+    ''' <para>0 si la tabla del juego no declara ninguna región Body (no debería pasar).</para></summary>
+    Public Function BodySlotBit() As UInteger
+        Dim regions = RegionsForGame()
+        For b = 0 To 31
+            If regions(b) = BipedRegion.Body Then Return (1UI << b)
+        Next
+        Return 0UI
+    End Function
+
     ''' <summary>Pliega el <c>BodyPart</c> de una partición BSDismember a su slot BASE: los valores
     ''' SBP_1xx / SBP_2xx son la misma región biped con prefijo (100 = "editor visible", 200 = variantes),
     ''' así que 2xx → −200 y 1xx → −100. Es LA ley del plegado y vive acá sola: la escribían a mano dos

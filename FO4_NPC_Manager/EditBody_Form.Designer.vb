@@ -41,6 +41,8 @@ Partial Class EditBody_Form
         SkinLayout = New TableLayoutPanel()
         LabelWnam = New Label()
         ComboBoxWnam = New ComboBox()
+        WnamPickPanel = New Panel()
+        ButtonPickWnam = New Button()
         LabelLmSkinTemplate = New Label()
         ComboBoxLmSkinTemplate = New ComboBox()
         GroupBoxMrsv = New GroupBox()
@@ -514,7 +516,11 @@ Partial Class EditBody_Form
         SkinLayout.ColumnStyles.Add(New ColumnStyle())
         SkinLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         SkinLayout.Controls.Add(LabelWnam, 0, 0)
-        SkinLayout.Controls.Add(ComboBoxWnam, 1, 0)
+        ' ⛔ El combo NO va directo en la celda (1,0): va dentro de WnamPickPanel junto al botón "…".
+        ' Agregar una TERCERA COLUMNA al TableLayoutPanel encogería el ComboBoxLmSkinTemplate de la fila
+        ' de abajo (que vive en (1,1)) y dejaría una celda vacía bajo el botón. El panel anidado deja la
+        ' geometría de esa fila intacta.
+        SkinLayout.Controls.Add(WnamPickPanel, 1, 0)
         SkinLayout.Controls.Add(LabelLmSkinTemplate, 0, 1)
         SkinLayout.Controls.Add(ComboBoxLmSkinTemplate, 1, 1)
         SkinLayout.Dock = DockStyle.Fill
@@ -547,6 +553,27 @@ Partial Class EditBody_Form
         ComboBoxWnam.Name = "ComboBoxWnam"
         ComboBoxWnam.Size = New Size(365, 23)
         ComboBoxWnam.TabIndex = 1
+        '
+        ' WnamPickPanel  (combo Fill + botón "…" Right, dentro de la celda (1,0))
+        '
+        WnamPickPanel.AutoSize = True
+        WnamPickPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        WnamPickPanel.Controls.Add(ComboBoxWnam)
+        WnamPickPanel.Controls.Add(ButtonPickWnam)
+        WnamPickPanel.Dock = DockStyle.Fill
+        WnamPickPanel.Margin = New Padding(0)
+        WnamPickPanel.Name = "WnamPickPanel"
+        WnamPickPanel.TabIndex = 1
+        '
+        ' ButtonPickWnam
+        '
+        ButtonPickWnam.Dock = DockStyle.Right
+        ButtonPickWnam.Margin = New Padding(2)
+        ButtonPickWnam.Name = "ButtonPickWnam"
+        ButtonPickWnam.Size = New Size(30, 23)
+        ButtonPickWnam.TabIndex = 2
+        ButtonPickWnam.Text = "..."
+        ButtonPickWnam.UseVisualStyleBackColor = True
         ' 
         ' LabelLmSkinTemplate
         ' 
@@ -1423,6 +1450,8 @@ Partial Class EditBody_Form
     Friend WithEvents SkinLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelWnam As System.Windows.Forms.Label
     Friend WithEvents ComboBoxWnam As System.Windows.Forms.ComboBox
+    Friend WithEvents WnamPickPanel As System.Windows.Forms.Panel
+    Friend WithEvents ButtonPickWnam As System.Windows.Forms.Button
     Friend WithEvents LabelLmSkinTemplate As System.Windows.Forms.Label
     Friend WithEvents ComboBoxLmSkinTemplate As System.Windows.Forms.ComboBox
     Friend WithEvents GroupBoxMrsv As System.Windows.Forms.GroupBox

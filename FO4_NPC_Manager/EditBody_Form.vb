@@ -362,13 +362,26 @@ Public Class EditBody_Form
             ComboBoxWnam.Items.Add("(use RACE default)")
             _wnamComboFormIDs.Add(0UI)
             Dim filtered = _mainForm.GetSkinArmoCandidates(_npcRaceFID, _npcIsFemale)
-            ' Pin current WNAM at the top if it's non-zero AND not already in the filtered list.
-            If _currentWnamFormID <> 0UI AndAlso Not filtered.Any(Function(x) x.FormID = _currentWnamFormID) Then
-                Dim disp = _mainForm.GetSkinArmoDisplayName(_currentWnamFormID)
-                If String.IsNullOrEmpty(disp) Then disp = _currentWnamFormID.ToString("X8")
+            ' Pin fuera-de-filtro: la UNIÓN DE-DUPLICADA del WNAM actual del NPC y del valor EFECTIVO
+            ' seleccionado (el override del preset, si hay).
+            ' ⛔ NO uno "o" el otro. Este Sub se volvió REENTRANTE (el botón "…" lo re-llama), y pinear
+            ' sólo el efectivo BORRARÍA del combo el WNAM real del NPC cuando ése está fuera del filtro —
+            ' que es exactamente el caso para el que el pin existe — dejando al usuario sin forma de volver
+            ' a la piel original. Y si después eligiera "(use RACE default)", el override pasa a 0, el
+            ' guard `<> 0` no pinea nada, y el combo quedaría sin uno Y sin el otro.
+            Dim presetForPin = Preset
+            Dim pinCandidates = New UInteger() {_currentWnamFormID,
+                                                If(presetForPin.SkinFormIDOverride.HasValue, presetForPin.SkinFormIDOverride.Value, 0UI)}
+            For Each pinFid In pinCandidates
+                Dim fidToPin = pinFid
+                If fidToPin = 0UI Then Continue For
+                If filtered.Any(Function(x) x.FormID = fidToPin) Then Continue For
+                If _wnamComboFormIDs.Contains(fidToPin) Then Continue For
+                Dim disp = _mainForm.GetSkinArmoDisplayName(fidToPin)
+                If String.IsNullOrEmpty(disp) Then disp = fidToPin.ToString("X8")
                 ComboBoxWnam.Items.Add(disp & "  ⚠ outside race/gender filter")
-                _wnamComboFormIDs.Add(_currentWnamFormID)
-            End If
+                _wnamComboFormIDs.Add(fidToPin)
+            Next
             For Each cand In filtered
                 ComboBoxWnam.Items.Add(cand.DisplayName)
                 _wnamComboFormIDs.Add(cand.FormID)
@@ -417,6 +430,40 @@ Public Class EditBody_Form
         ' Save ESP path; the runtime overlay merge already maps 0 to RACE.WNAM fallback
         ' (MainForm.vb:6185-6187). Any other index encodes the chosen ARMO FormID.
         p.SkinFormIDOverride = _wnamComboFormIDs(idx)
+        Await TriggerSkinChangeReload()
+    End Sub
+
+    ''' <summary>Botón "…" del Skin Armor: elegir CUALQUIER ARMO que ocupe el slot BODY del juego activo,
+    ''' sin el filtro de raza/género/TXST que aplica el combo.
+    ''' <para>El combo es la lista CURADA; esto es la puerta del caso extremo, y la elección es del usuario
+    ''' (requisito textual). El predicado vive en <c>MainForm.ArmoHasBodyArmature</c> — ahí está documentado
+    ''' por qué no lleva gate de power armor ni filtro "inteligente". El checkbox <b>"Show all"</b> del
+    ''' picker (que aparece solo porque le pasamos un filtro) es la vía a literalmente cualquier ARMO.</para>
+    ''' <para>Aplicar la selección NO duplica la ley del combo: escribe el MISMO
+    ''' <c>SkinFormIDOverride</c> (0 = "(use RACE default)", igual que el índice 0) y pasa por el MISMO
+    ''' <see cref="TriggerSkinChangeReload"/>.</para></summary>
+    Private Async Sub OnPickWnamClicked(sender As Object, e As EventArgs) Handles ButtonPickWnam.Click
+        If _mainForm Is Nothing Then Return
+        Dim p = Preset
+        Dim currentFid As UInteger = If(p.SkinFormIDOverride.HasValue, p.SkinFormIDOverride.Value, _currentWnamFormID)
+
+        ' Drafts propios sin guardar, con el mismo shape que usan los demás pickers del proyecto.
+        Dim draftEntries = _mainForm.ArmoDrafts().Where(Function(d) d.IsDirty).
+            Select(Function(d) New FormIdPickerEntry With {
+                .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMO"}).ToList()
+
+        Dim picked As UInteger
+        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMO"},
+                                           "Select Skin Armor (ARMO) — everything that occupies the body slot",
+                                           currentFid, allowNull:=True,
+                                           extraDraftEntries:=draftEntries,
+                                           formIdFilter:=AddressOf _mainForm.ArmoHasBodyArmature)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            picked = dlg.SelectedFormID
+        End Using
+
+        p.SkinFormIDOverride = picked
+        PopulateSkinCombos()
         Await TriggerSkinChangeReload()
     End Sub
 
