@@ -163,7 +163,7 @@ Partial Class EditBody_Form
         ' RootLayout
         ' 
         RootLayout.ColumnCount = 1
-        RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         RootLayout.Controls.Add(TabsBody, 0, 0)
         RootLayout.Controls.Add(BottomLayout, 0, 1)
         RootLayout.Dock = DockStyle.Fill
@@ -171,7 +171,7 @@ Partial Class EditBody_Form
         RootLayout.Name = "RootLayout"
         RootLayout.Padding = New Padding(8)
         RootLayout.RowCount = 2
-        RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.Size = New Size(860, 781)
         RootLayout.TabIndex = 0
@@ -202,7 +202,7 @@ Partial Class EditBody_Form
         ' 
         BodyTabLayout.AutoScroll = True
         BodyTabLayout.ColumnCount = 1
-        BodyTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        BodyTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         BodyTabLayout.Controls.Add(GroupBoxWeight, 0, 0)
         BodyTabLayout.Controls.Add(GroupBoxMrsv, 0, 1)
         BodyTabLayout.Controls.Add(GroupBoxHeight, 0, 2)
@@ -237,7 +237,7 @@ Partial Class EditBody_Form
         WeightLayout.AutoSize = True
         WeightLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         WeightLayout.ColumnCount = 2
-        WeightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        WeightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         WeightLayout.ColumnStyles.Add(New ColumnStyle())
         WeightLayout.Controls.Add(WeightTriangle, 0, 0)
         WeightLayout.Controls.Add(WeightLegend, 1, 0)
@@ -306,7 +306,7 @@ Partial Class EditBody_Form
         SliderMuscular.LargeChange = 0.1R
         SliderMuscular.Location = New Point(67, 4)
         SliderMuscular.Margin = New Padding(2, 4, 2, 4)
-        SliderMuscular.Maximum = 1.0R
+        SliderMuscular.Maximum = 1R
         SliderMuscular.MinimumSize = New Size(140, 28)
         SliderMuscular.Name = "SliderMuscular"
         SliderMuscular.Size = New Size(160, 28)
@@ -314,7 +314,7 @@ Partial Class EditBody_Form
         SliderMuscular.TabIndex = 1
         SliderMuscular.TextBoxTextAlign = HorizontalAlignment.Right
         SliderMuscular.ThumbColor = SystemColors.HotTrack
-        SliderMuscular.ThumbRadius = 4.0F
+        SliderMuscular.ThumbRadius = 4F
         SliderMuscular.TrackColor = SystemColors.ControlDark
         ' 
         ' LabelThin
@@ -338,7 +338,7 @@ Partial Class EditBody_Form
         SliderThin.LargeChange = 0.1R
         SliderThin.Location = New Point(67, 40)
         SliderThin.Margin = New Padding(2, 4, 2, 4)
-        SliderThin.Maximum = 1.0R
+        SliderThin.Maximum = 1R
         SliderThin.MinimumSize = New Size(140, 28)
         SliderThin.Name = "SliderThin"
         SliderThin.Size = New Size(160, 28)
@@ -346,7 +346,7 @@ Partial Class EditBody_Form
         SliderThin.TabIndex = 3
         SliderThin.TextBoxTextAlign = HorizontalAlignment.Right
         SliderThin.ThumbColor = SystemColors.HotTrack
-        SliderThin.ThumbRadius = 4.0F
+        SliderThin.ThumbRadius = 4F
         SliderThin.TrackColor = SystemColors.ControlDark
         ' 
         ' LabelFat
@@ -370,7 +370,7 @@ Partial Class EditBody_Form
         SliderFat.LargeChange = 0.1R
         SliderFat.Location = New Point(67, 76)
         SliderFat.Margin = New Padding(2, 4, 2, 4)
-        SliderFat.Maximum = 1.0R
+        SliderFat.Maximum = 1R
         SliderFat.MinimumSize = New Size(140, 28)
         SliderFat.Name = "SliderFat"
         SliderFat.Size = New Size(160, 28)
@@ -378,7 +378,7 @@ Partial Class EditBody_Form
         SliderFat.TabIndex = 5
         SliderFat.TextBoxTextAlign = HorizontalAlignment.Right
         SliderFat.ThumbColor = SystemColors.HotTrack
-        SliderFat.ThumbRadius = 4.0F
+        SliderFat.ThumbRadius = 4F
         SliderFat.TrackColor = SystemColors.ControlDark
         ' 
         ' GroupBoxMrsv
@@ -400,7 +400,7 @@ Partial Class EditBody_Form
         MrsvLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         MrsvLayout.ColumnCount = 2
         MrsvLayout.ColumnStyles.Add(New ColumnStyle())
-        MrsvLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        MrsvLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         MrsvLayout.Dock = DockStyle.Fill
         MrsvLayout.Location = New Point(3, 19)
         MrsvLayout.Name = "MrsvLayout"
@@ -433,7 +433,7 @@ Partial Class EditBody_Form
         HeightLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         HeightLayout.ColumnCount = 2
         HeightLayout.ColumnStyles.Add(New ColumnStyle())
-        HeightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        HeightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         HeightLayout.Controls.Add(LabelHeightMin, 0, 0)
         HeightLayout.Controls.Add(SliderHeightMin, 1, 0)
         HeightLayout.Controls.Add(LabelHeightMax, 0, 1)
@@ -471,7 +471,7 @@ Partial Class EditBody_Form
         SliderHeightMin.LargeChange = 0.1R
         SliderHeightMin.Location = New Point(76, 8)
         SliderHeightMin.Margin = New Padding(2, 4, 2, 4)
-        SliderHeightMin.Maximum = 2.0R
+        SliderHeightMin.Maximum = 2R
         SliderHeightMin.Minimum = 0.2R
         SliderHeightMin.MinimumSize = New Size(140, 28)
         SliderHeightMin.Name = "SliderHeightMin"
@@ -480,9 +480,9 @@ Partial Class EditBody_Form
         SliderHeightMin.TabIndex = 1
         SliderHeightMin.TextBoxTextAlign = HorizontalAlignment.Right
         SliderHeightMin.ThumbColor = SystemColors.HotTrack
-        SliderHeightMin.ThumbRadius = 4.0F
+        SliderHeightMin.ThumbRadius = 4F
         SliderHeightMin.TrackColor = SystemColors.ControlDark
-        SliderHeightMin.Value = 1.0R
+        SliderHeightMin.Value = 1R
         ' 
         ' LabelHeightMax
         ' 
@@ -507,7 +507,7 @@ Partial Class EditBody_Form
         SliderHeightMax.LargeChange = 0.1R
         SliderHeightMax.Location = New Point(76, 44)
         SliderHeightMax.Margin = New Padding(2, 4, 2, 4)
-        SliderHeightMax.Maximum = 2.0R
+        SliderHeightMax.Maximum = 2R
         SliderHeightMax.Minimum = 0.2R
         SliderHeightMax.MinimumSize = New Size(140, 28)
         SliderHeightMax.Name = "SliderHeightMax"
@@ -516,9 +516,9 @@ Partial Class EditBody_Form
         SliderHeightMax.TabIndex = 3
         SliderHeightMax.TextBoxTextAlign = HorizontalAlignment.Right
         SliderHeightMax.ThumbColor = SystemColors.HotTrack
-        SliderHeightMax.ThumbRadius = 4.0F
+        SliderHeightMax.ThumbRadius = 4F
         SliderHeightMax.TrackColor = SystemColors.ControlDark
-        SliderHeightMax.Value = 1.0R
+        SliderHeightMax.Value = 1R
         ' 
         ' GroupBoxSkin
         ' 
@@ -539,7 +539,7 @@ Partial Class EditBody_Form
         SkinLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         SkinLayout.ColumnCount = 2
         SkinLayout.ColumnStyles.Add(New ColumnStyle())
-        SkinLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        SkinLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         SkinLayout.Controls.Add(LabelWnam, 0, 0)
         SkinLayout.Controls.Add(WnamPickPanel, 1, 0)
         SkinLayout.Controls.Add(LabelLmSkinTemplate, 0, 1)
@@ -549,8 +549,8 @@ Partial Class EditBody_Form
         SkinLayout.Name = "SkinLayout"
         SkinLayout.Padding = New Padding(4)
         SkinLayout.RowCount = 3
-        SkinLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 28.0F))
-        SkinLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 28.0F))
+        SkinLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 28F))
+        SkinLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 28F))
         SkinLayout.RowStyles.Add(New RowStyle())
         SkinLayout.Size = New Size(806, 64)
         SkinLayout.TabIndex = 0
@@ -569,7 +569,7 @@ Partial Class EditBody_Form
         ' WnamPickPanel
         ' 
         WnamPickPanel.ColumnCount = 2
-        WnamPickPanel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        WnamPickPanel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         WnamPickPanel.ColumnStyles.Add(New ColumnStyle())
         WnamPickPanel.Controls.Add(ComboBoxWnam, 0, 0)
         WnamPickPanel.Controls.Add(ButtonPickWnam, 1, 0)
@@ -637,14 +637,14 @@ Partial Class EditBody_Form
         ' BodySlideTabLayout
         ' 
         BodySlideTabLayout.ColumnCount = 1
-        BodySlideTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        BodySlideTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         BodySlideTabLayout.Controls.Add(GroupBoxBodySlide, 0, 0)
         BodySlideTabLayout.Controls.Add(LabelBodySlideEmpty, 0, 1)
         BodySlideTabLayout.Dock = DockStyle.Fill
         BodySlideTabLayout.Location = New Point(6, 6)
         BodySlideTabLayout.Name = "BodySlideTabLayout"
         BodySlideTabLayout.RowCount = 2
-        BodySlideTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        BodySlideTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         BodySlideTabLayout.RowStyles.Add(New RowStyle())
         BodySlideTabLayout.Size = New Size(818, 680)
         BodySlideTabLayout.TabIndex = 0
@@ -663,7 +663,7 @@ Partial Class EditBody_Form
         ' BodySlideLayout
         ' 
         BodySlideLayout.ColumnCount = 1
-        BodySlideLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        BodySlideLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         BodySlideLayout.Controls.Add(BodySlidePresetLayout, 0, 0)
         BodySlideLayout.Controls.Add(TextBoxBodySlideFilter, 0, 1)
         BodySlideLayout.Controls.Add(BodySlidePanel, 0, 2)
@@ -674,7 +674,7 @@ Partial Class EditBody_Form
         BodySlideLayout.RowCount = 3
         BodySlideLayout.RowStyles.Add(New RowStyle())
         BodySlideLayout.RowStyles.Add(New RowStyle())
-        BodySlideLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        BodySlideLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         BodySlideLayout.Size = New Size(806, 629)
         BodySlideLayout.TabIndex = 0
         ' 
@@ -682,10 +682,10 @@ Partial Class EditBody_Form
         ' 
         BodySlidePresetLayout.AutoSize = True
         BodySlidePresetLayout.ColumnCount = 4
-        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 80.0F))
-        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 58.0F))
-        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92.0F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 80F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 58F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92F))
         BodySlidePresetLayout.Controls.Add(ComboBoxBsPreset, 0, 0)
         BodySlidePresetLayout.Controls.Add(ComboBoxBsSize, 1, 0)
         BodySlidePresetLayout.Controls.Add(ButtonBsPresetClear, 2, 0)
@@ -781,14 +781,14 @@ Partial Class EditBody_Form
         ' OverlaysTabLayout
         ' 
         OverlaysTabLayout.ColumnCount = 1
-        OverlaysTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        OverlaysTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         OverlaysTabLayout.Controls.Add(OverlayListsLayout, 0, 0)
         OverlaysTabLayout.Controls.Add(GroupBoxOverlayProps, 0, 1)
         OverlaysTabLayout.Dock = DockStyle.Fill
         OverlaysTabLayout.Location = New Point(6, 6)
         OverlaysTabLayout.Name = "OverlaysTabLayout"
         OverlaysTabLayout.RowCount = 2
-        OverlaysTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        OverlaysTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         OverlaysTabLayout.RowStyles.Add(New RowStyle())
         OverlaysTabLayout.Size = New Size(818, 680)
         OverlaysTabLayout.TabIndex = 0
@@ -796,9 +796,9 @@ Partial Class EditBody_Form
         ' OverlayListsLayout
         ' 
         OverlayListsLayout.ColumnCount = 3
-        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50.0F))
+        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50F))
         OverlayListsLayout.ColumnStyles.Add(New ColumnStyle())
-        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50.0F))
+        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50F))
         OverlayListsLayout.Controls.Add(GroupBoxOverlayAvailable, 0, 0)
         OverlayListsLayout.Controls.Add(OverlayCenterLayout, 1, 0)
         OverlayListsLayout.Controls.Add(GroupBoxOverlayApplied, 2, 0)
@@ -806,7 +806,7 @@ Partial Class EditBody_Form
         OverlayListsLayout.Location = New Point(3, 3)
         OverlayListsLayout.Name = "OverlayListsLayout"
         OverlayListsLayout.RowCount = 1
-        OverlayListsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        OverlayListsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         OverlayListsLayout.Size = New Size(812, 449)
         OverlayListsLayout.TabIndex = 0
         ' 
@@ -824,7 +824,7 @@ Partial Class EditBody_Form
         ' OverlayAvailableLayout
         ' 
         OverlayAvailableLayout.ColumnCount = 1
-        OverlayAvailableLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        OverlayAvailableLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         OverlayAvailableLayout.Controls.Add(TextBoxOverlayFilter, 0, 0)
         OverlayAvailableLayout.Controls.Add(ListBoxOverlayAvailable, 0, 1)
         OverlayAvailableLayout.Dock = DockStyle.Fill
@@ -833,7 +833,7 @@ Partial Class EditBody_Form
         OverlayAvailableLayout.Padding = New Padding(4)
         OverlayAvailableLayout.RowCount = 2
         OverlayAvailableLayout.RowStyles.Add(New RowStyle())
-        OverlayAvailableLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        OverlayAvailableLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         OverlayAvailableLayout.Size = New Size(351, 421)
         OverlayAvailableLayout.TabIndex = 0
         ' 
@@ -905,7 +905,7 @@ Partial Class EditBody_Form
         ' OverlayAppliedLayout
         ' 
         OverlayAppliedLayout.ColumnCount = 1
-        OverlayAppliedLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        OverlayAppliedLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         OverlayAppliedLayout.Controls.Add(ListBoxOverlayApplied, 0, 0)
         OverlayAppliedLayout.Controls.Add(OverlayAppliedButtons, 0, 1)
         OverlayAppliedLayout.Dock = DockStyle.Fill
@@ -913,7 +913,7 @@ Partial Class EditBody_Form
         OverlayAppliedLayout.Name = "OverlayAppliedLayout"
         OverlayAppliedLayout.Padding = New Padding(4)
         OverlayAppliedLayout.RowCount = 2
-        OverlayAppliedLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        OverlayAppliedLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         OverlayAppliedLayout.RowStyles.Add(New RowStyle())
         OverlayAppliedLayout.Size = New Size(352, 421)
         OverlayAppliedLayout.TabIndex = 0
@@ -976,8 +976,8 @@ Partial Class EditBody_Form
         OverlayPropsLayout.AutoSize = True
         OverlayPropsLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         OverlayPropsLayout.ColumnCount = 2
-        OverlayPropsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90.0F))
-        OverlayPropsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        OverlayPropsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
+        OverlayPropsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         OverlayPropsLayout.Controls.Add(LabelOverlaySelected, 0, 0)
         OverlayPropsLayout.Controls.Add(LabelOverlayOffsetU, 0, 1)
         OverlayPropsLayout.Controls.Add(SliderOverlayOffsetU, 1, 1)
@@ -1036,8 +1036,8 @@ Partial Class EditBody_Form
         SliderOverlayOffsetU.LargeChange = 0.4R
         SliderOverlayOffsetU.Location = New Point(96, 31)
         SliderOverlayOffsetU.Margin = New Padding(2)
-        SliderOverlayOffsetU.Maximum = 2.0R
-        SliderOverlayOffsetU.Minimum = -2.0R
+        SliderOverlayOffsetU.Maximum = 2R
+        SliderOverlayOffsetU.Minimum = -2R
         SliderOverlayOffsetU.MinimumSize = New Size(140, 22)
         SliderOverlayOffsetU.Name = "SliderOverlayOffsetU"
         SliderOverlayOffsetU.Size = New Size(704, 28)
@@ -1045,7 +1045,7 @@ Partial Class EditBody_Form
         SliderOverlayOffsetU.TabIndex = 2
         SliderOverlayOffsetU.TextBoxTextAlign = HorizontalAlignment.Right
         SliderOverlayOffsetU.ThumbColor = SystemColors.HotTrack
-        SliderOverlayOffsetU.ThumbRadius = 4.0F
+        SliderOverlayOffsetU.ThumbRadius = 4F
         SliderOverlayOffsetU.TrackColor = SystemColors.ControlDark
         ' 
         ' LabelOverlayOffsetV
@@ -1069,8 +1069,8 @@ Partial Class EditBody_Form
         SliderOverlayOffsetV.LargeChange = 0.4R
         SliderOverlayOffsetV.Location = New Point(96, 63)
         SliderOverlayOffsetV.Margin = New Padding(2)
-        SliderOverlayOffsetV.Maximum = 2.0R
-        SliderOverlayOffsetV.Minimum = -2.0R
+        SliderOverlayOffsetV.Maximum = 2R
+        SliderOverlayOffsetV.Minimum = -2R
         SliderOverlayOffsetV.MinimumSize = New Size(140, 22)
         SliderOverlayOffsetV.Name = "SliderOverlayOffsetV"
         SliderOverlayOffsetV.Size = New Size(704, 28)
@@ -1078,7 +1078,7 @@ Partial Class EditBody_Form
         SliderOverlayOffsetV.TabIndex = 4
         SliderOverlayOffsetV.TextBoxTextAlign = HorizontalAlignment.Right
         SliderOverlayOffsetV.ThumbColor = SystemColors.HotTrack
-        SliderOverlayOffsetV.ThumbRadius = 4.0F
+        SliderOverlayOffsetV.ThumbRadius = 4F
         SliderOverlayOffsetV.TrackColor = SystemColors.ControlDark
         ' 
         ' LabelOverlayScaleU
@@ -1101,8 +1101,8 @@ Partial Class EditBody_Form
         SliderOverlayScaleU.LargeChange = 0.4R
         SliderOverlayScaleU.Location = New Point(96, 95)
         SliderOverlayScaleU.Margin = New Padding(2)
-        SliderOverlayScaleU.Maximum = 2.0R
-        SliderOverlayScaleU.Minimum = -2.0R
+        SliderOverlayScaleU.Maximum = 2R
+        SliderOverlayScaleU.Minimum = -2R
         SliderOverlayScaleU.MinimumSize = New Size(140, 22)
         SliderOverlayScaleU.Name = "SliderOverlayScaleU"
         SliderOverlayScaleU.Size = New Size(704, 28)
@@ -1110,9 +1110,9 @@ Partial Class EditBody_Form
         SliderOverlayScaleU.TabIndex = 6
         SliderOverlayScaleU.TextBoxTextAlign = HorizontalAlignment.Right
         SliderOverlayScaleU.ThumbColor = SystemColors.HotTrack
-        SliderOverlayScaleU.ThumbRadius = 4.0F
+        SliderOverlayScaleU.ThumbRadius = 4F
         SliderOverlayScaleU.TrackColor = SystemColors.ControlDark
-        SliderOverlayScaleU.Value = 1.0R
+        SliderOverlayScaleU.Value = 1R
         ' 
         ' LabelOverlayScaleV
         ' 
@@ -1134,8 +1134,8 @@ Partial Class EditBody_Form
         SliderOverlayScaleV.LargeChange = 0.4R
         SliderOverlayScaleV.Location = New Point(96, 127)
         SliderOverlayScaleV.Margin = New Padding(2)
-        SliderOverlayScaleV.Maximum = 2.0R
-        SliderOverlayScaleV.Minimum = -2.0R
+        SliderOverlayScaleV.Maximum = 2R
+        SliderOverlayScaleV.Minimum = -2R
         SliderOverlayScaleV.MinimumSize = New Size(140, 22)
         SliderOverlayScaleV.Name = "SliderOverlayScaleV"
         SliderOverlayScaleV.Size = New Size(704, 28)
@@ -1143,9 +1143,9 @@ Partial Class EditBody_Form
         SliderOverlayScaleV.TabIndex = 8
         SliderOverlayScaleV.TextBoxTextAlign = HorizontalAlignment.Right
         SliderOverlayScaleV.ThumbColor = SystemColors.HotTrack
-        SliderOverlayScaleV.ThumbRadius = 4.0F
+        SliderOverlayScaleV.ThumbRadius = 4F
         SliderOverlayScaleV.TrackColor = SystemColors.ControlDark
-        SliderOverlayScaleV.Value = 1.0R
+        SliderOverlayScaleV.Value = 1R
         ' 
         ' CheckBoxOverlayTint
         ' 
@@ -1164,7 +1164,7 @@ Partial Class EditBody_Form
         OverlayTintRowLayout.ColumnCount = 3
         OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle())
         OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle())
-        OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         OverlayTintRowLayout.Controls.Add(ButtonOverlayTintColor, 0, 0)
         OverlayTintRowLayout.Controls.Add(LabelOverlayTintAlpha, 1, 0)
         OverlayTintRowLayout.Controls.Add(SliderOverlayTintAlpha, 2, 0)
@@ -1209,7 +1209,7 @@ Partial Class EditBody_Form
         SliderOverlayTintAlpha.LargeChange = 0.1R
         SliderOverlayTintAlpha.Location = New Point(105, 2)
         SliderOverlayTintAlpha.Margin = New Padding(2)
-        SliderOverlayTintAlpha.Maximum = 1.0R
+        SliderOverlayTintAlpha.Maximum = 1R
         SliderOverlayTintAlpha.MinimumSize = New Size(120, 22)
         SliderOverlayTintAlpha.Name = "SliderOverlayTintAlpha"
         SliderOverlayTintAlpha.Size = New Size(597, 28)
@@ -1217,9 +1217,9 @@ Partial Class EditBody_Form
         SliderOverlayTintAlpha.TabIndex = 2
         SliderOverlayTintAlpha.TextBoxTextAlign = HorizontalAlignment.Right
         SliderOverlayTintAlpha.ThumbColor = SystemColors.HotTrack
-        SliderOverlayTintAlpha.ThumbRadius = 4.0F
+        SliderOverlayTintAlpha.ThumbRadius = 4F
         SliderOverlayTintAlpha.TrackColor = SystemColors.ControlDark
-        SliderOverlayTintAlpha.Value = 1.0R
+        SliderOverlayTintAlpha.Value = 1R
         ' 
         ' BottomLayout
         ' 
@@ -1263,7 +1263,7 @@ Partial Class EditBody_Form
         ' PreviewSidebar
         ' 
         PreviewSidebar.ColumnCount = 1
-        PreviewSidebar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        PreviewSidebar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         PreviewSidebar.Controls.Add(RenderTogglesPanel, 0, 0)
         PreviewSidebar.Controls.Add(PreviewHostPanel, 0, 1)
         PreviewSidebar.Dock = DockStyle.Fill
@@ -1271,7 +1271,7 @@ Partial Class EditBody_Form
         PreviewSidebar.Name = "PreviewSidebar"
         PreviewSidebar.RowCount = 2
         PreviewSidebar.RowStyles.Add(New RowStyle())
-        PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         PreviewSidebar.Size = New Size(696, 781)
         PreviewSidebar.TabIndex = 0
         ' 
