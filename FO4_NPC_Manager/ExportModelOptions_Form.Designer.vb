@@ -178,7 +178,7 @@ Partial Class ExportModelOptions_Form
         CheckExportHelperShapes.Name = "CheckExportHelperShapes"
         CheckExportHelperShapes.Size = New Size(300, 19)
         CheckExportHelperShapes.TabIndex = 2
-        CheckExportHelperShapes.Text = "Export helper shapes (collisions, markers)"
+        CheckExportHelperShapes.Text = "Export hidden shapes (collisions, markers)"
         CheckExportHelperShapes.UseVisualStyleBackColor = True
         '
         ' GroupFaceTextures
