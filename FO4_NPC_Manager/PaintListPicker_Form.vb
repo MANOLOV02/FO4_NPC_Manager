@@ -12,7 +12,10 @@ Imports FO4_Base_Library
 ''' the full entry, including any <c>*Ex</c> texture-set slots.
 ''' </summary>
 Friend Class PaintListPicker_Form
-    Inherits Form
+    ' Hereda de FO4_Base_Library.IconFormBase, que aporta los ImageList compartidos IconsSmall (16x16)
+    ' e IconsLarge (24x24). Este formulario se arma por codigo y no tiene .Designer.vb, asi que su
+    ' unico Inherits vive aca. Ver el remarks de IconFormBase.vb.
+    Inherits FO4_Base_Library.IconFormBase
 
     Private ReadOnly _entries As List(Of RaceMenuPaintCatalog.Entry)
     Private ReadOnly _allowNone As Boolean

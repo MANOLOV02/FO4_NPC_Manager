@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <Configurations>Debug;Release;Publish</Configurations>
     <TargetFramework>net8.0-windows</TargetFramework>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
@@ -74,4 +75,10 @@
   <!-- Fija la plataforma del wrapper NATIVO. Va en LOS SEIS proyectos, no solo en los dos que lo
        referencian de verdad: el SDK inyecta el ProjectReference transitivo sin la metadata. Ver el .targets. -->
   <Import Project="..\..\..\DirectXTextWrapper\DirectXTexWrapper.targets" />
+  <!-- Avisa si un formulario quedo con COPIA PROPIA de los iconos compartidos. Solo lee; no
+       modifica nada. Warning en Debug, error en Release. Ver el comentario del .targets. -->
+  <Import Project="..\..\FO4_Base_Library\IconosCompartidos.targets" />
+  <!-- La configuracion Publish: es Release con carpeta propia. Sin esto compilaria SIN
+       OPTIMIZAR, en verde. Ver el comentario del .targets. -->
+  <Import Project="..\..\FO4_Base_Library\ConfiguracionPublish.targets" />
 </Project>

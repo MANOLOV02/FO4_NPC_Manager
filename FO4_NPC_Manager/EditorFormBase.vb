@@ -1,4 +1,4 @@
-''' <summary>
+﻿''' <summary>
 ''' Shared base for the two modal NPC editors (EditFace_Form, EditBody_Form). Holds only the
 ''' members that were declared identically in both forms — the per-editor render host, the two
 ''' event-suppression flags, and the OK/Cancel result flag. Form-specific state (ReadOnly
@@ -8,7 +8,13 @@
 ''' `Inherits System.Windows.Forms.Form` to `Inherits EditorFormBase`.
 ''' </summary>
 Public Class EditorFormBase
-    Inherits System.Windows.Forms.Form
+    ' Hereda de FO4_Base_Library.IconFormBase, que aporta los ImageList compartidos IconsSmall (16x16)
+    ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
+    ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
+    ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
+    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' compartido se corre solo con agregar un PNG a Resources\Icons.
+    Inherits FO4_Base_Library.IconFormBase
 
     ''' <summary>Per-editor render host driving the embedded preview (each editor owns its own,
     ''' not the MainForm's _renderHost). Created in the derived form's Shown handler. Friend (not

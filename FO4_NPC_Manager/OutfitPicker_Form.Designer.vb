@@ -1,7 +1,13 @@
 ﻿' UI built in Designer per 00-reglas-ui-y-vb.md.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class OutfitPicker_Form
-    Inherits System.Windows.Forms.Form
+    ' Hereda de FO4_Base_Library.IconFormBase, que aporta los ImageList compartidos IconsSmall (16x16)
+    ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
+    ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
+    ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
+    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' compartido se corre solo con agregar un PNG a Resources\Icons.
+    Inherits FO4_Base_Library.IconFormBase
 
     <System.Diagnostics.DebuggerNonUserCode()>
     Protected Overrides Sub Dispose(disposing As Boolean)
