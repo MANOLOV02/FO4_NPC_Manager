@@ -338,11 +338,22 @@ Public Module SseMorphReverseEngineer
 
         Dim bestW = EvaluateNama(jobs, state, namaVec, morphRaceEd, raceKeywords, g, nCols)
         Dim bestRes = bestW.ResidualSq
+        ' El catálogo depende SÓLO de los .tri de `jobs`, que no cambian durante el descenso: se arma UNA
+        ' vez. Antes se reconstruía adentro de NamaCandidates, o sea hasta 3 rondas × 4 familias = 12 veces,
+        ' y cada una recorría todos los morphs de todos los jobs para las 4 familias y devolvía una sola.
+        Dim triNames As New List(Of String)
+        For Each job In jobs
+            If job.TriHead Is Nothing OrElse job.TriHead.Morphs Is Nothing Then Continue For
+            For Each m In job.TriHead.Morphs
+                If Not String.IsNullOrEmpty(m.Name) Then triNames.Add(m.Name)
+            Next
+        Next
+        Dim typeCatalog = SseNam9MorphMap.BuildTypeCatalog(triNames)
         For round = 1 To 3
             Dim improvedAny = False
             For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
                 Dim keep = namaVec(f)
-                For Each cand In NamaCandidates(jobs, f, keep)
+                For Each cand In NamaCandidates(typeCatalog, f, keep)
                     If cand = keep Then Continue For
                     namaVec(f) = cand
                     Dim trial = EvaluateNama(jobs, state, namaVec, morphRaceEd, raceKeywords, g, nCols)
@@ -739,26 +750,26 @@ Public Module SseMorphReverseEngineer
     ''' ("&lt;Prefix&gt;N"), más "Default" (valor 0) si existe, más "unset" (0xFFFFFFFF = sin canal), más el
     ''' valor actual. Enumerar sólo morphs existentes no pierde nada: el motor resuelve por NOMBRE y un
     ''' tipo cuyo morph no existe es indistinguible de "unset" (AddNam9Channel no-opea en el miss).</summary>
-    Private Function NamaCandidates(jobs As List(Of ShapeJob), familyIndex As Integer, current As UInteger) As List(Of UInteger)
+    Private Function NamaCandidates(catalog As SseNam9MorphMap.NamaTypeCatalog, familyIndex As Integer, current As UInteger) As List(Of UInteger)
+        ' ⭐ La ley "¿este nombre es el tipo N de esta familia?" vive en UN solo lugar
+        ' (SseNam9MorphMap.BuildTypeCatalog → TryParseFamilyMember), compartida con el combo del editor.
+        ' Antes esto parseaba la cola con UInteger.TryParse por su cuenta y aceptaba de más: "NoseType03"
+        ' entraba como 3 (pero el motor pide "NoseType3", que es otro morph o ninguno) y "NoseType0" entraba
+        ' como candidato 0 DUPLICANDO el "Default" que se agrega aparte. El round-trip contra MorphForType
+        ' descarta los dos casos por construcción.
+        ' ⚠️ CAMBIO DE COMPORTAMIENTO declarado: los candidatos ahora salen ORDENADOS ascendente (el
+        ' catálogo los ordena) y antes venían en orden de aparición en los .tri. Importa porque el descenso
+        ' se queda con el PRIMERO que mejora y exige otro 0,1% a los siguientes: entre dos tipos casi
+        ' equivalentes, el orden decide cuál gana, y eso se escribe en la NAMA. El orden nuevo es
+        ' DETERMINISTA (no depende del layout del archivo ni del orden de las shapes al unir head parts),
+        ' que es lo que se quiere; el efecto sobre el resultado NO está medido.
         Dim outList As New List(Of UInteger) From {SseNam9MorphMap.NamaUnset}
         If Not outList.Contains(current) Then outList.Add(current)
-        Dim prefix = SseNam9MorphMap.Families(familyIndex).Prefix
         Dim seen As New HashSet(Of UInteger)(outList)
-        Dim hasDefault As Boolean = False
-        For Each job In jobs
-            If job.TriHead Is Nothing OrElse job.TriHead.Morphs Is Nothing Then Continue For
-            For Each m In job.TriHead.Morphs
-                Dim nm = m.Name
-                If String.IsNullOrEmpty(nm) Then Continue For
-                If String.Equals(nm, "Default", StringComparison.OrdinalIgnoreCase) Then hasDefault = True : Continue For
-                If nm.Length <= prefix.Length Then Continue For
-                If Not nm.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) Then Continue For
-                Dim tail = nm.Substring(prefix.Length)
-                Dim n As UInteger
-                If UInteger.TryParse(tail, n) AndAlso seen.Add(n) Then outList.Add(n)
-            Next
+        For Each n In catalog.Available(familyIndex)
+            If seen.Add(n) Then outList.Add(n)
         Next
-        If hasDefault AndAlso seen.Add(0UI) Then outList.Add(0UI)
+        If catalog.HasDefault(familyIndex) AndAlso seen.Add(0UI) Then outList.Add(0UI)
         Return outList
     End Function
 

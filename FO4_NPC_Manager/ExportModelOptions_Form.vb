@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>
 ''' Opciones del botón "NPC Model to NIF". Diálogo modal, chico y fijo: geometría skinned/unskinned
@@ -224,6 +224,7 @@ Public Class ExportModelOptions_Form
         ' el exporter tome siempre la rama de FO4.
         Options.FoldFaceOverlays = PanelOverlays.Visible AndAlso RadioWithOverlays.Checked
         Options.WriteSkinTone = CheckWriteSkinTone.Checked
+        Options.IncludeHelperShapes = CheckExportHelperShapes.Checked
         ' Igual que FoldFaceOverlays: se exige que el grupo esté VISIBLE (o sea, FO4) además del tilde,
         ' así el juego equivocado no puede colar la opción por un estado viejo del control. La geometría
         ' NO entra: el nodo se escribe con skin y sin skin.

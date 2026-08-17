@@ -1,4 +1,4 @@
-' UI built in Designer per 00-reglas-ui-y-vb (Designer + English). Fixed frame: the dialog has a
+﻿' UI built in Designer per 00-reglas-ui-y-vb (Designer + English). Fixed frame: the dialog has a
 ' fixed set of options, so resizing could only add dead space. The face-overlay sub-group is hidden
 ' outside SSE — FO4 bakes the tint INTO the diffuse and has nothing to fold — and the layout is
 ' AutoSize so the form shrinks by exactly that group's height when it is hidden.
@@ -34,6 +34,7 @@ Partial Class ExportModelOptions_Form
         GroupSkinTone = New GroupBox()
         SkinToneLayout = New TableLayoutPanel()
         CheckWriteSkinTone = New CheckBox()
+        CheckExportHelperShapes = New CheckBox()
         LabelSkinTone = New Label()
         GroupLoadScreen = New GroupBox()
         LoadScreenLayout = New TableLayoutPanel()
@@ -133,6 +134,7 @@ Partial Class ExportModelOptions_Form
         '
         GroupGeometry.AutoSize = True
         GroupGeometry.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupGeometry.Controls.Add(CheckExportHelperShapes)
         GroupGeometry.Controls.Add(RadioSkinned)
         GroupGeometry.Controls.Add(RadioUnskinned)
         GroupGeometry.Location = New Point(15, 15)
@@ -166,6 +168,18 @@ Partial Class ExportModelOptions_Form
         RadioUnskinned.TabIndex = 1
         RadioUnskinned.Text = "Unskinned — bake the current pose into the vertices"
         RadioUnskinned.UseVisualStyleBackColor = True
+        '
+        ' CheckExportHelperShapes
+        '
+        CheckExportHelperShapes.AutoSize = True
+        CheckExportHelperShapes.Checked = True
+        CheckExportHelperShapes.CheckState = CheckState.Checked
+        CheckExportHelperShapes.Location = New Point(13, 74)
+        CheckExportHelperShapes.Name = "CheckExportHelperShapes"
+        CheckExportHelperShapes.Size = New Size(300, 19)
+        CheckExportHelperShapes.TabIndex = 2
+        CheckExportHelperShapes.Text = "Export helper shapes (collisions, markers)"
+        CheckExportHelperShapes.UseVisualStyleBackColor = True
         '
         ' GroupFaceTextures
         '
@@ -739,6 +753,7 @@ Partial Class ExportModelOptions_Form
     Friend WithEvents GroupSkinTone As System.Windows.Forms.GroupBox
     Friend WithEvents SkinToneLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents CheckWriteSkinTone As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckExportHelperShapes As System.Windows.Forms.CheckBox
     Friend WithEvents LabelSkinTone As System.Windows.Forms.Label
     Friend WithEvents GroupLoadScreen As System.Windows.Forms.GroupBox
     Friend WithEvents LoadScreenLayout As System.Windows.Forms.TableLayoutPanel

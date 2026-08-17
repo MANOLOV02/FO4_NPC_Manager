@@ -6,6 +6,15 @@ Public Class SceneExportOptions
     ''' False = se hornea la pose actual en los vértices y se tira el skin.</summary>
     Public Property Skinned As Boolean = True
 
+    ''' <summary>Incluir las "helper shapes" (sin BSShaderProperty o con el bit 0 de NiAVObject.flags:
+    ''' colisiones, marcadores de editor, volumenes de emisor). Ver <see cref="IRenderableShape.IsHelperShape"/>.
+    ''' <para>⛔ Bandera PROPIA, deliberadamente separada de la casilla de RENDER: los BYTES del NIF
+    ''' exportado no pueden depender de una preferencia de inspeccion del preview. Default ON = el export
+    ''' no pierde geometria salvo que el usuario lo pida.</para>
+    ''' <para>La consumen los DOS filtros del exporter —el que mide el bbox y el que escribe—, para que
+    ''' midan y escriban lo mismo.</para></summary>
+    Public Property IncludeHelperShapes As Boolean = True
+
     ''' <summary>True = reescribir los paths de textura de la cara apuntando a la salida del bake de
     ''' FaceGen. NO bakea nada: sólo cambia los paths. False = la cara queda con los paths del NIF
     ''' fuente (vanilla, sin tint).</summary>

@@ -212,7 +212,8 @@ Public NotInheritable Class SceneNifExporter
     ''' cuenta acá y no allá. Es un residuo conocido y acotado: cuando pasa, el export ya le muestra al
     ''' usuario el cuadro de shapes fallidos.</para>
     ''' </summary>
-    Public Shared Function MeasureBakedBounds(meshes As IEnumerable(Of PreviewModel.RenderableMesh)) As BakedBounds
+    Public Shared Function MeasureBakedBounds(meshes As IEnumerable(Of PreviewModel.RenderableMesh),
+                                              Optional incluirHelpers As Boolean = True) As BakedBounds
         Dim result As New BakedBounds With {
             .Min = New System.Numerics.Vector3(Single.MaxValue, Single.MaxValue, Single.MaxValue),
             .Max = New System.Numerics.Vector3(Single.MinValue, Single.MinValue, Single.MinValue),
@@ -224,6 +225,9 @@ Public NotInheritable Class SceneNifExporter
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
             Dim srcRenderable = mesh.MeshData.Shape
             If srcRenderable.RenderHide Then Continue For
+            ' Bandera PROPIA del export, NO la casilla de render: los bytes del NIF no dependen de una
+            ' preferencia del preview. Mismo filtro que Export, para medir y escribir lo mismo.
+            If Not incluirHelpers AndAlso srcRenderable.IsHelperShape Then Continue For
             If Not mesh.OcclusionEvaluated Then Continue For
             Try
                 If mesh.MeshData.Meshgeometry.Vertices IsNot Nothing Then
@@ -391,6 +395,8 @@ Public NotInheritable Class SceneNifExporter
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
             Dim srcRenderable = mesh.MeshData.Shape
             If srcRenderable.RenderHide Then Continue For
+            ' Ver MeasureBakedBounds: mismo filtro, para que el bbox que se ofrece describa lo que se escribe.
+            If Not opts.IncludeHelperShapes AndAlso srcRenderable.IsHelperShape Then Continue For
             Dim srcINiShape = srcRenderable.NifShape
             Dim srcNif = srcRenderable.NifContent
             If srcINiShape Is Nothing OrElse srcNif Is Nothing Then Continue For
@@ -917,7 +923,7 @@ Public NotInheritable Class SceneNifExporter
                 ' bind. La posición default es entonces aproximada; el usuario la corrige en el diálogo.
                 Dim placement = opts.LoadScreenNodePlacement
                 If placement Is Nothing Then
-                    Dim measured = MeasureBakedBounds(meshes)
+                    Dim measured = MeasureBakedBounds(meshes, opts.IncludeHelperShapes)
                     If Not measured.IsUsable Then
                         loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: no exported vertex to measure the model from."
                     Else

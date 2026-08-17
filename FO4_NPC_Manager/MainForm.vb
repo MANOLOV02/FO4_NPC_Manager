@@ -5874,7 +5874,7 @@ Public Class MainForm
         ' Gate the Edit Face button by the same shape as Edit Body: section availability per race
         ' + gender. Skipped entirely when no head parts, no hair colors, no morph presets in the
         ' loaded TRI, no tint groups, and no FacialBoneRegions JSON — opening the editor would
-        ' show only empty pickers. See ComputeFaceEditAvailability for the per-section rule.
+        ' show only empty pickers. La regla vive en UpdateEditFaceEnabled (RaceUtil.RaceSupportsFaceGen).
         UpdateEditFaceEnabled()
         ' Gate the Edit Outfit button: enabled when an NPC with a race is loaded and the load order
         ' has any outfit. The per-race candidate filter is deferred to picker-open (GetOutfitCandidates).
@@ -10401,65 +10401,6 @@ Public Class MainForm
     ' Edit Face — toolbar enable + dialog launch
     ' =====================================================================
 
-    ''' <summary>Qué puede ofrecer el editor de cara para este NPC, según el RACE + su JSON de
-    ''' FacialBoneRegions + el TRI de chargen. Cada sección gatea por separado y el botón se habilita
-    ''' si hay AL MENOS una con contenido. Reglas de gating: memoria 22-morphs-gating-editor-de-cara.</summary>
-    Private Structure FaceEditAvailability
-        Public HasHeadParts As Boolean
-        Public HasHairColors As Boolean
-        Public HasMorphPresets As Boolean
-        Public HasFaceTints As Boolean
-        Public HasFaceBoneRegions As Boolean
-        Public ReadOnly Property AnythingAvailable As Boolean
-            Get
-                Return HasHeadParts OrElse HasHairColors OrElse HasMorphPresets OrElse HasFaceTints OrElse HasFaceBoneRegions
-            End Get
-        End Property
-    End Structure
-
-    ''' <summary>Compute face-edit availability against the currently rendered NPC. The TRI
-    ''' morph-name set comes from <see cref="NpcRenderHost.LastFaceTriMorphNames"/>, which is
-    ''' populated post-render in <see cref="RenderCurrentStateAsync"/> right before this method
-    ''' is invoked. The race record is parsed once and queried for each gendered list.</summary>
-    Private Function ComputeFaceEditAvailability(state As NPCVisualState, host As NpcRenderHost) As FaceEditAvailability
-        Dim avail As New FaceEditAvailability
-        If state Is Nothing OrElse state.RaceFormID = 0UI Then Return avail
-        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
-        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return avail
-        Dim race = _ctx.ParseRaceCached(raceRec)
-        If race Is Nothing Then Return avail
-
-        Dim headParts = If(state.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
-        avail.HasHeadParts = (headParts IsNot Nothing AndAlso headParts.Count > 0)
-
-        Dim hairColors = If(state.IsFemale, race.FemaleHairColorFormIDs, race.MaleHairColorFormIDs)
-        avail.HasHairColors = (hairColors IsNot Nothing AndAlso hairColors.Count > 0)
-
-        Dim tintGroups = If(state.IsFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
-        avail.HasFaceTints = (tintGroups IsNot Nothing AndAlso tintGroups.Count > 0)
-
-        avail.HasFaceBoneRegions = (NpcMorphPoseResolver.GetFacialBoneRegionsForRace(race, state.IsFemale) IsNot Nothing)
-
-        ' Morph presets — same filter as EditFace_Form.BuildMorphGroupSections: a preset counts
-        ' only if its MorphName is present in the loaded chargen TRI. Empty TRI set means we
-        ' don't have the morph names yet; bail conservatively (HasMorphPresets stays False).
-        Dim triNames As HashSet(Of String) = If(host?.LastFaceTriMorphNames, Nothing)
-        Dim morphGroups = If(state.IsFemale, race.FemaleMorphGroups, race.MaleMorphGroups)
-        If morphGroups IsNot Nothing AndAlso triNames IsNot Nothing AndAlso triNames.Count > 0 Then
-            For Each g In morphGroups
-                If g.Presets Is Nothing Then Continue For
-                For Each p In g.Presets
-                    If Not String.IsNullOrEmpty(p.MorphName) AndAlso triNames.Contains(p.MorphName) Then
-                        avail.HasMorphPresets = True
-                        Exit For
-                    End If
-                Next
-                If avail.HasMorphPresets Then Exit For
-            Next
-        End If
-
-        Return avail
-    End Function
 
     ''' <summary>Gate de ButtonEditFace: EXACTAMENTE el mismo que impide bakear, en los dos juegos —
     ''' <see cref="RaceUtil.RaceSupportsFaceGen"/> (RACE.DATA bit 0x2). Si la raza bakea, se edita; si no,

@@ -233,6 +233,8 @@ Module Program
         If opt.ParityGate Then ParityGateRun(opt.DumpGolden) : Return
 
         ' --- 1. Config (app config.json local) ---
+        ' Exe SEPARADO: no pasa por el RealMain de NPC Manager, asi que declara su propio default.
+        Config_App.DefaultShowHelperShapes = False
         Config_App.LoadConfig()
         Config_App.Current.Game = opt.Game
 

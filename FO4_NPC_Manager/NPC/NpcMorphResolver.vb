@@ -791,7 +791,12 @@ Public Class NpcMorphResolver
             End Function)
     End Function
 
-    Private Function TryLoadTriHead(normalizedPath As String) As TriHeadFile
+    ''' <summary><c>Friend Shared</c> (no Private) para que el catálogo de tipos NAMA del editor
+    ''' (<see cref="SseChargenTypeCatalog"/>) lea los mismos .tri por el MISMO caché, en vez de abrir un
+    ''' segundo lector con su propia normalización y su propio parseo — que es como nació el
+    ''' <c>_faceTriMorphNamesCache</c> de MainForm. No toca estado de instancia: <c>_triHeadCache</c>,
+    ''' <c>TryGetFileBytes</c> y <c>ChargenMouthFix</c> ya son Shared.</summary>
+    Friend Shared Function TryLoadTriHead(normalizedPath As String) As TriHeadFile
         If String.IsNullOrEmpty(normalizedPath) Then Return Nothing
 
         ' Key the cache on the mouth-fix state so the vanilla and the fixed BaseFemaleHeadChargen.tri head

@@ -86,6 +86,14 @@ Module Program
 
     <MethodImpl(MethodImplOptions.NoInlining)>
     Private Sub RealMain(args As String())
+        ' NPC Manager es un VISOR: no dibuja helper shapes (colisiones, marcadores, emisores) salvo que
+        ' el usuario prenda la casilla. UNA sola linea acá porque los CUATRO Config_App.LoadConfig del
+        ' archivo y el --bake-all cuelgan todos de RealMain. Ver Config_App.DefaultShowHelperShapes:
+        ' si un host se la olvida, LoadConfig lo delata en el log en vez de asumir en silencio.
+        Config_App.DefaultShowHelperShapes = False
+        ' Y el otro ajuste app-aware: NPC Manager NO puede editar la oclusion por segmento (su render
+        ' depende de ella). La casilla se muestra DESHABILITADA, no oculta.
+        Config_App.AllowDrawHiddenSegments = False
         ' --- HEADLESS bake-ALL mode ----------------------------------------------------------------
         ' NPC_Manager_FO4.exe --bake-all [--game fo4|sse] [--windowed]
         ' Bakes loose FaceGen (NIF + face textures) for EVERY NPC_ in the active load order — the exact

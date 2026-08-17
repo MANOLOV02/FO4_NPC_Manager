@@ -39,6 +39,30 @@ Public Class EditFace_Form
     Private _sseNama As UInteger() = New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}
     Private _sseNam9Sliders As FO4_Base_Library.TinySliderTextBox() = New FO4_Base_Library.TinySliderTextBox(SseNam9MorphMap.Nam9SliderCount - 1) {}
     Private _sseNamaCombos As System.Windows.Forms.ComboBox() = New System.Windows.Forms.ComboBox(SseNam9MorphMap.NamaFamilyCount - 1) {}
+    ''' <summary>Los tipos NAMA que el motor puede aplicar a ESTE NPC (+ la anotación de cuáles ofrece el CK).
+    ''' Se computa UNA vez por formulario y NO dentro de <see cref="PopulateSseMorphTab"/>, que
+    ''' <see cref="ResetSseMorphsSection"/> vuelve a llamar — si no, cada Reset re-leería los .tri.</summary>
+    Private _sseTypeCatalog As SseChargenTypeCatalog = Nothing
+
+    ''' <summary>Item de un combo NAMA. ⛔ El valor viaja EN el item: el combo NO se mapea por posición.
+    ''' Ese era exactamente el defecto — <c>SelectedIndex</c> como valor recortaba a 15 y destruía el dato
+    ''' del record. Y se guarda tipado (no el UInteger boxeado suelto) porque comparar Objects en VB es
+    ''' resolución tardía y <c>0UI</c>/<c>0</c>/<c>Nothing</c> no se comportan como uno espera.</summary>
+    Private NotInheritable Class NamaTypeItem
+        Public ReadOnly Value As UInteger
+        Public ReadOnly Text As String
+        ''' <summary>True = fila inyectada por <see cref="SelectNamaValue"/> porque el valor no estaba en el
+        ''' catálogo. Se marca para poder RETIRARLA: sin esto los huérfanos se acumulaban (un Regenerate que
+        ''' elige otro valor dejaba la fila anterior, seleccionable y rotulada "(del record)" cuando ya no
+        ''' era de ningún lado).</summary>
+        Public ReadOnly IsOrphan As Boolean
+        Public Sub New(value As UInteger, text As String, Optional isOrphan As Boolean = False)
+            Me.Value = value : Me.Text = text : Me.IsOrphan = isOrphan
+        End Sub
+        Public Overrides Function ToString() As String
+            Return Text
+        End Function
+    End Class
     ' RaceMenu NiOverride CUSTOM morphs (arbitrary named morphs from a preset/mod). Value sliders rebuilt from
     ' Preset.SseCustomMorphs; the render applies them by name via the chargen TriHead (NpcMorphResolver).
     ' RaceMenu tab controls, keyed by slider name (TinySliderTextBox for Slider / ComboBox for Preset).
@@ -300,6 +324,7 @@ Public Class EditFace_Form
         ' y se llena el contenido data-driven. SSE: tabs "Morphs (SSE)" + "Tints (SSE)"; se ocultan las FO4-only
         ' (Face Tints FO4, Vertex Morphs LM, Bone Regions). FO4: se ocultan las SSE.
         If _isSSE Then
+            BuildSseTypeCatalog()
             PopulateSseMorphTab()
             PopulateSseTintTab()
             PopulateSseSculptTab()  ' read-only list of RaceMenu per-shape sculpt blocks (head/brows/eyes/mouth)
@@ -801,6 +826,98 @@ Public Class EditFace_Form
         Return s.Replace(vbCrLf, vbLf).Replace(vbCr, vbLf).Replace(vbLf, vbCrLf)
     End Function
 
+    ''' <summary>Arma el catálogo de tipos NAMA de este NPC. Fuente = los chargen .tri (HDPT NAM0=2) de TODAS
+    ''' sus head parts, que es contra lo que el motor resuelve NAMA (por shape, no sólo la cabeza).
+    ''' <para><c>ShapeChargenTriPaths</c> lo puebla NpcMeshCollector para toda HeadPart y NO depende de los
+    ''' toggles de morphs del preview — por eso el catálogo sigue existiendo con "Vertex morphs" en OFF.</para>
+    ''' <para>La fuente es <c>_mainForm._renderHost</c> y no <c>_editorHost</c>: esto corre en el CONSTRUCTOR,
+    ''' antes de que el Shown cree el host propio (misma razón que BuildMorphGroupSections).</para></summary>
+    Private Sub BuildSseTypeCatalog()
+        _sseTypeCatalog = SseChargenTypeCatalog.Unknown()
+        Dim rd = _mainForm?._renderHost?.LastRenderData
+        If rd Is Nothing OrElse rd.ShapeChargenTriPaths Is Nothing Then Return
+        Dim entries As New List(Of (Path As String, ShapeVerts As Integer))
+        For Each kv In rd.ShapeChargenTriPaths
+            If String.IsNullOrEmpty(kv.Value) Then Continue For
+            ' Mismo guard de geometría nula que LoadTriForShape: 0 apaga el redirect HPH, no lo rompe.
+            Dim shape = kv.Key
+            Dim verts As Integer = If(shape IsNot Nothing AndAlso shape.Geometry IsNot Nothing, shape.Geometry.VertexCount, 0)
+            entries.Add((kv.Value, verts))
+        Next
+        ' Costo MEDIBLE, no estimado: esto es I/O sincrónico en el hilo de UI dentro del ctor de un diálogo
+        ' modal, y antes PopulateSseMorphTab hacía CERO lecturas. Con el caché caliente (el render ya pasó)
+        ' debería ser ~0; el caso a mirar es el FRÍO — "Vertex morphs" OFF o post-ClearCaches. Si el número
+        ' molesta, el plan B ya está pensado: poblar al desplegar el combo en vez de acá.
+        ' ⛔ El Stopwatch va DENTRO del gate: la instrumentación no corre en una build sin log. `LogLazy` ya
+        ' se auto-gatea (Logger.vb:123), pero eso sólo evita CONSTRUIR el string — no evita medir.
+        ' UNA sola llamada a Build: duplicarla en las dos ramas del gate es el lugar clásico donde una se
+        ' actualiza y la otra no — y la que corre en producción es justamente la que nadie mira.
+        Dim sw As Diagnostics.Stopwatch = Nothing
+        If Logger.Enabled Then sw = Diagnostics.Stopwatch.StartNew()
+        _sseTypeCatalog = SseChargenTypeCatalog.Build(entries, _race, _isFemale)
+        If sw IsNot Nothing Then
+            sw.Stop()
+            Dim ms = sw.Elapsed.TotalMilliseconds
+            Logger.LogLazy(Function() $"[SSE-TYPECAT] {entries.Count} chargen tri declarados · known={_sseTypeCatalog.IsKnown} · " &
+                                      String.Join(" ", Enumerable.Range(0, SseNam9MorphMap.NamaFamilyCount).Select(
+                                          Function(f) $"{SseNam9MorphMap.Families(f).Prefix}={_sseTypeCatalog.AvailableTypes(f).Count}")) &
+                                      $" · {ms:F1} ms")
+        End If
+    End Sub
+
+    ''' <summary>Las filas de un combo NAMA: el centinela "sin asignar", "Default" si el .tri lo trae, y cada
+    ''' tipo que el motor puede aplicar. Los que el CK no ofrece para esta raza+género se marcan — pero se
+    ''' ofrecen igual: filtrar por el RACE dejaría afuera tipos que NPC vanilla usan (medido).</summary>
+    Private Function BuildNamaItems(familyIndex As Integer) As List(Of NamaTypeItem)
+        Dim items As New List(Of NamaTypeItem)
+        items.Add(New NamaTypeItem(SseNam9MorphMap.NamaUnset, "(unset)"))
+        If _sseTypeCatalog Is Nothing Then Return items
+        If _sseTypeCatalog.HasDefault(familyIndex) Then items.Add(New NamaTypeItem(0UI, "Default"))
+        Dim prefix = SseNam9MorphMap.Families(familyIndex).Prefix
+        For Each n In _sseTypeCatalog.AvailableTypes(familyIndex)
+            Dim label = prefix & n.ToString()
+            ' La marca sólo se pone cuando el MPAV de esta raza+género se LEYÓ. Sin ese dato no se afirma nada.
+            If _sseTypeCatalog.OfferedIsKnown(familyIndex) AndAlso Not _sseTypeCatalog.IsOfferedByCk(familyIndex, n) Then
+                label &= "  ·  (not offered by the CK for this race)"
+            End If
+            items.Add(New NamaTypeItem(n, label))
+        Next
+        Return items
+    End Function
+
+    ''' <summary>Selecciona un valor NAMA en su combo POR VALOR, insertando el ítem si falta.
+    ''' <para>⛔ ÚNICO camino: antes había TRES sitios asignando <c>SelectedIndex</c> por su cuenta, dos de
+    ''' ellos con un clamp a 15, y un cuarto (post-"Regenerate morphs") que ni repoblaba. Un valor que el
+    ''' catálogo no tiene NO se descarta — se agrega como "N (del record)" y queda seleccionado, o abrir el
+    ''' editor destruiría el dato.</para>
+    ''' <para>El rótulo NO afirma si el motor lo resuelve: el aplicador busca sobre el .tri MERGEADO
+    ''' (race+chargen+mesh) mientras este catálogo es sólo el chargen, así que "no resoluble" podría ser
+    ''' falso contra el propio preview de al lado.</para></summary>
+    Private Sub SelectNamaValue(familyIndex As Integer, value As UInteger)
+        Dim cb = _sseNamaCombos(familyIndex)
+        If cb Is Nothing Then Return
+        ' IDEMPOTENTE: primero se retiran los huérfanos que inyectó una llamada anterior. Sin esto, cada
+        ' "Regenerate morphs" que elija un valor nuevo dejaba atrás la fila vieja — seleccionable y
+        ' rotulada "(del record)" cuando ya no correspondía a ningún record. El RE puede elegir un valor
+        ' ausente del catálogo legítimamente: NamaCandidates enumera sobre el .tri MERGEADO (race+mesh
+        ' incluidos) y el catálogo del combo es sólo chargen+extended.
+        For i = cb.Items.Count - 1 To 0 Step -1
+            Dim old = TryCast(cb.Items(i), NamaTypeItem)
+            If old IsNot Nothing AndAlso old.IsOrphan Then cb.Items.RemoveAt(i)
+        Next
+        For i = 0 To cb.Items.Count - 1
+            Dim it = TryCast(cb.Items(i), NamaTypeItem)
+            If it IsNot Nothing AndAlso it.Value = value Then
+                cb.SelectedIndex = i
+                Return
+            End If
+        Next
+        Dim label = If(value = SseNam9MorphMap.NamaUnset, "(unset)",
+                       $"{SseNam9MorphMap.Families(familyIndex).Prefix}{value}  ·  (from record)")
+        cb.Items.Add(New NamaTypeItem(value, label, isOrphan:=True))
+        cb.SelectedIndex = cb.Items.Count - 1
+    End Sub
+
     Private Sub PopulateSseMorphTab()
         ' Flat vertical TableLayoutPanel (proven layout) with a bold CK-category HEADER row before each group's
         ' NAM9 sliders + NAMA "type" combos: Nose/Jaw/Cheeks/Eyes/Brow/Mouth/Chin. Matches the Creation Kit
@@ -835,8 +952,13 @@ Public Class EditFace_Form
                 panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 30))
                 panel.Controls.Add(New Label With {.Text = SseNam9MorphMap.Families(fi).Label, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(14, 8, 3, 0)}, 0, row)
                 Dim cb As New ComboBox With {.DropDownStyle = ComboBoxStyle.DropDownList, .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Margin = New Padding(3, 4, 8, 3)}
-                cb.Items.Add("Default")
-                For t = 1 To 15 : cb.Items.Add(SseNam9MorphMap.Families(fi).Prefix & t.ToString()) : Next
+                ' DATA-DRIVEN: las filas salen de los chargen .tri de las head parts de ESTE NPC. Antes era
+                ' `For t = 1 To 15`, un literal que ni llegaba a los ~30 de vanilla ni distinguía raza/género
+                ' (medido: Argonian 6 narices, HighElf 18, DefaultRace 32; DarkElf 29 ojos male vs 16 female).
+                cb.Items.AddRange(BuildNamaItems(fi).ToArray())
+                ' "Todavía no sé" ≠ "no hay tipos": sin datos el combo se deshabilita en vez de mostrar una
+                ' lista inventada (mentir) o vacía (afirmar que la familia no existe).
+                If _sseTypeCatalog Is Nothing OrElse Not _sseTypeCatalog.IsKnown Then cb.Enabled = False
                 AddHandler cb.SelectedIndexChanged, Sub(sender, e) OnSseTypeChanged(fi)
                 panel.Controls.Add(cb, 1, row)
                 _sseNamaCombos(fi) = cb
@@ -1709,24 +1831,12 @@ Public Class EditFace_Form
                     tv = BitConverter.ToUInt32(raw.NamaRaw, f * 4)
                 End If
                 _sseNama(f) = tv
-                If _sseNamaCombos(f) IsNot Nothing Then _sseNamaCombos(f).SelectedIndex = Math.Max(0, Math.Min(_sseNamaCombos(f).Items.Count - 1, NamaDisplayIndex(tv)))
+                SelectNamaValue(f, tv)
             Next
         Finally
             _suspendEvents = False
         End Try
     End Sub
-
-    ''' <summary>Índice de combo para un valor NAMA. ⛔ El centinela 0xFFFFFFFF ("familia sin asignar") NO es
-    ''' un índice: se muestra como 0, y cualquier otro valor se acota a 15 <b>antes</b> de bajar a Integer.
-    ''' <c>CInt(0xFFFFFFFF)</c> tira <c>OverflowException</c> — el rango de UInteger no entra en Int32 — y eso
-    ''' es lo que rompía Reset Section al re-asertar el snapshot: la ruta de carga ya acotaba, la de reset
-    ''' convertía crudo. El caso NO es raro: BrowType no tiene morphs femeninos en vanilla, así que toda cara
-    ''' femenina normal llega con NAMA[1] = 0xFFFFFFFF.
-    ''' <para>El valor CRUDO se preserva en <c>_sseNama</c> a propósito (round-trip byte-exacto de una familia
-    ''' que el usuario nunca tocó); esto es SÓLO para el display del combo.</para></summary>
-    Private Shared Function NamaDisplayIndex(tv As UInteger) As Integer
-        Return If(tv = SseNam9MorphMap.NamaUnset, 0, CInt(Math.Min(tv, 15UI)))
-    End Function
 
     Private Sub OnSseSliderChanged(idx As Integer)
         If _suspendEvents Then Return
@@ -1740,7 +1850,11 @@ Public Class EditFace_Form
     Private Sub OnSseTypeChanged(fi As Integer)
         If _suspendEvents Then Return
         If fi < 0 OrElse fi >= _sseNamaCombos.Length Then Return
-        _sseNama(fi) = CUInt(Math.Max(0, _sseNamaCombos(fi).SelectedIndex))
+        ' El valor sale DEL ÍTEM, no del índice: la lista ya no es 0..15 contigua (puede tener huecos, una
+        ' fila "(sin asignar)" adelante y un huérfano al final), así que la posición no es el valor.
+        Dim it = TryCast(_sseNamaCombos(fi).SelectedItem, NamaTypeItem)
+        If it Is Nothing Then Return
+        _sseNama(fi) = it.Value
         ApplySseMorphOverlay()
         ScheduleRefresh(FaceRefreshScope.Morphs)
     End Sub
@@ -4758,7 +4872,7 @@ Public Class EditFace_Form
                 For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
                     If f < p.SseNama.Length Then
                         _sseNama(f) = p.SseNama(f)
-                        If _sseNamaCombos(f) IsNot Nothing Then _sseNamaCombos(f).SelectedIndex = Math.Max(0, Math.Min(_sseNamaCombos(f).Items.Count - 1, NamaDisplayIndex(p.SseNama(f))))
+                        SelectNamaValue(f, p.SseNama(f))
                     End If
                 Next
             End If
