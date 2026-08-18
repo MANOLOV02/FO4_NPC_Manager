@@ -400,8 +400,29 @@ Public Module NpcOverrideSaver
             ' NPC being written, so we drop the records we're about to replace. Mirror of the engine
             ' FileID scheme: 12-bit object for an ESL source, 24-bit for a full source.
             Dim skipLocalFormIDs As New HashSet(Of UInteger)
+            Dim skipMasterIndex = PluginManager.BuildMasterIndex(reader.Masters)
             For Each npcInput In inputs
-                skipLocalFormIDs.Add(MapGlobalToLocalInPlugin(npcInput.NpcFormID, reader, ctx.PluginManager))
+                Dim localFid As UInteger = 0UI
+                Dim mapRes = ctx.PluginManager.TryMapGlobalToFileLocal(
+                    npcInput.NpcFormID, skipMasterIndex, reader.Masters.Count, reader.FileName, localFid)
+                If mapRes = PluginManager.FileLocalMapResult.Ok Then
+                    skipLocalFormIDs.Add(localFid)
+                    Continue For
+                End If
+                ' ⛔ NO se anota nada. El master de origen de este NPC todavia no esta en la MAST del
+                ' destino (se suma recien en ESTE guardado, Paso 2b del writer), asi que el archivo NO
+                ' PUEDE contener una copia suya y no hay nada que descartar.
+                ' El codigo viejo caia a SELF (reader.Masters.Count) para este caso, que es la respuesta
+                ' correcta SOLO cuando el dueno ES el archivo destino. Con un master ausente producia un
+                ' FormID local que colisiona con los records PROPIOS del destino: los drafts de la app
+                ' arrancan en 0x800 (PluginWriter.NEXT_OBJECT_ID_DEFAULT) y los records nuevos de
+                ' cualquier mod tambien, por la convencion del CK (xEdit TwbFile.NewFormID,
+                ' wbImplementation.pas:5092). El record colisionado se saltaba en el barrido de
+                ' preservacion de abajo y DESAPARECIA del plugin, sin aviso. Medido: un outfit creado en
+                ' una sesion previa se perdia al guardar por primera vez un NPC de un mod nuevo.
+                Logger.LogLazy(Function() $"[SAVE] NPC {npcInput.NpcFormID:X8}: su master de origen no esta " &
+                                          $"en la MAST de '{reader.FileName}' todavia, asi que el archivo no " &
+                                          "puede tener una copia previa; no se descarta ningun record.")
             Next
 
             For Each kv In reader.Records
@@ -1848,22 +1869,6 @@ Public Module NpcOverrideSaver
             i += take
         End While
         Return result
-    End Function
-
-    Private Function MapGlobalToLocalInPlugin(npcFormID As UInteger, reader As PluginReader, pm As PluginManager) As UInteger
-        Dim npcSourceMasterName As String = pm.GetOriginatingPluginName(npcFormID)
-        Dim npcIsLight As Boolean = ((npcFormID >> 24) And &HFFUI) = &HFEUI
-        Dim npcObject As UInteger = If(npcIsLight, npcFormID And &HFFFUI, npcFormID And &HFFFFFFUI)
-        If String.IsNullOrEmpty(npcSourceMasterName) Then Return npcFormID
-        Dim newHigh As Integer = -1
-        For i = 0 To reader.Masters.Count - 1
-            If String.Equals(reader.Masters(i), npcSourceMasterName, StringComparison.OrdinalIgnoreCase) Then
-                newHigh = i
-                Exit For
-            End If
-        Next
-        If newHigh < 0 Then newHigh = reader.Masters.Count  ' self
-        Return (CUInt(newHigh) << 24) Or npcObject
     End Function
 
     ''' <summary>Push a marquee-style phase update through IProgress. The runtime marshals the

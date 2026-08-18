@@ -574,6 +574,12 @@ Module Program
             Dim loadList = PluginManager.ReadActiveLoadOrder()
             EnsureEspInLoadList(loadList, espName, dataPath)
             pm.LoadAllPlugins(dataPath, loadList, Nothing, Nothing)
+            ' Un plugin activo que NO se cargó por master faltante se nombra: en el CLI el log de la lib no
+            ' se ve, y un bake silenciosamente incompleto es peor que uno que falla.
+            If pm.LastExcludedForMissingMasters IsNot Nothing AndAlso pm.LastExcludedForMissingMasters.Count > 0 Then
+                Console.Error.WriteLine("[load] WARNING: not loaded (a required master is missing): " &
+                                        String.Join(", ", pm.LastExcludedForMissingMasters))
+            End If
 
             ' --- 4. Archivos (BA2 + loose). Cache dir bajo el exe. ---
             Console.WriteLine("[load] mounting archives (BA2/BSA + loose)…")

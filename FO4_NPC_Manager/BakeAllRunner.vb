@@ -287,8 +287,21 @@ Friend Module BakeAllRunner
             ' from Plugins.txt. The .ccc lists all Creation Club content that EXISTS, not what is installed,
             ' so on a normal setup most of it has no file in Data\ and LoadAllPlugins skips it. That is
             ' expected, not an error — report it as information so the count doesn't read as data loss.
-            If pm.Plugins.Count < effectiveLoadList.Count Then
-                log($"  ({effectiveLoadList.Count - pm.Plugins.Count} load-order entries have no file in Data\ — normally Creation Club content that isn't installed — skipped)")
+            ' ⛔ Los excluidos por master faltante se reportan APARTE y se descuentan de la cuenta de arriba:
+            ' meterlos en el mismo saco los presentaría como "Creation Club no instalado", que es una causa
+            ' distinta y benigna. Un plugin que el usuario tiene activo y NO se cargó tiene que decirse con
+            ' su nombre y su razón.
+            Dim excluded = pm.LastExcludedForMissingMasters
+            If excluded IsNot Nothing AndAlso excluded.Count > 0 Then
+                log($"  ⚠ {excluded.Count} plugin(s) NOT loaded — a master they need is missing, so their")
+                log("    FormIDs can't be resolved. Anything they add or override is absent from this bake:")
+                For Each nm In excluded
+                    log($"      - {nm}")
+                Next
+            End If
+            Dim missingFiles = effectiveLoadList.Count - pm.Plugins.Count - If(excluded Is Nothing, 0, excluded.Count)
+            If missingFiles > 0 Then
+                log($"  ({missingFiles} load-order entries have no file in Data\ — normally Creation Club content that isn't installed — skipped)")
             End If
 
             ' ---------------------------------------------------------------------------------

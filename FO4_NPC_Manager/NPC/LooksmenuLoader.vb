@@ -609,10 +609,29 @@ Public Module LooksmenuLoader
                     preset.SkinFormIDOverride = 0UI
                 Else
                     Dim resolved = ResolveFormIdentifier(sfStr, pluginManager)
-                    ' Si plugin no está cargado, ResolveFormIdentifier devuelve 0 → cae como Some(0).
-                    ' Aceptable: si el JSON referenciaba un ARMO custom que el user no tiene activo,
-                    ' el render cae a RACE.WNAM en lugar de crashear.
-                    preset.SkinFormIDOverride = resolved
+                    ' ⛔ "NO PUDE RESOLVERLO" ≠ "EL USUARIO LO BORRÓ". Este campo tiene TRES estados y dos de
+                    ' ellos colapsaban: Nothing = preservar, Some(0) = CLEAR explícito (el "" de arriba), y
+                    ' un valor = override. Asignar el 0 que devuelve ResolveFormIdentifier cuando el plugin
+                    ' no está cargado lo metía en el estado CLEAR, y ese valor NO se queda en el render:
+                    ' NpcRecordOverlay:131 hace `.SkinFormID = If(preset.SkinFormIDOverride, raw.SkinFormID)`
+                    ' ⇒ pisa el skin real del NPC con 0 ⇒ el NPC_ sale al ESP con la piel BORRADA. O sea que
+                    ' un preset cuyo ARMO de piel es de un mod no activo BORRABA la piel del NPC de forma
+                    ' permanente, en vez de dejarla como estaba.
+                    ' CANÓNICO: f4ee saltea el form que no resuelve y no toca al actor —
+                    ' `TESForm * form = GetFormFromIdentifier(...); if(!form) continue;`
+                    ' (F4SEPlugins-master/f4ee/CharGenInterface.cpp:328-330).
+                    If resolved <> 0UI Then
+                        preset.SkinFormIDOverride = resolved
+                    ElseIf Logger.Enabled Then
+                        ' Sin esto el caso queda MUDO: el informe de compatibilidad sólo mira
+                        ' `HasValue AndAlso <> 0` (PresetCompatibilityReport:501-510), así que un override
+                        ' que no resuelve no aparece en ningún lado. Con los head parts el usuario sí se
+                        ' entera (UnresolvedHeadParts → MainForm:8837), y no hay razón para que estos tres
+                        ' sean la excepción.
+                        Dim sfMissing = sfStr
+                        Logger.LogLazy(Function() $"[LMLoad] _npcm_SkinFormID '{sfMissing}' no resuelve " &
+                                                  "(su plugin no está en el load order) -> se preserva el skin del NPC.")
+                    End If
                 End If
             End If
             Dim outfitFidEl As JsonElement
@@ -622,9 +641,19 @@ Public Module LooksmenuLoader
                     ' Empty string = "no outfit". Equivale a Some(0).
                     preset.DefaultOutfitFormIDOverride = 0UI
                 Else
-                    ' Si el plugin del OTFT no está cargado, ResolveFormIdentifier devuelve 0 → cae como
-                    ' Some(0) = "no outfit" en lugar de crashear (mismo criterio que _npcm_SkinFormID).
-                    preset.DefaultOutfitFormIDOverride = ResolveFormIdentifier(ofStr, pluginManager)
+                    ' Mismo criterio que _npcm_SkinFormID: si el plugin del OTFT no está cargado, NO se
+                    ' asigna ⇒ queda Nothing = "preservar el DOFT del NPC". Asignar el 0 lo metía en el
+                    ' estado CLEAR ("sin outfit") y eso viaja al ESP, o sea que un preset cuyo outfit es de
+                    ' un mod ausente DEJABA AL NPC DESNUDO de forma permanente. f4ee saltea el form que no
+                    ' resuelve (CharGenInterface.cpp:328-330), no lo limpia.
+                    Dim ofResolved = ResolveFormIdentifier(ofStr, pluginManager)
+                    If ofResolved <> 0UI Then
+                        preset.DefaultOutfitFormIDOverride = ofResolved
+                    ElseIf Logger.Enabled Then
+                        Dim ofMissing = ofStr
+                        Logger.LogLazy(Function() $"[LMLoad] _npcm_DefaultOutfit '{ofMissing}' no resuelve " &
+                                                  "(su plugin no está en el load order) -> se preserva el DOFT del NPC.")
+                    End If
                 End If
             End If
             Dim sleepFidEl As JsonElement
@@ -634,7 +663,15 @@ Public Module LooksmenuLoader
                     ' Empty string = "no sleep outfit". Equivale a Some(0). (mismo criterio que _npcm_DefaultOutfit)
                     preset.SleepOutfitFormIDOverride = 0UI
                 Else
-                    preset.SleepOutfitFormIDOverride = ResolveFormIdentifier(sofStr, pluginManager)
+                    ' Mismo criterio que los dos de arriba: sin resolver ⇒ Nothing = preservar, nunca CLEAR.
+                    Dim sofResolved = ResolveFormIdentifier(sofStr, pluginManager)
+                    If sofResolved <> 0UI Then
+                        preset.SleepOutfitFormIDOverride = sofResolved
+                    ElseIf Logger.Enabled Then
+                        Dim sofMissing = sofStr
+                        Logger.LogLazy(Function() $"[LMLoad] _npcm_SleepOutfit '{sofMissing}' no resuelve " &
+                                                  "(su plugin no está en el load order) -> se preserva el SOFT del NPC.")
+                    End If
                 End If
             End If
             Dim cgpEl As JsonElement

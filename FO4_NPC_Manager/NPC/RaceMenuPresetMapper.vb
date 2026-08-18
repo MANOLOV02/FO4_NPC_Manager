@@ -17,6 +17,32 @@
 ''' left untouched in this task. A later refactor should route EditFace/EditBody Load/Save .jslot through here.</summary>
 Public Module RaceMenuPresetMapper
 
+    ''' <summary>Traducir un <c>headParts[].formId</c> de un <c>.jslot</c> SIN <c>formIdentifier</c> (formato
+    ''' viejo de RaceMenu) al FormID global de ESTA sesión, usando la tabla <c>mods</c> del propio archivo.
+    ''' Devuelve 0 cuando no se puede — sin tabla, sin entrada para ese índice, o el plugin no está cargado.
+    '''
+    ''' <para>Réplica exacta del fallback del motor, <c>skee PresetInterface.cpp:988-1002</c>:
+    ''' <c>modIndex = formId &gt;&gt; 24</c>; la clave es <c>modIndex &lt;&gt; 0xFE ? modIndex : (formId &gt;&gt; 12)</c>
+    ''' (= <c>ModInfo::GetPartialIndex</c>, f4se GameData.h:87-90, que es como skee ESCRIBIÓ la tabla);
+    ''' después <c>LookupModByName</c> y <c>modInfo-&gt;GetFormID(formId)</c>, que enmascara los bits bajos al
+    ''' ancho del plugin ACTUAL (24 full / 12 light). De este lado esas dos piezas ya existen:
+    ''' <see cref="PluginManager.PartialIndexOfFormID"/> y
+    ''' <see cref="PluginManager.GlobalFormIDFromIdentifierLocal"/>.</para>
+    '''
+    ''' <para>⚠️ Sólo para el formato viejo. Un <c>.jslot</c> moderno trae <c>formIdentifier</c> y ése gana
+    ''' siempre, porque es portable por construcción y no depende de ninguna tabla.</para></summary>
+    Friend Function ResolveLegacyHeadPartFormId(rawFormId As UInteger,
+                                                modIndexToName As Dictionary(Of UInteger, String),
+                                                pluginManager As PluginManager) As UInteger
+        If rawFormId = 0UI OrElse pluginManager Is Nothing Then Return 0UI
+        If modIndexToName Is Nothing OrElse modIndexToName.Count = 0 Then Return 0UI
+        Dim modName As String = Nothing
+        If Not modIndexToName.TryGetValue(PluginManager.PartialIndexOfFormID(rawFormId), modName) Then Return 0UI
+        If String.IsNullOrEmpty(modName) Then Return 0UI
+        ' Devuelve 0 si el plugin no está cargado, que es justo el "no se pudo" del contrato.
+        Return pluginManager.GlobalFormIDFromIdentifierLocal(modName, rawFormId)
+    End Function
+
     ''' <summary>Full preset → <c>.jslot</c>. Combines the FACE mapping (EditFace_Form.OnSaveJslot) and the BODY
     ''' mapping (EditBody_Form.OnSaveJslot + BuildJslotBodyMorphs). Never returns Nothing; a Nothing/empty preset
     ''' yields an all-default jslot.</summary>
@@ -44,10 +70,16 @@ Public Module RaceMenuPresetMapper
             Next
         End If
         ' Re-emit the head parts that ApplyJslotToPreset couldn't resolve (owning mod absent from THIS load
-        ' order) exactly as they came in. Without this, saving a preset that was loaded while its mod was
-        ' missing would silently erase that hair/eyes entry from the .jslot — the user would lose the part the
-        ' moment they saved on a machine that doesn't have the mod. Skee behaves the same: it skips the head
-        ' part it can't apply but leaves the preset's stored entry intact.
+        ' order) exactly as they came in, so a preset whose mod is missing does not LOSE that hair/eyes entry.
+        ' Skee behaves the same: it skips the head part it can't apply but leaves the stored entry intact.
+        ' ⚠️ HOY ESTA RAMA NO SE ALCANZA — misma situación que la de UnresolvedHairColor
+        ' (LooksmenuLoader.vb:997). El único caller de ToJslot es MainForm ("Save RaceMenu Preset"), que arma
+        ' el preset con BuildPresetFromState — desde el ESTADO del NPC, nunca desde un .jslot leído de disco —
+        ' y ese constructor NO copia SseUnresolvedHeadParts. O sea que la app NO hace load→save de un archivo
+        ' de preset, en ningún juego. Se deja como red LATENTE: el día que exista ese camino, sin ella el dato
+        ' se pierde en silencio.
+        ' ⛔ NO leer este comentario como "la app preserva presets del usuario": no los preserva porque no los
+        ' re-escribe. Afirmarlo al revés costó dos diagnósticos de bloqueante que no existían.
         If preset.SseUnresolvedHeadParts IsNot Nothing Then
             For Each h In preset.SseUnresolvedHeadParts
                 If h Is Nothing Then Continue For
@@ -240,8 +272,35 @@ Public Module RaceMenuPresetMapper
                         Continue For
                     End If
                 Else
-                    ' No portable id (older .jslot): the raw FormId is all we have.
-                    fid = h.FormId
+                    ' No portable id (.jslot viejo). ⛔ NO se usa h.FormId crudo: su byte alto es un slot del
+                    ' load order del AUTOR y en el nuestro —que además está COMPACTADO por el Preflight—
+                    ' nombra otro plugin. Eso es exactamente lo que el comentario de arriba describe como
+                    ' MEDIDO ("makes HeadPartResolver discard the WHOLE preset"), así que hacerlo acá era
+                    ' cometer el daño que el bloque documenta.
+                    ' La tabla de traducción está EN EL ARCHIVO: `mods` = [{index,name}] con el partial index
+                    ' del autor. Es lo mismo que hace skee (PresetInterface.cpp:992-997): buscar el nombre por
+                    ' índice y re-encodear con el índice ACTUAL vía ModInfo::GetFormID — que de este lado es
+                    ' GlobalFormIDFromIdentifierLocal (enmascara al ancho del dueño, 12 bits si light y 24 si
+                    ' full, igual que GetFormID).
+                    fid = ResolveLegacyHeadPartFormId(h.FormId, j.ModIndexToName, pluginManager)
+                    If fid = 0UI Then
+                        ' El mod no está en este load order (o el .jslot no trae tabla): mismo trato que un
+                        ' identifier que no resuelve — se SALTEA y se PRESERVA verbatim, para no borrarle al
+                        ' usuario el pelo/ojos al guardar en una máquina que no tiene ese mod.
+                        Dim legacyKey As String = "#" & h.FormId.ToString("X8", Globalization.CultureInfo.InvariantCulture)
+                        If Not preset.UnresolvedHeadParts.Contains(legacyKey, StringComparer.OrdinalIgnoreCase) Then
+                            preset.UnresolvedHeadParts.Add(legacyKey)
+                            preset.SseUnresolvedHeadParts.Add(h)
+                        End If
+                        If Logger.Enabled Then
+                            Dim srcName2 As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))
+                            Dim rawFid As UInteger = h.FormId
+                            Logger.LogLazy(Function() $"[LMLoad] '{srcName2}': legacy head part 0x{rawFid:X8} " &
+                                                      "unresolved (no `mods` entry, or its plugin is not in the " &
+                                                      "load order) -> skipped, preserved verbatim.")
+                        End If
+                        Continue For
+                    End If
                 End If
                 If fid <> 0UI AndAlso Not hp.Contains(fid) Then hp.Add(fid)
             Next

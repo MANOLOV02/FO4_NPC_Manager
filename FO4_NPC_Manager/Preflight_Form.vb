@@ -736,6 +736,19 @@ Public Class Preflight_Form
 
             Await Task.Run(Sub() pm.LoadAllPlugins(LoadedDataPath, SelectedPlugins, pluginProgress))
 
+            ' La validación de arriba exige la clausura de masters entre los tildados, así que esto debería
+            ' venir vacío. Si NO viene vacío, algo cambió entre validar y cargar (el archivo del master
+            ' desapareció, o falló su parseo) y el usuario tiene que enterarse: seguir en silencio con menos
+            ' plugins de los que tildó es justo el modo de falla mudo que se está eliminando.
+            If pm.LastExcludedForMissingMasters IsNot Nothing AndAlso pm.LastExcludedForMissingMasters.Count > 0 Then
+                MessageBox.Show(
+                    "These plugins were NOT loaded because a master they require is missing:" & Environment.NewLine &
+                    Environment.NewLine & "  " & String.Join(Environment.NewLine & "  ", pm.LastExcludedForMissingMasters) &
+                    Environment.NewLine & Environment.NewLine &
+                    "The rest of the load order was loaded. Anything these plugins add or override will not be visible.",
+                    "Plugins skipped", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            End If
+
             LoadedPluginManager = pm
 
             ' --- Archive load: Fill_DictionaryAsync reports (stage, value, max) and discovers the
