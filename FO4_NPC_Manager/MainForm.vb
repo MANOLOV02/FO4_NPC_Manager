@@ -867,6 +867,12 @@ Public Class MainForm
         ''' opacity (wbDefinitionsFO4.pas:10776 wbFloatRGBA QNAM 'Texture lighting'), so this
         ''' preserves engine-fidelity while reflecting the user's edit.</summary>
         Public TextureLightingColor As Color = Color.Empty
+        ''' <summary>Ajuste manual del skin tone del CUERPO autorado en Edit Body (overlay -> state). YA ESTA
+        ''' APLICADO dentro de <see cref="TextureLightingColor"/>; se guarda ademas crudo porque el refresh en
+        ''' vivo re-resuelve el tono desde el record y necesita volver a sumarlo. NUNCA se aplica a la resolucion
+        ''' que consume la CARA (ResolveNpcSkinToneColor): el punto de la feature es que el origen del match no
+        ''' se mueva. Nothing = sin ajuste.</summary>
+        Public SkinToneOffset As SkinToneQnamOffset = Nothing
         Public HeadPartFormIDs As New List(Of UInteger)
         Public LoadoutArmorFormIDs As New List(Of UInteger)
         ''' <summary>Per-ARMO contextual keywords inherited from the LVLI.LLKC chain at outfit
@@ -7266,6 +7272,29 @@ Public Class MainForm
     ''' by the Phase 2 split.</summary>
     Friend Function RefreshFaceTintLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
         Return _faceTintResolver.RefreshFaceTintLivePreview(host)
+    End Function
+
+    ''' <summary>Facade del editor de cuerpo: repinta SOLO el tono de piel del cuerpo con el ajuste manual
+    ''' (re-resuelve el QNAM efectivo y reescribe los uniforms del soft-light). No recompone la cara ni toca
+    ''' texturas -- el ajuste no entra por ahi-, asi que sirve para arrastrar un slider y para las iteraciones
+    ''' del auto-calc.</summary>
+    Friend Function RefreshBodySkinToneLive(offset As SkinToneQnamOffset, Optional host As NpcRenderHost = Nothing) As Boolean
+        Return _faceTintResolver.RefreshBodySkinToneLive(offset, host)
+    End Function
+
+    ''' <summary>Tono de piel BASE del host (sin el ajuste manual). Nothing = este NPC no tiene tono derivable
+    ''' -- la misma condicion con la que el render se saltea el soft-light del cuerpo-, y es lo que el editor
+    ''' usa para deshabilitar el tab en vez de ofrecer sliders inertes.</summary>
+    Friend Function ResolveBaseSkinToneForHost(host As NpcRenderHost) As Nullable(Of Color)
+        If host Is Nothing OrElse host.LastRenderedState Is Nothing Then Return Nothing
+        Return _materialResolver.ResolveNpcSkinToneColor(host.LastRenderedState)
+    End Function
+
+    ''' <summary>Tono de piel EFECTIVO del cuerpo (base + ajuste manual) = exactamente el QNAM que se va a
+    ''' escribir en el ESP y a hornear. Solo para mostrarlo en el editor.</summary>
+    Friend Function ResolveBodySkinToneForHost(host As NpcRenderHost) As Nullable(Of Color)
+        If host Is Nothing OrElse host.LastRenderedState Is Nothing Then Return Nothing
+        Return _materialResolver.ResolveNpcBodySkinToneColor(host.LastRenderedState)
     End Function
 
     ''' <summary>Facade for the editors: delegates to the skin-override live-preview fast-path. Kept on

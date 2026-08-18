@@ -43,7 +43,7 @@ Public Module BssliderSidecar
     ' `sseFirstPersonTransforms`. Se sube el número aunque la lectura sea tolerante en las dos direcciones
     ' (ausente ⇒ comportamiento viejo): sin subirlo no había forma EN DISCO de distinguir un v12 con `raw` de
     ' uno sin, y este archivo se distribuye a usuarios que ya tienen sidecars escritos.
-    Public Const SchemaVersion As Integer = 13
+    Public Const SchemaVersion As Integer = 14
 
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
@@ -99,6 +99,11 @@ Public Module BssliderSidecar
         ''' RaceMenu co-save data (not the NPC record) → persisted so the hair colour survives a reload. Nullable —
         ''' Nothing on FO4 / presets without hairColor; serialized under <c>sseHairColor</c> (schema v11).</summary>
         Public SseHairColorRgb As Integer? = Nothing
+        ''' <summary>Ajuste manual del skin tone del cuerpo (QNAM). Nothing = sin ajuste. Serializado bajo
+        ''' <c>skinToneOffset</c> (schema v14) como los cuatro deltas CANONICOS: r/g/b en [-1..1] (fraccion del
+        ''' color, no bytes) e i en [-1..1] (fraccion de la intensidad). El QNAM en disco son floats, asi que
+        ''' persistir bytes hornearia una cuantizacion que el dato no tiene; el +-255 es SOLO unidad de UI.</summary>
+        Public SkinToneOffset As SkinToneQnamOffset = Nothing
         ''' <summary>SSE-ONLY RaceMenu NiOverride SKIN overrides (body-paint per biped slot): slotMask +
         ''' diffuse/normal path + tint. Nullable — Nothing on FO4 / SSE entries without skin overrides;
         ''' serialized under <c>sseSkinOverrides</c> (schema v5). See
@@ -140,6 +145,7 @@ Public Module BssliderSidecar
                 If SseBodyOverlays IsNot Nothing AndAlso SseBodyOverlays.Count > 0 Then Return True
                 If SseNodeTransforms IsNot Nothing AndAlso SseNodeTransforms.Count > 0 Then Return True
                 If SseHairColorRgb.HasValue Then Return True
+                If SkinToneOffset IsNot Nothing AndAlso Not SkinToneOffset.IsZero Then Return True
                 If SseSkinOverrides IsNot Nothing AndAlso SseSkinOverrides.Count > 0 Then Return True
                 If SseCustomMorphs IsNot Nothing AndAlso SseCustomMorphs.Count > 0 Then Return True
                 If SseSculptHead IsNot Nothing AndAlso SseSculptHead.Count > 0 Then Return True
@@ -268,6 +274,9 @@ Public Module BssliderSidecar
         End If
         ' SSE RaceMenu absolute hair tint (packed RGB) — rebuild onto the carrier from the sidecar.
         If entry.SseHairColorRgb.HasValue Then preset.SseHairColorRgb = entry.SseHairColorRgb
+        ' Ajuste manual del skin tone del cuerpo (QNAM). Se copia clonado: entry y preset no pueden compartir
+        ' la instancia o mover un slider del editor mutaria tambien la fila leida del disco.
+        If entry.SkinToneOffset IsNot Nothing Then preset.SkinToneOffset = entry.SkinToneOffset.Clone()
         ' SSE skin overrides (body-paint per slot) — deep-copy onto the overlay. SSE-only.
         If entry.SseSkinOverrides IsNot Nothing AndAlso entry.SseSkinOverrides.Count > 0 Then
             preset.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(entry.SseSkinOverrides)
@@ -372,6 +381,11 @@ Public Module BssliderSidecar
         End If
         ' SSE RaceMenu absolute hair tint (packed RGB) — co-save data, persist so it survives a reload.
         If overlay.SseHairColorRgb.HasValue Then entry.SseHairColorRgb = overlay.SseHairColorRgb
+        ' Ajuste manual del skin tone del cuerpo. Un ajuste en CERO no se escribe: la fila del sidecar no debe
+        ' contener nada que sea no-op al re-aplicarlo (mismo criterio que HasAnything).
+        If overlay.SkinToneOffset IsNot Nothing AndAlso Not overlay.SkinToneOffset.IsZero Then
+            entry.SkinToneOffset = overlay.SkinToneOffset.Clone()
+        End If
         ' SSE skin overrides (body-paint per slot) — deep-copy onto the sidecar entry (SSE-only, nullable).
         If overlay.SseSkinOverrides IsNot Nothing AndAlso overlay.SseSkinOverrides.Count > 0 Then
             entry.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
@@ -645,6 +659,18 @@ Public Module BssliderSidecar
         End If
         ' sseSkinOverrides — SSE-only, optional (schema v5). Array of { slotMask, diffuse?, normal?, tint?[r,g,b,a] }.
         ' Tolerant of absence (FO4 / v1-v4 files) — left Nothing.
+        ' skinToneOffset: ajuste manual del QNAM del cuerpo (schema v14, los dos juegos). Objeto { r, g, b, i }
+        ' con los cuatro deltas CANONICOS en [-1..1]. Ausente en archivos v1-v13, queda Nothing.
+        Dim stoEl As JsonElement
+        If el.TryGetProperty("skinToneOffset", stoEl) AndAlso stoEl.ValueKind = JsonValueKind.Object Then
+            Dim off As New SkinToneQnamOffset()
+            Dim comp As JsonElement
+            If stoEl.TryGetProperty("r", comp) AndAlso comp.ValueKind = JsonValueKind.Number Then off.R = comp.GetSingle()
+            If stoEl.TryGetProperty("g", comp) AndAlso comp.ValueKind = JsonValueKind.Number Then off.G = comp.GetSingle()
+            If stoEl.TryGetProperty("b", comp) AndAlso comp.ValueKind = JsonValueKind.Number Then off.B = comp.GetSingle()
+            If stoEl.TryGetProperty("i", comp) AndAlso comp.ValueKind = JsonValueKind.Number Then off.Intensity = comp.GetSingle()
+            If Not off.IsZero Then entry.SkinToneOffset = off
+        End If
         If el.TryGetProperty("sseSkinOverrides", child) AndAlso child.ValueKind = JsonValueKind.Array Then
             Dim list As New List(Of RaceMenuJslot.JslotSkinOverride)
             For Each so In child.EnumerateArray()
@@ -946,6 +972,17 @@ Public Module BssliderSidecar
                     ' sseHairColor — SSE-only, emitted when present. Packed 0xRRGGBB int (RaceMenu absolute hair tint).
                     If kv.Value.SseHairColorRgb.HasValue Then w.WriteNumber("sseHairColor", kv.Value.SseHairColorRgb.Value)
                     ' sseSkinOverrides — SSE-only, emitted when non-empty. Array of { slotMask, diffuse, normal?, tint? }.
+                    ' skinToneOffset: ajuste manual del QNAM del cuerpo. Se emiten los deltas CANONICOS
+                    ' (fracciones), no las unidades de la UI.
+                    Dim sto = kv.Value.SkinToneOffset
+                    If sto IsNot Nothing AndAlso Not sto.IsZero Then
+                        w.WriteStartObject("skinToneOffset")
+                        w.WriteNumber("r", sto.R)
+                        w.WriteNumber("g", sto.G)
+                        w.WriteNumber("b", sto.B)
+                        w.WriteNumber("i", sto.Intensity)
+                        w.WriteEndObject()
+                    End If
                     If kv.Value.SseSkinOverrides IsNot Nothing AndAlso kv.Value.SseSkinOverrides.Count > 0 Then
                         w.WriteStartArray("sseSkinOverrides")
                         For Each sk In kv.Value.SseSkinOverrides

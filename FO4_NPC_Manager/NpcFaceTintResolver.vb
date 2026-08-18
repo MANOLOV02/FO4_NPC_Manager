@@ -1170,6 +1170,24 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' diffuse with it at render (uEffectiveType==4, engine-faithful) — nothing is baked into the texture,
     ''' so the body needs NO pristine snapshot. Guarded by the race's SkinTone tint catalog (humans have it;
     ''' synth/ghoul/robot don't → skip; their skin shapes aren't human skin-tone).</summary>
+    ''' <summary>Camino BARATO para el editor de "Skin Tint Adjustment": re-resuelve el tono del CUERPO desde
+    ''' el overlay y lo vuelve a escribir en los materiales de las shapes de piel. NO recompone la cara ni toca
+    ''' una sola textura -el ajuste solo entra por el uniform del soft-light del cuerpo-, asi que sirve tanto
+    ''' para repintar mientras se arrastra un slider como para las iteraciones del auto-calc.
+    ''' <para>Devuelve False si no habia state/modelo (el caller cae al refresh completo).</para></summary>
+    Friend Function RefreshBodySkinToneLive(offset As SkinToneQnamOffset, Optional host As NpcRenderHost = Nothing) As Boolean
+        If host Is Nothing Then host = _hostProvider()
+        If host Is Nothing OrElse host.LastRenderedState Is Nothing Then Return False
+        If host.PreviewCtl Is Nothing OrElse host.PreviewCtl.Model Is Nothing Then Return False
+        host.LastRenderedState.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(offset)
+        Dim tone = _materialResolver.ResolveNpcBodySkinToneColor(host.LastRenderedState)
+        If Not tone.HasValue Then Return False
+        host.LastRenderedState.HasTextureLighting = True
+        host.LastRenderedState.TextureLightingColor = tone.Value
+        TryApplyBodySkinSoftLight(host.LastRenderedState, host)
+        Return True
+    End Function
+
     Private Sub TryApplyBodySkinSoftLight(state As MainForm.NPCVisualState, Optional host As NpcRenderHost = Nothing)
         If host Is Nothing Then host = _hostProvider()
         If state Is Nothing OrElse Not state.HasTextureLighting Then
@@ -1218,7 +1236,15 @@ Friend NotInheritable Class NpcFaceTintResolver
             Next
             Logger.LogLazy(Function() $"[SSE-BODY] guard OK. QNAM=({qr},{qg},{qb},A={qa}) opacity={opL:F3} → applying to body SkinTint shapes (meshes={total} conMat={withMat} skinTint={skinTintN} faceTint={faceN} skinTintFromOverride={ovrN})")
         End If
-        If opacity <= 0.001F Then Return
+        ' [!] ANTES ESTO ERA `If opacity <= 0.001F Then Return`, y era un agujero: con la fuerza en cero el
+        ' pase se iba SIN escribir nada, asi que las shapes de piel se quedaban con el SkinTintColor que
+        ' trajera su propio material (el del NIF/BGSM) y con SkinTintAlpha 1.0 -> el cuerpo se veia TINTADO
+        ' justo en el caso que significa "sin tono". El motor no hace eso: SetupMaterial escribe el tono Y su
+        ' .w en TODA shape SkinTint (material+0xC0 / +0xCC), y con .w=0 el prepass hace mix(diffuse, ..., 0) =
+        ' diffuse sin tocar. Escribir alpha 0 es lo fiel, y es lo que hace que bajar "Intensity" a -100% en el
+        ' editor se VEA (WYSIWYG) en vez de dejar el ultimo tono aplicado.
+        ' Poblacion afectada: NPCs cuya capa de skin-tone resuelve con Value 0 (o cuyo QNAM.A es 0). Antes se
+        ' renderizaban con el tinte del material; ahora se renderizan sin tinte, que es lo que el ESP dice.
         Dim appliedCount As Integer = 0
         For Each mesh In model.meshes
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
@@ -1500,6 +1526,9 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' Nothing) porque limpiar el override es una edición válida: volver al CLFM. SSE-only por origen
             ' (en FO4 el campo es siempre Nothing).
             host.LastRenderedState.SseHairColorRgb = overlayPreset.SseHairColorRgb
+            ' Mismo re-pull para el ajuste manual del tono del cuerpo: el state se sembro al cargar el NPC, asi
+            ' que sin esto mover un slider de "Skin Tint Adjustment" no se veria hasta recargar.
+            host.LastRenderedState.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(overlayPreset.SkinToneOffset)
         End If
 
         ' Stage 1: roll every face/body diffuse cache entry back to its pristine bytes. Each
@@ -1520,7 +1549,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' tone into state ourselves before calling the SoftLight pass, otherwise body would
         ' be tinted with the previous QNAM/SkinTone snapshot and face/body would diverge as
         ' the user moves the slot-12 colour combo.
-        Dim freshSkinTone = _materialResolver.ResolveNpcSkinToneColor(host.LastRenderedState)
+        Dim freshSkinTone = _materialResolver.ResolveNpcBodySkinToneColor(host.LastRenderedState)
         Dim hasValueLog = freshSkinTone.HasValue
         If freshSkinTone.HasValue Then
             Dim fsR = freshSkinTone.Value.R
@@ -1550,7 +1579,12 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' mas rica, que considera solidTintColor para head parts de cara. Esa asimetria es un frente aparte
         ' (50-facetint-residuos-aceptados) y no se toca aca para no cambiar el render de la cara en vivo.
         Dim renderData = host.LastRenderData
+        ' DOS tonos, no uno: el del CUERPO lleva el ajuste manual del editor y el base no. El reparto es el
+        ' MISMO gate que usa TryApplyBodySkinSoftLight (la cara, shaderType FaceTint, queda afuera del ajuste),
+        ' asi el uniform de la cara no se mueve cuando el usuario corre el tono del cuerpo. Con ajuste en cero
+        ' los dos valores son identicos y esto es byte-identico a lo de antes.
         Dim skinTone = _materialResolver.ResolveNpcSkinToneColor(host.LastRenderedState)
+        Dim bodySkinTone = _materialResolver.ResolveNpcBodySkinToneColor(host.LastRenderedState)
         For Each shape In renderData.Shapes
             If shape Is Nothing Then Continue For
             Dim relatedMaterial = shape.ShapeMaterial
@@ -1558,8 +1592,14 @@ Friend NotInheritable Class NpcFaceTintResolver
             Dim mat = relatedMaterial.material
 
             ' Don't overwrite a RaceMenu skin-override tint (key 7) with the actor skin tone — the override wins.
-            If mat.SkinTint AndAlso skinTone.HasValue AndAlso Not mat.SkinTintFromOverride Then
-                mat.SkinTintColor = skinTone.Value
+            If mat.SkinTint AndAlso Not mat.SkinTintFromOverride Then
+                ' If/Then explicito y NO un ternario: `If(cond, nullableA, nullableB)` es justo la construccion
+                ' de VB que devuelve un Nullable con HasValue=True cuando no corresponde (00-reglas-vb-trampas).
+                If mat.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then
+                    If skinTone.HasValue Then mat.SkinTintColor = skinTone.Value
+                Else
+                    If bodySkinTone.HasValue Then mat.SkinTintColor = bodySkinTone.Value
+                End If
             End If
 
             Dim shapeCandidate As MainForm.MeshCandidate = Nothing

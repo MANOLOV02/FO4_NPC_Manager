@@ -339,6 +339,10 @@ Public Class EditBody_Form
         AddHandler CheckBoxOverlayTint.CheckedChanged, AddressOf OnOverlayTintToggled
         AddHandler ButtonOverlayTintColor.Click, AddressOf OnOverlayTintColorClicked
 
+        ' Tab "Skin Tint Adjustment" (los dos juegos): offsets del QNAM del cuerpo. Los controles viven en el
+        ' Designer; esto solo ajusta el texto game-aware y siembra los sliders desde el overlay.
+        InitSkinTintTab()
+
         LoadValuesFromOverlay()
         InitOverlaysTab()
         ' SSE: after the FO4 InitOverlaysTab, re-point the reused overlay controls at the RaceMenu carrier.
@@ -1221,6 +1225,8 @@ Public Class EditBody_Form
             ResetSseBodyScaleSection()
         ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseSkinOverrides" Then
             Await ResetSseSkinOverridesSection()
+        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSkinTint" Then
+            ResetSkinTintSection()
         End If
     End Sub
 
@@ -3668,6 +3674,9 @@ Public Class EditBody_Form
                 RebuildSseBodyScaleTab()
                 UpdateSseSkinDetail()   ' sync the biped-slot flags to the selected override now that shapes exist
             End If
+            ' El gate del tab de skin tint necesita el state del primer render (de ahi sale si el tono del
+            ' cuerpo se deriva o no), asi que se evalua ACA y no en el .ctor.
+            RefreshSkinTintAvailability()
         End If
     End Sub
 

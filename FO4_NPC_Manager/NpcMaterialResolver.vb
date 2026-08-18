@@ -1098,6 +1098,18 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' wbDefinitionsFO4.pas:3478), not a hardcoded magic number. Returns Nothing when the NPC
     ''' has no layer at the SkinTone slot or the race / CLFM lookup fails.</para></summary>
     Friend Function ResolveNpcSkinToneColor(state As MainForm.NPCVisualState) As Nullable(Of Color)
+        Return ResolveNpcSkinToneCore(state, Nothing)
+    End Function
+
+    ''' <summary>El mismo tono, pero con el AJUSTE MANUAL del editor de cuerpo ya sumado. Es el tono del CUERPO:
+    ''' lo consumen el seed de <c>state.TextureLightingColor</c> (que alimenta TryApplyBodySkinSoftLight) y el
+    ''' refresh en vivo. La variante SIN ajuste de arriba es la que sigue leyendo la CARA -si las dos fueran la
+    ''' misma, el origen del match se moveria junto con el destino y el ajuste no podria converger nunca.</summary>
+    Friend Function ResolveNpcBodySkinToneColor(state As MainForm.NPCVisualState) As Nullable(Of Color)
+        Return ResolveNpcSkinToneCore(state, If(state Is Nothing, Nothing, state.SkinToneOffset))
+    End Function
+
+    Private Function ResolveNpcSkinToneCore(state As MainForm.NPCVisualState, offset As SkinToneQnamOffset) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
         Dim npcData = _overlayResolver(_ctx.GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
@@ -1112,7 +1124,8 @@ Friend NotInheritable Class NpcMaterialResolver
         ' state.RaceFormID = raza EFECTIVA (override del editor): sin él, npcData sin preset es el raw
         ' cacheado y la rama SSE derivaría el QNAM del catálogo de la raza VIEJA tras un cambio de raza.
         Return NpcRecordOverlay.DeriveSkinToneQnam(npcData, race, state.IsFemale, _ctx.PluginManager,
-                                                   raceFormIDOverride:=state.RaceFormID)
+                                                   raceFormIDOverride:=state.RaceFormID,
+                                                   offset:=offset)
     End Function
 
     ' ===== Ghoul female head-rear (nape) vanilla-UV texture clone =====

@@ -269,7 +269,11 @@ Friend NotInheritable Class NpcStateResolver
             ' parity for free because the engine reads from the actor's tint array, which the
             ' preset just rewrote — we have to re-derive it manually because QNAM is a vanilla
             ' record-level field that LooksMenu doesn't serialize.
-            Dim presetSkin = _materialResolver.ResolveNpcSkinToneColor(state)
+            ' El ajuste manual del tono del cuerpo tiene que estar EN el state antes de resolver: el resolver
+            ' del cuerpo lo lee de ahi. Se clona para que el state de un render no comparta instancia con el
+            ' overlay que el editor esta moviendo.
+            state.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(overlayPreset.SkinToneOffset)
+            Dim presetSkin = _materialResolver.ResolveNpcBodySkinToneColor(state)
             If presetSkin.HasValue Then
                 state.HasTextureLighting = True
                 state.TextureLightingColor = presetSkin.Value
@@ -329,6 +333,7 @@ Friend NotInheritable Class NpcStateResolver
             .FacialHairColorFormID = state.FacialHairColorFormID,
             .HasTextureLighting = state.HasTextureLighting,
             .TextureLightingColor = state.TextureLightingColor,
+            .SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(state.SkinToneOffset),
             .WeightThin = state.WeightThin,
             .WeightMuscular = state.WeightMuscular,
             .WeightFat = state.WeightFat

@@ -65,6 +65,11 @@ Public Module LooksmenuLoader
         ''' ×2, PresetInterface.cpp:112-116), taking precedence over the NPC's CLFM/HCLF colour. Nothing = the preset
         ''' carried no hairColor → render falls back to the CLFM. SSE-only; Nothing on FO4.</summary>
         Public SseHairColorRgb As Integer?
+        ''' <summary>Ajuste manual del SKIN TONE del cuerpo (QNAM), autorado en Edit Body -> "Skin Tint Adjustment".
+        ''' Nothing = sin ajuste. Es dato INTERNO del app (ni LooksMenu ni RaceMenu tienen un campo asi): viaja por
+        ''' el overlay y se persiste en el sidecar .bssliders, no en el .jslot. Lo consumen el tono del CUERPO en el
+        ''' render y el QNAM que se escribe en el ESP / se hornea, NUNCA la resolucion que lee la CARA.</summary>
+        Public SkinToneOffset As SkinToneQnamOffset = Nothing
         Public WeightThin As Single?
         Public WeightMuscular As Single?
         Public WeightFat As Single?
@@ -758,6 +763,7 @@ Public Module LooksmenuLoader
         c.UnresolvedHairColor = p.UnresolvedHairColor
         c.SseHeadTextureFormIDOverride = p.SseHeadTextureFormIDOverride
         c.SseHairColorRgb = p.SseHairColorRgb
+        c.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(p.SkinToneOffset)
         c.WeightThin = p.WeightThin
         c.WeightMuscular = p.WeightMuscular
         c.WeightFat = p.WeightFat

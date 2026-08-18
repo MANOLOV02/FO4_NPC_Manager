@@ -458,7 +458,12 @@ Public Module NpcRecordOverlay
         ' the user's edits never reached. If the shadow has no SkinTone tint, leave the raw-seeded
         ' QNAM (line 122-127) untouched.
         If raceIsValid Then
-            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, race, raw.IsFemale, pluginManager)
+            ' El ajuste manual del tono del CUERPO entra ACA (y no dentro de la derivacion compartida): este
+            ' es el punto donde el QNAM se materializa como campo del record, que es tono de CUERPO por
+            ' definicion. El save y el BAKE salen los dos de esta shadow, asi que con una sola linea quedan
+            ' alineados con el render. La cara no pasa por aca (compone desde FaceTintLayers).
+            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, race, raw.IsFemale, pluginManager,
+                                                     offset:=If(preset Is Nothing, Nothing, preset.SkinToneOffset))
             Dim tintCountLog = shadow.FaceTintLayers.Count
             Dim hasDerivedLog = derivedSkinTone.HasValue
             If derivedSkinTone.HasValue Then
@@ -498,7 +503,8 @@ Public Module NpcRecordOverlay
     ''' <para>The Slot enum value is a schema-defined field name (xEdit wbDefinitionsFO4.pas:3478),
     ''' NOT a hardcoded magic number — this is the canonical lookup for "skin tint layer".</para></summary>
     Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean, pluginManager As PluginManager,
-                                       Optional raceFormIDOverride As UInteger = 0UI) As Nullable(Of Color)
+                                       Optional raceFormIDOverride As UInteger = 0UI,
+                                       Optional offset As SkinToneQnamOffset = Nothing) As Nullable(Of Color)
         ' SSE (Skyrim): no slot-12; the skin tone is the RACE tint layer whose TINP mask type == 6, with the
         ' intensity FOLDED into the QNAM colour (SSE QNAM has no alpha). Game-gated so FO4 stays byte-identical.
         ' This single source of truth feeds both the save-overlay QNAM (above) and the render body (via
@@ -508,7 +514,7 @@ Public Module NpcRecordOverlay
             ' Raza EFECTIVA cuando el caller la tiene (state.RaceFormID); npc.RaceFormID puede ser el raw
             ' cacheado con la raza vieja tras un cambio de raza sin preset aplicado.
             Dim raceFid = If(raceFormIDOverride <> 0UI, raceFormIDOverride, npc.RaceFormID)
-            Return SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npc, race, raceFid, isFemale)
+            Return SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npc, race, raceFid, isFemale, offset)
         End If
 
         If npc Is Nothing OrElse race Is Nothing Then Return Nothing
@@ -529,8 +535,24 @@ Public Module NpcRecordOverlay
             If tl.Discriminator <> 1 Then Continue For   ' Palette only — color source for skin tone
 
             If tl.Color <> Color.Empty Then
-                Dim alphaByte As Integer = Math.Max(0, Math.Min(255, CInt(Math.Round(CSng(tl.Value) * 2.55F))))
-                Return Color.FromArgb(alphaByte, tl.Color.R, tl.Color.G, tl.Color.B)
+                ' Ajuste manual del tono del CUERPO: se suma sobre el color de la paleta y sobre la opacidad de
+                ' la capa, los dos normalizados a [0..1] = el dominio del dato (el QNAM en disco son FLOATS; el
+                ' byte es la cuantizacion de ESTA funcion, no la unidad del campo). En FO4 la intensidad ES el
+                ' alpha del QNAM -la opacidad del soft-light del cuerpo- asi que va derecho ahi; en SSE no hay
+                ' alpha y la rama de arriba la pliega en el color con el seed y la convencion de la config.
+                ' Con offset Nothing/cero la aritmetica es la de antes byte a byte.
+                Dim r01 As Double = CDbl(tl.Color.R) / 255.0R
+                Dim g01 As Double = CDbl(tl.Color.G) / 255.0R
+                Dim b01 As Double = CDbl(tl.Color.B) / 255.0R
+                Dim a01 As Double = SkinToneQnamOffset.Clamp01(CDbl(tl.Value) / 100.0R)
+                If offset IsNot Nothing AndAlso Not offset.IsZero Then
+                    offset.ApplyToRgb01(r01, g01, b01)
+                    a01 = offset.ApplyToIntensity01(a01)
+                End If
+                Return Color.FromArgb(CInt(Math.Round(a01 * 255.0R)),
+                                      CInt(Math.Round(r01 * 255.0R)),
+                                      CInt(Math.Round(g01 * 255.0R)),
+                                      CInt(Math.Round(b01 * 255.0R)))
             End If
         Next
 

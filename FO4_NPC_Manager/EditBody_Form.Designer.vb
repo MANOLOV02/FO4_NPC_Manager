@@ -47,6 +47,33 @@ Partial Class EditBody_Form
         ButtonPickWnam = New Button()
         LabelLmSkinTemplate = New Label()
         ComboBoxLmSkinTemplate = New ComboBox()
+        TabPageSkinTint = New TabPage()
+        SkinTintTabLayout = New TableLayoutPanel()
+        LabelSkinTintLegend = New Label()
+        LabelSkinTintIntensityMeaning = New Label()
+        GroupBoxSkinTintMatch = New GroupBox()
+        SkinTintMatchLayout = New TableLayoutPanel()
+        ButtonSkinTintPickSource = New Button()
+        PanelSkinTintSourceSwatch = New Panel()
+        LabelSkinTintSource = New Label()
+        ButtonSkinTintPickTarget = New Button()
+        PanelSkinTintTargetSwatch = New Panel()
+        LabelSkinTintTarget = New Label()
+        ButtonSkinTintAuto = New Button()
+        LabelSkinTintAutoHint = New Label()
+        GroupBoxSkinTintOffsets = New GroupBox()
+        SkinTintOffsetsLayout = New TableLayoutPanel()
+        LabelSkinTintR = New Label()
+        SliderSkinTintR = New TinySliderTextBox()
+        LabelSkinTintG = New Label()
+        SliderSkinTintG = New TinySliderTextBox()
+        LabelSkinTintB = New Label()
+        SliderSkinTintB = New TinySliderTextBox()
+        LabelSkinTintIntensity = New Label()
+        SliderSkinTintIntensity = New TinySliderTextBox()
+        ButtonSkinTintReset = New Button()
+        LabelSkinTintStatus = New Label()
+        LabelSkinTintGate = New Label()
         TabPageBodySlide = New TabPage()
         BodySlideTabLayout = New TableLayoutPanel()
         GroupBoxBodySlide = New GroupBox()
@@ -119,6 +146,12 @@ Partial Class EditBody_Form
         GroupBoxSkin.SuspendLayout()
         SkinLayout.SuspendLayout()
         WnamPickPanel.SuspendLayout()
+        TabPageSkinTint.SuspendLayout()
+        SkinTintTabLayout.SuspendLayout()
+        GroupBoxSkinTintMatch.SuspendLayout()
+        SkinTintMatchLayout.SuspendLayout()
+        GroupBoxSkinTintOffsets.SuspendLayout()
+        SkinTintOffsetsLayout.SuspendLayout()
         TabPageBodySlide.SuspendLayout()
         BodySlideTabLayout.SuspendLayout()
         GroupBoxBodySlide.SuspendLayout()
@@ -181,6 +214,7 @@ Partial Class EditBody_Form
         TabsBody.Controls.Add(TabPageBody)
         TabsBody.Controls.Add(TabPageBodySlide)
         TabsBody.Controls.Add(TabPageOverlays)
+        TabsBody.Controls.Add(TabPageSkinTint)
         TabsBody.Dock = DockStyle.Fill
         TabsBody.Location = New Point(11, 11)
         TabsBody.Name = "TabsBody"
@@ -623,6 +657,354 @@ Partial Class EditBody_Form
         ComboBoxLmSkinTemplate.Name = "ComboBoxLmSkinTemplate"
         ComboBoxLmSkinTemplate.Size = New Size(675, 23)
         ComboBoxLmSkinTemplate.TabIndex = 3
+        '
+        ' TabPageSkinTint
+        ' 
+        TabPageSkinTint.Controls.Add(SkinTintTabLayout)
+        TabPageSkinTint.Location = New Point(4, 24)
+        TabPageSkinTint.Name = "TabPageSkinTint"
+        TabPageSkinTint.Padding = New Padding(6)
+        TabPageSkinTint.Size = New Size(830, 692)
+        TabPageSkinTint.TabIndex = 3
+        TabPageSkinTint.Text = "Skin Tint Adjustment"
+        ' 
+        ' SkinTintTabLayout
+        ' 
+        SkinTintTabLayout.AutoScroll = True
+        SkinTintTabLayout.ColumnCount = 1
+        SkinTintTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SkinTintTabLayout.Controls.Add(LabelSkinTintLegend, 0, 0)
+        SkinTintTabLayout.Controls.Add(LabelSkinTintIntensityMeaning, 0, 1)
+        SkinTintTabLayout.Controls.Add(GroupBoxSkinTintMatch, 0, 2)
+        SkinTintTabLayout.Controls.Add(GroupBoxSkinTintOffsets, 0, 3)
+        SkinTintTabLayout.Controls.Add(LabelSkinTintStatus, 0, 4)
+        SkinTintTabLayout.Controls.Add(LabelSkinTintGate, 0, 5)
+        SkinTintTabLayout.Dock = DockStyle.Fill
+        SkinTintTabLayout.Location = New Point(6, 6)
+        SkinTintTabLayout.Name = "SkinTintTabLayout"
+        SkinTintTabLayout.RowCount = 7
+        SkinTintTabLayout.RowStyles.Add(New RowStyle())
+        SkinTintTabLayout.RowStyles.Add(New RowStyle())
+        SkinTintTabLayout.RowStyles.Add(New RowStyle())
+        SkinTintTabLayout.RowStyles.Add(New RowStyle())
+        SkinTintTabLayout.RowStyles.Add(New RowStyle())
+        SkinTintTabLayout.RowStyles.Add(New RowStyle())
+        SkinTintTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SkinTintTabLayout.Size = New Size(818, 680)
+        SkinTintTabLayout.TabIndex = 0
+        ' 
+        ' LabelSkinTintLegend
+        ' 
+        LabelSkinTintLegend.AutoSize = True
+        LabelSkinTintLegend.Margin = New Padding(2, 2, 2, 2)
+        LabelSkinTintLegend.Name = "LabelSkinTintLegend"
+        LabelSkinTintLegend.TabIndex = 0
+        LabelSkinTintLegend.Text = "Adjusts the BODY skin tone (NPC.QNAM) for NPCs whose body and face come from different mods. Colours are picked ON THE PREVIEW and are the pixel as displayed (lighting, shadow and gamma included), so pick comparable spots or the best possible match will still leave a residual. The value is stored in the sidecar and applied to the render, to the bake and to the QNAM written to the ESP."
+        ' 
+        ' LabelSkinTintIntensityMeaning
+        ' 
+        LabelSkinTintIntensityMeaning.AutoSize = True
+        LabelSkinTintIntensityMeaning.Margin = New Padding(2, 2, 2, 8)
+        LabelSkinTintIntensityMeaning.Name = "LabelSkinTintIntensityMeaning"
+        LabelSkinTintIntensityMeaning.TabIndex = 1
+        LabelSkinTintIntensityMeaning.Text = "Intensity is the QNAM alpha (the body soft-light opacity)."
+        ' 
+        ' GroupBoxSkinTintMatch
+        ' 
+        GroupBoxSkinTintMatch.AutoSize = True
+        GroupBoxSkinTintMatch.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxSkinTintMatch.Controls.Add(SkinTintMatchLayout)
+        GroupBoxSkinTintMatch.Dock = DockStyle.Fill
+        GroupBoxSkinTintMatch.Margin = New Padding(2, 2, 2, 8)
+        GroupBoxSkinTintMatch.Name = "GroupBoxSkinTintMatch"
+        GroupBoxSkinTintMatch.TabIndex = 2
+        GroupBoxSkinTintMatch.TabStop = False
+        GroupBoxSkinTintMatch.Text = "Match"
+        ' 
+        ' SkinTintMatchLayout
+        ' 
+        SkinTintMatchLayout.AutoSize = True
+        SkinTintMatchLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        SkinTintMatchLayout.ColumnCount = 3
+        SkinTintMatchLayout.ColumnStyles.Add(New ColumnStyle())
+        SkinTintMatchLayout.ColumnStyles.Add(New ColumnStyle())
+        SkinTintMatchLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SkinTintMatchLayout.Controls.Add(ButtonSkinTintPickSource, 0, 0)
+        SkinTintMatchLayout.Controls.Add(PanelSkinTintSourceSwatch, 1, 0)
+        SkinTintMatchLayout.Controls.Add(LabelSkinTintSource, 2, 0)
+        SkinTintMatchLayout.Controls.Add(ButtonSkinTintPickTarget, 0, 1)
+        SkinTintMatchLayout.Controls.Add(PanelSkinTintTargetSwatch, 1, 1)
+        SkinTintMatchLayout.Controls.Add(LabelSkinTintTarget, 2, 1)
+        SkinTintMatchLayout.Controls.Add(ButtonSkinTintAuto, 0, 2)
+        SkinTintMatchLayout.Controls.Add(LabelSkinTintAutoHint, 1, 2)
+        SkinTintMatchLayout.Dock = DockStyle.Fill
+        SkinTintMatchLayout.Name = "SkinTintMatchLayout"
+        SkinTintMatchLayout.Padding = New Padding(4)
+        SkinTintMatchLayout.RowCount = 3
+        SkinTintMatchLayout.RowStyles.Add(New RowStyle())
+        SkinTintMatchLayout.RowStyles.Add(New RowStyle())
+        SkinTintMatchLayout.RowStyles.Add(New RowStyle())
+        SkinTintMatchLayout.SetColumnSpan(LabelSkinTintAutoHint, 2)
+        SkinTintMatchLayout.TabIndex = 0
+        ' 
+        ' ButtonSkinTintPickSource
+        ' 
+        ButtonSkinTintPickSource.AutoSize = True
+        ButtonSkinTintPickSource.Margin = New Padding(2)
+        ButtonSkinTintPickSource.Name = "ButtonSkinTintPickSource"
+        ButtonSkinTintPickSource.TabIndex = 0
+        ButtonSkinTintPickSource.Text = "Pick source (face)..."
+        ButtonSkinTintPickSource.UseVisualStyleBackColor = True
+        ' 
+        ' PanelSkinTintSourceSwatch
+        ' 
+        PanelSkinTintSourceSwatch.BackColor = SystemColors.Control
+        PanelSkinTintSourceSwatch.BorderStyle = BorderStyle.FixedSingle
+        PanelSkinTintSourceSwatch.Margin = New Padding(2, 4, 2, 2)
+        PanelSkinTintSourceSwatch.Name = "PanelSkinTintSourceSwatch"
+        PanelSkinTintSourceSwatch.Size = New Size(28, 20)
+        PanelSkinTintSourceSwatch.TabIndex = 1
+        ' 
+        ' LabelSkinTintSource
+        ' 
+        LabelSkinTintSource.AutoSize = True
+        LabelSkinTintSource.Margin = New Padding(2, 6, 2, 2)
+        LabelSkinTintSource.Name = "LabelSkinTintSource"
+        LabelSkinTintSource.TabIndex = 2
+        LabelSkinTintSource.Text = "not picked"
+        ' 
+        ' ButtonSkinTintPickTarget
+        ' 
+        ButtonSkinTintPickTarget.AutoSize = True
+        ButtonSkinTintPickTarget.Margin = New Padding(2)
+        ButtonSkinTintPickTarget.Name = "ButtonSkinTintPickTarget"
+        ButtonSkinTintPickTarget.TabIndex = 3
+        ButtonSkinTintPickTarget.Text = "Pick target (body)..."
+        ButtonSkinTintPickTarget.UseVisualStyleBackColor = True
+        ' 
+        ' PanelSkinTintTargetSwatch
+        ' 
+        PanelSkinTintTargetSwatch.BackColor = SystemColors.Control
+        PanelSkinTintTargetSwatch.BorderStyle = BorderStyle.FixedSingle
+        PanelSkinTintTargetSwatch.Margin = New Padding(2, 4, 2, 2)
+        PanelSkinTintTargetSwatch.Name = "PanelSkinTintTargetSwatch"
+        PanelSkinTintTargetSwatch.Size = New Size(28, 20)
+        PanelSkinTintTargetSwatch.TabIndex = 4
+        ' 
+        ' LabelSkinTintTarget
+        ' 
+        LabelSkinTintTarget.AutoSize = True
+        LabelSkinTintTarget.Margin = New Padding(2, 6, 2, 2)
+        LabelSkinTintTarget.Name = "LabelSkinTintTarget"
+        LabelSkinTintTarget.TabIndex = 5
+        LabelSkinTintTarget.Text = "not picked (only its POSITION is kept: its colour is what the adjustment moves)"
+        ' 
+        ' ButtonSkinTintAuto
+        ' 
+        ButtonSkinTintAuto.AutoSize = True
+        ButtonSkinTintAuto.Enabled = False
+        ButtonSkinTintAuto.Margin = New Padding(2)
+        ButtonSkinTintAuto.Name = "ButtonSkinTintAuto"
+        ButtonSkinTintAuto.TabIndex = 6
+        ButtonSkinTintAuto.Text = "Auto-calc"
+        ButtonSkinTintAuto.UseVisualStyleBackColor = True
+        ' 
+        ' LabelSkinTintAutoHint
+        ' 
+        LabelSkinTintAutoHint.AutoSize = True
+        LabelSkinTintAutoHint.Margin = New Padding(2, 6, 2, 2)
+        LabelSkinTintAutoHint.Name = "LabelSkinTintAutoHint"
+        LabelSkinTintAutoHint.TabIndex = 7
+        LabelSkinTintAutoHint.Text = "Searches the four offsets that bring the body pixel closest to the source colour, re-rendering at every step."
+        ' 
+        ' GroupBoxSkinTintOffsets
+        ' 
+        GroupBoxSkinTintOffsets.AutoSize = True
+        GroupBoxSkinTintOffsets.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxSkinTintOffsets.Controls.Add(SkinTintOffsetsLayout)
+        GroupBoxSkinTintOffsets.Dock = DockStyle.Fill
+        GroupBoxSkinTintOffsets.Margin = New Padding(2, 2, 2, 8)
+        GroupBoxSkinTintOffsets.Name = "GroupBoxSkinTintOffsets"
+        GroupBoxSkinTintOffsets.TabIndex = 3
+        GroupBoxSkinTintOffsets.TabStop = False
+        GroupBoxSkinTintOffsets.Text = "Offsets (QNAM)"
+        ' 
+        ' SkinTintOffsetsLayout
+        ' 
+        SkinTintOffsetsLayout.AutoSize = True
+        SkinTintOffsetsLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        SkinTintOffsetsLayout.ColumnCount = 2
+        SkinTintOffsetsLayout.ColumnStyles.Add(New ColumnStyle())
+        SkinTintOffsetsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SkinTintOffsetsLayout.Controls.Add(LabelSkinTintR, 0, 0)
+        SkinTintOffsetsLayout.Controls.Add(SliderSkinTintR, 1, 0)
+        SkinTintOffsetsLayout.Controls.Add(LabelSkinTintG, 0, 1)
+        SkinTintOffsetsLayout.Controls.Add(SliderSkinTintG, 1, 1)
+        SkinTintOffsetsLayout.Controls.Add(LabelSkinTintB, 0, 2)
+        SkinTintOffsetsLayout.Controls.Add(SliderSkinTintB, 1, 2)
+        SkinTintOffsetsLayout.Controls.Add(LabelSkinTintIntensity, 0, 3)
+        SkinTintOffsetsLayout.Controls.Add(SliderSkinTintIntensity, 1, 3)
+        SkinTintOffsetsLayout.Controls.Add(ButtonSkinTintReset, 1, 4)
+        SkinTintOffsetsLayout.Dock = DockStyle.Fill
+        SkinTintOffsetsLayout.Name = "SkinTintOffsetsLayout"
+        SkinTintOffsetsLayout.Padding = New Padding(4)
+        SkinTintOffsetsLayout.RowCount = 5
+        SkinTintOffsetsLayout.RowStyles.Add(New RowStyle())
+        SkinTintOffsetsLayout.RowStyles.Add(New RowStyle())
+        SkinTintOffsetsLayout.RowStyles.Add(New RowStyle())
+        SkinTintOffsetsLayout.RowStyles.Add(New RowStyle())
+        SkinTintOffsetsLayout.RowStyles.Add(New RowStyle())
+        SkinTintOffsetsLayout.TabIndex = 0
+        ' 
+        ' LabelSkinTintR
+        ' 
+        LabelSkinTintR.Anchor = AnchorStyles.Left
+        LabelSkinTintR.AutoSize = True
+        LabelSkinTintR.Margin = New Padding(2, 6, 8, 2)
+        LabelSkinTintR.Name = "LabelSkinTintR"
+        LabelSkinTintR.TabIndex = 0
+        LabelSkinTintR.Text = "R"
+        LabelSkinTintR.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderSkinTintR
+        ' 
+        SliderSkinTintR.AccentColor = SystemColors.HotTrack
+        SliderSkinTintR.BackColor = SystemColors.Control
+        SliderSkinTintR.DisplayFormat = "0"
+        SliderSkinTintR.Dock = DockStyle.Fill
+        SliderSkinTintR.LargeChange = 10R
+        SliderSkinTintR.Margin = New Padding(2)
+        SliderSkinTintR.Maximum = 255R
+        SliderSkinTintR.Minimum = -255R
+        SliderSkinTintR.MinimumSize = New Size(120, 22)
+        SliderSkinTintR.Name = "SliderSkinTintR"
+        SliderSkinTintR.Size = New Size(600, 28)
+        SliderSkinTintR.SmallChange = 1R
+        SliderSkinTintR.TabIndex = 1
+        SliderSkinTintR.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderSkinTintR.ThumbColor = SystemColors.HotTrack
+        SliderSkinTintR.ThumbRadius = 4F
+        SliderSkinTintR.TrackColor = SystemColors.ControlDark
+        SliderSkinTintR.Value = 0R
+        ' 
+        ' LabelSkinTintG
+        ' 
+        LabelSkinTintG.Anchor = AnchorStyles.Left
+        LabelSkinTintG.AutoSize = True
+        LabelSkinTintG.Margin = New Padding(2, 6, 8, 2)
+        LabelSkinTintG.Name = "LabelSkinTintG"
+        LabelSkinTintG.TabIndex = 2
+        LabelSkinTintG.Text = "G"
+        LabelSkinTintG.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderSkinTintG
+        ' 
+        SliderSkinTintG.AccentColor = SystemColors.HotTrack
+        SliderSkinTintG.BackColor = SystemColors.Control
+        SliderSkinTintG.DisplayFormat = "0"
+        SliderSkinTintG.Dock = DockStyle.Fill
+        SliderSkinTintG.LargeChange = 10R
+        SliderSkinTintG.Margin = New Padding(2)
+        SliderSkinTintG.Maximum = 255R
+        SliderSkinTintG.Minimum = -255R
+        SliderSkinTintG.MinimumSize = New Size(120, 22)
+        SliderSkinTintG.Name = "SliderSkinTintG"
+        SliderSkinTintG.Size = New Size(600, 28)
+        SliderSkinTintG.SmallChange = 1R
+        SliderSkinTintG.TabIndex = 3
+        SliderSkinTintG.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderSkinTintG.ThumbColor = SystemColors.HotTrack
+        SliderSkinTintG.ThumbRadius = 4F
+        SliderSkinTintG.TrackColor = SystemColors.ControlDark
+        SliderSkinTintG.Value = 0R
+        ' 
+        ' LabelSkinTintB
+        ' 
+        LabelSkinTintB.Anchor = AnchorStyles.Left
+        LabelSkinTintB.AutoSize = True
+        LabelSkinTintB.Margin = New Padding(2, 6, 8, 2)
+        LabelSkinTintB.Name = "LabelSkinTintB"
+        LabelSkinTintB.TabIndex = 4
+        LabelSkinTintB.Text = "B"
+        LabelSkinTintB.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderSkinTintB
+        ' 
+        SliderSkinTintB.AccentColor = SystemColors.HotTrack
+        SliderSkinTintB.BackColor = SystemColors.Control
+        SliderSkinTintB.DisplayFormat = "0"
+        SliderSkinTintB.Dock = DockStyle.Fill
+        SliderSkinTintB.LargeChange = 10R
+        SliderSkinTintB.Margin = New Padding(2)
+        SliderSkinTintB.Maximum = 255R
+        SliderSkinTintB.Minimum = -255R
+        SliderSkinTintB.MinimumSize = New Size(120, 22)
+        SliderSkinTintB.Name = "SliderSkinTintB"
+        SliderSkinTintB.Size = New Size(600, 28)
+        SliderSkinTintB.SmallChange = 1R
+        SliderSkinTintB.TabIndex = 5
+        SliderSkinTintB.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderSkinTintB.ThumbColor = SystemColors.HotTrack
+        SliderSkinTintB.ThumbRadius = 4F
+        SliderSkinTintB.TrackColor = SystemColors.ControlDark
+        SliderSkinTintB.Value = 0R
+        ' 
+        ' LabelSkinTintIntensity
+        ' 
+        LabelSkinTintIntensity.Anchor = AnchorStyles.Left
+        LabelSkinTintIntensity.AutoSize = True
+        LabelSkinTintIntensity.Margin = New Padding(2, 6, 8, 2)
+        LabelSkinTintIntensity.Name = "LabelSkinTintIntensity"
+        LabelSkinTintIntensity.TabIndex = 6
+        LabelSkinTintIntensity.Text = "Intensity"
+        LabelSkinTintIntensity.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderSkinTintIntensity
+        ' 
+        SliderSkinTintIntensity.AccentColor = SystemColors.HotTrack
+        SliderSkinTintIntensity.BackColor = SystemColors.Control
+        SliderSkinTintIntensity.DisplayFormat = "0\%"
+        SliderSkinTintIntensity.Dock = DockStyle.Fill
+        SliderSkinTintIntensity.LargeChange = 10R
+        SliderSkinTintIntensity.Margin = New Padding(2)
+        SliderSkinTintIntensity.Maximum = 100R
+        SliderSkinTintIntensity.Minimum = -100R
+        SliderSkinTintIntensity.MinimumSize = New Size(120, 22)
+        SliderSkinTintIntensity.Name = "SliderSkinTintIntensity"
+        SliderSkinTintIntensity.Size = New Size(600, 28)
+        SliderSkinTintIntensity.SmallChange = 1R
+        SliderSkinTintIntensity.TabIndex = 7
+        SliderSkinTintIntensity.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderSkinTintIntensity.ThumbColor = SystemColors.HotTrack
+        SliderSkinTintIntensity.ThumbRadius = 4F
+        SliderSkinTintIntensity.TrackColor = SystemColors.ControlDark
+        SliderSkinTintIntensity.Value = 0R
+        ' 
+        ' ButtonSkinTintReset
+        ' 
+        ButtonSkinTintReset.AutoSize = True
+        ButtonSkinTintReset.Margin = New Padding(2, 6, 2, 2)
+        ButtonSkinTintReset.Name = "ButtonSkinTintReset"
+        ButtonSkinTintReset.TabIndex = 8
+        ButtonSkinTintReset.Text = "Reset to 0, 0, 0, 0"
+        ButtonSkinTintReset.UseVisualStyleBackColor = True
+        ' 
+        ' LabelSkinTintStatus
+        ' 
+        LabelSkinTintStatus.AutoSize = True
+        LabelSkinTintStatus.Margin = New Padding(2)
+        LabelSkinTintStatus.Name = "LabelSkinTintStatus"
+        LabelSkinTintStatus.TabIndex = 4
+        LabelSkinTintStatus.Text = ""
+        ' 
+        ' LabelSkinTintGate
+        ' 
+        LabelSkinTintGate.AutoSize = True
+        LabelSkinTintGate.ForeColor = Color.Firebrick
+        LabelSkinTintGate.Margin = New Padding(2)
+        LabelSkinTintGate.Name = "LabelSkinTintGate"
+        LabelSkinTintGate.TabIndex = 5
+        LabelSkinTintGate.Text = ""
         ' 
         ' TabPageBodySlide
         ' 
@@ -1375,6 +1757,17 @@ Partial Class EditBody_Form
         SkinLayout.ResumeLayout(False)
         SkinLayout.PerformLayout()
         WnamPickPanel.ResumeLayout(False)
+        TabPageSkinTint.ResumeLayout(False)
+        SkinTintTabLayout.ResumeLayout(False)
+        SkinTintTabLayout.PerformLayout()
+        GroupBoxSkinTintMatch.ResumeLayout(False)
+        GroupBoxSkinTintMatch.PerformLayout()
+        SkinTintMatchLayout.ResumeLayout(False)
+        SkinTintMatchLayout.PerformLayout()
+        GroupBoxSkinTintOffsets.ResumeLayout(False)
+        GroupBoxSkinTintOffsets.PerformLayout()
+        SkinTintOffsetsLayout.ResumeLayout(False)
+        SkinTintOffsetsLayout.PerformLayout()
         TabPageBodySlide.ResumeLayout(False)
         BodySlideTabLayout.ResumeLayout(False)
         BodySlideTabLayout.PerformLayout()
@@ -1497,4 +1890,31 @@ Partial Class EditBody_Form
     Friend WithEvents ButtonOverlayTintColor As System.Windows.Forms.Button
     Friend WithEvents LabelOverlayTintAlpha As System.Windows.Forms.Label
     Friend WithEvents SliderOverlayTintAlpha As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents TabPageSkinTint As System.Windows.Forms.TabPage
+    Friend WithEvents SkinTintTabLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSkinTintLegend As System.Windows.Forms.Label
+    Friend WithEvents LabelSkinTintIntensityMeaning As System.Windows.Forms.Label
+    Friend WithEvents GroupBoxSkinTintMatch As System.Windows.Forms.GroupBox
+    Friend WithEvents SkinTintMatchLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonSkinTintPickSource As System.Windows.Forms.Button
+    Friend WithEvents PanelSkinTintSourceSwatch As System.Windows.Forms.Panel
+    Friend WithEvents LabelSkinTintSource As System.Windows.Forms.Label
+    Friend WithEvents ButtonSkinTintPickTarget As System.Windows.Forms.Button
+    Friend WithEvents PanelSkinTintTargetSwatch As System.Windows.Forms.Panel
+    Friend WithEvents LabelSkinTintTarget As System.Windows.Forms.Label
+    Friend WithEvents ButtonSkinTintAuto As System.Windows.Forms.Button
+    Friend WithEvents LabelSkinTintAutoHint As System.Windows.Forms.Label
+    Friend WithEvents GroupBoxSkinTintOffsets As System.Windows.Forms.GroupBox
+    Friend WithEvents SkinTintOffsetsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSkinTintR As System.Windows.Forms.Label
+    Friend WithEvents SliderSkinTintR As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelSkinTintG As System.Windows.Forms.Label
+    Friend WithEvents SliderSkinTintG As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelSkinTintB As System.Windows.Forms.Label
+    Friend WithEvents SliderSkinTintB As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelSkinTintIntensity As System.Windows.Forms.Label
+    Friend WithEvents SliderSkinTintIntensity As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents ButtonSkinTintReset As System.Windows.Forms.Button
+    Friend WithEvents LabelSkinTintStatus As System.Windows.Forms.Label
+    Friend WithEvents LabelSkinTintGate As System.Windows.Forms.Label
 End Class
