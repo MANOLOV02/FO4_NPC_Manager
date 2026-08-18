@@ -1035,12 +1035,66 @@ Public Module BssliderSidecar
         File.Move(tmp, path)
     End Sub
 
-    ''' <summary>Build a LM-style form identifier <c>"Master.esp|HEX6"</c> from a master plugin
-    ''' filename and a (global) FormID. Only the low 24 bits of the FormID are used — the high
-    ''' byte (load-order index) is intentionally dropped so the identifier stays stable across
-    ''' different load orders.</summary>
+    ''' <summary>Build a LM-style form identifier <c>"Master.esp|HEX6"</c> from a master plugin filename
+    ''' and a (global) FormID. The hex part is the owner's OBJECT ID with no load-order information in
+    ''' it — 12 bits for a light plugin, 24 for a full one — which is the inverse of Bethesda's own
+    ''' <c>ModInfo::GetFormID</c> (f4se GameData.h:93-96).
+    ''' <para>⛔ This used to mask with <c>&amp; 0xFFFFFF</c> and claim that dropping the high byte made
+    ''' the identifier "stable across load orders". FALSE for a LIGHT owner: a light global is
+    ''' <c>0xFE | lightSlot&lt;&lt;12 | object12</c>, so 24 bits keep the SLOT in bits 12..23 and every row
+    ''' written for an ESL carried the slot of the session that wrote it. Adding, removing or unticking
+    ''' any light plugin ahead of it — one Creation Club item is enough — repointed the row.</para>
+    ''' <para>Both engines are satisfied by the bare form: skee64 reads through
+    ''' <c>ModInfo::GetFormID</c>, which masks to 0xFFF, while f4ee hand-rolls an OR of 24 raw bits
+    ''' (Utilities.cpp:147-151), which only lands correctly when those bits carry no slot.</para>
+    ''' <para>Existing rows keep working: reading normalises through
+    ''' <see cref="PluginManager.GlobalFormIDFromIdentifierLocal"/>, and
+    ''' <c>NpcOverrideSaver.MergeOneNpcIntoSidecar</c> folds any legacy-keyed row for the same NPC onto
+    ''' this key so a re-save leaves one row, not two.</para></summary>
+    ''' <summary>Drop any row keyed with an older form of the identifier for the SAME NPC, so the caller's
+    ''' write lands on one row instead of adding a second. Returns how many were folded.
+    ''' <para>Needed because <see cref="BuildIdentifier"/> used to emit the low 24 bits, which for a LIGHT
+    ''' master keeps the light slot of the session that wrote the row. Those rows are keyed differently from
+    ''' the canonical one, so without folding a re-save leaves BOTH — and BodyGen emits both to morphs.ini,
+    ''' one of them pointing at whatever record now sits on that stale slot.</para>
+    ''' <para>Matching on the 12-bit object id catches EVERY historical slot, not just the one this session
+    ''' happens to hold. Full masters are never folded: their 24-bit form already IS canonical, and masking
+    ''' them to 12 bits would collide unrelated NPCs.</para></summary>
+    ''' <summary>Placeholder master name used when a NPC's originating plugin could not be resolved. Rows
+    ''' under it are NOT all the same plugin — they are every unresolvable plugin lumped together — so the
+    ''' "same master + same object id ⇒ same NPC" reasoning does not hold and folding must not touch them.</summary>
+    Friend Const UNKNOWN_MASTER As String = "Unknown.esp"
+
+    Friend Function FoldLegacyKeys(npcs As Dictionary(Of String, NpcEntry),
+                                   canonicalIdentifier As String,
+                                   masterPluginName As String,
+                                   globalFormID As UInteger) As Integer
+        If npcs Is Nothing OrElse (globalFormID >> 24) <> &HFEUI Then Return 0
+        ' ⛔ Never fold under the placeholder name. Everything that failed to resolve is filed under it, so
+        ' two rows sharing it can be completely unrelated NPCs from different plugins — deleting one would
+        ' destroy morphs the user set up, which is far worse than leaving a duplicate row behind.
+        If String.IsNullOrEmpty(masterPluginName) OrElse
+           String.Equals(masterPluginName, UNKNOWN_MASTER, StringComparison.OrdinalIgnoreCase) Then Return 0
+        ' Within ONE light plugin the object id is 12 bits wide by definition, so those 12 bits identify the
+        ' record uniquely and the match below is exact rather than a guess. That is only true because the
+        ' master name is a real, specific plugin — hence the guard above.
+        Dim obj12 = globalFormID And &HFFFUI
+        Dim stale = npcs.Keys.Where(
+            Function(k)
+                If String.Equals(k, canonicalIdentifier, StringComparison.OrdinalIgnoreCase) Then Return False
+                Dim m As String = "" : Dim loc As UInteger = 0UI
+                If Not TryParseIdentifier(k, m, loc) Then Return False
+                Return String.Equals(m, masterPluginName, StringComparison.OrdinalIgnoreCase) AndAlso
+                       (loc And &HFFFUI) = obj12
+            End Function).ToList()
+        For Each k In stale
+            npcs.Remove(k)
+        Next
+        Return stale.Count
+    End Function
+
     Public Function BuildIdentifier(masterPluginName As String, globalFormID As UInteger) As String
-        Return $"{If(masterPluginName, "")}|{(globalFormID And &HFFFFFFUI):X6}"
+        Return $"{If(masterPluginName, "")}|{PluginManager.ToFaceGenLocalFormID(globalFormID):X6}"
     End Function
 
     ''' <summary>Reverse of <see cref="BuildIdentifier"/>: split <c>"Master.esp|HEX6"</c> into

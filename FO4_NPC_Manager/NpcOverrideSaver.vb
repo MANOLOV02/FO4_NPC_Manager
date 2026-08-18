@@ -915,8 +915,8 @@ Public Module NpcOverrideSaver
 
         ' Phase 2i: materialize the SSE RaceMenu hair tint into HCLF. SKYRIM-ONLY (see the method).
         ' Runs LAST of the entry-building phases and BEFORE the writer, because it mutates
-        ' entry.Npc.HairColorFormID — which the writer's Step 1 master walk reads (SaveNpcEspWriter.vb:937)
-        ' to pull the CLFM's defining plugin into the MAST list.
+        ' entry.Npc.HairColorFormID — which the writer's discovery pass sees when it walks the emitters,
+        ' pulling the CLFM's defining plugin into the MAST list. It has to be set before that walk runs.
         MaterializeSseHairColors(game, entries, clfmEntries, ctx, espNameNoExt, target)
 
         Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
@@ -1886,6 +1886,11 @@ Public Module NpcOverrideSaver
         Dim masterName = ctx.PluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(masterName) Then masterName = "Unknown.esp"
         Dim identifier = BssliderSidecar.BuildIdentifier(masterName, npcFormID)
+
+        ' Fold any row this NPC still has under an older identifier form onto the canonical key, so the
+        ' write below replaces it instead of adding a second row. The rule lives next to BuildIdentifier
+        ' because it IS the same law (what the key means), and keeping it there is what makes it testable.
+        BssliderSidecar.FoldLegacyKeys(merged.Npcs, identifier, masterName, npcFormID)
 
         ' Overlay → entry via the ONE preset↔entry mirror (BssliderSidecar.EntryFromPreset). The field
         ' list used to be duplicated here and in HydratePresets/StripEspFieldsFromOverlay, and the copies

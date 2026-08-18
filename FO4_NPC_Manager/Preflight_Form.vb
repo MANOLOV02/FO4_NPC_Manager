@@ -343,16 +343,23 @@ Public Class Preflight_Form
         Catch ex As Exception
             If token <> _mastersSweepToken OrElse IsDisposed Then Return
             Logger.LogLazy(Function() $"[PREFLIGHT] Masters sweep failed: {ex.Message}")
-            ' Without master data we can't validate; leave validation off (no false reds) and let
-            ' OK enable so the user isn't hard-blocked by a sweep failure.
-            _mastersReady = True
-            RecomputeValidation()
+            ' ⛔ Do NOT enable OK here. With no master data there is nothing to validate against, so
+            ' waving the user through loads plugins whose dependencies were never checked — and a
+            ' plugin merged before its master resolves every reference it owns against a master list
+            ' that is not in the index yet, silently filing its records under another plugin's
+            ' FormIDs. A gate that opens when its own input is missing is not a gate. xEdit refuses
+            ' to load a module whose masters it cannot account for (wbLoadOrder.pas:404-421).
+            _mastersReady = False
+            RecomputeValidation()   ' disables OK and early-returns WITHOUT touching LabelStatus...
+            LabelStatus.Text = "Could not read the plugin masters, so this selection cannot be " &
+                               "validated. Re-select the Data folder to try again. Details: " & ex.Message
         End Try
     End Sub
 
     ''' <summary>Read the direct master list of each named plugin via a TES4-header-only load.
-    ''' Runs on a worker thread. A plugin whose header can't be read maps to an empty list (it
-    ''' won't be flagged for missing masters — a corrupt plugin is a separate concern).</summary>
+    ''' Runs on a worker thread. A plugin whose header can't be read maps to <c>Nothing</c> — NOT to
+    ''' an empty list. "Declares no masters" and "we could not find out" are different facts and only
+    ''' the first is safe to wave through; <see cref="RecomputeValidation"/> counts Nothing as broken.</summary>
     Private Shared Function ReadAllMasters(dataPath As String,
                                            names As List(Of String),
                                            progress As IProgress(Of Integer)) As Dictionary(Of String, List(Of String))
@@ -360,13 +367,16 @@ Public Class Preflight_Form
         Dim i As Integer = 0
         For Each pluginName In names
             i += 1
-            Dim masters As New List(Of String)
+            Dim masters As List(Of String) = Nothing
             Try
                 Dim reader As New PluginReader()
                 reader.LoadHeaderOnly(IO.Path.Combine(dataPath, pluginName))
                 masters = reader.Masters
             Catch
-                ' Unreadable/malformed header — treat as no declared masters.
+                ' Unreadable header: corrupt, or a TRANSIENT sharing violation (antivirus, MO2's VFS,
+                ' the file still being written). Record Nothing, not an empty list — an empty list
+                ' claims "this plugin depends on nothing", which is exactly the claim we cannot make.
+                masters = Nothing
             End Try
             map(pluginName) = masters
             If (i And &H3F) = 0 Then progress?.Report(i)
@@ -390,7 +400,17 @@ Public Class Preflight_Form
         _brokenPlugins.Clear()
         For Each pluginName In _checkedPlugins
             Dim masters As List(Of String) = Nothing
-            If Not _mastersByName.TryGetValue(pluginName, masters) OrElse masters Is Nothing Then Continue For
+            ' Absent from the map = not on disk / not in _allRows, so it never reaches SelectedPlugins
+            ' (ButtonOk iterates _allRows) and cannot be loaded — ignoring it is correct.
+            If Not _mastersByName.TryGetValue(pluginName, masters) Then Continue For
+            ' Nothing = its header could not be read, so its dependencies are UNKNOWN. Unknown counts
+            ' as broken: letting it load means every reference it owns resolves against a master list
+            ' we never saw. xEdit infects a dependent the same way when a master is unaccounted for
+            ' (wbLoadOrder.pas:418-421).
+            If masters Is Nothing Then
+                _brokenPlugins.Add(pluginName)
+                Continue For
+            End If
             For Each m In masters
                 If (Not _presentFiles.Contains(m)) OrElse (Not _checkedPlugins.Contains(m)) Then
                     _brokenPlugins.Add(pluginName)

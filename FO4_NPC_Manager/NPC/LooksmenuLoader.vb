@@ -1272,9 +1272,23 @@ Public Module LooksmenuLoader
         ' GetOriginatingPluginName handles both full (high byte = full slot) and ESL (0xFE light) globals.
         Dim pluginName = pluginManager.GetOriginatingPluginName(globalFormID)
         If String.IsNullOrEmpty(pluginName) Then Return ""
-        ' LooksMenu's local = runtime FormID & 0xFFFFFF (for ESL this carries the light-slot bits, which
-        ' is exactly what GlobalFormIDFromIdentifierLocal expects on the way back).
-        Dim localFormID = globalFormID And &HFFFFFFUI
+        ' The local is the owner's OBJECT ID with NO load-order information in it: 12 bits for a light
+        ' plugin, 24 for a full one. That is precisely Bethesda's own ModInfo::GetFormID
+        ' (f4se GameData.h:93-96):
+        '     !IsLight() ? modIndex << 24 | (formLower & 0xFFFFFF)
+        '                : 0xFE000000 | (lightIndex << 12) | (formLower & 0xFFF)
+        ' so ToFaceGenLocalFormID is exactly its inverse.
+        '
+        ' ⛔ This used to write `globalFormID And 0xFFFFFF`, which for a LIGHT owner keeps the light slot
+        ' in bits 12..23 — the slot of whichever session wrote the file. Verified against BOTH engines:
+        '   * SSE/skee64 reads via modInfo->GetFormID (FileUtils.cpp:219), which MASKS to 0xFFF, so a
+        '     stale slot is discarded — tolerant.
+        '   * FO4/f4ee hand-rolls the reconstruction instead and ORs 24 raw bits
+        '     (Utilities.cpp:147-151, BodyGenInterface.cpp:319-321), so a stale slot MERGES with the
+        '     current one into a third, bogus slot — the morphs then land on the wrong NPC or nowhere.
+        ' Writing the bare object id is correct under BOTH: the masking engine no-ops it, the OR-ing
+        ' engine gets clean bits. It is the only form that is right either way.
+        Dim localFormID = PluginManager.ToFaceGenLocalFormID(globalFormID)
         ' LooksMenu uses %06X (6-digit zero-padded hex) per Utilities.cpp:127.
         Return pluginName & "|" & localFormID.ToString("X6", Globalization.CultureInfo.InvariantCulture)
     End Function
