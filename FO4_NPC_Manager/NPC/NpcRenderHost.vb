@@ -164,7 +164,7 @@ Friend Class NpcRenderHost
 
     ''' <summary>PREVIEW-ONLY escape hatch for the ARMA editor's "Only Model" scope: the ARMA with this FormID
     ''' is collected even when its RNAM / AdditionalRaces don't cover the preview actor's race (the engine rule
-    ''' that <c>MainForm.ArmorAddonMatchesRace</c> enforces). Without it, editing an ARMA authored for another
+    ''' that <c>EquipResolver.ArmaMatchesRace</c> enforces). Without it, editing an ARMA authored for another
     ''' race renders NOTHING — the collector drops it before any mesh is loaded, so the user can't see the model
     ''' they're editing. "Only Model" already renders a synthetic ARMO/OTFT that no engine ever sees, so the
     ''' bypass changes nothing an actor would actually wear; the engine-faithful scopes ("Full armor" / "Full

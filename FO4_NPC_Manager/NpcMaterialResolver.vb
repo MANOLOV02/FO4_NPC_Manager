@@ -366,7 +366,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim a = _ctx.GetParsedArma(entry.ArmaFormID)
                 If a Is Nothing Then Continue For
                 If requireRaceMatch AndAlso
-                   Not MainForm.ArmorAddonMatchesRace(a, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) Then Continue For
+                   Not EquipResolver.ArmaMatchesRace(a, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) Then Continue For
                 Dim armaSlot = a.SlotMask
 
                 Dim matches As Boolean = False

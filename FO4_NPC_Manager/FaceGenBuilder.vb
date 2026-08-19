@@ -2015,7 +2015,7 @@ Public Module FaceGenBuilder
 
     ''' <summary>Slots de headwear que cubre la DEFAULT OUTFIT del NPC, de forma DETERMINISTA.
     ''' <para>⛔ SYNC: RENDER == BAKE — la unión usa el MISMO filtro por raza que el render
-    ''' (<c>ComputeArmoEffectiveSlotMaskCore</c>). Unir todas las ARMA sin filtrar hacía que una de otra
+    ''' (<c>EquipResolver.BuildFootprint</c>). Unir todas las ARMA sin filtrar hacía que una de otra
     ''' raza —o una pieza de power armor, que lista la raza humana para su modelo de inventario— aportara
     ''' slots que el motor nunca viste en este actor, y el bake sobre-ocluía pelo y barba que el render sí
     ''' muestra.</para>
@@ -2061,6 +2061,21 @@ Public Module FaceGenBuilder
             End If
         End If
 
+        ' Contexto de la ley única para el bake: los mismos resolvers de arriba (sin NpcRenderContext) y el
+        ' gate PA ya calculado. ⛔ RENDER == BAKE: de acá sale EXACTAMENTE el mismo footprint que en el render.
+        Dim eqCtx As New EquipResolver.EquipContext With {
+            .PluginManager = pluginManager,
+            .RaceFormID = npcData.RaceFormID,
+            .IsFemale = npcData.IsFemale,
+            .EffectiveArmorRaces = effectiveArmorRaces,
+            .ArmoResolver = parseArmo,
+            .ArmaResolver = parseArma,
+            .IsPowerArmorArmo = Function(fid As UInteger)
+                                    Dim a = parseArmo(fid)
+                                    Return a IsNot Nothing AndAlso MainForm.IsPowerArmorArmoData(a, paKywdFid)
+                                End Function,
+            .IsPowerArmorRace = raceIsPa}
+
         For Each itemFID In otft.ItemFormIDs
             If itemFID = 0UI Then Continue For
             Dim itemRec = pluginManager.GetRecord(itemFID)
@@ -2075,20 +2090,22 @@ Public Module FaceGenBuilder
                     If terminalFID = 0UI Then Continue For
                     Dim armo = parseArmo(terminalFID)
                     If armo Is Nothing Then Continue For
-                    ' Gate PA — misma regla que el render (CollectArmoCandidates) y el Create tab.
-                    If MainForm.IsPowerArmorArmoData(armo, paKywdFid) AndAlso Not raceIsPa Then Continue For
                     If armo.ArmorAddons.Count = 0 Then
                         ' ARMO sin armatures (el render cae al mesh fallback ARMO.MOD2, p.ej. robots):
-                        ' su BOD2 propio cuenta, como antes.
-                        slots = slots Or armo.SlotMask
+                        ' su BOD2 propio cuenta, como antes. El gate PA lo aplica igual la ley única abajo,
+                        ' pero acá no hay footprint que pedir.
+                        If Not (MainForm.IsPowerArmorArmoData(armo, paKywdFid) AndAlso Not raceIsPa) Then
+                            slots = slots Or armo.SlotMask
+                        End If
                         Continue For
                     End If
-                    Dim fp = MainForm.ComputeArmoEffectiveSlotMaskCore(
-                        armo, npcData.RaceFormID, npcData.IsFemale, parseArma, effectiveArmorRaces)
+                    ' ⭐ LEY ÚNICA (EquipResolver, FO4_Base_Library) — el mismo footprint que el render y los
+                    ' editores. El gate de power-armor entra por el contexto, no como un if repetido acá.
+                    Dim fp = EquipResolver.BuildFootprint(terminalFID, eqCtx)
                     ' Valid=False ⇒ ningún addon race-valid con mesh ⇒ el engine no viste nada de este
-                    ' ARMO en este actor ⇒ 0 slots (el fallback recordSlot/BOD2 del Mask es para el
-                    ' display del Create tab, no para oclusión).
-                    If fp.Valid Then slots = slots Or fp.Mask
+                    ' ARMO en este actor ⇒ 0 slots (el fallback del footprint es para display, no para
+                    ' oclusión).
+                    If fp.Valid Then slots = slots Or fp.OcclusionMask
             End Select
         Next
 

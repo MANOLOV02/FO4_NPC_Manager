@@ -37,6 +37,13 @@ Friend NotInheritable Class NpcRenderContext
     ''' behavior, a non-Nothing return ⇒ the app's live draft view. The returned object is NEVER cached
     ''' (drafts mutate live), so a draft edit is reflected on the next render.</summary>
     Public ArmoDraftResolver As Func(Of UInteger, ARMO_Data) = Nothing
+
+    ''' <summary>Gate de power-armor de la app (necesita el catálogo de keywords). Lo setea MainForm junto
+    ''' con los draft-resolvers; lo consume <see cref="EquipCtx"/> para que la ley única lo aplique una sola
+    ''' vez, en vez de que cada caller lo repita antes de pedir el footprint.</summary>
+    Public ArmoIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
+    ''' <summary>Idem, del lado de la raza. Ver <see cref="ArmoIsPowerArmor"/>.</summary>
+    Public RaceIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
     Public ArmaDraftResolver As Func(Of UInteger, ARMA_Data) = Nothing
     ''' <summary>Optional draft-resolver hook for MSWP drafts. Given a FormID, returns a synthesized
@@ -176,6 +183,22 @@ Friend NotInheritable Class NpcRenderContext
                 LmCustomTintLoader.EnsureMerged(race, PluginManager, DataPath)
                 Return race
             End Function)
+    End Function
+
+    ''' <summary>⭐ El contexto con el que TODA la app llama a la ley única de equip
+    ''' (<see cref="EquipResolver"/>, FO4_Base_Library). Un solo constructor: los resolvedores draft-aware,
+    ''' la cadena de razas del redirect RNAM y el gate de power-armor viven acá, que es el objeto que ya es
+    ''' dueño de ese conocimiento. Ni el render, ni el bake, ni los editores arman el suyo.</summary>
+    Public Function EquipCtx(npcRaceFID As UInteger, isFemale As Boolean) As EquipResolver.EquipContext
+        Return New EquipResolver.EquipContext With {
+            .PluginManager = PluginManager,
+            .RaceFormID = npcRaceFID,
+            .IsFemale = isFemale,
+            .EffectiveArmorRaces = GetEffectiveArmorRaces(npcRaceFID),
+            .ArmoResolver = AddressOf GetParsedArmo,
+            .ArmaResolver = AddressOf GetParsedArma,
+            .IsPowerArmorArmo = ArmoIsPowerArmor,
+            .IsPowerArmorRace = (RaceIsPowerArmor IsNot Nothing AndAlso RaceIsPowerArmor(npcRaceFID))}
     End Function
 
     ''' <summary>The set of races an armature (ARMA) may be authored for and still fit an actor of

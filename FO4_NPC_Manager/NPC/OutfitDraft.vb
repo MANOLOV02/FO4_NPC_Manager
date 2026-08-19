@@ -1,4 +1,4 @@
-''' <summary>An outfit being authored in the Edit Outfit "Create" tab — a draft OTFT record that
+﻿''' <summary>An outfit being authored in the Edit Outfit "Create" tab — a draft OTFT record that
 ''' lives in memory (process scope, owned by MainForm) until the user persists it via the Save
 ''' dialog's "Save new outfits" checkbox, at which point the writer emits it as a real OTFT in the
 ''' output plugin and the draft is marked clean.
@@ -11,7 +11,7 @@
 '''     IS that record's real FormID from the load order; the writer emits an override record.
 '''
 ''' The item list is a FLAT set of terminal ARMO FormIDs (the OTFT.INAM entries) — no LVLI, no
-''' sampling. Slot conflicts among the items are resolved with <see cref="SlotConflictResolver"/>
+''' sampling. Slot conflicts among the items are resolved with <see cref="EquipResolver"/>
 ''' (the same engine rule the render uses), so what the user assembles renders the same way the
 ''' engine would equip it.</summary>
 Public Class OutfitDraft

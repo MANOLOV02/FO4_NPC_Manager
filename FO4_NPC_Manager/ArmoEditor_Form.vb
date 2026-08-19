@@ -1078,13 +1078,14 @@ Public Class ArmoEditor_Form
     End Sub
 
     ''' <summary>The effective slot footprint shown read-only for an addon row: the ARMA's own BOD2 mask, or
-    ''' the editing ARMO's BOD2 when the ARMA declares none (<see cref="MainForm.EffectiveArmaSlotMask"/>
-    ''' semantics). Drafts resolve via the draft-aware parsed view.</summary>
+    ''' the ARMO's when the ARMA declares none — por <see cref="EquipResolver.ArmaGeometryMask"/>, el mismo
+    ''' átomo que usa la ley de equip, para que esta celda no pueda decir otra cosa que el render. El BOD2
+    ''' del ARMO es el que el usuario está editando (checkboxes), que todavía no es un registro. Drafts
+    ''' resolve via the draft-aware parsed view.</summary>
     Private Function EffectiveSlotsText(armaFid As UInteger) As String
         If armaFid = 0UI Then Return ""
         Dim arma = _mainForm.GetParsedArmaForEditor(armaFid)
-        Dim mask As UInteger = If(arma IsNot Nothing AndAlso arma.SlotMask <> 0UI, arma.SlotMask, ReadSlotChecks())
-        Return SlotsToText(mask)
+        Return SlotsToText(EquipResolver.ArmaGeometryMask(arma, ReadSlotChecks()))
     End Function
 
     ''' <summary>Compact "30,33,41" listing of the biped slot numbers set in <paramref name="mask"/>

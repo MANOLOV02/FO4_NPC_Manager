@@ -404,7 +404,7 @@ Public Class OutfitPicker_Form
                 ' reads exactly what we're about to mark as rendered (no stale-content race).
                 If reqDraftItems IsNot Nothing Then
                     ' The preview draft is FLAT terminal ARMOs: ARMO pieces + each LVLI piece's current
-                    ' cached realization (see FlattenPieces). So it renders exactly the sample shown in the
+                    ' cached realization (ver PieceTerminals). So it renders exactly the sample shown in the
                     ' pieces list, with no fresh re-roll on every render.
                     Dim d As New OutfitDraft With {.FormID = OutfitDraft.PreviewDraftFormID,
                                                    .EditorID = OutfitDraft.EditorIdPrefix & "(preview)"}
@@ -784,35 +784,58 @@ Public Class OutfitPicker_Form
     Private Const OutfitContextFormID As UInteger = &HFF0007FDUI
     Private _outfitContextRegistered As Boolean
 
-    ''' <summary>BOD2 CRUDO del ARMO de la pieza — la máscara con la que el engine decide el conflicto de
-    ''' EQUIP en Skyrim (0x1403BD39E castea el ítem con AsBipedObjectForm y lo compara contra lo ya equipado
-    ''' con SlotsOverlap 0x1401CCA90, any-bit). <see cref="PieceEntry.SlotMask"/> NO sirve: es la unión de los
-    ''' BOD2 de los ARMA más los bits headwear del ARMO, y esos bits extra (34 Forearms, 38 Calves, 41, 43…)
-    ''' gobiernan particiones, no el equip — usarlos hacía chocar las botas [37,38] con la túnica [32,34,38]
-    ''' y las botas desaparecían. Piezas LVLI: se queda la máscara que ya traen (sus ARMO terminales se
-    ''' muestrean aparte). Cacheado por FormID. El resolver lo ignora en FO4.</summary>
-    Private ReadOnly _armoConflictMaskCache As New Dictionary(Of UInteger, UInteger)
-    Private Function ArmoConflictMask(p As PieceEntry) As UInteger
-        If p Is Nothing Then Return 0UI
-        If p.IsLeveled Then Return p.SlotMask
-        Dim cached As UInteger
-        If _armoConflictMaskCache.TryGetValue(p.FormID, cached) Then Return cached
-        Dim mask As UInteger = p.SlotMask
-        Dim pm = _mainForm.PluginManagerForEditor
-        If pm IsNot Nothing Then
-            Dim rec = pm.GetRecord(p.FormID)
-            If rec IsNot Nothing AndAlso rec.Header.Signature = "ARMO" Then
-                Dim armo = RecordParsers.ParseARMO(rec, pm)
-                If armo IsNot Nothing AndAlso armo.SlotMask <> 0UI Then mask = armo.SlotMask
-            End If
-        End If
-        _armoConflictMaskCache(p.FormID) = mask
-        Return mask
+    ''' <summary>⭐ Las unidades de equip de las piezas armadas, para la LEY ÚNICA
+    ''' (<see cref="EquipResolver"/>). La unidad del motor es UN ARMO, así que una pieza leveled aporta una
+    ''' unidad POR TERMINAL de su realización — igual que el render, que compite por ARMO terminal. El
+    ''' <c>Tag</c> de cada unidad es su <see cref="PieceEntry"/>, para mapear el veredicto de vuelta a la
+    ''' fila. Antes esta pestaña calculaba su propia máscara de conflicto (la unión de las ARMA de la
+    ''' realización), que es lo que tachaba piezas que el render sí dibuja.</summary>
+    Private Function BuildEquipUnits() As List(Of EquipResolver.EquipItem)
+        Dim units As New List(Of EquipResolver.EquipItem)
+        Dim order As Integer = 0
+        For Each p In _pieces.OrderBy(Function(x) x.Order)
+            For Each fid In PieceTerminals(p)
+                order += 1
+                units.Add(EquipResolver.EquipItem.FromFootprint(
+                    _mainForm.ArmoFootprintFor(fid, _raceFormID, _isFemale), order, p))
+            Next
+        Next
+        Return units
     End Function
 
+    ''' <summary>Los ARMO que una pieza pone sobre el actor: una pieza concreta es ella misma; una leveled,
+    ''' los terminales de su realización actual (vacía si el sorteo no dio nada — ChanceNone).</summary>
+    Private Shared Function PieceTerminals(p As PieceEntry) As IEnumerable(Of UInteger)
+        If p Is Nothing Then Return Array.Empty(Of UInteger)()
+        If p.IsLeveled Then Return If(p.Realization, New List(Of UInteger)())
+        Return New UInteger() {p.FormID}
+    End Function
+
+    ''' <summary>Veredicto por pieza a partir del veredicto por unidad: cuántas de sus unidades ganaron y
+    ''' cuántas cayeron. Sin unidades = la lista no sorteó nada.</summary>
+    Private Shared Function PieceVerdicts(res As EquipResolver.EquipResolution) As Dictionary(Of PieceEntry, (Won As Integer, Lost As Integer))
+        Dim d As New Dictionary(Of PieceEntry, (Won As Integer, Lost As Integer))
+        For Each it In res.Winners
+            Dim pe = TryCast(it.Tag, PieceEntry)
+            If pe Is Nothing Then Continue For
+            Dim cur = If(d.ContainsKey(pe), d(pe), (Won:=0, Lost:=0))
+            d(pe) = (Won:=cur.Won + 1, Lost:=cur.Lost)
+        Next
+        For Each it In res.Losers
+            Dim pe = TryCast(it.Tag, PieceEntry)
+            If pe Is Nothing Then Continue For
+            Dim cur = If(d.ContainsKey(pe), d(pe), (Won:=0, Lost:=0))
+            d(pe) = (Won:=cur.Won, Lost:=cur.Lost + 1)
+        Next
+        Return d
+    End Function
+
+    ''' <summary>Los ARMO terminales GANADORES, en orden de equip: lo que se manda a renderizar.</summary>
+    Private Shared Function WinningTerminals(res As EquipResolver.EquipResolution) As List(Of UInteger)
+        Return res.Winners.OrderBy(Function(x) x.Order).Select(Function(x) x.ArmoFormID).ToList()
+    End Function
     Private Function RegisterOutfitContextDraft() As UInteger
-        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order, AddressOf ArmoConflictMask)
-        Dim winners = FlattenPieces(res.Winners)
+        Dim winners = WinningTerminals(EquipResolver.Resolve(BuildEquipUnits()))
         If winners.Count = 0 Then Return 0UI
         Dim d As New OutfitDraft With {.FormID = OutfitContextFormID,
                                        .EditorID = OutfitDraft.EditorIdPrefix & "(outfitcontext)"}
@@ -1116,19 +1139,57 @@ Public Class OutfitPicker_Form
         ' leveled list) without re-selecting it every time. No-op if that piece is gone (e.g. Remove).
         Dim keepSelectedFid As UInteger = If(SelectedPieceEntry()?.FormID, 0UI)
 
-        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order, AddressOf ArmoConflictMask)
-        Dim winners As New HashSet(Of PieceEntry)(res.Winners)
+        ' ⭐ La MISMA ley que el render: una unidad por ARMO terminal, veredicto por unidad, agregado por fila.
+        Dim units = BuildEquipUnits()
+        Dim res = EquipResolver.Resolve(units)
+        Dim verdicts = PieceVerdicts(res)
+        ' La máscara que se pinta es EXACTAMENTE la que decidió el ✓/✗ (EquipResolver.MutexMaskOf), no otra:
+        ' hoy en FO4 esa no es el BOD2 del ARMO, y pintar el BOD2 daba dos listas de slots distintas para el
+        ' mismo ítem en la misma ventana. Cuando FO4 pase a EquipMask, esta columna lo sigue sola.
+        Dim mutexMaskByPiece As New Dictionary(Of PieceEntry, UInteger)
+        For Each u In units
+            Dim pe = TryCast(u.Tag, PieceEntry)
+            If pe Is Nothing Then Continue For
+            mutexMaskByPiece(pe) = If(mutexMaskByPiece.ContainsKey(pe), mutexMaskByPiece(pe), 0UI) Or EquipResolver.MutexMaskOf(u)
+        Next
+        Dim renderingCount As Integer = 0, eliminatedCount As Integer = 0, rolledNothingCount As Integer = 0
         ListViewPieces.BeginUpdate()
         Try
             ListViewPieces.Items.Clear()
             For Each p In _pieces.OrderBy(Function(x) x.Order)
-                Dim isWin = winners.Contains(p)
+                Dim v = If(verdicts.ContainsKey(p), verdicts(p), (Won:=0, Lost:=0))
+                Dim hasUnits = (v.Won + v.Lost) > 0
                 Dim row As New ListViewItem(If(p.IsLeveled, "🎲 " & p.Display, p.Display))
-                row.SubItems.Add(DescribeSlotMask(p.SlotMask))
-                row.SubItems.Add(If(isWin, "✓", "✗ eliminated"))
+                Dim status As String
+                Dim slotsText As String
+                If Not hasUnits Then
+                    ' La lista no sorteó nada (ChanceNone). La fila NO puede mostrar "(none)": lo que la
+                    ' pieza ES sigue siendo la lista, así que se muestra su footprint, etiquetado.
+                    rolledNothingCount += 1
+                    status = "— rolled nothing"
+                    Dim listMask = _mainForm.GetReferenceSlotMask(p.FormID, _raceFormID, _isFemale)
+                    slotsText = If(listMask = 0UI, "(none)", "list: " & DescribeSlotMask(listMask))
+                    row.ForeColor = Color.Gray
+                ElseIf v.Lost = 0 Then
+                    renderingCount += 1
+                    status = "✓"
+                    slotsText = DescribeSlotMask(mutexMaskByPiece(p))
+                ElseIf v.Won = 0 Then
+                    eliminatedCount += 1
+                    status = "✗ eliminated"
+                    slotsText = DescribeSlotMask(mutexMaskByPiece(p))
+                    row.ForeColor = Color.Gray
+                Else
+                    ' Una lista UseAll puede realizar en varios ARMO: unos ganan y otros caen. Pintarla ✓ o ✗
+                    ' sería mentira en los dos sentidos.
+                    renderingCount += 1
+                    status = $"◐ {v.Won}/{v.Won + v.Lost}  ·  {v.Lost} eliminated"
+                    slotsText = DescribeSlotMask(mutexMaskByPiece(p))
+                End If
+                row.SubItems.Add(slotsText)
+                row.SubItems.Add(status)
                 row.SubItems.Add(p.Plugin)
                 row.Tag = p
-                If Not isWin Then row.ForeColor = Color.Gray
                 If keepSelectedFid <> 0UI AndAlso p.FormID = keepSelectedFid Then row.Selected = True
                 ListViewPieces.Items.Add(row)
             Next
@@ -1144,8 +1205,10 @@ Public Class OutfitPicker_Form
         UpdateEditArmorEnabled()  ' reflects the (preserved) selection
         UpdateMovePieceEnabled()  ' ▲/▼ enable per selection + edges
 
-        Dim losers = res.Losers.Count
-        LabelCreateStatus.Text = $"{res.Winners.Count} piece(s) in outfit" & If(losers > 0, $"  ·  {losers} eliminated by slot conflict", "")
+        Dim statusText = $"{renderingCount} of {_pieces.Count} piece(s) rendering"
+        If eliminatedCount > 0 Then statusText &= $"  ·  {eliminatedCount} eliminated by slot conflict"
+        If rolledNothingCount > 0 Then statusText &= $"  ·  {rolledNothingCount} rolled nothing"
+        LabelCreateStatus.Text = statusText
 
         ' Preview only when the Create tab is active and the host exists (skipped during construction,
         ' where the active tab is Browse and _host has not been created yet). The list repaint above ran
@@ -1170,26 +1233,10 @@ Public Class OutfitPicker_Form
                 ClearPreview()
             End If
         Else
-            Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order, AddressOf ArmoConflictMask)
-            ' Flatten to terminal ARMOs (LVLI winners → their cached realization) so the preview draft is
-            ' the concrete sample currently shown in the list (Reroll changes it).
-            Await PreviewCreateAssemblyAsync(FlattenPieces(res.Winners))
+            ' Los ARMO terminales ganadores del sorteo actual — el mismo veredicto y el mismo sorteo que
+            ' pinta la lista (Reroll cambia la realización y con ella esto).
+            Await PreviewCreateAssemblyAsync(WinningTerminals(EquipResolver.Resolve(BuildEquipUnits())))
         End If
-    End Function
-
-    ''' <summary>Flatten pieces to render-ready terminal ARMO FormIDs: ARMO pieces pass through; LVLI pieces
-    ''' expand to their cached realization. Used to build the FLAT preview draft (the committed draft keeps
-    ''' the LVLI FormIDs).</summary>
-    Private Function FlattenPieces(pieces As IEnumerable(Of PieceEntry)) As List(Of UInteger)
-        Dim flat As New List(Of UInteger)
-        For Each p In pieces
-            If p.IsLeveled AndAlso p.Realization IsNot Nothing Then
-                flat.AddRange(p.Realization)
-            Else
-                flat.Add(p.FormID)
-            End If
-        Next
-        Return flat
     End Function
 
     ''' <summary>Terminal ARMO FormIDs to preview for a single selected FormID: a chosen LVLI piece → its

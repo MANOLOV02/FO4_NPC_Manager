@@ -407,7 +407,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' NO early-out on ARMO.RaceFormID: vanilla convention is each ARMA declares its own
         ' race compatibility via RNAM + AdditionalRaces (MODL entries). An ARMO with
         ' RNAM=HumanRace is commonly worn by Ghouls/Synths if the sub-ARMAs list those as
-        ' AdditionalRaces. The per-ARMA check (ArmorAddonMatchesRace) handles this correctly.
+        ' AdditionalRaces. The per-ARMA check (EquipResolver.ArmaMatchesRace) handles this correctly.
         ' Log the ARMO race only for visibility; don't reject based on it.
 
         ' Multi-addon: los ARMO con varios Models (ej. Combat Torso Lite/Mid/Heavy) eligen UN addon por la
@@ -481,9 +481,19 @@ Friend NotInheritable Class NpcMeshCollector
         ' coveredSlots check before candidates.Add below). Accumulates the biped slots already taken
         ' by earlier race-matching armature entries of THIS ARMO.
         Dim coveredSlots As UInteger = 0UI
+        ' ⭐ LEY ÚNICA: raza y footprint por armature salen de EquipResolver (FO4_Base_Library), acotado al
+        ' grupo de Models que el AddonIndex efectivo seleccionó. Este bucle ya no decide slots: sólo resuelve
+        ' lo suyo (malla, facebones, material swap, bone scale) para los armatures que la ley deja pasar.
+        Dim armoFp = EquipResolver.BuildFootprint(armoFormID, _ctx.EquipCtx(state.RaceFormID, state.IsFemale), addonOrder)
+        Dim addonFp As New Dictionary(Of UInteger, EquipResolver.ArmaFootprint)
+        For Each af In armoFp.Addons
+            addonFp(af.ArmaFormID) = af
+        Next
         For Each armaFormID In addonOrder
             Dim arma = _ctx.GetParsedArma(armaFormID)
             If arma Is Nothing Then Continue For
+            Dim fpArma As EquipResolver.ArmaFootprint = Nothing
+            If Not addonFp.TryGetValue(armaFormID, fpArma) Then Continue For
             ' raceOk drives the skip below (app logic, always computed). The block under
             ' If Logger.Enabled is PURELY diagnostic — it dumps every ARMA at the effective addon
             ' index (even race-skipped ones) with its model flags (MO2F/MO3F/MO4F/MO5F) + all four
@@ -494,7 +504,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' one ARMA the ARMA editor is previewing in "Only Model" scope, which is shown regardless of race so
             ' the user can see the mesh they're editing (see NpcRenderHost.RaceFilterBypassArmaFormID). No render
             ' path outside that editor scope passes a nonzero bypass.
-            Dim raceOk As Boolean = MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) _
+            Dim raceOk As Boolean = fpArma.RaceOk _
                                     OrElse (raceFilterBypassArmaFormID <> 0UI AndAlso armaFormID = raceFilterBypassArmaFormID)
             If Logger.Enabled Then
                 Dim a = arma
@@ -567,7 +577,7 @@ Friend NotInheritable Class NpcMeshCollector
                 End If
             End If
 
-            Dim effSlotMask As UInteger = MainForm.EffectiveArmaSlotMask(arma, armo)
+            Dim effSlotMask As UInteger = fpArma.GeometryMask
 
             ' Within-ARMO armature dedup. The engine processes the armature in Models order; the FIRST
             ' race-matching addon to claim a biped slot owns it, and a later addon overlapping an
@@ -1134,7 +1144,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' [A] es un underarmor extendido cuya malla YA cubre esos slots [A] (incluye piernas o brazos). No
         ' puede coexistir con un over-armor puro [A] que reclame los mismos bits: serían dos geometrías
         ' superpuestas, con clip visible. Por eso RESERVA sus bits [A] y descarta entero al que los pida.
-        ' Las máscaras concretas viven en SlotConflictResolver.
+        ' Las máscaras concretas viven en EquipResolver (FO4_Base_Library).
 
         ' Skin candidates (NPC_.WNAM / RACE.WNAM via state.SkinFormID) representan la base body
         ' geometry del NPC — NO son piezas equipables que compitan por slots con outfits/armor.
@@ -1154,7 +1164,7 @@ Friend NotInheritable Class NpcMeshCollector
 
         Dim slottedCandidates = nonSkinCandidates.Where(Function(c) c.SlotMask <> 0UI).ToList()
 
-        ' La resolución de conflicto de slots vive en SlotConflictResolver, para que el render y la pestaña
+        ' La resolución de conflicto de slots vive en EquipResolver (FO4_Base_Library), para que el render y la pestaña
         ' Create del editor de outfits usen las MISMAS reglas del motor.
         ' ⛔ Se resuelve a nivel ARMO EQUIPADO, no por ARMA: el motor hace mutex sobre el BOD2 del item
         ' equipado como unidad — el ARMO entero gana o pierde. Alimentar las ARMA sueltas al resolver dejaba
@@ -1179,16 +1189,21 @@ Friend NotInheritable Class NpcMeshCollector
                 grp.Add(c)
             End If
         Next
-        ' conflictMaskOf (SSE): el BOD2 CRUDO del ARMO del grupo — la máscara con la que el engine decide el
-        ' conflicto de equip (0x1403BD39E + SlotsOverlap). Todas las candidates de un grupo comparten ARMO,
-        ' así que basta la primera. Ignorado en FO4 (rama any-bit last-wins sobre SlotMask).
-        Dim slotResolution = SlotConflictResolver.ResolveSlotWinners(
-            armoGroups,
-            Function(g) g.Aggregate(0UI, Function(acc, c) acc Or c.SlotMask),
-            Function(g) g.Min(Function(c) c.Order),
-            Function(g) g.First().ArmoOwnSlotMask)
-        For Each g In slotResolution.Winners
-            selected.AddRange(g)
+        ' ⭐ LEY ÚNICA (EquipResolver, FO4_Base_Library). Un EquipItem por ARMO equipado, con sus tres
+        ' máscaras: EquipMask = BOD2 crudo del ARMO (con la que el motor decide el mutex, en los DOS juegos)
+        ' · GeometryMask = unión de los BOD2 de las ARMA del grupo (particiones; es lo que mira la excepción
+        ' anti-clipping) · OcclusionMask = lo que el render venía usando como SlotMask (ARMA ∪ headwear del
+        ' ARMO), que es lo que alimenta la cobertura de piel y la oclusión de head-parts aguas abajo.
+        Dim equipItems = armoGroups.Select(Function(g) New EquipResolver.EquipItem With {
+            .ArmoFormID = g.First().SourceFormID,
+            .Order = g.Min(Function(c) c.Order),
+            .EquipMask = g.First().ArmoOwnSlotMask,
+            .GeometryMask = g.Aggregate(0UI, Function(acc, c) acc Or c.ArmaOwnSlotMask),
+            .OcclusionMask = g.Aggregate(0UI, Function(acc, c) acc Or c.SlotMask),
+            .Tag = g}).ToList()
+        Dim slotResolution = EquipResolver.Resolve(equipItems)
+        For Each it In slotResolution.Winners
+            selected.AddRange(DirectCast(it.Tag, List(Of MainForm.MeshCandidate)))
         Next
         Dim occupiedSlots As UInteger = slotResolution.OccupiedSlots
         ' Máscaras que consume HeadPartHideMask (mecanismo b): el BOD2 del ARMA de cada pieza renderizada,
@@ -1196,11 +1211,20 @@ Friend NotInheritable Class NpcMeshCollector
         ' (@0x1402134E0) guarda el ARMATURE en `entry+0x18` recorriendo los bits del ARMA; un bit que sólo
         ' declara el ARMO nunca escribe `+0x18` y por lo tanto no agrupa ni oculta nada.
         ' Cada candidate ya es un armature filtrado por raza/género = el que el engine adjuntaría.
-        wornItemMasks = slotResolution.Winners.SelectMany(Function(grp) grp).
+        wornItemMasks = slotResolution.Winners.SelectMany(Function(it) DirectCast(it.Tag, List(Of MainForm.MeshCandidate))).
             Select(Function(c) c.ArmaOwnSlotMask).Where(Function(m) m <> 0UI).ToList()
-        ' Worn mask (mecanismo a): la OR de los slots de los ítems equipados. Aproxima GetWornMask
-        ' (0x140225CB0, que OR-ea `[ARMO+0x1B8]`): acá SlotMask = ARMA ∪ bits headwear del ARMO.
-        wornSlotMask = occupiedSlots
+        ' ⭐ WORN MASK DEL MOTOR — OR del BOD2 de los ARMO EQUIPADOS, y NADA de la ARMA. Verificado byte-level
+        ' en el Fallout4.exe instalado: `0x14051F530` recorre la lista de ítems equipados del actor 3D
+        ' (`[actor3D+0xF8]`, count `+0x68` / data `+0x58`, stride 0x10), saltea LIGH/WEAP/AMMO y por cada uno
+        ' llama al virtual `vtable+0x238` = `GetBipedObjectSlotMask 0x140313B80`, que es
+        ' `[AsBipedObjectForm(this)+8]` — para un ARMO, su BOD2. Una ARMA nunca está en esa lista.
+        ' El driver de oclusión de head-parts `0x140506460` testea contra ESA máscara los tres canales que
+        ' declara la RACE (A face-cull `race+0x1B0`, B pelo `+0x1B4` y su B+1, C barba `+0x1B8`).
+        Dim wornEquipMask As UInteger = 0UI
+        For Each it In slotResolution.Winners
+            wornEquipMask = wornEquipMask Or it.EquipMask
+        Next
+        wornSlotMask = wornEquipMask
 
         ' Per-segment "covered by OTHER items" occlusion (ORDER / other-items rule, engine owner-slot
         ' branch 0x14035E22B) is NOT precomputed here anymore: it is rebuilt every render by
@@ -1220,13 +1244,29 @@ Friend NotInheritable Class NpcMeshCollector
         '   9 HeadRear   : NUNCA, es geometria base del craneo.
         ' Rama por juego: FO4 intersecta lo equipado con el canal de pelo; SSE usa el BOD2 completo del item
         ' que ocupa el slot de pelo, no la union de lo equipado (ver HeadPartHideMask).
+        ' ⛔ FO4: los tres canales se testean contra el WORN MASK DEL MOTOR (BOD2 de los ARMO equipados), no
+        ' contra `occupiedSlots` (que trae además los bits de la ARMA). Medido: 8 ARMO vanilla declaran el
+        ' slot 32 en su ARMA y NO en su ARMO (Armor_HazmatSuit(+Damaged), Clothes_RaiderMod_Hood1/2/3,
+        ' Armor_Raider_GreenHoodGasmask, Armor_Power_Raider_Helm, Clothes_InstituteWorkerwithHelmet) — con
+        ' ellos puestos ocultábamos ceja, barba, sombra de boca y pelo que el motor NO oculta.
+        ' SSE NO se toca: allá el canal de pelo va por el mecanismo (b) —el BOD2 de la ARMA adjunta que
+        ' ocupa el slot, no la unión de lo equipado— y está medido que ningún ARMO vanilla de Skyrim declara
+        ' el slot 30 en su ARMA sin declararlo también en el ARMO, así que el cambio sería inerte allá y la
+        ' ley es distinta.
+        ' La máscara contra la que se testean los TRES canales de head-part. Una sola vez, acá.
+        Dim headChannelMask As UInteger
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            headChannelMask = occupiedSlots
+        Else
+            headChannelMask = wornEquipMask
+        End If
         Dim hairCovered As UInteger
         If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
             hairCovered = HeadPartHideMask(hairMask, occupiedSlots, wornItemMasks)
         Else
-            hairCovered = occupiedSlots And hairMask
+            hairCovered = headChannelMask And hairMask
         End If
-        Dim hasFaceGenHead As Boolean = (occupiedSlots And faceCullMask) <> 0UI
+        Dim hasFaceGenHead As Boolean = (headChannelMask And faceCullMask) <> 0UI
         ' The two hair partitions a {30,31} piece can have. Engine-faithful: the partition bits are still the
         ' source mesh's biped-30/31 tags (BipedSlots.SlotBitHairTop/Long); a partition is "covered" only when its slot is
         ' both in the worn set AND in this race's hair channel (so a non-hair race with B=None never zaps hair).
@@ -1362,10 +1402,10 @@ Friend NotInheritable Class NpcMeshCollector
                         Case MainForm.HeadPartTypeFacialHair
                             ' Beard: oculto ⟺ worn cubre el slot de barba (C) O el slot face-cull (A).
                             ' (El antiguo término slot-49 "Mouth" NO es un slot de oclusión del engine.)
-                            occluded = (occupiedSlots And (facialHairMask Or faceCullMask)) <> 0UI
+                            occluded = (headChannelMask And (facialHairMask Or faceCullMask)) <> 0UI
                         Case 6 ' Eyebrows
                             ' Cejas: oculto ⟺ worn cubre el slot face-cull (A).
-                            occluded = (occupiedSlots And faceCullMask) <> 0UI
+                            occluded = (headChannelMask And faceCullMask) <> 0UI
                             ' Type 9 HeadRear: nunca se ocluye por headwear (es base skull geometry).
                     End Select
                 End If

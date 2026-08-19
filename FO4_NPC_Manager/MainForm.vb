@@ -357,7 +357,7 @@ Public Class MainForm
     Friend Class MeshCandidate
         Public DictKey As String = ""
         Public SlotMask As UInteger
-        ''' <summary>The ARMA's OWN biped-slot footprint (EffectiveArmaSlotMask), WITHOUT the owning ARMO's
+        ''' <summary>The ARMA's OWN biped-slot footprint (EquipResolver.ArmaGeometryMask), WITHOUT the owning ARMO's
         ''' head-occlusion gate bits that <see cref="SlotMask"/> also carries. The SSE skin-ARMA BOD2-ownership
         ''' de-dup keys on THIS, so a Feet(37) skin candidate isn't credited slot 30 just because its ARMO
         ''' (SkinNaked) declares head-occlusion bits — otherwise childfeet's EyesChild (partition 30) survives the
@@ -655,7 +655,7 @@ Public Class MainForm
         ''' OFF lo destapa para mostrar el pelo/barba/etc bajo el headwear oculto.</summary>
         Public ReadOnly ShapeOccludedByHeadwear As New Dictionary(Of IRenderableShape, Boolean)
         ''' <summary>Per-shape (Fase 2): the OWN worn biped-slot mask of the candidate this shape came from
-        ''' (bit N-30 = biped slot N, same convention as <see cref="SlotConflictResolver.OccupiedSlots"/>).
+        ''' (bit N-30 = biped slot N, same convention as <see cref="EquipResolver.EquipResolution.OccupiedSlots"/>).
         ''' Stored only for worn-item (Kind=Outfit) shapes; head parts / skin have no entry (own slots = 0).
         ''' ApplyRenderToggleVisibility rebuilds the per-segment occlusion mask (IRenderableShape.CoveredSlotsMask)
         ''' from these every apply, scoped to the items CURRENTLY rendered — so a render toggle that hides an
@@ -2163,6 +2163,8 @@ Public Class MainForm
         ' Same injection contract as the OutfitResolver leveled-list resolver — the resolver returns Nothing for
         ' a non-draft FormID (real-record path runs) and a freshly-synthesized *_Data for a draft (never cached).
         _ctx.ArmoDraftResolver = Function(fid) BuildArmoDataFromDraft(fid)
+        _ctx.ArmoIsPowerArmor = AddressOf ArmoIsPowerArmor
+        _ctx.RaceIsPowerArmor = AddressOf RaceIsPowerArmor
         _ctx.ArmaDraftResolver = Function(fid) BuildArmaDataFromDraft(fid)
         _ctx.MswpDraftResolver = Function(fid) BuildMswpDataFromDraft(fid)
         _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, _appliedPresets)
@@ -2814,25 +2816,17 @@ Public Class MainForm
         Dim bodyBit As UInteger = BipedSlots.BodySlotBit()
         If bodyBit = 0UI Then Return False
 
-        ' Unión de los slots de los armatures que RESUELVEN. EffectiveArmaSlotMask ya trae el fallback
-        ' por-addon al ARMO, así que la unión no pierde nada.
-        Dim union As UInteger = 0UI
-        For Each entry In armo.ArmorAddons
-            Dim arma As ARMA_Data = Nothing
-            Try
-                arma = _ctx.GetParsedArma(entry.ArmaFormID)
-            Catch
-                Continue For
-            End Try
-            If arma Is Nothing Then Continue For
-            union = union Or EffectiveArmaSlotMask(arma, armo)
-        Next
-
-        ' Unión 0 (sin addons, o ninguno resolvió) ⇒ vale el BOD2 propio del ARMO. Es exactamente lo que
-        ' hace ComputeArmoEffectiveSlotMaskCore y la ley del bake para el ARMO sin armatures (el render cae
-        ' al mesh fallback ARMO.MOD2, p.ej. robots).
-        If union = 0UI Then Return (armo.SlotMask And bodyBit) <> 0UI
-        Return (union And bodyBit) <> 0UI
+        ' Footprint del REGISTRO por la ley única (unión de los armatures que resuelven, sin filtro de
+        ' raza/género, con el fallback al BOD2 propio del ARMO cuando ninguno resuelve — el render cae ahí
+        ' al mesh de ARMO.MOD2, p.ej. robots). La pregunta acá es del registro, no del actor.
+        ' ⛔ SIN gate de power-armor, a propósito (ver EditBody_Form: el picker de Skin Armor lista las pieles
+        ' de PA, que por definición son ARMO con ArmorTypePower). Por eso el contexto se arma acá y no con
+        ' EquipCtx, que sí trae el gate.
+        Dim recCtx As New EquipResolver.EquipContext With {
+            .PluginManager = _pluginManager,
+            .ArmoResolver = AddressOf _ctx.GetParsedArmo,
+            .ArmaResolver = AddressOf _ctx.GetParsedArma}
+        Return (EquipResolver.BuildFootprint(armoFID, recCtx).RecordGeometryMask And bodyBit) <> 0UI
     End Function
 
     ''' <summary>The per-ARMO skin-candidate rule, shared by real records and ARMO drafts so both qualify
@@ -2854,7 +2848,7 @@ Public Class MainForm
                 Continue For
             End Try
             If arma Is Nothing Then Continue For
-            Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
+            Dim armaRaceOk = EquipResolver.ArmaMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
             If armaRaceOk Then raceMatch = True
             Dim txst = If(isFemale, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID)
             If armaRaceOk AndAlso txst <> 0UI Then genderMatch = True
@@ -3062,7 +3056,7 @@ Public Class MainForm
                     Continue For
                 End Try
                 If arma Is Nothing Then Continue For
-                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
+                Dim armaRaceOk = EquipResolver.ArmaMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
                 If Not armaRaceOk Then Continue For
                 If arma.FemaleMeshPath <> "" OrElse arma.MaleMeshPath <> "" Then Return True
             Next
@@ -3576,16 +3570,6 @@ Public Class MainForm
         Return fid
     End Function
 
-    ''' <summary>The biped slot mask an armor addon effectively occupies: the ARMA's own BOD2 mask, or the
-    ''' owning ARMO's BOD2 when the ARMA declares none. SINGLE source for armor slot-footprint logic — used
-    ''' by both the render (<see cref="CollectArmoCandidates"/>, once per ARMA candidate) and the Edit Outfit
-    ''' item enumeration (<see cref="GetArmoItemCandidates"/>, OR-ed across an ARMO's race-valid addons). Both
-    ''' MUST go through here so the Create tab's slot-conflict marking always matches what the render resolves
-    ''' (do not re-inline the ARMA-vs-ARMO choice anywhere else).</summary>
-    Friend Shared Function EffectiveArmaSlotMask(arma As ARMA_Data, armo As ARMO_Data) As UInteger
-        Return If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask)
-    End Function
-
     ''' <summary>Short source-plugin (esp/esm) name for a FormID, shown next to the ID in the Edit Outfit
     ''' lists and used by their filters. Not-yet-saved drafts → "(new)"; otherwise the originating plugin
     ''' via <see cref="PluginManager.GetOriginatingPluginName"/> (ESL-aware high-byte scheme).</summary>
@@ -3595,10 +3579,10 @@ Public Class MainForm
     End Function
 
     ''' <summary>Selectable ARMO items (armor/clothing pieces) for the Edit Outfit "Create" tab,
-    ''' filtered by (race, gender): every ARMO that has a race-valid ARMA (<see cref="ArmorAddonMatchesRace"/>)
+    ''' filtered by (race, gender): every ARMO that has a race-valid ARMA (<see cref="EquipResolver.ArmaMatchesRace"/>)
     ''' carrying a world mesh for the gender (male/female with the renderer's fallback). Returns
     ''' (FormID, DisplayName, SlotMask, Plugin). SlotMask is the effective slot footprint — the union of
-    ''' <see cref="EffectiveArmaSlotMask"/> across the ARMO's race-valid addons (same per-addon choice the
+    ''' <see cref="EquipResolver.ArmaGeometryMask"/> across the ARMO's race-valid addons (same per-addon choice the
     ''' render makes), so the conflict resolver sees exactly what the render does. Cached per (race, gender)
     ''' — the full ARMO+ARMA sweep is the costly part; ARMO/ARMA parses are globally cached so each record
     ''' is parsed once.</summary>
@@ -3608,6 +3592,8 @@ Public Class MainForm
         If _armoItemCandidateCache.TryGetValue(cacheKey, cached) Then Return cached
 
         Dim outList As New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+        ' Un solo contexto para todo el barrido: la cadena de razas del redirect RNAM se resuelve una vez.
+        Dim eqCtx = EquipCtx(npcRaceFID, isFemale)
         Dim armoRecs = _pluginManager.GetRecordsOfType("ARMO")
         If armoRecs IsNot Nothing Then
             For Each rec In armoRecs
@@ -3620,21 +3606,20 @@ Public Class MainForm
                     Continue For
                 End Try
                 If armo Is Nothing Then Continue For
-                ' Power-armor gate (same rule as the render): don't offer ArmorTypePower pieces for a
-                ' non-power-armor race — they'd mount wrong without a frame.
-                If ArmoIsPowerArmor(armoFID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
+                ' El gate de power-armor (no ofrecer piezas de PA a una raza que no es de PA: montarían mal
+                ' sin armazón) lo aplica la ley única y se reporta en PowerArmorRejected.
                 ' Effective slot footprint, matching the render (CollectArmoCandidates:7319): per addon take
                 ' the ARMA's own BOD2 mask, falling back to the ARMO's only when the ARMA declares none, and
                 ' UNION across every race-valid addon that has a mesh. The render builds one candidate per
-                ' ARMA and feeds them all to SlotConflictResolver; for the Create tab — one piece per ARMO —
+                ' ARMA and feeds them all to EquipResolver; for the Create tab — one piece per ARMO —
                 ' the union is the equivalent footprint, so two pieces overlapping on ANY slot conflict the
                 ' same way they do in-game. (The old "ARMO BOD2 first, first ARMA only" path used a declared
                 ' mask that can diverge from the ARMA's real slots, so same-slot pieces weren't eliminated.)
-                Dim armoSlot = ComputeArmoEffectiveSlotMask(armo, npcRaceFID, isFemale)
+                Dim armoSlot = EquipResolver.BuildFootprint(armoFID, eqCtx)
                 If armoSlot.Valid Then
                     Dim disp As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
                                             If(Not String.IsNullOrEmpty(armo.EditorID), armo.EditorID, armoFID.ToString("X8")))
-                    outList.Add((armoFID, disp, armoSlot.Mask, GetOutfitPluginName(armoFID)))
+                    outList.Add((armoFID, disp, armoSlot.OcclusionMask, GetOutfitPluginName(armoFID)))
                 End If
             Next
         End If
@@ -3650,16 +3635,10 @@ Public Class MainForm
             Dim unionMask As UInteger = 0UI
             Dim anyValid As Boolean = False
             For Each terminalFID In OutfitResolver.EnumerateItemTerminalArmos(lvliFID, _pluginManager)
-                Dim tArmo As ARMO_Data
-                Try
-                    tArmo = _ctx.GetParsedArmo(terminalFID)
-                Catch
-                    Continue For
-                End Try
-                Dim tr = ComputeArmoEffectiveSlotMask(tArmo, npcRaceFID, isFemale)
+                Dim tr = EquipResolver.BuildFootprint(terminalFID, eqCtx)
                 If tr.Valid Then
                     anyValid = True
-                    unionMask = unionMask Or tr.Mask
+                    unionMask = unionMask Or tr.OcclusionMask
                 End If
             Next
             If anyValid Then
@@ -3677,7 +3656,7 @@ Public Class MainForm
     ''' drafts ("[LVL]") AND dirty in-memory ARMO drafts ("(new)") — fresh on every call (not cached: they
     ''' change as the user builds them). The Edit Outfit picker uses this so own leveled lists are addable /
     ''' nestable and an unsaved armor piece can be dropped into an outfit before Save. Each draft's slot
-    ''' footprint = UNION of <see cref="ComputeArmoEffectiveSlotMask"/> over the terminals/addons it resolves to
+    ''' footprint = UNION of <see cref="EquipResolver.BuildFootprint"/> over the terminals/addons it resolves to
     ''' (draft-aware: <see cref="EnumerateLeveledTerminalsAll"/> for LVLI, the draft ARMA children for ARMO).</summary>
     Friend Function GetArmoItemCandidatesWithDrafts(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
         Dim baseList = GetArmoItemCandidates(npcRaceFID, isFemale)
@@ -3688,16 +3667,16 @@ Public Class MainForm
         For Each d In _leveledListDrafts
             Dim unionMask As UInteger = 0UI
             For Each t In EnumerateLeveledTerminalsAll(d.FormID)
-                unionMask = unionMask Or ComputeArmoEffectiveSlotMask(_ctx.GetParsedArmo(t), npcRaceFID, isFemale).Mask
+                unionMask = unionMask Or ArmoFootprintFor(t, npcRaceFID, isFemale).OcclusionMask
             Next
             result.Add((d.FormID, d.EditorID & "  [LVL]", unionMask, "(new)"))
         Next
 
         ' Dirty ARMO drafts — an unsaved armor/clothing piece selectable as an outfit item. Filtered by the
-        ' SAME race/gender rule the real candidates use: ComputeArmoEffectiveSlotMask walks the draft's ARMA
-        ' children (resolved via the now-draft-aware GetParsedArma) applying ArmorAddonMatchesRace + gender
+        ' SAME race/gender rule the real candidates use: EquipResolver.BuildFootprint walks the draft's ARMA
+        ' children (resolved via the now-draft-aware GetParsedArma) applying EquipResolver.ArmaMatchesRace + gender
         ' mesh presence, returning Valid only when at least one addon fits. Same power-armor gate too. The
-        ' slot footprint is the union of those addons' EffectiveArmaSlotMask — exactly what the render resolves.
+        ' slot footprint is the union of those addons' geometry mask — exactly what the render resolves.
         For Each d In _armoDrafts
             If Not d.IsDirty Then Continue For
             Dim armo As ARMO_Data
@@ -3707,14 +3686,15 @@ Public Class MainForm
                 Continue For
             End Try
             If armo Is Nothing Then Continue For
-            If ArmoIsPowerArmor(d.FormID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
-            Dim armoSlot = ComputeArmoEffectiveSlotMask(armo, npcRaceFID, isFemale)
+            Dim armoSlot = ArmoFootprintFor(d.FormID, npcRaceFID, isFemale)
+            ' Mismo gate PA que los candidatos reales: la ley lo marca en el footprint.
+            If armoSlot.PowerArmorRejected Then Continue For
             ' Own ARMO drafts are the user's OWN creations (few, hand-authored) — ALWAYS list them, even when no addon
             ' matches this NPC's race/gender (armoSlot.Valid=False). Hiding a just-created armor was the reported bug
             ' ("New armor doesn't show up"): a brand-new ARMO has no race-matching addon yet, so the old
             ' `If Not armoSlot.Valid Then Continue For` gate dropped it silently. Real vanilla candidates KEEP the race
             ' filter (thousands of records) — that gate lives in GetArmoItemCandidates and is untouched. For a not-valid
-            ' draft the mask falls back to the ARMO's own BOD2 (ComputeArmoEffectiveSlotMask) so it still occupies slots
+            ' draft the mask falls back to the ARMO's own BOD2 (EquipResolver.BuildFootprint) so it still occupies slots
             ' in the conflict resolver; the label flags WHY it may not render on this NPC.
             Dim newTag As String = If(armoSlot.Valid, "  (new)", "  (new · no addon for this race/gender)")
             Dim disp As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
@@ -3724,7 +3704,7 @@ Public Class MainForm
             ' would leave the stale real entry first, and the FormID→candidate index (first-wins) would shadow
             ' the draft — the outfit's selected piece would keep resolving to the OLD data. A NEW draft (its
             ' provisional FormID isn't in baseList) simply appends.
-            Dim entry = (d.FormID, disp & newTag, armoSlot.Mask, "(new)")
+            Dim entry = (d.FormID, disp & newTag, armoSlot.OcclusionMask, "(new)")
             Dim existingIdx = result.FindIndex(Function(x) x.FormID = d.FormID)
             If existingIdx >= 0 Then result(existingIdx) = entry Else result.Add(entry)
         Next
@@ -3732,60 +3712,21 @@ Public Class MainForm
         Return result
     End Function
 
-    ''' <summary>Effective slot footprint of an ARMO for a race/gender: UNION of <see cref="EffectiveArmaSlotMask"/>
-    ''' over its race-valid addons that carry a gender mesh, falling back to the ARMO's own BOD2 when no addon
-    ''' contributes. Valid = at least one addon had a mesh for this race/gender. Shared by the ARMO and the
-    ''' LVLI-terminal paths of <see cref="GetArmoItemCandidates"/> so both compute the slot identically.</summary>
-    Private Function ComputeArmoEffectiveSlotMask(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean) As (Mask As UInteger, Valid As Boolean)
-        If armo Is Nothing Then Return (0UI, False)
-        Return ComputeArmoEffectiveSlotMaskCore(armo, npcRaceFID, isFemale,
-                                                AddressOf _ctx.GetParsedArma,
-                                                _ctx.GetEffectiveArmorRaces(npcRaceFID))
+    ''' <summary>⭐ El contexto con el que la app llama a la LEY ÚNICA de equip
+    ''' (<see cref="EquipResolver"/>, FO4_Base_Library): resolvedores draft-aware, la cadena de razas del
+    ''' redirect RNAM y el gate de power-armor, que son lo único que la librería no puede saber sola.
+    ''' TODO cálculo de slots de armadura sale de acá — el render, el bake y los editores no vuelven a
+    ''' recorrer armatures por su cuenta.</summary>
+    Friend Function EquipCtx(npcRaceFID As UInteger, isFemale As Boolean) As EquipResolver.EquipContext
+        Return _ctx.EquipCtx(npcRaceFID, isFemale)
     End Function
 
-    ''' <summary>⛔ SYNC: RENDER == BAKE. Núcleo compartido de <see cref="ComputeArmoEffectiveSlotMask"/>;
-    ''' parametrizado por delegados para que el bake (FaceGenBuilder.ResolveOutfitHeadwearSlots, sin ctx)
-    ''' calcule EL MISMO footprint race-valid que el render y la pestaña Create. Si diverge, el bake ocluye
-    ''' pelo/barba que el render sí dibuja.
-    ''' Un solo recorrido, dos resultados:
-    '''   • recordSlot = unión de EffectiveArmaSlotMask de TODOS los addons (+ bits de headwear del ARMO).
-    '''     Footprint real del ítem, independiente de raza/género: display y máscara de conflicto. Nunca
-    '''     debe leerse (none) porque falle el gate de raza/género.
-    '''   • raceSlot   = misma unión pero solo sobre addons que matchean raza Y tienen mesh del género (lo
-    '''     que el render colecta). Se prefiere si no está vacío. Valid=False significa "no aporta nada":
-    '''     los callers de oclusión deben tratarlo así — el fallback a recordSlot es para display, no para
-    '''     vestir.</summary>
-    Friend Shared Function ComputeArmoEffectiveSlotMaskCore(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean,
-                                                            getParsedArma As Func(Of UInteger, ARMA_Data),
-                                                            effectiveArmorRaces As ICollection(Of UInteger)) As (Mask As UInteger, Valid As Boolean)
-        If armo Is Nothing Then Return (0UI, False)
-        Dim recordSlot As UInteger = 0UI
-        Dim raceSlot As UInteger = 0UI
-        Dim valid As Boolean = False
-        Dim headwearBits As UInteger = armo.SlotMask And BipedSlots.HeadwearMaskForGame()
-        For Each addon In armo.ArmorAddons
-            Dim arma As ARMA_Data
-            Try
-                arma = getParsedArma(addon.ArmaFormID)
-            Catch
-                Continue For
-            End Try
-            If arma Is Nothing Then Continue For
-            Dim armaSlot As UInteger = EffectiveArmaSlotMask(arma, armo) Or headwearBits
-            recordSlot = recordSlot Or armaSlot
-            If Not ArmorAddonMatchesRace(arma, npcRaceFID, effectiveArmorRaces) Then Continue For
-            Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
-            If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
-            If genderMesh <> "" Then
-                valid = True
-                raceSlot = raceSlot Or armaSlot
-            End If
-        Next
-        ' Prefer the race-valid footprint (what the render collects); else the full record footprint; else
-        ' the ARMO's own BOD2. Never (none) when the record actually declares any biped slot.
-        Dim slotMask As UInteger = If(raceSlot <> 0UI, raceSlot, If(recordSlot <> 0UI, recordSlot, armo.SlotMask))
-        Return (slotMask, valid)
+    ''' <summary>Footprint de un ARMO para (raza, género) por la ley única. Atajo sobre
+    ''' <see cref="EquipResolver.BuildFootprint"/> con el contexto de <see cref="EquipCtx"/>.</summary>
+    Friend Function ArmoFootprintFor(armoFid As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As EquipResolver.ArmoFootprint
+        Return EquipResolver.BuildFootprint(armoFid, EquipCtx(npcRaceFID, isFemale))
     End Function
+
 
     ''' <summary>Slot footprint of ANY outfit reference (ARMO or LVLI) for a race/gender — robust for references
     ''' OUTSIDE the (race-filtered, bounded) candidate universe, so the leveled-list drill-down can show real slots
@@ -3797,11 +3738,11 @@ Public Class MainForm
         If IsLeveledItem(fid) Then
             Dim unionMask As UInteger = 0UI
             For Each t In EnumerateLeveledTerminalsAll(fid)
-                unionMask = unionMask Or ComputeArmoEffectiveSlotMask(_ctx.GetParsedArmo(t), npcRaceFID, isFemale).Mask
+                unionMask = unionMask Or ArmoFootprintFor(t, npcRaceFID, isFemale).OcclusionMask
             Next
             Return unionMask
         End If
-        Return ComputeArmoEffectiveSlotMask(_ctx.GetParsedArmo(fid), npcRaceFID, isFemale).Mask
+        Return ArmoFootprintFor(fid, npcRaceFID, isFemale).OcclusionMask
     End Function
 
     ''' <summary>The set of LVLI FormIDs referenced directly by any OTFT's INAM — i.e. the leveled lists that
@@ -3965,7 +3906,7 @@ Public Class MainForm
         Dim terminals = SampleLeveledTerminals(lvliFid)
         Dim mask As UInteger = 0UI
         For Each t In terminals
-            mask = mask Or ComputeArmoEffectiveSlotMask(_ctx.GetParsedArmo(t), npcRaceFID, isFemale).Mask
+            mask = mask Or ArmoFootprintFor(t, npcRaceFID, isFemale).OcclusionMask
         Next
         Return (terminals, mask)
     End Function
@@ -8040,31 +7981,8 @@ Public Class MainForm
 
 
 
-    ''' <summary>Match estricto de raza por ARMA: RaceFormID igual a la del NPC, o AdditionalRaces (MODL)
-    ''' la incluye. Regla única para el render y los pickers de skin/outfit/item. No existe cláusula
-    ''' permisiva para RaceFormID=0 (era código muerto). El guard npcRaceFormID=0 se queda: evita que un
-    ''' NPC cuya raza no resolvió se renderice desnudo.
-    ''' <paramref name="effectiveArmorRaces"/> agrega el redirect RACE.RNAM "Armor Race"; el match es
-    ''' ADITIVO, solo acepta armaduras que el motor también acepta, así que no puede romper el mutex de
-    ''' slots. Ver memoria 23-armor-race-redirect-rnam.</summary>
-    Friend Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger,
-                                                 Optional effectiveArmorRaces As ICollection(Of UInteger) = Nothing) As Boolean
-        If npcRaceFormID = 0UI Then Return True
-        If ArmaMatchesOneRace(arma, npcRaceFormID) Then Return True
-        If effectiveArmorRaces IsNot Nothing Then
-            For Each r In effectiveArmorRaces
-                If r <> npcRaceFormID AndAlso ArmaMatchesOneRace(arma, r) Then Return True
-            Next
-        End If
-        Return False
-    End Function
-
-    Private Shared Function ArmaMatchesOneRace(arma As ARMA_Data, raceFormID As UInteger) As Boolean
-        Return arma.RaceFormID = raceFormID OrElse arma.AdditionalRaces.Contains(raceFormID)
-    End Function
-
     ''' <summary>True if an ARMA is wearable by <paramref name="raceFid"/> for the FormIdPicker race filter — the
-    ''' SAME per-ARMA race match the render/candidate paths use (<see cref="ArmorAddonMatchesRace"/> with the
+    ''' SAME per-ARMA race match the render/candidate paths use (<see cref="EquipResolver.ArmaMatchesRace"/> with the
     ''' RNAM "Armor Race" redirect + AdditionalRaces, via <see cref="NpcRenderContext.GetEffectiveArmorRaces"/>).
     ''' <paramref name="raceFid"/> = 0 (editor opened without a preview NPC) → True, i.e. no filtering. The ARMA
     ''' is resolved through the draft-aware <see cref="NpcRenderContext.GetParsedArma"/>, so draft ARMAs are
@@ -8078,7 +7996,7 @@ Public Class MainForm
             Return False
         End Try
         If arma Is Nothing Then Return False
-        Return ArmorAddonMatchesRace(arma, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
+        Return EquipResolver.ArmaMatchesRace(arma, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
     End Function
 
     ''' <summary>Same per-ARMA race rule as <see cref="IsArmaRaceCompatible"/> (RNAM + AdditionalRaces + the
@@ -8090,14 +8008,14 @@ Public Class MainForm
         If raceFid = 0UI Then Return True
         Dim probe As New ARMA_Data With {.RaceFormID = armaRaceFormID}
         If additionalRaces IsNot Nothing Then probe.AdditionalRaces.AddRange(additionalRaces)
-        Return ArmorAddonMatchesRace(probe, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
+        Return EquipResolver.ArmaMatchesRace(probe, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
     End Function
 
     ''' <summary>True if an ARMO is wearable by <paramref name="raceFid"/> for the FormIdPicker race filter. An
     ''' ARMO qualifies iff at least one of its ArmorAddons ARMAs is race-compatible (<see cref="IsArmaRaceCompatible"/>)
     ''' — the PER-ARMA match, NOT <c>ARMO.RaceFormID</c>: a clothing ARMO commonly carries RNAM=HumanRace but is
     ''' worn by ghouls via a sub-ARMA's AdditionalRaces, so filtering by the ARMO's own race would wrongly hide it.
-    ''' This mirrors the per-ARMA OR that <see cref="ComputeArmoEffectiveSlotMask"/> / <see cref="GetArmoItemCandidates"/>
+    ''' This mirrors the per-ARMA OR that <see cref="EquipResolver.BuildFootprint"/> / <see cref="GetArmoItemCandidates"/>
     ''' use to decide an ARMO is valid for a race (without their extra gender-mesh/skin-TXST constraint, which would
     ''' over-filter a generic Template picker). <paramref name="raceFid"/> = 0 → True (no filtering). The ARMO is
     ''' resolved through the draft-aware <see cref="NpcRenderContext.GetParsedArmo"/>. <paramref name="isFemale"/> is
