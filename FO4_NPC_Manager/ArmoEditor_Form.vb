@@ -1,4 +1,4 @@
-Imports System.Drawing
+﻿Imports System.Drawing
 Imports System.Globalization
 Imports System.Linq
 Imports FO4_Base_Library
@@ -583,6 +583,7 @@ Public Class ArmoEditor_Form
             .DropSoundFormID = a.DropSoundFormID,
             .AlternateBlockMaterialFormID = a.AlternateBlockMaterialFormID,
             .Description = a.Description,
+            .HasDescription = a.HasDescription,
             .NonPlayable = a.NonPlayable,
             .ObndX1 = a.ObndX1, .ObndY1 = a.ObndY1, .ObndZ1 = a.ObndZ1,
             .ObndX2 = a.ObndX2, .ObndY2 = a.ObndY2, .ObndZ2 = a.ObndZ2,
@@ -633,6 +634,10 @@ Public Class ArmoEditor_Form
             SetFidText(TextBoxPtrn, _draft.PatternFormID)
             CheckBoxNonPlayable.Checked = _draft.NonPlayable
             TextBoxDesc.Text = _draft.Description
+            ' Explícito y no por efecto secundario: poblar el cuadro NO es una edición del usuario, y
+            ' CommitPanelsToDraft usa Modified para decidir si toca HasDescription. WinForms ya resetea
+            ' Modified al asignar Text, pero de eso depende que un DESC vacío-pero-presente sobreviva.
+            TextBoxDesc.Modified = False
             SetSlotChecks(_draft.SlotMask)
             NumValue.Value = ClampDec(CDec(_draft.Value), NumValue)
             NumWeight.Value = ClampDec(CDec(_draft.Weight), NumWeight)
@@ -784,6 +789,18 @@ Public Class ArmoEditor_Form
         _draft.PatternFormID = GetFid(TextBoxPtrn)
         _draft.NonPlayable = CheckBoxNonPlayable.Checked
         _draft.Description = TextBoxDesc.Text.Trim()
+        ' ⛔⛔ La PRESENCIA sólo la cambia el USUARIO, y por eso el gate es `TextBoxDesc.Modified` y no el largo
+        ' del texto. Derivarla del contenido destruye la única distinción que este campo existe para hacer
+        ' ("" ≠ ausente) y lo hace SIN que nadie toque nada: `RenderPreviewAsync` llama a
+        ' CommitPanelsToDraft(validate:=False) para el preview, así que abrir el editor sobre un ARMO cuyo DESC
+        ' es un id de lstring que resuelve a "" bastaba para poner HasDescription en False y que el guardado
+        ' dejara de emitir el subrecord — en Skyrim, donde wbDESC es SetRequired (wbDefinitionsTES5.pas:4399).
+        ' MEDIDO por el revisor: 2.724 de 2.762 ARMO de Skyrim.esm y 628 de 688 de Fallout4.esm tienen DESC con
+        ' id 0, o sea texto resuelto vacío. Encima ContentEquals compara HasDescription, así que el override
+        ' quedaba marcado como modificado por el solo hecho de abrir el editor.
+        ' `Modified` es exactamente el primitivo que hace falta: WinForms lo pone en True con la edición del
+        ' usuario y lo vuelve a False cuando el texto se asigna por código (que es como se puebla el cuadro).
+        If TextBoxDesc.Modified Then _draft.HasDescription = (_draft.Description.Length > 0)
         _draft.SlotMask = ReadSlotChecks()
         _draft.Value = CInt(NumValue.Value)
         _draft.Weight = CSng(NumWeight.Value)

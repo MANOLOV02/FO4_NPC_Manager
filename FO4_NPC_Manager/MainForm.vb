@@ -8653,9 +8653,11 @@ Public Class MainForm
                 Dim lvln As LVLN_Data = Nothing
                 If Not _detailsLvlnCache.TryGetValue(sourceFormID, lvln) Then
                     lvln = RecordParsers.TryParseLVLN(sourceRec, _pluginManager)
-                    ' ⛔ El Nothing NO se cachea a proposito: si un dia el LVLN se arregla en disco y se
-                    ' recarga el plugin, un Nothing cacheado lo seguiria mostrando roto hasta reiniciar.
-                    If lvln IsNot Nothing Then _detailsLvlnCache(sourceFormID) = lvln
+                    ' El fallo también se cachea: `_detailsLvlnCache` se vacía en CADA repoblado del árbol
+                    ' de detalle (:8255), o sea en cada selección de NPC, así que no puede quedar pegado.
+                    ' (Acá decía que no se cacheaba "para que un LVLN arreglado en disco no siguiera roto
+                    '  hasta reiniciar" — razón FALSA con esa vida útil.)
+                    _detailsLvlnCache(sourceFormID) = lvln
                 End If
                 ' ⛔ TryParseLVLN es el tolerante: devuelve Nothing en el LVLN malformado que existe para
                 ' tolerar. Sin este guard el .Entries de abajo tira NRE dentro de un handler Handles

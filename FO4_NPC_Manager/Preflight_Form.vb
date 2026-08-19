@@ -309,6 +309,9 @@ Public Class Preflight_Form
             ' el barrido (activos por load order + inactivos ALFABETICOS) perdia ese orden en silencio y con el
             ' la precedencia de overrides y de BA2. Las filas guardadas van primero, en su orden; el resto
             ' detras, como estaban.
+            ' El orden guardado ES el que el usuario dejó, así que a partir de acá la grilla es SUYA: el botón
+            ' de reset es el único que vuelve al orden del juego.
+            _orderIsUserDefined = True
             Dim byName = _allRows.ToDictionary(Function(r) r.Name, Function(r) r, StringComparer.OrdinalIgnoreCase)
             Dim reordered As New List(Of PluginRow)()
             Dim placed As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
@@ -458,8 +461,12 @@ Public Class Preflight_Form
         ' plugin with unsatisfied masters, and (c) ningun conflicto IRREPARABLE de grupo. Los conflictos de
         ' orden REPARABLES no bloquean: LoadOrderPlanner los deja en cero salvo header corrupto, y si quedara
         ' el aviso lo dice. Bloquear por algo que la app puede arreglar sola seria un callejon sin salida.
-        Dim groupConflictCount = If(_plan Is Nothing, 0, _plan.GroupConflicts.Count)
-        ButtonOk.Enabled = (_checkedPlugins.Count > 0 AndAlso _brokenPlugins.Count = 0 AndAlso groupConflictCount = 0)
+        ' ⛔ Los GroupConflicts AVISAN pero NO bloquean. Un plugin del grupo master que dependa de un .esp es
+        ' algo que ESTA MISMA APP fabrica con un click: guardar un override con "Mark as master" le pone el
+        ' flag ESM, y sus MAST son los .esp de origen de los NPC. Bloquear OK por eso dejaba al usuario sin
+        ' salida en el Preflight siguiente, con la única opción de destildar su propio plugin. Ni el motor ni
+        ' xEdit lo tratan como fatal: cargan igual, con la precedencia que el aviso explica.
+        ButtonOk.Enabled = (_checkedPlugins.Count > 0 AndAlso _brokenPlugins.Count = 0)
         ' "Check Masters" affordance: shown whenever a checked plugin is broken. Clicking ticks the
         ' fixable masters (present on disk) transitively and reports any that are missing on disk.
         ButtonCheckMasters.Visible = (_brokenPlugins.Count > 0)
@@ -513,8 +520,9 @@ Public Class Preflight_Form
 
         If toCheck IsNot Nothing AndAlso toCheck.Count > 0 Then
             For Each m In toCheck : _checkedPlugins.Add(m) : Next
-            ApplyFilter()          ' reflect the newly-ticked masters in the ListView
-            RecomputeValidation()  ' recolor, re-gate OK, refresh button visibility
+            ' Cambió el SET de tildados ⇒ la grilla se reconstruye (diferido) para que los checkboxes lo
+            ' reflejen, además de recolorear y re-evaluar OK.
+            RevalidateAfterCheckChange(checkSetChanged:=True)
         End If
 
         If missing IsNot Nothing AndAlso missing.Count > 0 Then
@@ -593,8 +601,6 @@ Public Class Preflight_Form
     ''' "Load #", los colores y el aviso, así que la UI nunca deriva nada por su cuenta.</summary>
     Private _plan As LoadOrderPlanner.Plan = Nothing
 
-    ''' <summary>True desde que el usuario mueve una fila: a partir de ahí el orden de la grilla es SUYO y se
-    ''' persiste tal cual, en vez de re-derivarse del load order del juego en el próximo Preflight.</summary>
     ''' <summary>Índice de la columna "Load #" en los SubItems (0 = Plugin, 1 = State, 2 = Load #).
     ''' Nombrada para que reordenar columnas en el Designer no deje un 2 suelto en el código.</summary>
     Private Const COL_ORDER As Integer = 2
@@ -603,6 +609,10 @@ Public Class Preflight_Form
     ''' reconstruirla, no sólo repintarla. Ver <see cref="RefreshPlanColumnsInPlace"/>.</summary>
     Private _planReorderedRows As Boolean = False
 
+    ''' <summary>El orden de la grilla lo definió el USUARIO (movió filas, o se restauró el que había guardado)
+    ''' y no sale del load order del juego. Se muestra en la barra de estado: si no se ve en ningún lado, el
+    ''' usuario no tiene forma de saber que lo que mira ya no es el orden del juego, ni de qué le devuelve el
+    ''' botón de reset.</summary>
     Private _orderIsUserDefined As Boolean = False
 
     ''' <summary>Índice de una fila por nombre en <c>_allRows</c>, o -1. Hace falta porque <c>PluginRow</c> es una
@@ -673,16 +683,30 @@ Public Class Preflight_Form
     ''' un conflicto de masters igual que mover una fila. Repinta en el lugar y sólo difiere la reconstrucción
     ''' si el planner movió filas. Ver <see cref="RefreshPlanColumnsInPlace"/> para por qué no se reconstruye
     ''' acá mismo.</summary>
-    Private Sub RevalidateAfterCheckChange()
+    ''' <param name="checkSetChanged">True cuando cambió QUÉ está tildado por fuera del propio ListView (los
+    ''' botones "Only actives" / "Mark all" / "Unmark all" / "Check Masters"). En ese caso hay que RECONSTRUIR
+    ''' la grilla para que los checkboxes reflejen <c>_checkedPlugins</c>.
+    ''' <para>⛔ Sin esto la grilla MENTÍA: los bulk buttons rellenan <c>_checkedPlugins</c> pero
+    ''' <see cref="RefreshPlanColumnsInPlace"/> sólo escribe la columna "Load #" y el color — nunca toca
+    ''' <c>it.Checked</c>. El usuario veía sus tildes viejos y OK cargaba otra cosa. El ApplyFilter diferido
+    ''' tampoco lo salvaba porque corría sólo si el planner había reordenado filas, y con un Plugins.txt ya
+    ''' ordenado eso es False.</para></param>
+    Private Sub RevalidateAfterCheckChange(Optional checkSetChanged As Boolean = False)
         RebuildPlan()
         RecomputeValidation()
         RefreshPlanColumnsInPlace()
-        If _planReorderedRows Then
-            _planReorderedRows = False
-            BeginInvoke(Sub()
-                            If IsDisposed Then Return
-                            ApplyFilter()
-                        End Sub)
+        If checkSetChanged OrElse _planReorderedRows Then
+            ' Diferido SIEMPRE: reconstruir la grilla desde adentro de un evento del ListView desprende el
+            ' item que el control está procesando. Ver RefreshPlanColumnsInPlace.
+            ' ⛔ La bandera se consume DENTRO del If: si no hay handle no se puede diferir, y apagarla antes
+            ' perdía la reconstrucción pendiente sin que nada la recordara.
+            If Not IsDisposed AndAlso IsHandleCreated Then
+                _planReorderedRows = False
+                BeginInvoke(Sub()
+                                If IsDisposed Then Return
+                                ApplyFilter()
+                            End Sub)
+            End If
         End If
     End Sub
 
@@ -718,7 +742,10 @@ Public Class Preflight_Form
 
     ''' <summary>Los tres botones de orden son simbolos; sin tooltip no se entiende ninguno.</summary>
     Private Sub WireOrderTooltips()
-        Dim tip As New ToolTip()
+        ' Se registra en components para que lo libere el Dispose del formulario: un ToolTip por apertura del
+        ' diálogo, sin dueño, es una fuga chica pero real.
+        If components Is Nothing Then components = New System.ComponentModel.Container()
+        Dim tip As New ToolTip(components)
         tip.SetToolTip(ButtonMoveUp, "Move up (Alt+Up)")
         tip.SetToolTip(ButtonMoveDown, "Move down (Alt+Down)")
         tip.SetToolTip(ButtonResetOrder, "Reset order to the game load order (Plugins.txt / loadorder.txt)")
@@ -778,6 +805,9 @@ Public Class Preflight_Form
 
         _orderIsUserDefined = True
         RebuildPlan()
+        ' Ya se reconstruye acá abajo: la bandera se consume para que el próximo cambio de tilde no dispare un
+        ' ApplyFilter diferido de más.
+        _planReorderedRows = False
         RecomputeValidation()
         ApplyFilter()
 
@@ -804,15 +834,25 @@ Public Class Preflight_Form
     ''' normal del ListView y pisarlas rompería el teclado de la grilla.</summary>
     Private Sub ListViewPlugins_KeyDown(sender As Object, e As KeyEventArgs) Handles ListViewPlugins.KeyDown
         If Not e.Alt Then Return
+        Dim delta As Integer = 0
         If e.KeyCode = Keys.Up Then
-            MoveSelection(-1)
-            e.Handled = True
-            e.SuppressKeyPress = True
+            delta = -1
         ElseIf e.KeyCode = Keys.Down Then
-            MoveSelection(1)
-            e.Handled = True
-            e.SuppressKeyPress = True
+            delta = 1
+        Else
+            Return
         End If
+        ' ⛔ Se marca Handled ANTES y el movimiento se DIFIERE. MoveSelection llama a ApplyFilter, que hace
+        ' Items.Clear(): hacerlo acá adentro desprende el item que el ListView está procesando y después el
+        ' WndProc base sigue trabajando contra él — es la misma InvalidOperationException de accesibilidad que
+        ' ya rompió el click en un tilde. La regla vale para TODOS los eventos del control, no sólo ItemChecked.
+        e.Handled = True
+        e.SuppressKeyPress = True
+        If IsDisposed OrElse Not IsHandleCreated Then Return
+        BeginInvoke(Sub()
+                        If IsDisposed Then Return
+                        MoveSelection(delta)
+                    End Sub)
     End Sub
 
 #End Region
@@ -835,15 +875,18 @@ Public Class Preflight_Form
                             $"({String.Join(", ", gc.Take(3))}{If(gc.Count > 3, ", ...", "")}) " &
                             "— reordering cannot fix this; untick it or untick the dependent."
         End If
+        Dim ordenSuffix As String = If(_orderIsUserDefined,
+                                       " — order: yours (⟲ resets it to the game load order)",
+                                       " — order: game load order")
         If uc.Count > 0 Then
             brokenSuffix &= $" — ⚠ {uc.Count} still load before a master (corrupt header?)."
         ElseIf mm > 0 Then
             brokenSuffix &= $" — {mm} row(s) reordered so every master loads before what depends on it."
         End If
         If filter.Length > 0 Then
-            LabelStatus.Text = $"{ListViewPlugins.Items.Count} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked{brokenSuffix}."
+            LabelStatus.Text = $"{ListViewPlugins.Items.Count} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked{ordenSuffix}{brokenSuffix}."
         Else
-            LabelStatus.Text = $"{_allRows.Count} plugins found ({activeCount} active, {_allRows.Count - activeCount} inactive) — {_checkedPlugins.Count} checked{brokenSuffix}."
+            LabelStatus.Text = $"{_allRows.Count} plugins found ({activeCount} active, {_allRows.Count - activeCount} inactive) — {_checkedPlugins.Count} checked{ordenSuffix}{brokenSuffix}."
         End If
     End Sub
 
@@ -883,7 +926,7 @@ Public Class Preflight_Form
             If row.IsActive Then _checkedPlugins.Add(row.Name)
         Next
         ' Single validation pass after the bulk selection change (not per-row). Repara el orden y renderiza.
-        RevalidateAfterCheckChange()
+        RevalidateAfterCheckChange(checkSetChanged:=True)
     End Sub
 
     ''' <summary>Apply <paramref name="checkedState"/> to every row currently visible in the
@@ -906,7 +949,10 @@ Public Class Preflight_Form
             _suspendItemChecked = False
         End Try
 
-        ' Single validation pass after the bulk check change (the per-item handler was suspended).
+        ' ⛔ checkSetChanged:=False A PROPÓSITO: este camino YA puso `it.Checked` en cada item visible, así
+        ' que la grilla no miente y reconstruirla sería tirar y rehacer N ListViewItem para llegar al mismo
+        ' estado — con los 1500 plugins del Case19, 1500 items por click en "Mark all". El flag es para los
+        ' que tocan `_checkedPlugins` SIN tocar el ListView.
         RevalidateAfterCheckChange()
     End Sub
 

@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>An Armor (ARMO) record being authored in the (future) ARMA/ARMO/MSWP editor — an in-memory
 ''' draft owned by MainForm (process scope) until persisted via the Save dialog. Mirrors
@@ -51,8 +51,14 @@ Public Class ArmoDraft
     Public Property DropSoundFormID As UInteger           ' ZNAM (SNDR)
     ''' <summary>BAMT — Alternate Block Material ([MATT]). Owned optional single FormID.</summary>
     Public Property AlternateBlockMaterialFormID As UInteger  ' BAMT (MATT)
-    ''' <summary>DESC — Description (translatable). Owned optional string (omit when empty).</summary>
+    ''' <summary>DESC — Description (translatable), opcional en FO4 (<c>wbDESC</c>) y REQUERIDO en Skyrim
+    ''' (<c>wbDESC.SetRequired</c>, wbDefinitionsTES5.pas:4399).</summary>
     Public Property Description As String = ""            ' DESC
+
+    ''' <summary>Si el DESC debe emitirse. ⛔ "" y AUSENTE no son lo mismo: en un master localizado el DESC es
+    ''' un id de lstring que puede resolver a texto vacío, y ahí el subrecord SÍ está. Se copia de
+    ''' <c>ARMO_Data.HasDescription</c>; ponerlo en False es cómo se expresa "sacá la descripción".</summary>
+    Public Property HasDescription As Boolean = False
     ''' <summary>OBND — Object Bounds (required 6×i16 min/max XYZ). Editable; always emitted.</summary>
     Public Property ObndX1 As Short
     Public Property ObndY1 As Short
@@ -119,7 +125,7 @@ Public Class ArmoDraft
             .EnchantmentFormID = EnchantmentFormID, .PatternFormID = PatternFormID,
             .EquipTypeFormID = EquipTypeFormID, .PickupSoundFormID = PickupSoundFormID,
             .DropSoundFormID = DropSoundFormID, .AlternateBlockMaterialFormID = AlternateBlockMaterialFormID,
-            .Description = Description, .NonPlayable = NonPlayable,
+            .Description = Description, .HasDescription = HasDescription, .NonPlayable = NonPlayable,
             .ObndX1 = ObndX1, .ObndY1 = ObndY1, .ObndZ1 = ObndZ1,
             .ObndX2 = ObndX2, .ObndY2 = ObndY2, .ObndZ2 = ObndZ2,
             .TemplateArmorFormID = TemplateArmorFormID,
@@ -163,6 +169,7 @@ Public Class ArmoDraft
         If DropSoundFormID <> o.DropSoundFormID Then Return False
         If AlternateBlockMaterialFormID <> o.AlternateBlockMaterialFormID Then Return False
         If Not String.Equals(Description, o.Description, StringComparison.Ordinal) Then Return False
+        If HasDescription <> o.HasDescription Then Return False
         If NonPlayable <> o.NonPlayable Then Return False
         If ObndX1 <> o.ObndX1 OrElse ObndY1 <> o.ObndY1 OrElse ObndZ1 <> o.ObndZ1 _
            OrElse ObndX2 <> o.ObndX2 OrElse ObndY2 <> o.ObndY2 OrElse ObndZ2 <> o.ObndZ2 Then Return False

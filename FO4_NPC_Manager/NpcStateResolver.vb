@@ -558,6 +558,12 @@ Friend NotInheritable Class NpcStateResolver
             ' referencie volvía a lanzar acá — o sea en tiempo de RESOLUCIÓN DE ESTADO, con el usuario mirando
             ' un NPC. Sin lista no hay leaf que elegir: se devuelve 0, que es lo mismo que una lista vacía.
             lvln = RecordParsers.TryParseLVLN(lvlnRec, _ctx.PluginManager)
+            ' ⛔ El FALLO también se cachea. Sin esto, un LVLN roto que un template referencie se re-parsea
+            ' —con su Throw + Catch + log adentro de TryParseLVLN— en CADA resolución de estado, o sea en cada
+            ' selección de NPC que lo toque, para un resultado que ya se sabe constante. Es seguro porque
+            ' `_lvlnDataCache` se vacía en el rebuild de clasificación (MainForm:4163), que es justo lo que
+            ' corre cuando se recargan los plugins: si el LVLN se arregla en disco, la caché ya no existe.
+            _lvlnDataCache(lvlnFormID) = lvln
         End If
         If lvln Is Nothing Then Return 0UI
 
