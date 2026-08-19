@@ -25,28 +25,20 @@ Public Class EditBody_Form
     ' the vanilla body weight (NAM7 → _0/_1 LERP) plus Load/Save .jslot. Everything game-gated so FO4 is
     ' byte-identical.
     Private ReadOnly _isSSE As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
-    ' SSE weight section control (built in code under _isSSE; Nothing on FO4). A TinySliderTextBox — the
-    ' same slider style the BodySlide / MRSV rows use — replacing the earlier raw TrackBar.
-    Private _sseWeightSlider As FO4_Base_Library.TinySliderTextBox = Nothing
-    ' SSE overlays reuse the FO4 overlay controls; these two read-only fields show the applied overlay's texture
-    ' (RaceMenu overlays carry a texture path directly, where FO4 resolves it from an f4ee template).
-    Private _sseTexDiffuse As TextBox = Nothing
-    Private _sseTexNormal As TextBox = Nothing
-    ''' <summary>Which overlay zone a new overlay is added to (Body/Hands/Feet). skee64 keeps a separate node
-    ''' set per zone; without this only Body overlays could be authored.</summary>
-    Private _sseOverlayZone As ComboBox = Nothing
-    ''' <summary>"Magic" del overlay SELECCIONADO = ¿está en el pool <c>[SOvl{n}]</c> de skee en vez del
-    ''' <c>[Ovl{n}]</c>? Conmutarlo RENOMBRA el nodo (ver <see cref="OnSseOverlayMagicChanged"/>).</summary>
-    Private _sseOverlayMagic As CheckBox = Nothing
+    ' SSE weight (SliderSseWeight), overlay zone/texture-display/magic (FlowSseOverlayZone, ComboBoxSseOverlayZone,
+    ' TextBoxSseOverlayDiffuse/Normal, CheckBoxSseOverlayMagic), node-transform (ListBoxSseNodes, TextBoxSseNodeFilter,
+    ' the 7 TRS sliders, CheckBoxSseShowAllNodes) and skin-override (ListBoxSseSkinOverrides, the 4 texture-slot rows,
+    ' tint controls) controls all live in the Designer now (00-reglas-ui-y-vb §1) — always instantiated, hidden under
+    ' Fallout 4. The decisions those controls encode (single 0..100 weight slider mirroring BuildSseMorphTab; overlay
+    ' texture fields are a read-only display set from the catalog on Add; the "Magic" checkbox MOVES the overlay
+    ' between skee64's normal/spell pools by renaming its node; node transforms are TRS, not scale-only) are documented
+    ' where those controls are declared in EditBody_Form.Designer.vb and at the populate methods below.
     ''' <summary>Opción de VISTA de este editor: dibujar el pool magic en su preview. El preview principal nunca
     ''' se los ve — de ahí el default ON.</summary>
     Private ReadOnly _sseOverlayToolTip As New ToolTip()
     ' Parallel index→entry map for the LEFT paint catalog (ListBoxOverlayAvailable) in SSE mode; the ListBox
     ' index can't be used directly because the filter box removes rows.
     Private ReadOnly _ssePaintShown As New List(Of FO4_Base_Library.RaceMenuPaintCatalog.Entry)
-    ' SSE "Skin Overrides" tab controls (RaceMenu NiOverride body-paint per slot; SSE-only, code-built).
-    Private ReadOnly _sseSkinToolTip As New ToolTip()
-    Private _sseSkinList As ListBox = Nothing
     ' Biped-slot flag grid (BipedSlotCheckboxes) that builds the selected override's slotMask — the SAME control
     ' the ARMA/ARMO editors use. RaceMenu keys a skin override by a slotMask BITMASK (any combination of biped
     ' slots), matched in-game by an EXACT find(armorMask & addonMask) (OverrideInterface.cpp:1190/2506), so the
@@ -60,9 +52,6 @@ Public Class EditBody_Form
     ' on a skin, so we don't offer them (a preset that carries them still round-trips — see the model).
     Private Shared ReadOnly SseSkinTexSlots As (Index As Integer, Label As String)() = {
         (0, "Diffuse"), (1, "Normal"), (2, "Subsurface (SK)"), (7, "Specular")}
-    Private _sseSkinTintEnable As CheckBox = Nothing
-    Private _sseSkinTintColor As Button = Nothing
-    Private _sseSkinTintAlpha As FO4_Base_Library.TinySliderTextBox = Nothing
     ' The NPC's effective NAM7 weight captured at open time (for the Body-tab Reset).
     Private _initialSseWeight As Single = 100.0F
 
@@ -290,7 +279,7 @@ Public Class EditBody_Form
             ' already carries one), so the slider opens at the real value and edits ride on top.
             If Not p.SseWeight.HasValue Then p.SseWeight = _initialSseWeight
             BuildSseWeightSection()
-            BuildSseBodyScaleTab()   ' RaceMenu NiOverride node transform sliders (SSE-only tab; FO4 has no analogue)
+            PopulateSseBodyScaleTab()   ' RaceMenu NiOverride node transform sliders (SSE-only tab; FO4 has no analogue)
             BuildSseSkinOverridesTab()  ' RaceMenu NiOverride skin body-paint per slot (SSE-only tab; FO4 has no analogue)
             ' Same sliders, different carrier: under Skyrim these are the .jslot's bodyMorphs read through
             ' skee64/RaceMenu, not F4SE's PIRT field — so the FO4 caption would be a lie here.
@@ -300,6 +289,12 @@ Public Class EditBody_Form
             ComboBoxLmSkinTemplate.Visible = False : LabelLmSkinTemplate.Visible = False  ' F4SE-only
             ' Overlays: reuse the FO4 controls (set up in BuildSseOverlaysSection AFTER InitOverlaysTab, so the
             ' FO4 init doesn't overwrite the SSE-populated applied list). See below.
+        Else
+            ' Las dos pestañas RaceMenu viven en el Designer (regla de UI) y Fallout 4 no tiene análogo:
+            ' no hay node transforms ni skin overrides de NiOverride. Se quitan del TabControl, que es la
+            ' única forma de ocultar un TabPage en WinForms.
+            If TabsBody.TabPages.Contains(TabPageSseBodyScale) Then TabsBody.TabPages.Remove(TabPageSseBodyScale)
+            If TabsBody.TabPages.Contains(TabPageSseSkinOverrides) Then TabsBody.TabPages.Remove(TabPageSseSkinOverrides)
         End If
 
         AddHandler WeightTriangle.WeightChanged, AddressOf OnWeightTriangleChanged
@@ -982,7 +977,16 @@ Public Class EditBody_Form
         FlushRefresh()
     End Sub
 
-    Private Sub OnSliderDragEnded(sender As Object, e As EventArgs)
+    ''' <summary>Shared DragEnded flush, wired both by AddHandler (dynamic controls, and the FO4 Overlay-tab
+    ''' Designer sliders that predate this migration) and, for the SSE controls migrated to the Designer here,
+    ''' by Handles — Handles is mandatory for SliderSseNodeScale/PosX/Y/Z/RotX/Y/Z because their populate method
+    ''' (PopulateSseBodyScaleTab) runs TWICE per form (ctor + RebuildSseBodyScaleTab); an AddHandler in there would
+    ''' double-subscribe and fire the flush twice per drag. SliderSseWeight/SliderSseSkinAlpha are only ever built
+    ''' once, so Handles there is a consistency choice, not a correctness requirement.</summary>
+    Private Sub OnSliderDragEnded(sender As Object, e As EventArgs) _
+        Handles SliderSseWeight.DragEnded, SliderSseSkinAlpha.DragEnded,
+                SliderSseNodeScale.DragEnded, SliderSseNodePosX.DragEnded, SliderSseNodePosY.DragEnded, SliderSseNodePosZ.DragEnded,
+                SliderSseNodeRotX.DragEnded, SliderSseNodeRotY.DragEnded, SliderSseNodeRotZ.DragEnded
         FlushRefresh()
     End Sub
 
@@ -1221,11 +1225,13 @@ Public Class EditBody_Form
             ResetBodySlideSection()
         ElseIf active Is TabPageOverlays Then
             Await ResetOverlaysSection()
-        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseBodyScale" Then
+        ' Comparacion por REFERENCIA, como las ramas de arriba: desde que las TabPage viven en el Designer
+        ' hay un unico objeto por pestana y comparar el Name era la forma indirecta de lo mismo.
+        ElseIf active Is TabPageSseBodyScale Then
             ResetSseBodyScaleSection()
-        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseSkinOverrides" Then
+        ElseIf active Is TabPageSseSkinOverrides Then
             Await ResetSseSkinOverridesSection()
-        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSkinTint" Then
+        ElseIf active Is TabPageSkinTint Then
             ResetSkinTintSection()
         End If
     End Sub
@@ -1265,9 +1271,7 @@ Public Class EditBody_Form
             ' under _isSSE but their reverts are harmless: WeightTriangle is hidden, _mrsvBars are Nothing.)
             If _isSSE Then
                 p.SseWeight = _initialSseWeight
-                If _sseWeightSlider IsNot Nothing Then
-                    _sseWeightSlider.Value = Math.Max(0.0R, Math.Min(100.0R, Math.Round(CDbl(_initialSseWeight))))
-                End If
+                SliderSseWeight.Value = Math.Max(0.0R, Math.Min(100.0R, Math.Round(CDbl(_initialSseWeight))))
             End If
             ' MWGT — back to initial values seeded from the live NPC at open time.
             If _initialSeed IsNot Nothing Then
@@ -1349,78 +1353,22 @@ Public Class EditBody_Form
     ' morph-dirty path (OnLocalBodyRefresh) the BodySlide sliders use.
     ' =====================================================================
 
-    ''' <summary>Build the code-built SSE weight section into the Body tab: a top bar with Load/Save
-    ''' .jslot buttons and a single 0..100 <see cref="FO4_Base_Library.TinySliderTextBox"/> (the same slider
-    ''' style the BodySlide / MRSV rows use), in the cell GroupBoxWeight occupied (GroupBoxWeight is hidden
-    ''' under _isSSE). Mirrors BuildSseMorphTab.</summary>
+    ''' <summary>Wire up the Designer-built SSE weight group (GroupBoxSseWeight/SliderSseWeight — 00-reglas-ui-y-vb
+    ''' §1): swap it into cell (0,0) of BodyTabLayout in place of the hidden FO4 GroupBoxWeight, and seed the slider
+    ''' from the overlay's SseWeight. A single 0..100 <see cref="FO4_Base_Library.TinySliderTextBox"/> (the same
+    ''' slider style the BodySlide / MRSV rows use) mirrors BuildSseMorphTab.
+    ''' ⛔ Vacate cell (0,0) FIRST. This used to add into the cell the (hidden) FO4 GroupBoxWeight still occupied,
+    ''' and TableLayoutPanel's behaviour for two controls in one explicit cell is not something to rely on — it may
+    ''' overlap them or bump the newcomer to the next free cell, and which row is "next free" moved when the Height
+    ''' row was added. Parking the unused FO4 group in the spare last row makes the placement deterministic: the SSE
+    ''' weight group owns row 0, so Skyrim reads weight -> Height -> Skin whatever the collision policy is.
+    ''' Re-positioned rather than Removed on purpose: a control taken out of the tree is no longer disposed with the
+    ''' form, and ResetBodySection still calls WeightTriangle.SetWeights / SyncMwgtSliders on this group's children
+    ''' under SSE. Hidden, it contributes no height to its row.</summary>
     Private Sub BuildSseWeightSection()
-        Dim grp As New GroupBox() With {
-            .Text = "Weight (NPC.NAM7 — SSE _0 / _1 body morph)",
-            .Dock = DockStyle.Fill,
-            .AutoSize = True,
-            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            .TabStop = False
-        }
-        Dim layout As New TableLayoutPanel() With {
-            .Dock = DockStyle.Fill,
-            .ColumnCount = 2,
-            .RowCount = 2,
-            .AutoSize = True,
-            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            .Padding = New Padding(4)
-        }
-        layout.ColumnStyles.Add(New ColumnStyle())
-        layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        layout.RowStyles.Add(New RowStyle())
-        layout.RowStyles.Add(New RowStyle())
-
-        ' A .jslot is a whole-character snapshot (face + body + RaceMenu overrides). Loading one from inside the
-        ' body editor applied only its body half, leaving face and body from different presets. Preset load/save
-        ' lives at the main window, where it is a single action over the whole preset — and where the presets are
-        ' LISTED (as RaceMenu lists them) instead of being fished out of a file dialog.
-        Dim topBar As New Label() With {
-            .Dock = DockStyle.Fill, .AutoSize = True,
-            .Text = "Vanilla — stored in the NPC record (NPC.NAM7). Load/Save a RaceMenu preset from the main window.",
-            .Margin = New Padding(0, 0, 0, 4)
-        }
-        layout.Controls.Add(topBar, 0, 0)
-        layout.SetColumnSpan(topBar, 2)
-
-        Dim lbl As New Label() With {
-            .Text = "Weight (NPC.NAM7)", .AutoSize = True, .Anchor = AnchorStyles.Left,
-            .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(2, 6, 8, 2)
-        }
-        layout.Controls.Add(lbl, 0, 1)
-        ' Same TinySliderTextBox the BodySlide / MRSV rows use, replacing the raw TrackBar so the SSE weight
-        ' matches the app's slider style. El valor YA viene 0..100, asi que el '%' va ESCAPADO ("0\%"): el
-        ' especificador "0%" de .NET MULTIPLICA por 100 y mostraria 10000%. Mismo par que la fila de tint.
-        _sseWeightSlider = New FO4_Base_Library.TinySliderTextBox() With {
-            .Minimum = 0R,
-            .Maximum = 100.0R,
-            .DisplayFormat = "0\%",
-            .SmallChange = 1.0R,
-            .LargeChange = 10.0R,
-            .Height = 28,
-            .Value = 100.0R,
-            .Dock = DockStyle.Fill,
-            .Margin = New Padding(2)
-        }
-        AddHandler _sseWeightSlider.ValueChanged, AddressOf OnSseWeightChanged
-        AddHandler _sseWeightSlider.DragEnded, AddressOf OnSliderDragEnded
-        layout.Controls.Add(_sseWeightSlider, 1, 1)
-
-        grp.Controls.Add(layout)
-        ' ⛔ Vacate cell (0,0) FIRST. This used to add into the cell the (hidden) FO4 GroupBoxWeight still
-        ' occupied, and TableLayoutPanel's behaviour for two controls in one explicit cell is not something to
-        ' rely on — it may overlap them or bump the newcomer to the next free cell, and which row is "next
-        ' free" moved when the Height row was added. Parking the unused FO4 group in the spare last row makes
-        ' the placement deterministic: the SSE weight group owns row 0, so Skyrim reads weight -> Height ->
-        ' Skin whatever the collision policy is.
-        ' Re-positioned rather than Removed on purpose: a control taken out of the tree is no longer disposed
-        ' with the form, and ResetBodySection still calls WeightTriangle.SetWeights / SyncMwgtSliders on this
-        ' group's children under SSE. Hidden, it contributes no height to its row.
+        GroupBoxSseWeight.Visible = True
         BodyTabLayout.SetCellPosition(GroupBoxWeight, New TableLayoutPanelCellPosition(0, BodyTabSpareRow))
-        BodyTabLayout.Controls.Add(grp, 0, 0)
+        BodyTabLayout.SetCellPosition(GroupBoxSseWeight, New TableLayoutPanelCellPosition(0, 0))
 
         ' Seed the slider from the overlay's SseWeight (already seeded in the ctor from the effective NAM7).
         Dim p = Preset
@@ -1428,7 +1376,7 @@ Public Class EditBody_Form
         Dim iv As Double = Math.Max(0.0R, Math.Min(100.0R, Math.Round(CDbl(w))))
         _suspendEvents = True
         Try
-            _sseWeightSlider.Value = iv
+            SliderSseWeight.Value = iv
         Finally
             _suspendEvents = False
         End Try
@@ -1438,10 +1386,9 @@ Public Class EditBody_Form
     ''' refresh. The SSE _0/_1 LERP is a morph channel: OnLocalBodyRefresh rebuilds the composite morph
     ''' resolver, which reads the overlay-applied NAM7 (preset.SseWeight → shadow.Nam7Raw). DragEnded
     ''' (OnSliderDragEnded → FlushRefresh) forces the final value to render immediately.</summary>
-    Private Sub OnSseWeightChanged(sender As Object, e As EventArgs)
+    Private Sub OnSseWeightChanged(sender As Object, e As EventArgs) Handles SliderSseWeight.ValueChanged
         If _suspendEvents Then Return
-        If _sseWeightSlider Is Nothing Then Return
-        Dim v As Single = CSng(_sseWeightSlider.Value)
+        Dim v As Single = CSng(SliderSseWeight.Value)
         Dim p = Preset
         If p IsNot Nothing Then p.SseWeight = v
         ScheduleRefresh()
@@ -1454,30 +1401,22 @@ Public Class EditBody_Form
     ' re-applies the merged pose live (a node transform is a BONE pose, not a vertex morph). Rotation is edited in
     ' euler DEGREES but stored as the axis-angle the render consumes (Transform_Class.BSRotationToMatrix33), so it
     ' reproduces the .jslot's 3×3 matrix exactly. FO4 has no node-transform system → SSE-only tab.
-    Private _sseNodeList As ListBox
+    ' ListBoxSseNodes, TextBoxSseNodeFilter, PanelSseNodeDetail, LabelSseNodeNote, the 7 TRS sliders and
+    ' CheckBoxSseShowAllNodes now live in the Designer (00-reglas-ui-y-vb §1; see EditBody_Form.Designer.vb).
+    ' _sseNodeItems / _sseNodeShown / _sseNodeSelected / _sseShowAllNodes stay as plain data fields — they are
+    ' not controls.
     Private ReadOnly _sseNodeItems As New List(Of (Label As String, Node As String))
     ' Filter over the node list. With "show all rig bones" on this is every bone of the skeleton (hundreds), so the
     ' box is the only way to reach one by name. _sseNodeShown is the parallel mapping shown-row → item (same idiom
     ' as _ssePaintShown / _bodySlideRows): once the list is filtered, the ListBox index can NOT index _sseNodeItems.
-    Private _sseNodeFilter As TextBox
     Private ReadOnly _sseNodeShown As New List(Of (Label As String, Node As String))
-    Private _sseNodeDetailPanel As Control
-    ''' <summary>Aviso POR NODO, debajo de los sliders. Hoy sólo tiene un caso, y es EL caso: el hueso rotulado
-    ''' "Height" es el nodo <c>NPC</c>, que es exactamente donde skee compone el lift de los tacos altos. O sea que el
-    ''' único NPC que un jugador va a ver más alto en el juego que en el editor es el que él mismo subió de altura y
-    ''' calzó con botas. Estaba dicho —dentro de una nota de 13 líneas, a dos diálogos de distancia, sin nombrar el
-    ''' slider— y ahí no le sirve a nadie.</summary>
-    Private _sseNodeNote As Label
-    Private _sseNodeScaleBar As FO4_Base_Library.TinySliderTextBox
-    Private _sseNodePosX As FO4_Base_Library.TinySliderTextBox
-    Private _sseNodePosY As FO4_Base_Library.TinySliderTextBox
-    Private _sseNodePosZ As FO4_Base_Library.TinySliderTextBox
-    Private _sseNodeRotX As FO4_Base_Library.TinySliderTextBox
-    Private _sseNodeRotY As FO4_Base_Library.TinySliderTextBox
-    Private _sseNodeRotZ As FO4_Base_Library.TinySliderTextBox
+    ' Aviso POR NODO, debajo de los sliders (texto puesto en LabelSseNodeNote, ver LoadSseNodeDetail). Hoy sólo
+    ' tiene un caso, y es EL caso: el hueso rotulado "Height" es el nodo NPC, que es exactamente donde skee compone
+    ' el lift de los tacos altos. O sea que el único NPC que un jugador va a ver más alto en el juego que en el
+    ' editor es el que él mismo subió de altura y calzó con botas. Estaba dicho —dentro de una nota de 13 líneas,
+    ' a dos diálogos de distancia, sin nombrar el slider— y ahí no le sirve a nadie.
     Private _sseNodeSelected As String
     Private _sseShowAllNodes As Boolean = False
-    Private _sseShowAllCheck As CheckBox
 
     ''' <summary>Piso de la escala de un node transform. Un factor 0 deja la matriz del hueso singular
     ''' (geometría colapsada, normal indefinida ⇒ inversa imposible), así que el editor no permite bajar
@@ -1551,140 +1490,37 @@ Public Class EditBody_Form
         Return node
     End Function
 
-    Private Sub OnSseShowAllNodesChanged(sender As Object, e As EventArgs)
-        If _sseShowAllCheck Is Nothing Then Return
-        _sseShowAllNodes = _sseShowAllCheck.Checked
+    Private Sub OnSseShowAllNodesChanged(sender As Object, e As EventArgs) Handles CheckBoxSseShowAllNodes.CheckedChanged
+        _sseShowAllNodes = CheckBoxSseShowAllNodes.Checked
         RebuildSseNodeItems()
         PopulateSseNodeList(0)
     End Sub
 
-    Private Sub BuildSseBodyScaleTab()
-        Dim tab As New TabPage("Body Transform") With {.Name = "TabPageSseBodyScale", .Padding = New Padding(6)}
-        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 2}
-        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42))
-        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58))
-        ' ⛔ NO HAY ENCABEZADO ARRIBA. Estuvo ahi en dos versiones y las dos molestaban: primero recortado en una
-        ' fila de 40 px (no se leia la mitad), y despues legible pero comiendose el alto de la pestana para repetir
-        ' algo que el usuario lee una vez. TODO el texto vive ahora en `_sseNodeNote`, abajo, en el espacio que de
-        ' todos modos quedaba vacio — y ahi se le suma la advertencia del nodo cuando corresponde.
-        root.RowStyles.Add(New RowStyle(SizeType.Percent, 100))   ' fila 0: listas + sliders
-        root.RowStyles.Add(New RowStyle(SizeType.AutoSize))        ' fila 1: TODO el texto, abajo
-
-        ' Left column: "show all" toggle + name filter above the node list. The list itself is filled by
-        ' RebuildSseNodeItems (RaceMenu's registered body nodes ∪ the dynamic node catalog ∪ preset nodes; + weapons
-        ' + all rig bones when show-all is on).
-        Dim leftCol As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 3}
-        leftCol.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        leftCol.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        leftCol.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
-        _sseShowAllCheck = New CheckBox With {.Text = "Show all rig bones (+ weapons)", .AutoSize = True,
-                                              .Checked = _sseShowAllNodes, .Margin = New Padding(3, 3, 3, 3)}
-        _sseShowAllCheck.FlatStyle = FlatStyle.Standard
-        AddHandler _sseShowAllCheck.CheckedChanged, AddressOf OnSseShowAllNodesChanged
-        Dim tip As New ToolTip()
-        tip.SetToolTip(_sseShowAllCheck, "RaceMenu only exposes a registered set of nodes (RaceMenuPlugin + XPMSE). " &
-                       "Off = that faithful set (present on this rig) plus any node the preset uses. On = also the " &
-                       "weapon nodes and every other bone the skeleton has.")
-        leftCol.Controls.Add(_sseShowAllCheck, 0, 0)
-        _sseNodeFilter = New TextBox With {.Dock = DockStyle.Fill, .Margin = New Padding(3)}
-        _sseNodeFilter.PlaceholderText = "Filter nodes…"
-        AddHandler _sseNodeFilter.TextChanged, AddressOf OnSseNodeFilterChanged
-        leftCol.Controls.Add(_sseNodeFilter, 0, 1)
-        _sseNodeList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False}
-        AddHandler _sseNodeList.SelectedIndexChanged, AddressOf OnSseNodeSelChanged
-        leftCol.Controls.Add(_sseNodeList, 0, 2)
-        root.Controls.Add(leftCol, 0, 0)
+    ''' <summary>Populate the "Body Transform" tab: rebuild the RaceMenu node catalog (RebuildSseNodeItems) and
+    ''' (re)fill the node list. The controls themselves live in the Designer (00-reglas-ui-y-vb §1;
+    ''' GroupBoxSseWeight's sibling tabs TabPageSseBodyScale/TabPageSseSkinOverrides) — this only does the
+    ''' per-NPC population a Designer field can't do for itself. Runs once from the .ctor (before the preview
+    ''' host exists — the catalog is still useful unfiltered) and again from RebuildSseBodyScaleTab once the
+    ''' actor's skeleton is available, to intersect the dynamic catalog against the rig's actual bones.</summary>
+    Private Sub PopulateSseBodyScaleTab()
         RebuildSseNodeItems()
-
-        ' Detail: labeled TinySlider rows — Scale (0..2), Position X/Y/Z (centred), Rotation X/Y/Z in degrees
-        ' (centred), then a per-node Reset RIGHT under the last slider. The rows live in an AutoSize/Dock.Top
-        ' TableLayoutPanel inside a scrollable panel so the Reset button hugs the sliders instead of a stretched
-        ' filler pushing it to the bottom. AllowExtremeValues lets a typed value exceed the slider range.
-        Dim rightPanel As New Panel With {.Dock = DockStyle.Fill, .AutoScroll = True}
-        _sseNodeDetailPanel = rightPanel
-        Dim detail As New TableLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True, .ColumnCount = 2}
-        detail.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 118))
-        detail.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        _sseNodeScaleBar = MakeNodeSlider(MinNodeScale, 2.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Left)
-        _sseNodePosX = MakeNodeSlider(-20.0R, 20.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Center)
-        _sseNodePosY = MakeNodeSlider(-20.0R, 20.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Center)
-        _sseNodePosZ = MakeNodeSlider(-20.0R, 20.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Center)
-        _sseNodeRotX = MakeNodeSlider(-180.0R, 180.0R, "0.0", FO4_Base_Library.TinySliderFillMode.Center)
-        _sseNodeRotY = MakeNodeSlider(-180.0R, 180.0R, "0.0", FO4_Base_Library.TinySliderFillMode.Center)
-        _sseNodeRotZ = MakeNodeSlider(-180.0R, 180.0R, "0.0", FO4_Base_Library.TinySliderFillMode.Center)
-        AddHandler _sseNodeScaleBar.ValueChanged, Sub(s, e) OnSseNodeScaleChanged()
-        AddHandler _sseNodePosX.ValueChanged, Sub(s, e) OnSseNodePosChanged()
-        AddHandler _sseNodePosY.ValueChanged, Sub(s, e) OnSseNodePosChanged()
-        AddHandler _sseNodePosZ.ValueChanged, Sub(s, e) OnSseNodePosChanged()
-        AddHandler _sseNodeRotX.ValueChanged, Sub(s, e) OnSseNodeRotChanged()
-        AddHandler _sseNodeRotY.ValueChanged, Sub(s, e) OnSseNodeRotChanged()
-        AddHandler _sseNodeRotZ.ValueChanged, Sub(s, e) OnSseNodeRotChanged()
-        For Each b In {_sseNodeScaleBar, _sseNodePosX, _sseNodePosY, _sseNodePosZ, _sseNodeRotX, _sseNodeRotY, _sseNodeRotZ}
-            AddHandler b.DragEnded, AddressOf OnSliderDragEnded
-        Next
-        Dim r = 0
-        AddNodeDetailRow(detail, r, "Scale", _sseNodeScaleBar) : r += 1
-        AddNodeDetailRow(detail, r, "Position X", _sseNodePosX) : r += 1
-        AddNodeDetailRow(detail, r, "Position Y", _sseNodePosY) : r += 1
-        AddNodeDetailRow(detail, r, "Position Z", _sseNodePosZ) : r += 1
-        AddNodeDetailRow(detail, r, "Rotation X (°)", _sseNodeRotX) : r += 1
-        AddNodeDetailRow(detail, r, "Rotation Y (°)", _sseNodeRotY) : r += 1
-        AddNodeDetailRow(detail, r, "Rotation Z (°)", _sseNodeRotZ) : r += 1
-        Dim btnReset As New Button With {.Text = "Reset node", .AutoSize = True, .Margin = New Padding(0, 4, 3, 3)}
-        AddHandler btnReset.Click, AddressOf OnSseNodeResetClick
-        ' Button row sits directly below the slider grid (Dock.Top stacking: the LAST-added Dock.Top control ends up
-        ' on top, so add the button row FIRST and the slider grid second).
-        Dim btnRow As New FlowLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True,
-                                                .Padding = New Padding(118, 0, 0, 0), .Margin = New Padding(0)}
-        btnRow.Controls.Add(btnReset)
-        ' ⛔⛔⛔ TRES INTENTOS FALLADOS ANTES DE ESTE, TODOS DE LAYOUT Y TODOS MIOS. Vale escribirlos porque la
-        ' causa era siempre la misma y no la vi: **un Label que ENVUELVE necesita algo que le limite el ANCHO**.
-        '   1) `MaximumSize = 430` con ~790 px disponibles ⇒ partia la frase en 4 lineas sin necesidad;
-        '   2) `Dock = Bottom` + AutoSize ⇒ la ALTURA se calcula para una linea ⇒ texto recortado por abajo;
-        '   3) `Dock = Top` dentro del panel `AutoScroll` y SIN tope ⇒ AutoSize pide una linea larguisima y el
-        '      panel la recorta a lo ANCHO (las dos lineas cortadas a la mitad de la oracion).
-        ' Lo que funciona, y es lo que el encabezado original hacia: vivir en una CELDA del TableLayoutPanel.
-        ' El TLP le fija el ancho de la columna, y con eso el wrap y el AutoSize de alto salen bien solos.
-        _sseNodeNote = New Label With {.Dock = DockStyle.Fill, .AutoSize = True,
-                                       .ForeColor = SystemColors.GrayText, .Padding = New Padding(6, 8, 6, 4),
-                                       .Text = ""}
-        rightPanel.Controls.Add(btnRow)
-        rightPanel.Controls.Add(detail)
-        root.Controls.Add(rightPanel, 1, 0)
-        root.Controls.Add(_sseNodeNote, 0, 1) : root.SetColumnSpan(_sseNodeNote, 2)
-
-        tab.Controls.Add(root)
-        TabsBody.TabPages.Add(tab)
         PopulateSseNodeList(0)
-    End Sub
-
-    Private Function MakeNodeSlider(min As Double, max As Double, fmt As String, fill As FO4_Base_Library.TinySliderFillMode) As FO4_Base_Library.TinySliderTextBox
-        Return New FO4_Base_Library.TinySliderTextBox With {
-            .Minimum = min, .Maximum = max, .DisplayFormat = fmt, .SmallChange = 0.01R, .LargeChange = 0.1R,
-            .FillMode = fill, .AllowExtremeValues = True, .Height = 26, .Dock = DockStyle.Fill}
-    End Function
-
-    Private Shared Sub AddNodeDetailRow(detail As TableLayoutPanel, row As Integer, label As String, bar As Control)
-        detail.RowStyles.Add(New RowStyle(SizeType.Absolute, 32))
-        detail.Controls.Add(New Label With {.Text = label, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(3, 8, 3, 0)}, 0, row)
-        detail.Controls.Add(bar, 1, row)
     End Sub
 
     ''' <summary>Fill the node ListBox from <see cref="_sseNodeShown"/> (= <see cref="_sseNodeItems"/> narrowed by the
     ''' filter box), marking nodes that carry a non-identity transform with a ●, then load the selected node's TRS
     ''' into the detail sliders. <paramref name="selectIndex"/> is an index into the SHOWN rows.</summary>
     Private Sub PopulateSseNodeList(selectIndex As Integer)
-        If _sseNodeList Is Nothing Then Return
         RebuildSseNodeShown()
         _suspendEvents = True
         Try
-            _sseNodeList.BeginUpdate()
-            _sseNodeList.Items.Clear()
+            ListBoxSseNodes.BeginUpdate()
+            ListBoxSseNodes.Items.Clear()
             For Each it In _sseNodeShown
-                _sseNodeList.Items.Add(SseNodeRowLabel(it.Label, it.Node))
+                ListBoxSseNodes.Items.Add(SseNodeRowLabel(it.Label, it.Node))
             Next
-            _sseNodeList.EndUpdate()
-            If _sseNodeList.Items.Count > 0 Then _sseNodeList.SelectedIndex = Math.Max(0, Math.Min(selectIndex, _sseNodeList.Items.Count - 1))
+            ListBoxSseNodes.EndUpdate()
+            If ListBoxSseNodes.Items.Count > 0 Then ListBoxSseNodes.SelectedIndex = Math.Max(0, Math.Min(selectIndex, ListBoxSseNodes.Items.Count - 1))
         Finally
             _suspendEvents = False
         End Try
@@ -1695,7 +1531,7 @@ Public Class EditBody_Form
     ''' on the friendly label OR the raw node name (case-insensitive substring), since the label is what the user
     ''' reads for RaceMenu's known nodes while the bone name is what a preset/skeleton carries.</summary>
     Private Sub RebuildSseNodeShown()
-        Dim filter = If(_sseNodeFilter Is Nothing, "", _sseNodeFilter.Text.Trim())
+        Dim filter = TextBoxSseNodeFilter.Text.Trim()
         _sseNodeShown.Clear()
         For Each it In _sseNodeItems
             If filter.Length = 0 OrElse
@@ -1708,7 +1544,7 @@ Public Class EditBody_Form
 
     ''' <summary>Filter changed → re-project the rows, keeping the selected node selected when it survives the
     ''' filter (otherwise the detail panel would silently jump to another node's TRS).</summary>
-    Private Sub OnSseNodeFilterChanged(sender As Object, e As EventArgs)
+    Private Sub OnSseNodeFilterChanged(sender As Object, e As EventArgs) Handles TextBoxSseNodeFilter.TextChanged
         Dim keep = _sseNodeSelected
         RebuildSseNodeShown()
         Dim idx = If(String.IsNullOrEmpty(keep), -1,
@@ -1722,8 +1558,7 @@ Public Class EditBody_Form
     End Function
 
     Private Function SelectedSseNode() As String
-        If _sseNodeList Is Nothing Then Return Nothing
-        Dim i = _sseNodeList.SelectedIndex
+        Dim i = ListBoxSseNodes.SelectedIndex
         ' _sseNodeShown, NOT _sseNodeItems: with a filter typed the row index no longer indexes the full item list.
         If i < 0 OrElse i >= _sseNodeShown.Count Then Return Nothing
         Return _sseNodeShown(i).Node
@@ -1735,7 +1570,7 @@ Public Class EditBody_Form
         Return p.SseNodeTransforms.FirstOrDefault(Function(x) x IsNot Nothing AndAlso String.Equals(x.NodeName, node, StringComparison.OrdinalIgnoreCase))
     End Function
 
-    Private Sub OnSseNodeSelChanged(sender As Object, e As EventArgs)
+    Private Sub OnSseNodeSelChanged(sender As Object, e As EventArgs) Handles ListBoxSseNodes.SelectedIndexChanged
         If _suspendEvents Then Return
         LoadSseNodeDetail()
     End Sub
@@ -1747,27 +1582,26 @@ Public Class EditBody_Form
         Dim has = Not String.IsNullOrEmpty(_sseNodeSelected)
         _suspendEvents = True
         Try
-            If _sseNodeDetailPanel IsNot Nothing Then _sseNodeDetailPanel.Enabled = has
-            _sseNodeScaleBar.Value = If(nt IsNot Nothing AndAlso nt.HasScale, CDbl(nt.Scale), 1.0R)
-            _sseNodePosX.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosX), 0.0R)
-            _sseNodePosY.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosY), 0.0R)
-            _sseNodePosZ.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosZ), 0.0R)
+            PanelSseNodeDetail.Enabled = has
+            SliderSseNodeScale.Value = If(nt IsNot Nothing AndAlso nt.HasScale, CDbl(nt.Scale), 1.0R)
+            SliderSseNodePosX.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosX), 0.0R)
+            SliderSseNodePosY.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosY), 0.0R)
+            SliderSseNodePosZ.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosZ), 0.0R)
             Dim deg = SseNodeRotDegrees(nt)
-            _sseNodeRotX.Value = deg.X : _sseNodeRotY.Value = deg.Y : _sseNodeRotZ.Value = deg.Z
-            ' El aviso de los tacos, sólo en el nodo donde el motor los compone (ver el doc de _sseNodeNote).
-            ' El bloque de abajo es el UNICO texto de la pestana: la explicacion general (que antes era el
-            ' encabezado) mas la advertencia del nodo seleccionado, cuando ese nodo tiene una.
-            If _sseNodeNote IsNot Nothing Then
-                Dim t = "The value shown is FINAL: several preset sliders on one bone were added into this one " &
-                        "number. Only this app's value is written, with ""Attach the helper script"" ticked in " &
-                        "the Save dialog."
-                If has AndAlso String.Equals(_sseNodeSelected, SseCatalogs.HeightNodeName, StringComparison.OrdinalIgnoreCase) Then
-                    t &= ControlChars.Lf & ControlChars.Lf &
-                         "High-heeled boots add their own lift on top of this bone, so in game the NPC can stand " &
-                         "taller than it does here. That is correct — the app does not remove the boots' lift."
-                End If
-                _sseNodeNote.Text = t
+            SliderSseNodeRotX.Value = deg.X : SliderSseNodeRotY.Value = deg.Y : SliderSseNodeRotZ.Value = deg.Z
+            ' El aviso de los tacos, sólo en el nodo donde el motor los compone (ver el doc de _sseNodeSelected,
+            ' arriba, y el texto de LabelSseNodeNote en el Designer). El bloque de abajo es el UNICO texto de la
+            ' pestana: la explicacion general (que antes era el encabezado) mas la advertencia del nodo
+            ' seleccionado, cuando ese nodo tiene una.
+            Dim t = "The value shown is FINAL: several preset sliders on one bone were added into this one " &
+                    "number. Only this app's value is written, with ""Attach the helper script"" ticked in " &
+                    "the Save dialog."
+            If has AndAlso String.Equals(_sseNodeSelected, SseCatalogs.HeightNodeName, StringComparison.OrdinalIgnoreCase) Then
+                t &= ControlChars.Lf & ControlChars.Lf &
+                     "High-heeled boots add their own lift on top of this bone, so in game the NPC can stand " &
+                     "taller than it does here. That is correct — the app does not remove the boots' lift."
             End If
+            LabelSseNodeNote.Text = t
         Finally
             _suspendEvents = False
         End Try
@@ -1800,30 +1634,32 @@ Public Class EditBody_Form
         Return nt
     End Function
 
-    Private Sub OnSseNodeScaleChanged()
+    Private Sub OnSseNodeScaleChanged(sender As Object, e As EventArgs) Handles SliderSseNodeScale.ValueChanged
         If _suspendEvents Then Return
         ' Escala 0 (o negativa) hace singular la matriz del hueso: la geometría colapsa y la normal
         ' queda indefinida. El slider ya arranca en MinNodeScale, pero AllowExtremeValues deja tipear
         ' un valor fuera de rango, así que el piso se aplica acá también. Re-asignar Value re-entra en
         ' este handler con el valor ya capeado (AreClose corta la recursión).
-        If _sseNodeScaleBar.Value < MinNodeScale Then
-            _sseNodeScaleBar.Value = MinNodeScale
+        If SliderSseNodeScale.Value < MinNodeScale Then
+            SliderSseNodeScale.Value = MinNodeScale
             Return
         End If
         Dim nt = EnsureSseNodeTransform() : If nt Is Nothing Then Return
-        nt.Scale = CSng(_sseNodeScaleBar.Value) : nt.HasScale = True
+        nt.Scale = CSng(SliderSseNodeScale.Value) : nt.HasScale = True
         ApplySseNodeEdit()
     End Sub
 
-    Private Sub OnSseNodePosChanged()
+    Private Sub OnSseNodePosChanged(sender As Object, e As EventArgs) _
+        Handles SliderSseNodePosX.ValueChanged, SliderSseNodePosY.ValueChanged, SliderSseNodePosZ.ValueChanged
         If _suspendEvents Then Return
         Dim nt = EnsureSseNodeTransform() : If nt Is Nothing Then Return
-        nt.PosX = CSng(_sseNodePosX.Value) : nt.PosY = CSng(_sseNodePosY.Value) : nt.PosZ = CSng(_sseNodePosZ.Value)
+        nt.PosX = CSng(SliderSseNodePosX.Value) : nt.PosY = CSng(SliderSseNodePosY.Value) : nt.PosZ = CSng(SliderSseNodePosZ.Value)
         nt.HasPosition = True
         ApplySseNodeEdit()
     End Sub
 
-    Private Sub OnSseNodeRotChanged()
+    Private Sub OnSseNodeRotChanged(sender As Object, e As EventArgs) _
+        Handles SliderSseNodeRotX.ValueChanged, SliderSseNodeRotY.ValueChanged, SliderSseNodeRotZ.ValueChanged
         If _suspendEvents Then Return
         Dim nt = EnsureSseNodeTransform() : If nt Is Nothing Then Return
         ' STANDARD euler degrees (X/Y/Z about the X/Y/Z axes) → matrix → axis-angle radians (the model/render
@@ -1832,7 +1668,7 @@ Public Class EditBody_Form
         ' negation the sliders would be mislabelled (raw EulerXYZToMatrix33 params are yaw=Z, pitch=Y, roll=X, so
         ' "Rotation X" would actually rotate about Z). RotationDirty tells Save to rebuild the key-32 matrix from
         ' this axis-angle (untouched rotations stay byte-exact from Raw).
-        Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(-_sseNodeRotX.Value, -_sseNodeRotY.Value, -_sseNodeRotZ.Value)
+        Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(-SliderSseNodeRotX.Value, -SliderSseNodeRotY.Value, -SliderSseNodeRotZ.Value)
         Dim aa = FO4_Base_Library.Transform_Class.Matrix33ToBSRotation(m)
         ' ⛔ UNA sola llamada, y a propósito: acá se seteaba RotX/Y/Z + HasRotation + RotationDirty a mano y se
         ' OLVIDABA invalidar la matriz cruda, que el sidecar persiste. Ver SetRotationFromUi.
@@ -1840,7 +1676,7 @@ Public Class EditBody_Form
         ApplySseNodeEdit()
     End Sub
 
-    Private Sub OnSseNodeResetClick(sender As Object, e As EventArgs)
+    Private Sub OnSseNodeResetClick(sender As Object, e As EventArgs) Handles ButtonSseNodeReset.Click
         If String.IsNullOrEmpty(_sseNodeSelected) Then Return
         Dim p = Preset
         If p Is Nothing OrElse p.SseNodeTransforms Is Nothing Then Return
@@ -1868,16 +1704,15 @@ Public Class EditBody_Form
 
     ''' <summary>Update just the selected row's ● marker (a transform may have become identity or non-identity).</summary>
     Private Sub RefreshSseNodeMarker()
-        If _sseNodeList Is Nothing Then Return
-        Dim i = _sseNodeList.SelectedIndex
+        Dim i = ListBoxSseNodes.SelectedIndex
         If i < 0 OrElse i >= _sseNodeShown.Count Then Return
         Dim it = _sseNodeShown(i)
         Dim newText = SseNodeRowLabel(it.Label, it.Node)
-        If String.Equals(CStr(_sseNodeList.Items(i)), newText) Then Return
+        If String.Equals(CStr(ListBoxSseNodes.Items(i)), newText) Then Return
         Dim keep = _suspendEvents
         _suspendEvents = True
         Try
-            _sseNodeList.Items(i) = newText
+            ListBoxSseNodes.Items(i) = newText
         Finally
             _suspendEvents = keep
         End Try
@@ -1885,115 +1720,34 @@ Public Class EditBody_Form
 
     ''' <summary>Reflect the preset's current node transforms onto the tab (after a .jslot load / reset).</summary>
     Private Sub RefreshSseBodyScaleBars()
-        If _sseNodeList Is Nothing Then Return
-        PopulateSseNodeList(_sseNodeList.SelectedIndex)
+        PopulateSseNodeList(ListBoxSseNodes.SelectedIndex)
     End Sub
 
-    ''' <summary>SSE-only "Skin Overrides" tab: RaceMenu NiOverride body-paint per biped slot (diffuse/normal
-    ''' texture + tint that replace/tint the worn skin). FO4 has no analogue → code-built SSE tab, as full as the
-    ''' others: a list of overrides (left) with Add/Remove, and a detail panel (right) with slot + diffuse/normal
-    ''' Browse fields + tint enable/color/alpha. Editing writes Preset.SseSkinOverrides and live re-renders (the
-    ''' render composes them under the tattoo overlays in ResolveSseOverlayLayers).</summary>
+    ''' <summary>Populate the SSE-only "Skin Overrides" tab: RaceMenu NiOverride body-paint per biped slot
+    ''' (diffuse/normal texture + tint that replace/tint the worn skin). FO4 has no analogue → the tab lives in
+    ''' the Designer, quitado del TabControl bajo Fallout 4 en el .ctor (00-reglas-ui-y-vb §1). Only the dynamic
+    ''' bits stay here: the 4-slot texture-box map (index → the Designer's fixed TextBoxSseSkinTex0/1/2/7 — the
+    ''' indices are 0/1/2/7, not 0-3, so a map is still needed) and the biped-slot flag grid (BipedSlotCheckboxes,
+    ''' data-driven, ítem E de la auditoría — permitido). Editing writes Preset.SseSkinOverrides and live
+    ''' re-renders (the render composes them under the tattoo overlays in ResolveSseOverlayLayers).</summary>
     Private Sub BuildSseSkinOverridesTab()
-        Dim tab As New TabPage("Skin Overrides") With {.Name = "TabPageSseSkinOverrides", .Padding = New Padding(6)}
-        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 3}
-        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50))
-        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50))
-        root.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
-        root.RowStyles.Add(New RowStyle(SizeType.Percent, 55))
-        root.RowStyles.Add(New RowStyle(SizeType.Percent, 45))
-        Dim header As New Label With {.Dock = DockStyle.Fill, .AutoSize = False, .Padding = New Padding(3, 6, 3, 0),
-            .Text = "RaceMenu skin overrides (NiOverride body-paint per slot). Loaded/saved with the .jslot + sidecar."}
-        root.Controls.Add(header, 0, 0) : root.SetColumnSpan(header, 2)
-
-        ' Left (top row): the list of overrides with Add/Remove. The biped-slot FLAG grid that builds the SELECTED
-        ' override's slotMask lives in its OWN full-width row underneath (spanning both columns) so it uses the whole
-        ' tab width. RaceMenu keys a skin override by a slotMask bitmask — any combination of biped slots — so the
-        ' user checks the exact slots there.
-        Dim leftPanel As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
-        leftPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
-        leftPanel.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        _sseSkinList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False, .DrawMode = DrawMode.OwnerDrawFixed}
-        AddHandler _sseSkinList.SelectedIndexChanged, AddressOf OnSseSkinSelChanged
-        AddHandler _sseSkinList.DrawItem, AddressOf DrawSseSkinOverrideItem
-        leftPanel.Controls.Add(_sseSkinList, 0, 0)
-        Dim btnRow As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .FlowDirection = FlowDirection.LeftToRight, .WrapContents = False, .AutoSize = True, .Margin = New Padding(0, 3, 0, 3)}
-        Dim btnAdd As New Button With {.Text = "Add", .AutoSize = True}
-        Dim btnRemove As New Button With {.Text = "Remove", .AutoSize = True}
-        AddHandler btnAdd.Click, AddressOf OnSseSkinAdd
-        AddHandler btnRemove.Click, AddressOf OnSseSkinRemove
-        btnRow.Controls.Add(btnAdd) : btnRow.Controls.Add(btnRemove)
-        leftPanel.Controls.Add(btnRow, 0, 1)
-        root.Controls.Add(leftPanel, 0, 1)
-
-        ' Full-width row: the biped-slot flag grid (same control the ARMA/ARMO editors use). Spans both columns so
-        ' the category boxes flow across the whole tab width instead of being squeezed into the left column.
-        Dim slotGroup As New GroupBox With {.Dock = DockStyle.Fill, .Text = "Biped slots — this override's slotMask (check the slots it targets)"}
-        Dim slotFlow As New FlowLayoutPanel With {.Dock = DockStyle.Fill}
-        _sseSkinSlotChecks = BipedSlotCheckboxes.Build(slotFlow, AddressOf OnSseSkinSlotFlagsChanged, columns:=5)
-        slotFlow.WrapContents = True
-        slotGroup.Controls.Add(slotFlow)
-        root.Controls.Add(slotGroup, 0, 2) : root.SetColumnSpan(slotGroup, 2)
-
-        ' Right: detail — a 4-column grid so the path fields STRETCH and are readable: [label | path (fills) | Pick |
-        ' Clear]. One row per BSShaderTextureSet slot (skee replaces each key-9 slot independently, keeping the
-        ' skin's own texture in the untouched slots), then Tint (key 7, RGB) and Opacity (key 8) on their own rows —
-        ' the two are independent (skee unpacks the tint as an NiColor with no alpha and reads key 8 as the material
-        ' alpha). A trailing filler row packs everything at the top.
-        Dim detail As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 4, .RowCount = SseSkinTexSlots.Length + 3, .AutoScroll = True}
-        detail.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 108))    ' label
-        detail.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))     ' path (fills)
-        detail.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))         ' Pick
-        detail.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))         ' Clear
-        ' One AutoSize row per slot + the Tint row + the Opacity row, THEN a single Percent filler as the LAST row
-        ' (rows = slots + 3). Getting this count right is what keeps Opacity packed under Tint instead of floating
-        ' at the bottom of the panel.
-        For k = 0 To SseSkinTexSlots.Length + 1 : detail.RowStyles.Add(New RowStyle(SizeType.AutoSize)) : Next
-        detail.RowStyles.Add(New RowStyle(SizeType.Percent, 100))   ' filler (last row)
         _sseSkinSlotBoxes.Clear()
-        Dim rr = 0
-        For Each sl In SseSkinTexSlots
-            Dim slotIndex = sl.Index
-            detail.Controls.Add(New Label With {.Text = sl.Label & ":", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
-            Dim box As New TextBox With {.ReadOnly = True, .Dock = DockStyle.Fill, .Margin = New Padding(0, 4, 3, 0)}
-            _sseSkinSlotBoxes(slotIndex) = box
-            detail.Controls.Add(box, 1, rr)
-            ' Compact buttons (… = pick, × = clear) so the path textbox keeps the width and stays readable.
-            Dim brPick As New Button With {.Text = "…", .AutoSize = False, .Width = 26, .Height = 23, .Margin = New Padding(0, 3, 2, 0)}
-            Dim brClear As New Button With {.Text = "×", .AutoSize = False, .Width = 26, .Height = 23, .Margin = New Padding(0, 3, 3, 0)}
-            _sseSkinToolTip.SetToolTip(brPick, "Pick texture…") : _sseSkinToolTip.SetToolTip(brClear, "Clear")
-            AddHandler brPick.Click, Sub(s, e) PickSseSkinSlotTexture(slotIndex)
-            AddHandler brClear.Click, Sub(s, e) SetSseSkinSlotTexture(slotIndex, "")
-            detail.Controls.Add(brPick, 2, rr)
-            detail.Controls.Add(brClear, 3, rr)
-            rr += 1
-        Next
-        _sseSkinTintEnable = New CheckBox With {.Text = "Tint", .AutoSize = True, .Margin = New Padding(3, 10, 3, 0)}
-        AddHandler _sseSkinTintEnable.CheckedChanged, AddressOf OnSseSkinTintToggled
-        detail.Controls.Add(_sseSkinTintEnable, 0, rr)
-        _sseSkinTintColor = New Button With {.Text = "Color…", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(0, 6, 3, 0)}
-        AddHandler _sseSkinTintColor.Click, AddressOf OnSseSkinTintColor
-        detail.Controls.Add(_sseSkinTintColor, 1, rr) : detail.SetColumnSpan(_sseSkinTintColor, 3) : rr += 1
-        detail.Controls.Add(New Label With {.Text = "Opacity:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 10, 3, 0)}, 0, rr)
-        _sseSkinTintAlpha = New FO4_Base_Library.TinySliderTextBox With {
-            .Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
-            .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(0, 4, 8, 3), .Value = 1.0R}
-        AddHandler _sseSkinTintAlpha.ValueChanged, AddressOf OnSseSkinTintAlpha
-        AddHandler _sseSkinTintAlpha.DragEnded, AddressOf OnSliderDragEnded
-        detail.Controls.Add(_sseSkinTintAlpha, 1, rr) : detail.SetColumnSpan(_sseSkinTintAlpha, 3) : rr += 1
-        root.Controls.Add(detail, 1, 1)
-
-        tab.Controls.Add(root)
-        TabsBody.TabPages.Add(tab)
+        _sseSkinSlotBoxes(0) = TextBoxSseSkinTex0
+        _sseSkinSlotBoxes(1) = TextBoxSseSkinTex1
+        _sseSkinSlotBoxes(2) = TextBoxSseSkinTex2
+        _sseSkinSlotBoxes(7) = TextBoxSseSkinTex7
+        ' Full-width row: the biped-slot flag grid (same control the ARMA/ARMO editors use), dynamic/data-driven —
+        ' permitted (ítem E). Lives inside GroupBoxSseSkinSlots/FlowSseSkinSlots, declared empty in the Designer.
+        _sseSkinSlotChecks = BipedSlotCheckboxes.Build(FlowSseSkinSlots, AddressOf OnSseSkinSlotFlagsChanged, columns:=5)
         RefreshSseSkinList(-1)
     End Sub
 
     ''' <summary>Owner-draw a skin-override row red when its diffuse (slot 0) texture is missing from the load
     ''' order — the renderer skips a missing texture, so it should read as missing here too.</summary>
-    Private Sub DrawSseSkinOverrideItem(sender As Object, e As DrawItemEventArgs)
+    Private Sub DrawSseSkinOverrideItem(sender As Object, e As DrawItemEventArgs) Handles ListBoxSseSkinOverrides.DrawItem
         e.DrawBackground()
         Dim p = Preset
-        If e.Index >= 0 AndAlso e.Index < _sseSkinList.Items.Count Then
+        If e.Index >= 0 AndAlso e.Index < ListBoxSseSkinOverrides.Items.Count Then
             Dim missing As Boolean = False
             If p IsNot Nothing AndAlso p.SseSkinOverrides IsNot Nothing AndAlso e.Index < p.SseSkinOverrides.Count Then
                 Dim sk = p.SseSkinOverrides(e.Index)
@@ -2001,7 +1755,7 @@ Public Class EditBody_Form
             End If
             Dim fore = If(missing, SseCatalogs.MissingTextureColor,
                           If((e.State And DrawItemState.Selected) <> 0, SystemColors.HighlightText, e.ForeColor))
-            TextRenderer.DrawText(e.Graphics, _sseSkinList.Items(e.Index).ToString(), e.Font, e.Bounds, fore,
+            TextRenderer.DrawText(e.Graphics, ListBoxSseSkinOverrides.Items(e.Index).ToString(), e.Font, e.Bounds, fore,
                                   TextFormatFlags.Left Or TextFormatFlags.VerticalCenter)
         End If
         e.DrawFocusRectangle()
@@ -2011,7 +1765,7 @@ Public Class EditBody_Form
     Private Function SelectedSseSkinOverride() As RaceMenuJslot.JslotSkinOverride
         Dim p = Preset
         If p Is Nothing OrElse p.SseSkinOverrides Is Nothing Then Return Nothing
-        Dim idx = _sseSkinList.SelectedIndex
+        Dim idx = ListBoxSseSkinOverrides.SelectedIndex
         If idx < 0 OrElse idx >= p.SseSkinOverrides.Count Then Return Nothing
         Return p.SseSkinOverrides(idx)
     End Function
@@ -2025,21 +1779,21 @@ Public Class EditBody_Form
     Private Sub RefreshSseSkinList(selectIndex As Integer)
         _suspendEvents = True
         Try
-            _sseSkinList.BeginUpdate()
+            ListBoxSseSkinOverrides.BeginUpdate()
             Try
-                _sseSkinList.Items.Clear()
+                ListBoxSseSkinOverrides.Items.Clear()
                 Dim p = Preset
                 If p IsNot Nothing AndAlso p.SseSkinOverrides IsNot Nothing Then
                     For Each sk In p.SseSkinOverrides
                         If sk Is Nothing Then Continue For
-                        _sseSkinList.Items.Add(SseSkinLabel(sk))
+                        ListBoxSseSkinOverrides.Items.Add(SseSkinLabel(sk))
                     Next
                 End If
             Finally
-                _sseSkinList.EndUpdate()
+                ListBoxSseSkinOverrides.EndUpdate()
             End Try
-            Dim n = _sseSkinList.Items.Count
-            If n > 0 Then _sseSkinList.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
+            Dim n = ListBoxSseSkinOverrides.Items.Count
+            If n > 0 Then ListBoxSseSkinOverrides.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
         Finally
             _suspendEvents = False
         End Try
@@ -2051,10 +1805,10 @@ Public Class EditBody_Form
         _suspendEvents = True
         Try
             Dim has = sk IsNot Nothing
-            _sseSkinTintEnable.Enabled = has
-            _sseSkinTintColor.Enabled = has AndAlso sk.HasTint
+            CheckBoxSseSkinTint.Enabled = has
+            ButtonSseSkinTintColor.Enabled = has AndAlso sk.HasTint
             ' Alpha (key 8) is independent of the tint colour — enabled whenever an override is selected.
-            _sseSkinTintAlpha.Enabled = has
+            SliderSseSkinAlpha.Enabled = has
             If _sseSkinSlotChecks IsNot Nothing Then
                 For Each cb In _sseSkinSlotChecks.Values : cb.Enabled = has : Next
             End If
@@ -2068,28 +1822,28 @@ Public Class EditBody_Form
                     If sk.Slots IsNot Nothing Then sk.Slots.TryGetValue(kvp.Key, path)
                     If kvp.Value IsNot Nothing Then kvp.Value.Text = If(path, "")
                 Next
-                _sseSkinTintEnable.Checked = sk.HasTint
-                _sseSkinTintColor.BackColor = If(sk.HasTint, Color.FromArgb(ClampByte(sk.TintR), ClampByte(sk.TintG), ClampByte(sk.TintB)), Color.White)
-                _sseSkinTintAlpha.Value = CDbl(Math.Max(0.0F, Math.Min(1.0F, If(sk.HasAlpha, sk.Alpha, 1.0F))))
+                CheckBoxSseSkinTint.Checked = sk.HasTint
+                ButtonSseSkinTintColor.BackColor = If(sk.HasTint, Color.FromArgb(ClampByte(sk.TintR), ClampByte(sk.TintG), ClampByte(sk.TintB)), Color.White)
+                SliderSseSkinAlpha.Value = CDbl(Math.Max(0.0F, Math.Min(1.0F, If(sk.HasAlpha, sk.Alpha, 1.0F))))
             Else
                 If _sseSkinSlotChecks IsNot Nothing Then BipedSlotCheckboxes.SetMask(_sseSkinSlotChecks, 0UI)
                 For Each kvp In _sseSkinSlotBoxes
                     If kvp.Value IsNot Nothing Then kvp.Value.Text = ""
                 Next
-                _sseSkinTintEnable.Checked = False
-                _sseSkinTintColor.BackColor = Color.White : _sseSkinTintAlpha.Value = 1.0R
+                CheckBoxSseSkinTint.Checked = False
+                ButtonSseSkinTintColor.BackColor = Color.White : SliderSseSkinAlpha.Value = 1.0R
             End If
         Finally
             _suspendEvents = False
         End Try
     End Sub
 
-    Private Sub OnSseSkinSelChanged(sender As Object, e As EventArgs)
+    Private Sub OnSseSkinSelChanged(sender As Object, e As EventArgs) Handles ListBoxSseSkinOverrides.SelectedIndexChanged
         If _suspendEvents Then Return
         UpdateSseSkinDetail()
     End Sub
 
-    Private Async Sub OnSseSkinAdd(sender As Object, e As EventArgs)
+    Private Async Sub OnSseSkinAdd(sender As Object, e As EventArgs) Handles ButtonSseSkinAdd.Click
         Dim p = Preset
         If p Is Nothing Then Return
         If p.SseSkinOverrides Is Nothing Then p.SseSkinOverrides = New List(Of RaceMenuJslot.JslotSkinOverride)()
@@ -2104,9 +1858,9 @@ Public Class EditBody_Form
         Await TriggerOverlayReload()
     End Sub
 
-    Private Async Sub OnSseSkinRemove(sender As Object, e As EventArgs)
+    Private Async Sub OnSseSkinRemove(sender As Object, e As EventArgs) Handles ButtonSseSkinRemove.Click
         Dim p = Preset
-        Dim idx = _sseSkinList.SelectedIndex
+        Dim idx = ListBoxSseSkinOverrides.SelectedIndex
         If p Is Nothing OrElse p.SseSkinOverrides Is Nothing OrElse idx < 0 OrElse idx >= p.SseSkinOverrides.Count Then Return
         p.SseSkinOverrides.RemoveAt(idx)
         RefreshSseSkinList(If(p.SseSkinOverrides.Count = 0, -1, Math.Min(idx, p.SseSkinOverrides.Count - 1)))
@@ -2134,8 +1888,8 @@ Public Class EditBody_Form
         Dim sk = SelectedSseSkinOverride()
         If sk Is Nothing OrElse _sseSkinSlotChecks Is Nothing Then Return
         sk.SlotMask = BipedSlotCheckboxes.ReadMask(_sseSkinSlotChecks)
-        Dim i = _sseSkinList.SelectedIndex
-        If i >= 0 Then _sseSkinList.Items(i) = SseSkinLabel(sk)
+        Dim i = ListBoxSseSkinOverrides.SelectedIndex
+        If i >= 0 Then ListBoxSseSkinOverrides.Items(i) = SseSkinLabel(sk)
         TriggerSseOverlayLive()
     End Sub
 
@@ -2156,8 +1910,8 @@ Public Class EditBody_Form
         Finally
             _suspendEvents = False
         End Try
-        Dim i = _sseSkinList.SelectedIndex
-        If i >= 0 Then _sseSkinList.Items(i) = SseSkinLabel(sk)
+        Dim i = ListBoxSseSkinOverrides.SelectedIndex
+        If i >= 0 Then ListBoxSseSkinOverrides.Items(i) = SseSkinLabel(sk)
         TriggerSseOverlayLive()
     End Sub
 
@@ -2175,36 +1929,63 @@ Public Class EditBody_Form
         SetSseSkinSlotTexture(slotIndex, picked)
     End Sub
 
-    Private Sub OnSseSkinTintToggled(sender As Object, e As EventArgs)
+    ' 8 one-line Handles delegates (Pick/Clear × 4 fixed slots 0/1/2/7 — literal, per 00-reglas-ui-y-vb §InitializeComponent
+    ' §9: N ≤ 8, no For/If in the Designer, so each button needs its own named handler instead of a sender-index lookup).
+    Private Sub OnSseSkinTexPick0Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexPick0.Click
+        PickSseSkinSlotTexture(0)
+    End Sub
+    Private Sub OnSseSkinTexClear0Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexClear0.Click
+        SetSseSkinSlotTexture(0, "")
+    End Sub
+    Private Sub OnSseSkinTexPick1Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexPick1.Click
+        PickSseSkinSlotTexture(1)
+    End Sub
+    Private Sub OnSseSkinTexClear1Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexClear1.Click
+        SetSseSkinSlotTexture(1, "")
+    End Sub
+    Private Sub OnSseSkinTexPick2Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexPick2.Click
+        PickSseSkinSlotTexture(2)
+    End Sub
+    Private Sub OnSseSkinTexClear2Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexClear2.Click
+        SetSseSkinSlotTexture(2, "")
+    End Sub
+    Private Sub OnSseSkinTexPick7Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexPick7.Click
+        PickSseSkinSlotTexture(7)
+    End Sub
+    Private Sub OnSseSkinTexClear7Click(sender As Object, e As EventArgs) Handles ButtonSseSkinTexClear7.Click
+        SetSseSkinSlotTexture(7, "")
+    End Sub
+
+    Private Sub OnSseSkinTintToggled(sender As Object, e As EventArgs) Handles CheckBoxSseSkinTint.CheckedChanged
         If _suspendEvents Then Return
         Dim sk = SelectedSseSkinOverride()
         If sk Is Nothing Then Return
-        sk.HasTint = _sseSkinTintEnable.Checked
-        _sseSkinTintColor.Enabled = sk.HasTint   ' alpha (key 8) is independent — stays enabled
-        Dim i = _sseSkinList.SelectedIndex
-        If i >= 0 Then _sseSkinList.Items(i) = SseSkinLabel(sk)
+        sk.HasTint = CheckBoxSseSkinTint.Checked
+        ButtonSseSkinTintColor.Enabled = sk.HasTint   ' alpha (key 8) is independent — stays enabled
+        Dim i = ListBoxSseSkinOverrides.SelectedIndex
+        If i >= 0 Then ListBoxSseSkinOverrides.Items(i) = SseSkinLabel(sk)
         TriggerSseOverlayLive()
     End Sub
 
-    Private Sub OnSseSkinTintColor(sender As Object, e As EventArgs)
+    Private Sub OnSseSkinTintColor(sender As Object, e As EventArgs) Handles ButtonSseSkinTintColor.Click
         Dim sk = SelectedSseSkinOverride()
         If sk Is Nothing Then Return
         Using dlg As New ColorDialog() With {.Color = Color.FromArgb(ClampByte(sk.TintR), ClampByte(sk.TintG), ClampByte(sk.TintB))}
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 sk.TintR = dlg.Color.R / 255.0F : sk.TintG = dlg.Color.G / 255.0F : sk.TintB = dlg.Color.B / 255.0F
                 sk.HasTint = True
-                _sseSkinTintColor.BackColor = dlg.Color
+                ButtonSseSkinTintColor.BackColor = dlg.Color
                 TriggerSseOverlayLive()
             End If
         End Using
     End Sub
 
-    Private Sub OnSseSkinTintAlpha(sender As Object, e As EventArgs)
+    Private Sub OnSseSkinTintAlpha(sender As Object, e As EventArgs) Handles SliderSseSkinAlpha.ValueChanged
         If _suspendEvents Then Return
         Dim sk = SelectedSseSkinOverride()
         If sk Is Nothing Then Return
         ' key 8 (kParam_ShaderAlpha) — the override's material alpha, independent of the tint colour.
-        sk.Alpha = CSng(_sseSkinTintAlpha.Value) : sk.HasAlpha = True
+        sk.Alpha = CSng(SliderSseSkinAlpha.Value) : sk.HasAlpha = True
         TriggerSseOverlayLive()
     End Sub
 
@@ -2221,21 +2002,19 @@ Public Class EditBody_Form
         ' SSE overlay editor uses the SAME two-list paradigm as the FO4 overlay editor: LEFT = the paint catalog for
         ' the selected zone (choose from), RIGHT = the applied overlays. "Add →" creates an overlay node from the
         ' selected paint; "← Remove" deletes it. Keep the FO4 three-column layout (available | buttons | applied).
-        OverlayListsLayout.SuspendLayout()
-        GroupBoxOverlayAvailable.Visible = True
+        ' ⛔ Lo que este método hacía ANTES para reproducir el layout de 3 columnas ya declaradas del Designer
+        ' (GroupBoxOverlayAvailable.Visible=True, 3× SetCellPosition, 3× ColumnStyles) eran no-ops: el Designer ya
+        ' declara exactamente esa disposición (OverlayListsLayout 50%/AutoSize/50%, celdas (0,0)/(1,0)/(2,0)) —
+        ' medido, no supuesto. Y el SetRow(ButtonOverlayAdd,1)/SetRow(ButtonOverlayRemove,2) desaparece porque las
+        ' filas quedan declaradas en el Designer (FlowSseOverlayZone en fila 0).
         GroupBoxOverlayAvailable.Text = "Paints (RaceMenu)"
         GroupBoxOverlayApplied.Text = "Applied overlays"
-        OverlayListsLayout.SetCellPosition(GroupBoxOverlayAvailable, New TableLayoutPanelCellPosition(0, 0))
-        OverlayListsLayout.SetCellPosition(OverlayCenterLayout, New TableLayoutPanelCellPosition(1, 0))
-        OverlayListsLayout.SetCellPosition(GroupBoxOverlayApplied, New TableLayoutPanelCellPosition(2, 0))
-        OverlayListsLayout.ColumnStyles(0).SizeType = SizeType.Percent : OverlayListsLayout.ColumnStyles(0).Width = 50.0F
-        OverlayListsLayout.ColumnStyles(1).SizeType = SizeType.AutoSize
-        OverlayListsLayout.ColumnStyles(2).SizeType = SizeType.Percent : OverlayListsLayout.ColumnStyles(2).Width = 50.0F
-        OverlayListsLayout.ResumeLayout(True)
         TextBoxOverlayFilter.PlaceholderText = "Filter paints…"
         ' Mark rows whose texture isn't in the load order in red (same convention as the tint tab). A mod can
         ' register a paint whose .dds it doesn't ship — RaceMenu (and this app) then render nothing; showing it
         ' missing is clearer than a silent no-op. Owner-draw is set here (SSE only); FO4 keeps the default draw.
+        ' ⛔ DrawMode + AddHandler DrawItem de estos DOS ListBox se quedan por código (no en el Designer): son
+        ' controles COMPARTIDOS con FO4 y ponerlos en el Designer le cambiaría el dibujado a Fallout 4.
         ListBoxOverlayAvailable.DrawMode = DrawMode.OwnerDrawFixed
         AddHandler ListBoxOverlayAvailable.DrawItem, AddressOf DrawSsePaintCatalogItem
         ListBoxOverlayApplied.DrawMode = DrawMode.OwnerDrawFixed
@@ -2254,23 +2033,22 @@ Public Class EditBody_Form
         LabelOverlayTintAlpha.Text = "Opacity:"
 
         ' Zone selector: skee64 instantiates overlay nodes for Body/Hands/Feet independently
-        ' (OverlayInterface.h:33-46). Sits DIRECTLY ABOVE the Add button (center column). It drives BOTH which
-        ' paint category the LEFT catalog shows AND which zone "Add →" creates the overlay on.
-        _sseOverlayZone = New ComboBox With {.DropDownStyle = ComboBoxStyle.DropDownList, .Width = 120, .Margin = New Padding(3, 3, 3, 6)}
-        _sseOverlayZone.Items.AddRange({"Body", "Hands", "Feet"})
-        _sseOverlayZone.SelectedIndex = 0
-        AddHandler _sseOverlayZone.SelectedIndexChanged, Sub(s, e) RefreshSsePaintCatalog()
-        Dim zoneRow As New FlowLayoutPanel With {.AutoSize = True, .FlowDirection = FlowDirection.LeftToRight, .WrapContents = False, .Margin = New Padding(0)}
-        zoneRow.Controls.Add(New Label With {.Text = "Zone:", .AutoSize = True, .Margin = New Padding(0, 7, 3, 0)})
-        zoneRow.Controls.Add(_sseOverlayZone)
-        OverlayCenterLayout.SuspendLayout()
-        OverlayCenterLayout.RowCount = 3
-        OverlayCenterLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        OverlayCenterLayout.SetRow(ButtonOverlayAdd, 1)
-        OverlayCenterLayout.SetRow(ButtonOverlayRemove, 2)
-        OverlayCenterLayout.Controls.Add(zoneRow, 0, 0)
+        ' (OverlayInterface.h:33-46). Sits DIRECTLY ABOVE the Add button (center column, FlowSseOverlayZone —
+        ' now Designer-built, row 0 of OverlayCenterLayout). It drives BOTH which paint category the LEFT catalog
+        ' shows AND which zone "Add →" creates the overlay on.
+        FlowSseOverlayZone.Visible = True
+        ' ⛔ SelectedIndex se fija ACÁ, no en el Designer (00-reglas-ui-y-vb §2.4bis): el combo YA tiene sus 3
+        ' ítems literales del Designer, pero fijar el índice ahí dispararía SelectedIndexChanged dentro de
+        ' InitializeComponent(), antes de que el .ctor asigne _appliedPresets, y el handler llega a Preset.
+        ' ⛔ Y NO se envuelve en _suspendEvents: OnSseOverlayZoneChanged NO consulta ese flag —igual que la lambda
+        ' que tenía antes—, así que el wrap sería un gate que no puede fallar y un comentario que miente. Ponerle
+        ' el guard al handler SÍ cambiaría comportamiento: UpdateSseOverlayDetail apunta este combo a la zona del
+        ' overlay seleccionado DENTRO de _suspendEvents, y hoy eso re-filtra el catálogo a esa zona a propósito.
+        ' Consecuencia asumida: esta línea dispara un RefreshSsePaintCatalog() de más, que el del final de este
+        ' mismo método repite. Es un llenado de ListBox por apertura de editor, una vez.
+        ComboBoxSseOverlayZone.SelectedIndex = 0
         ' Top-align the whole center column (default is Anchor.None = vertically centred) so the Zone row sits at the
-        ' same height as the filter box; AlignSseOverlayCenterColumn supplies the exact offset once layout is real.
+        ' same height as the filter box; OnOverlayListsLayout supplies the exact offset once layout is real.
         OverlayCenterLayout.Anchor = AnchorStyles.Top
         ' Add/Remove: drop AutoSize and stretch them to the column width (which the zone row — label + combo —
         ' defines), so both buttons are the same width and symmetric with "Zone: [combo]" above.
@@ -2279,66 +2057,16 @@ Public Class EditBody_Form
             b.Anchor = AnchorStyles.Left Or AnchorStyles.Right
             b.Height = 25
         Next
-        OverlayCenterLayout.ResumeLayout(True)
         AddHandler OverlayListsLayout.Layout, AddressOf OnOverlayListsLayout
 
-        ' Applied-overlay texture rows: READ-ONLY display. The paint is chosen from the LEFT catalog at Add time
-        ' (RaceMenu overlays have no per-overlay texture browser); Normal shows an Ex paint's slot 1 when present.
-        Dim r0 = OverlayPropsLayout.RowCount
-        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        OverlayPropsLayout.RowCount = r0 + 2
-        OverlayPropsLayout.Controls.Add(New Label With {.Text = "Texture:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}, 0, r0)
-        _sseTexDiffuse = New TextBox With {.Width = 300, .ReadOnly = True}
-        OverlayPropsLayout.Controls.Add(SseTexFlow(_sseTexDiffuse), 1, r0)
-        OverlayPropsLayout.Controls.Add(New Label With {.Text = "Normal:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}, 0, r0 + 1)
-        _sseTexNormal = New TextBox With {.Width = 300, .ReadOnly = True}
-        OverlayPropsLayout.Controls.Add(SseTexFlow(_sseTexNormal), 1, r0 + 1)
-
-        ' ⭐ EL "MAGIC FLAG" DEL OVERLAY SELECCIONADO. skee64 tiene DOS pools por zona: el normal `[Ovl{n}]` y el
-        ' magic `[SOvl{n}]` (OverlayInterface.h:23-46), este último con su plantilla propia — la que trae el
-        ' controller que PULSA la alpha 0↔1 — su propio contador (iSpellOverlays) y su propia numeración.
-        ' UN control, UN significado: este checkbox describe el overlay SELECCIONADO y conmutarlo lo MUEVE de pool
-        ' (renombra el nodo al primer índice libre del destino). Add sigue creando en el pool normal, así que el
-        ' flujo es "agregar y, si va a ser mágico, tildarlo" — sin un segundo control que signifique otra cosa.
-        Dim r2 = OverlayPropsLayout.RowCount
-        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        OverlayPropsLayout.RowCount = r2 + 1
-        ' ⭐ MISMO VOCABULARIO QUE EDIT FACE. Estaban con dos nombres cada cosa ("Magic (spell effect layer — not
-        ' drawn in the main preview)" acá vs "Magic" allá; "Preview magic" vs "Preview magic in this window"), y dos
-        ' nombres para lo mismo es una decisión más que el usuario tiene que tomar sin datos.
-        _sseOverlayMagic = New CheckBox With {
-            .Text = "Magic (spell effect)", .AutoSize = True,
-            .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}
-        AddHandler _sseOverlayMagic.CheckedChanged, AddressOf OnSseOverlayMagicChanged
-        OverlayPropsLayout.Controls.Add(_sseOverlayMagic, 1, r2)
-
-        ' ⭐ EL TOGGLE DEL PREVIEW, en la columna del medio (debajo de Add/Remove) porque es una opción de VISTA de
-        ' este editor, no una propiedad del overlay. Default ON: acá se autora, así que se ve.
-        ' ⭐ VA EN LA FILA DE "Render ...", al lado de Render gore — no en la pestaña de Overlays. Es una opción de
-        ' VISTA del preview, igual que las otras cuatro, y ahí es donde el usuario las busca. En la pestaña quedaba
-        ' mezclada con las propiedades del overlay, que son otra cosa.
-        ' ⭐ YA NO VA EN `OverlayCenterLayout`. Antes estaba ahi y lo mande un rato a la fila 2, donde se
-        ' SUPERPUSO con "← Remove" (el Designer declara 2 filas pero este metodo las remapea con SetRow, asi que la
-        ' 2 no estaba libre). Moverlo al panel de Render cierra las dos cosas: el conflicto de celda no existe y el
-        ' control esta donde corresponde.
-
-        ' ⭐ LA NOTA VISIBLE QUE EDIT FACE YA TENÍA Y ESTA PESTAÑA NO. Sin ella, "lo agregué, lo veo acá y no lo veo
-        ' en la ventana principal" se lee como un BUG de la app. El motivo no puede vivir sólo en un tooltip.
-        Dim magicNoteRow = OverlayPropsLayout.RowCount
-        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        OverlayPropsLayout.RowCount = magicNoteRow + 1
-        ' El pool magic no se diferencia en el render: skee instala los dos pools IGUAL (SetupOverlay,
-        ' OverlayInterface.cpp:651-668) y la unica diferencia es la malla y de que contador sale el slot.
-        ' De ahi que ESTA APP los pinte igual. La tilde "Magic" es de AUTORADO (pool y slot), no de aspecto,
-        ' y lo unico que cambia de verdad es que un magic de CARA no se pliega en la textura.
-        ' ⛔ El texto NO afirma como se ven in-game: eso no esta medido. Solo lo que hace la app.
-        Dim magicNote As New Label With {
-            .Text = "Magic overlays come from a separate slot pool (iSpellOverlays in the skee64 ini). " &
-                    "This app paints them like any other overlay.",
-            .AutoSize = True, .ForeColor = SystemColors.GrayText,
-            .Margin = New Padding(3, 2, 3, 0)}
-        OverlayPropsLayout.Controls.Add(magicNote, 1, magicNoteRow)
+        ' Applied-overlay texture rows, magic checkbox and its note now live in the Designer (OverlayPropsLayout
+        ' rows 6-9), hidden by default — just show them.
+        LabelSseOverlayTexture.Visible = True
+        SseOverlayDiffuseRow.Visible = True
+        LabelSseOverlayNormal.Visible = True
+        SseOverlayNormalRow.Visible = True
+        CheckBoxSseOverlayMagic.Visible = True
+        LabelSseOverlayMagicNote.Visible = True
 
         RefreshSseOverlayList()
         RefreshSsePaintCatalog()
@@ -2352,14 +2080,14 @@ Public Class EditBody_Form
     ''' <c>[Ovl2]</c> que se convierte no puede quedar como <c>[SOvl2]</c> si ese slot magic ya está ocupado.</para>
     ''' <para>Aviso una vez por sesión si el destino no tiene tantos slots (misma regla y mismo texto que el Add;
     ''' el overlay se convierte igual — es legal e inerte hasta que suba la key).</para></summary>
-    Private Async Sub OnSseOverlayMagicChanged(sender As Object, e As EventArgs)
+    Private Async Sub OnSseOverlayMagicChanged(sender As Object, e As EventArgs) Handles CheckBoxSseOverlayMagic.CheckedChanged
         If _suspendEvents Then Return
         Dim p = Preset
         Dim ov = SelectedSseOverlay()
         If p Is Nothing OrElse ov Is Nothing Then Return
         Dim z = SseCatalogs.ZoneOfNode(ov.NodeName)
         If Not z.HasValue Then Return
-        Dim toSpell = _sseOverlayMagic.Checked
+        Dim toSpell = CheckBoxSseOverlayMagic.Checked
         If toSpell = ov.IsSpell Then Return   ' ya está en ese pool (re-seed de la UI) → nada que hacer
         Dim n = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, z.Value, toSpell)
         ' ⛔⛔ ACÁ EL POOL MAGIC SE NEGABA, Y ERA INCOHERENTE CON LA DECISIÓN QUE YA ESTABA TOMADA PARA TODOS LOS
@@ -2400,14 +2128,16 @@ Public Class EditBody_Form
     ''' entry (the ListBox index can't be used directly once filtered). This is the union of every mod's
     ''' Add{Body,Hand,Feet}Paint registration — exactly the list RaceMenu shows.</summary>
     Private Sub RefreshSsePaintCatalog()
-        If Not _isSSE OrElse ListBoxOverlayAvailable Is Nothing OrElse _sseOverlayZone Is Nothing Then Return
+        ' El gate es el JUEGO. Los dos guards de nulo que habia aca no podian fallar desde que los dos
+        ' controles viven en el Designer (00-reglas-epistemica §9).
+        If Not _isSSE Then Return
         _ssePaintShown.Clear()
         ListBoxOverlayAvailable.BeginUpdate()
         Try
             ListBoxOverlayAvailable.Items.Clear()
             Dim cat = FO4_Base_Library.RaceMenuPaintCatalog.Current
             If cat Is Nothing Then Return
-            Dim zone As SseCatalogs.OverlayZone = CType(Math.Max(0, _sseOverlayZone.SelectedIndex), SseCatalogs.OverlayZone)
+            Dim zone As SseCatalogs.OverlayZone = CType(Math.Max(0, ComboBoxSseOverlayZone.SelectedIndex), SseCatalogs.OverlayZone)
             Dim pcat = SseCatalogs.PaintCategoryForZone(zone)
             Dim filter = If(TextBoxOverlayFilter Is Nothing, "", TextBoxOverlayFilter.Text.Trim())
             For Each en In cat.Entries(pcat)
@@ -2448,22 +2178,11 @@ Public Class EditBody_Form
         e.DrawFocusRectangle()
     End Sub
 
-    ''' <summary>One "textbox + buttons" row that stretches to its cell: the textbox fills the remaining width and
-    ''' each button auto-sizes on the right, so nothing clips regardless of panel width.</summary>
-    Private Function SseTexFlow(tb As TextBox, ParamArray buttons As Button()) As Control
-        Dim p As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .Margin = New Padding(0, 4, 6, 0),
-                                            .ColumnCount = 1 + buttons.Length, .RowCount = 1}
-        p.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        tb.Dock = DockStyle.Fill
-        p.Controls.Add(tb, 0, 0)
-        Dim c = 1
-        For Each b In buttons
-            b.Anchor = AnchorStyles.Left
-            p.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
-            p.Controls.Add(b, c, 0) : c += 1
-        Next
-        Return p
-    End Function
+    ''' <summary>Zone combo changed → the LEFT paint catalog is filtered by zone. Named Handles sub (not the
+    ''' original inline lambda) because ComboBoxSseOverlayZone is now a static Designer WithEvents field.</summary>
+    Private Sub OnSseOverlayZoneChanged(sender As Object, e As EventArgs) Handles ComboBoxSseOverlayZone.SelectedIndexChanged
+        RefreshSsePaintCatalog()
+    End Sub
 
     ''' <summary>The Body/Hands/Feet overlays of <c>Preset.SseBodyOverlays</c>, in list order. The carrier holds
     ''' the whole <c>.jslot</c> <c>overrides</c> array, which also contains the <c>Face [Ovl]</c> nodes edited on
@@ -2558,21 +2277,18 @@ Public Class EditBody_Form
             LabelOverlaySelected.Text = If(has, $"Overlay: {ov.NodeName}", "(no overlay selected — Add one)")
             ' Point "Add to:" at the zone of whatever is selected, so adding a second Hands overlay doesn't
             ' silently create a Body one.
-            If has AndAlso _sseOverlayZone IsNot Nothing Then
+            ' Los cuatro controles son del Designer: NUNCA son Nothing, así que ya no se chequea. El guard de nulo
+            ' que había acá existía porque bajo Fallout 4 estos controles no se construían; el gate real de esta
+            ' pestaña es que no exista bajo FO4 (ver la rama Else del .ctor).
+            If has Then
                 Dim z = SseCatalogs.ZoneOfNode(ov.NodeName)
-                If z.HasValue AndAlso CInt(z.Value) < _sseOverlayZone.Items.Count Then _sseOverlayZone.SelectedIndex = CInt(z.Value)
+                If z.HasValue AndAlso CInt(z.Value) < ComboBoxSseOverlayZone.Items.Count Then ComboBoxSseOverlayZone.SelectedIndex = CInt(z.Value)
             End If
-            If _sseTexDiffuse IsNot Nothing Then
-                _sseTexDiffuse.Text = If(has, If(ov.DiffusePath, ""), "") : _sseTexDiffuse.Enabled = has
-            End If
-            If _sseTexNormal IsNot Nothing Then
-                _sseTexNormal.Text = If(has, If(ov.NormalPath, ""), "") : _sseTexNormal.Enabled = has
-            End If
-            If _sseOverlayMagic IsNot Nothing Then
-                ' Se siembra del NOMBRE del nodo (IsSpell es derivado) — no hay estado paralelo que sincronizar.
-                _sseOverlayMagic.Checked = has AndAlso ov.IsSpell
-                _sseOverlayMagic.Enabled = has
-            End If
+            TextBoxSseOverlayDiffuse.Text = If(has, If(ov.DiffusePath, ""), "") : TextBoxSseOverlayDiffuse.Enabled = has
+            TextBoxSseOverlayNormal.Text = If(has, If(ov.NormalPath, ""), "") : TextBoxSseOverlayNormal.Enabled = has
+            ' Se siembra del NOMBRE del nodo (IsSpell es derivado) — no hay estado paralelo que sincronizar.
+            CheckBoxSseOverlayMagic.Checked = has AndAlso ov.IsSpell
+            CheckBoxSseOverlayMagic.Enabled = has
             ' ⭐ LA OPACIDAD DE UN MAGIC OVERLAY LA MANEJA EL MOTOR. Medido en la plantilla del pool: un controller
             ' ACTIVE + CYCLE_REVERSE anima la Alpha 0↔1 (ver SseOverlayCompositor.IsSpellOverlayNodeName), así que el
             ' valor autorado se guarda y viaja, pero in-game lo pisa la animación mientras corre. Dejar el slider
@@ -2657,7 +2373,7 @@ Public Class EditBody_Form
         End If
         Dim entry = _ssePaintShown(ai)
 
-        Dim zone As SseCatalogs.OverlayZone = CType(Math.Max(0, _sseOverlayZone.SelectedIndex), SseCatalogs.OverlayZone)
+        Dim zone As SseCatalogs.OverlayZone = CType(Math.Max(0, ComboBoxSseOverlayZone.SelectedIndex), SseCatalogs.OverlayZone)
         ' Add crea en el pool NORMAL; el checkbox "Magic" del panel de detalle lo convierte después (un control, un
         ' significado). El índice libre se busca DENTRO del pool: los dos numeran independiente.
         Dim limit = SseCatalogs.OverlayCount(zone)
@@ -3680,21 +3396,16 @@ Public Class EditBody_Form
         End If
     End Sub
 
-    ''' <summary>Rebuild the "RaceMenu · Body Scale" tab now that <c>_editorHost.LastSkeletonInstance</c> exists, so
-    ''' its node list can be intersected with the bones this rig actually has.</summary>
+    ''' <summary>Re-intersect the node list against the actor's skeleton now that
+    ''' <c>_editorHost.LastSkeletonInstance</c> exists (the tab was first populated in the .ctor, before the
+    ''' preview host). Pure repopulation now that the tab lives in the Designer (00-reglas-ui-y-vb §1): no
+    ''' <c>TabPages.Remove</c>, no nulling ListBoxSseNodes/TextBoxSseNodeFilter, no <c>SelectedTab</c> restore —
+    ''' those existed only to tear down and rebuild a code-instantiated TabPage that is no longer built by hand.
+    ''' ⚠ Behaviour change: the filter TEXT now SURVIVES this rebuild (before, the TextBox itself was recreated
+    ''' empty on every call — losing whatever the user had typed). Surviving is the correct behaviour; it just
+    ''' wasn't what shipped.</summary>
     Private Sub RebuildSseBodyScaleTab()
-        Dim existing = TabsBody.TabPages.Cast(Of TabPage)().FirstOrDefault(Function(t) t.Name = "TabPageSseBodyScale")
-        Dim wasSelected = existing IsNot Nothing AndAlso TabsBody.SelectedTab Is existing
-        If existing IsNot Nothing Then TabsBody.TabPages.Remove(existing)
-        ' Both are recreated by BuildSseBodyScaleTab; nulled so nothing reads the removed tab's controls in between
-        ' (RebuildSseNodeShown consults the filter box).
-        _sseNodeList = Nothing
-        _sseNodeFilter = Nothing
-        BuildSseBodyScaleTab()
-        If wasSelected Then
-            Dim rebuilt = TabsBody.TabPages.Cast(Of TabPage)().FirstOrDefault(Function(t) t.Name = "TabPageSseBodyScale")
-            If rebuilt IsNot Nothing Then TabsBody.SelectedTab = rebuilt
-        End If
+        PopulateSseBodyScaleTab()
     End Sub
 
     Private Sub EditBodyForm_FormClosing(sender As Object, e As System.Windows.Forms.FormClosingEventArgs) Handles Me.FormClosing

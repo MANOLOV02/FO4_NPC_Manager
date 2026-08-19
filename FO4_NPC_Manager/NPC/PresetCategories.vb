@@ -270,6 +270,19 @@ Public Module PresetCategories
         ElseIf p.HasFaceTintLayers OrElse p.FaceTintLayers.Count > 0 Then
             Set0(d, PresetCategory.FaceTints, p.FaceTintLayers.Count.ToString(), "")
         End If
+        ' El ajuste del tono del CUERPO viaja dentro de esta categoria (no es una categoria nueva: es un
+        ' ajuste de tinte). Si el preset lo trae hay que DECIRLO, o el usuario acepta "Face tints" sin
+        ' enterarse de que tambien le cambia el tono del cuerpo. Marca la categoria como disponible aunque el
+        ' preset no tenga NINGUNA capa de tint: el ajuste solo ya es algo que tomar.
+        If p.SkinToneOffset IsNot Nothing AndAlso Not p.SkinToneOffset.IsZero Then
+            Dim info = d(PresetCategory.FaceTints)
+            Dim extra = $"body skin tint adjustment ({p.SkinToneOffset})"
+            info.Detail = If(String.IsNullOrEmpty(info.Detail), extra, info.Detail & " · " & extra)
+            If Not info.Available Then
+                info.Available = True
+                info.Text = "yes"
+            End If
+        End If
 
         ' --- Face morphs ---
         If isSse Then

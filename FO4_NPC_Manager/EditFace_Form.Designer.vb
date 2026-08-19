@@ -16,6 +16,10 @@ Partial Class EditFace_Form
 
     <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
+        ' ⛔ ESTA LINEA PRIMERA Y SIEMPRE: ToolTipSseTint se construye con New ToolTip(components), y el
+        ' ctor de ToolTip TIRA ArgumentNullException si el contenedor es Nothing. Compila igual y revienta
+        ' al abrir el editor, en los dos juegos. Ver 00-reglas-ui-y-vb §1.
+        components = New System.ComponentModel.Container()
         PreviewSplit = New SplitContainer()
         RootLayout = New TableLayoutPanel()
         TabsFace = New TabControl()
@@ -54,15 +58,80 @@ Partial Class EditFace_Form
         FaceFlagsLayout = New FlowLayoutPanel()
         CheckBoxIsCharGenFacePreset = New CheckBox()
         LabelCharGenHelp = New Label()
+        GroupBoxSseHeadTexture = New GroupBox()
+        FlowSseHeadTex = New FlowLayoutPanel()
+        LabelSseHeadTex = New Label()
+        ButtonSseHeadTexPick = New Button()
+        ButtonSseHeadTexDefault = New Button()
+        ButtonSseHeadTexClear = New Button()
         TabPageSseMorphs = New TabPage()
         PanelSseMorphs = New Panel()
         TabPageSseTints = New TabPage()
         PanelSseTints = New Panel()
+        SseTintSplit = New TableLayoutPanel()
+        SseTintListHost = New TableLayoutPanel()
+        LabelSseTintLayers = New Label()
+        ListBoxSseTintLayers = New DoubleBufferedListBox()
+        GroupBoxSseTintDetail = New GroupBox()
+        PanelSseTintDetail = New Panel()
+        SseTintDetailLayout = New TableLayoutPanel()
+        LabelSseTintColorSourceCaption = New Label()
+        ComboBoxSseTintPreset = New ComboBox()
+        LabelSseTintColorCaption = New Label()
+        SseTintColorRow = New TableLayoutPanel()
+        ButtonSseTintSwatch = New Button()
+        ButtonSseTintCustom = New Button()
+        LabelSseTintCoverageCaption = New Label()
+        SliderSseTintCoverage = New TinySliderTextBox()
+        LabelSseTintMaskCaption = New Label()
+        LabelSseTintMask = New Label()
+        SseTintMaskButtons = New TableLayoutPanel()
+        ButtonSseTintMaskPick = New Button()
+        ButtonSseTintMaskClear = New Button()
+        ButtonSseTintReset = New Button()
+        ButtonSseTintResetAll = New Button()
+        LabelSseTintEmpty = New Label()
+        ToolTipSseTint = New ToolTip(components)
         TabPageSseSculpt = New TabPage()
         ListSseSculpt = New ListView()
         SseSculptButtonRow = New FlowLayoutPanel()
         ButtonRegenSseMorphs = New Button()
         ButtonDeleteSseSculpt = New Button()
+        TabPageSseRaceMenu = New TabPage()
+        SseRaceMenuRoot = New TableLayoutPanel()
+        TextBoxSseRaceMenuFilter = New TextBox()
+        FlowSseRaceMenu = New FlowLayoutPanel()
+        LabelSseRaceMenuEmpty = New Label()
+        TabPageSseFaceOverlays = New TabPage()
+        SseFaceOvRoot = New TableLayoutPanel()
+        LabelSseFaceOvHeader = New Label()
+        SseFaceOvBody = New TableLayoutPanel()
+        GroupBoxSseFacePaints = New GroupBox()
+        SseFaceOvCatalogLayout = New TableLayoutPanel()
+        TextBoxSseFaceOvFilter = New TextBox()
+        ListBoxSseFacePaintCatalog = New ListBox()
+        FlowSseFaceOvButtons = New FlowLayoutPanel()
+        ButtonSseFaceOvAdd = New Button()
+        ButtonSseFaceOvRemove = New Button()
+        ButtonSseFaceOvUp = New Button()
+        ButtonSseFaceOvDown = New Button()
+        GroupBoxSseFaceOvApplied = New GroupBox()
+        SseFaceOvRightLayout = New TableLayoutPanel()
+        ListBoxSseFaceOvApplied = New ListBox()
+        SseFaceOvDetail = New TableLayoutPanel()
+        LabelSseFaceOvTexture = New Label()
+        SseFaceOvDiffuseRow = New TableLayoutPanel()
+        TextBoxSseFaceOvDiffuse = New TextBox()
+        LabelSseFaceOvNormal = New Label()
+        SseFaceOvNormalRow = New TableLayoutPanel()
+        TextBoxSseFaceOvNormal = New TextBox()
+        CheckBoxSseFaceOvTint = New CheckBox()
+        ButtonSseFaceOvTintColor = New Button()
+        LabelSseFaceOvOpacity = New Label()
+        SliderSseFaceOvAlpha = New TinySliderTextBox()
+        FlowSseFaceOvMagic = New FlowLayoutPanel()
+        CheckBoxSseFaceOvMagic = New CheckBox()
+        LabelSseFaceOvMagicNote = New Label()
         TabPageTints = New TabPage()
         TintsLayout = New TableLayoutPanel()
         TextBoxTintFilter = New TextBox()
@@ -92,6 +161,8 @@ Partial Class EditFace_Form
         TabPageBoneRegions = New TabPage()
         BoneRegionsRoot = New TableLayoutPanel()
         BoneRegionsContainer = New Panel()
+        BoneRegionsTabs = New TabControl()
+        LabelBoneRegionsEmpty = New Label()
         GroupBoxFmin = New GroupBox()
         FminLayout = New TableLayoutPanel()
         LabelFminCaption = New Label()
@@ -119,10 +190,34 @@ Partial Class EditFace_Form
         HairColorLayout.SuspendLayout()
         GroupBoxFaceFlags.SuspendLayout()
         FaceFlagsLayout.SuspendLayout()
+        GroupBoxSseHeadTexture.SuspendLayout()
+        FlowSseHeadTex.SuspendLayout()
         TabPageSseMorphs.SuspendLayout()
         TabPageSseTints.SuspendLayout()
+        PanelSseTints.SuspendLayout()
+        SseTintSplit.SuspendLayout()
+        SseTintListHost.SuspendLayout()
+        GroupBoxSseTintDetail.SuspendLayout()
+        PanelSseTintDetail.SuspendLayout()
+        SseTintDetailLayout.SuspendLayout()
+        SseTintColorRow.SuspendLayout()
+        SseTintMaskButtons.SuspendLayout()
         TabPageSseSculpt.SuspendLayout()
         SseSculptButtonRow.SuspendLayout()
+        TabPageSseRaceMenu.SuspendLayout()
+        SseRaceMenuRoot.SuspendLayout()
+        TabPageSseFaceOverlays.SuspendLayout()
+        SseFaceOvRoot.SuspendLayout()
+        SseFaceOvBody.SuspendLayout()
+        GroupBoxSseFacePaints.SuspendLayout()
+        SseFaceOvCatalogLayout.SuspendLayout()
+        FlowSseFaceOvButtons.SuspendLayout()
+        GroupBoxSseFaceOvApplied.SuspendLayout()
+        SseFaceOvRightLayout.SuspendLayout()
+        SseFaceOvDetail.SuspendLayout()
+        SseFaceOvDiffuseRow.SuspendLayout()
+        SseFaceOvNormalRow.SuspendLayout()
+        FlowSseFaceOvMagic.SuspendLayout()
         TabPageTints.SuspendLayout()
         TintsLayout.SuspendLayout()
         TintsButtonRow.SuspendLayout()
@@ -131,34 +226,35 @@ Partial Class EditFace_Form
         TabPageVertex.SuspendLayout()
         TabPageBoneRegions.SuspendLayout()
         BoneRegionsRoot.SuspendLayout()
+        BoneRegionsContainer.SuspendLayout()
         GroupBoxFmin.SuspendLayout()
         FminLayout.SuspendLayout()
         BottomLayout.SuspendLayout()
         PreviewSidebar.SuspendLayout()
         RenderTogglesPanel.SuspendLayout()
         SuspendLayout()
-        ' 
+        '
         ' PreviewSplit
-        ' 
+        '
         PreviewSplit.Dock = DockStyle.Fill
         PreviewSplit.FixedPanel = FixedPanel.Panel1
         PreviewSplit.Location = New Point(0, 0)
         PreviewSplit.Name = "PreviewSplit"
-        ' 
+        '
         ' PreviewSplit.Panel1
-        ' 
+        '
         PreviewSplit.Panel1.Controls.Add(RootLayout)
         PreviewSplit.Panel1MinSize = 860
-        ' 
+        '
         ' PreviewSplit.Panel2
-        ' 
+        '
         PreviewSplit.Panel2.Controls.Add(PreviewSidebar)
         PreviewSplit.Size = New Size(1560, 781)
         PreviewSplit.SplitterDistance = 860
         PreviewSplit.TabIndex = 0
-        ' 
+        '
         ' RootLayout
-        ' 
+        '
         RootLayout.ColumnCount = 1
         RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         RootLayout.Controls.Add(TabsFace, 0, 0)
@@ -172,13 +268,15 @@ Partial Class EditFace_Form
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.Size = New Size(860, 781)
         RootLayout.TabIndex = 0
-        ' 
+        '
         ' TabsFace
-        ' 
+        '
         TabsFace.Controls.Add(TabPageFaceParts)
         TabsFace.Controls.Add(TabPageSseMorphs)
         TabsFace.Controls.Add(TabPageSseTints)
         TabsFace.Controls.Add(TabPageSseSculpt)
+        TabsFace.Controls.Add(TabPageSseRaceMenu)
+        TabsFace.Controls.Add(TabPageSseFaceOverlays)
         TabsFace.Controls.Add(TabPageTints)
         TabsFace.Controls.Add(TabPageVertex)
         TabsFace.Controls.Add(TabPageBoneRegions)
@@ -188,9 +286,9 @@ Partial Class EditFace_Form
         TabsFace.SelectedIndex = 0
         TabsFace.Size = New Size(838, 718)
         TabsFace.TabIndex = 0
-        ' 
+        '
         ' TabPageFaceParts
-        ' 
+        '
         TabPageFaceParts.Controls.Add(FacePartsLayout)
         TabPageFaceParts.Location = New Point(4, 24)
         TabPageFaceParts.Name = "TabPageFaceParts"
@@ -198,26 +296,31 @@ Partial Class EditFace_Form
         TabPageFaceParts.Size = New Size(830, 690)
         TabPageFaceParts.TabIndex = 0
         TabPageFaceParts.Text = "Face Parts"
-        ' 
+        '
         ' FacePartsLayout
-        ' 
+        '
         FacePartsLayout.ColumnCount = 1
         FacePartsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         FacePartsLayout.Controls.Add(GroupBoxHeadParts, 0, 0)
         FacePartsLayout.Controls.Add(GroupBoxHairColor, 0, 1)
         FacePartsLayout.Controls.Add(GroupBoxFaceFlags, 0, 2)
+        FacePartsLayout.Controls.Add(GroupBoxSseHeadTexture, 0, 3)
         FacePartsLayout.Dock = DockStyle.Fill
         FacePartsLayout.Location = New Point(6, 6)
         FacePartsLayout.Name = "FacePartsLayout"
-        FacePartsLayout.RowCount = 3
+        FacePartsLayout.RowCount = 4
         FacePartsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 60F))
         FacePartsLayout.RowStyles.Add(New RowStyle())
         FacePartsLayout.RowStyles.Add(New RowStyle())
+        ' Fila 4 — SSE-only GroupBoxSseHeadTexture (item 6 de la migracion). AutoSize: bajo FO4 el grupo
+        ' esta Visible=False y una fila AutoSize con su unico control invisible colapsa a 0px, asi que el
+        ' layout FO4 no cambia (medido en Tools\DesignerCostProbe Q2 — ver el diseno de la migracion).
+        FacePartsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         FacePartsLayout.Size = New Size(818, 678)
         FacePartsLayout.TabIndex = 0
-        ' 
+        '
         ' GroupBoxHeadParts
-        ' 
+        '
         GroupBoxHeadParts.Controls.Add(HeadPartsLayout)
         GroupBoxHeadParts.Dock = DockStyle.Fill
         GroupBoxHeadParts.Location = New Point(3, 3)
@@ -226,9 +329,9 @@ Partial Class EditFace_Form
         GroupBoxHeadParts.TabIndex = 0
         GroupBoxHeadParts.TabStop = False
         GroupBoxHeadParts.Text = "Head Parts (NPC.PNAM — full reload on change)"
-        ' 
+        '
         ' HeadPartsLayout
-        ' 
+        '
         HeadPartsLayout.ColumnCount = 1
         HeadPartsLayout.ColumnStyles.Add(New ColumnStyle())
         HeadPartsLayout.Controls.Add(TableLayoutPanel1, 0, 1)
@@ -242,9 +345,9 @@ Partial Class EditFace_Form
         HeadPartsLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 56F))
         HeadPartsLayout.Size = New Size(806, 482)
         HeadPartsLayout.TabIndex = 0
-        ' 
+        '
         ' TableLayoutPanel1
-        ' 
+        '
         TableLayoutPanel1.ColumnCount = 6
         TableLayoutPanel1.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 16.6666679F))
         TableLayoutPanel1.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 16.6666641F))
@@ -271,9 +374,9 @@ Partial Class EditFace_Form
         TableLayoutPanel1.RowStyles.Add(New RowStyle(SizeType.Absolute, 25F))
         TableLayoutPanel1.Size = New Size(792, 50)
         TableLayoutPanel1.TabIndex = 11
-        ' 
+        '
         ' ButtonRemoveHeadPart
-        ' 
+        '
         ButtonRemoveHeadPart.AutoSize = True
         ButtonRemoveHeadPart.Dock = DockStyle.Fill
         ButtonRemoveHeadPart.Location = New Point(660, 25)
@@ -282,9 +385,9 @@ Partial Class EditFace_Form
         ButtonRemoveHeadPart.Size = New Size(132, 25)
         ButtonRemoveHeadPart.TabIndex = 10
         ButtonRemoveHeadPart.Text = "-Remove"
-        ' 
+        '
         ' ButtonAddMisc
-        ' 
+        '
         ButtonAddMisc.AutoSize = True
         ButtonAddMisc.Dock = DockStyle.Fill
         ButtonAddMisc.Location = New Point(396, 25)
@@ -293,9 +396,9 @@ Partial Class EditFace_Form
         ButtonAddMisc.Size = New Size(132, 25)
         ButtonAddMisc.TabIndex = 9
         ButtonAddMisc.Text = "+Misc"
-        ' 
+        '
         ' ButtonAddMeatcaps
-        ' 
+        '
         ButtonAddMeatcaps.AutoSize = True
         ButtonAddMeatcaps.Dock = DockStyle.Fill
         ButtonAddMeatcaps.Location = New Point(264, 25)
@@ -304,9 +407,9 @@ Partial Class EditFace_Form
         ButtonAddMeatcaps.Size = New Size(132, 25)
         ButtonAddMeatcaps.TabIndex = 8
         ButtonAddMeatcaps.Text = "+Meatcaps"
-        ' 
+        '
         ' ButtonAddHeadRear
-        ' 
+        '
         ButtonAddHeadRear.AutoSize = True
         ButtonAddHeadRear.Dock = DockStyle.Fill
         ButtonAddHeadRear.Location = New Point(132, 25)
@@ -315,9 +418,9 @@ Partial Class EditFace_Form
         ButtonAddHeadRear.Size = New Size(132, 25)
         ButtonAddHeadRear.TabIndex = 7
         ButtonAddHeadRear.Text = "+Head Rear"
-        ' 
+        '
         ' ButtonAddTeeth
-        ' 
+        '
         ButtonAddTeeth.AutoSize = True
         ButtonAddTeeth.Dock = DockStyle.Fill
         ButtonAddTeeth.Location = New Point(0, 25)
@@ -326,9 +429,9 @@ Partial Class EditFace_Form
         ButtonAddTeeth.Size = New Size(132, 25)
         ButtonAddTeeth.TabIndex = 6
         ButtonAddTeeth.Text = "+Teeth"
-        ' 
+        '
         ' ButtonAddScar
-        ' 
+        '
         ButtonAddScar.AutoSize = True
         ButtonAddScar.Dock = DockStyle.Fill
         ButtonAddScar.Location = New Point(660, 0)
@@ -337,9 +440,9 @@ Partial Class EditFace_Form
         ButtonAddScar.Size = New Size(132, 25)
         ButtonAddScar.TabIndex = 5
         ButtonAddScar.Text = "+Scar"
-        ' 
+        '
         ' ButtonAddEyebrows
-        ' 
+        '
         ButtonAddEyebrows.AutoSize = True
         ButtonAddEyebrows.Dock = DockStyle.Fill
         ButtonAddEyebrows.Location = New Point(528, 0)
@@ -348,9 +451,9 @@ Partial Class EditFace_Form
         ButtonAddEyebrows.Size = New Size(132, 25)
         ButtonAddEyebrows.TabIndex = 4
         ButtonAddEyebrows.Text = "+Eyebrows"
-        ' 
+        '
         ' ButtonAddFacialHair
-        ' 
+        '
         ButtonAddFacialHair.AutoSize = True
         ButtonAddFacialHair.Dock = DockStyle.Fill
         ButtonAddFacialHair.Location = New Point(396, 0)
@@ -359,9 +462,9 @@ Partial Class EditFace_Form
         ButtonAddFacialHair.Size = New Size(132, 25)
         ButtonAddFacialHair.TabIndex = 3
         ButtonAddFacialHair.Text = "+Facial Hair"
-        ' 
+        '
         ' ButtonAddEyes
-        ' 
+        '
         ButtonAddEyes.AutoSize = True
         ButtonAddEyes.Dock = DockStyle.Fill
         ButtonAddEyes.Location = New Point(264, 0)
@@ -370,9 +473,9 @@ Partial Class EditFace_Form
         ButtonAddEyes.Size = New Size(132, 25)
         ButtonAddEyes.TabIndex = 2
         ButtonAddEyes.Text = "+Eyes"
-        ' 
+        '
         ' ButtonAddHair
-        ' 
+        '
         ButtonAddHair.AutoSize = True
         ButtonAddHair.Dock = DockStyle.Fill
         ButtonAddHair.Location = New Point(132, 0)
@@ -381,9 +484,9 @@ Partial Class EditFace_Form
         ButtonAddHair.Size = New Size(132, 25)
         ButtonAddHair.TabIndex = 1
         ButtonAddHair.Text = "+Hair"
-        ' 
+        '
         ' ButtonAddFace
-        ' 
+        '
         ButtonAddFace.AutoSize = True
         ButtonAddFace.Dock = DockStyle.Fill
         ButtonAddFace.Location = New Point(0, 0)
@@ -392,9 +495,9 @@ Partial Class EditFace_Form
         ButtonAddFace.Size = New Size(132, 25)
         ButtonAddFace.TabIndex = 0
         ButtonAddFace.Text = "+Face"
-        ' 
+        '
         ' ListViewHeadParts
-        ' 
+        '
         ListViewHeadParts.Columns.AddRange(New ColumnHeader() {ColHeadPartType, ColHeadPartEditorID, ColHeadPartName, ColHeadPartPlugin, ColHeadPartFormID})
         ListViewHeadParts.Dock = DockStyle.Fill
         ListViewHeadParts.FullRowSelect = True
@@ -405,34 +508,34 @@ Partial Class EditFace_Form
         ListViewHeadParts.TabIndex = 0
         ListViewHeadParts.UseCompatibleStateImageBehavior = False
         ListViewHeadParts.View = View.Details
-        ' 
+        '
         ' ColHeadPartType
-        ' 
+        '
         ColHeadPartType.Text = "Type"
         ColHeadPartType.Width = 90
-        ' 
+        '
         ' ColHeadPartEditorID
-        ' 
+        '
         ColHeadPartEditorID.Text = "Editor ID"
         ColHeadPartEditorID.Width = 200
-        ' 
+        '
         ' ColHeadPartName
-        ' 
+        '
         ColHeadPartName.Text = "Name"
         ColHeadPartName.Width = 180
-        ' 
+        '
         ' ColHeadPartPlugin
-        ' 
+        '
         ColHeadPartPlugin.Text = "Plugin"
         ColHeadPartPlugin.Width = 110
-        ' 
+        '
         ' ColHeadPartFormID
-        ' 
+        '
         ColHeadPartFormID.Text = "FormID"
         ColHeadPartFormID.Width = 70
-        ' 
+        '
         ' GroupBoxHairColor
-        ' 
+        '
         GroupBoxHairColor.AutoSize = True
         GroupBoxHairColor.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxHairColor.Controls.Add(HairColorLayout)
@@ -444,9 +547,9 @@ Partial Class EditFace_Form
         GroupBoxHairColor.TabStop = False
         ' NPC.HCLF, not QNAM — QNAM is 'Texture Lighting' (the body SoftLight RGBA), a different pipe entirely.
         GroupBoxHairColor.Text = "Hair Color (NPC.HCLF)"
-        ' 
+        '
         ' HairColorLayout
-        ' 
+        '
         HairColorLayout.AutoSize = True
         HairColorLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         HairColorLayout.ColumnCount = 2
@@ -505,9 +608,9 @@ Partial Class EditFace_Form
         LabelSseCustomHair.Margin = New Padding(8, 7, 2, 2)
         LabelSseCustomHair.Name = "LabelSseCustomHair"
         LabelSseCustomHair.TabIndex = 2
-        ' 
+        '
         ' ComboBoxHairColor
-        ' 
+        '
         ComboBoxHairColor.Dock = DockStyle.Fill
         ComboBoxHairColor.DropDownStyle = ComboBoxStyle.DropDownList
         ComboBoxHairColor.Location = New Point(6, 6)
@@ -515,9 +618,9 @@ Partial Class EditFace_Form
         ComboBoxHairColor.Name = "ComboBoxHairColor"
         ComboBoxHairColor.Size = New Size(694, 23)
         ComboBoxHairColor.TabIndex = 0
-        ' 
+        '
         ' ButtonClearHairColor
-        ' 
+        '
         ButtonClearHairColor.Dock = DockStyle.Fill
         ButtonClearHairColor.Location = New Point(704, 6)
         ButtonClearHairColor.Margin = New Padding(2)
@@ -527,9 +630,9 @@ Partial Class EditFace_Form
         ButtonClearHairColor.Size = New Size(96, 52)
         ButtonClearHairColor.TabIndex = 1
         ButtonClearHairColor.Text = "Clear"
-        ' 
+        '
         ' PanelHairColorSwatch
-        ' 
+        '
         PanelHairColorSwatch.BackColor = Color.Gray
         PanelHairColorSwatch.BorderStyle = BorderStyle.FixedSingle
         PanelHairColorSwatch.Dock = DockStyle.Fill
@@ -538,9 +641,9 @@ Partial Class EditFace_Form
         PanelHairColorSwatch.Name = "PanelHairColorSwatch"
         PanelHairColorSwatch.Size = New Size(694, 16)
         PanelHairColorSwatch.TabIndex = 2
-        ' 
+        '
         ' GroupBoxFaceFlags
-        ' 
+        '
         GroupBoxFaceFlags.AutoSize = True
         GroupBoxFaceFlags.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxFaceFlags.Controls.Add(FaceFlagsLayout)
@@ -551,9 +654,9 @@ Partial Class EditFace_Form
         GroupBoxFaceFlags.TabIndex = 2
         GroupBoxFaceFlags.TabStop = False
         GroupBoxFaceFlags.Text = "FaceGen flags (ACBS)"
-        ' 
+        '
         ' FaceFlagsLayout
-        ' 
+        '
         FaceFlagsLayout.AutoSize = True
         FaceFlagsLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         FaceFlagsLayout.Controls.Add(CheckBoxIsCharGenFacePreset)
@@ -566,18 +669,18 @@ Partial Class EditFace_Form
         FaceFlagsLayout.Size = New Size(806, 48)
         FaceFlagsLayout.TabIndex = 0
         FaceFlagsLayout.WrapContents = False
-        ' 
+        '
         ' CheckBoxIsCharGenFacePreset
-        ' 
+        '
         CheckBoxIsCharGenFacePreset.AutoSize = True
         CheckBoxIsCharGenFacePreset.Location = New Point(7, 7)
         CheckBoxIsCharGenFacePreset.Name = "CheckBoxIsCharGenFacePreset"
         CheckBoxIsCharGenFacePreset.Size = New Size(145, 19)
         CheckBoxIsCharGenFacePreset.TabIndex = 0
         CheckBoxIsCharGenFacePreset.Text = "Is CharGen Face Preset"
-        ' 
+        '
         ' LabelCharGenHelp
-        ' 
+        '
         LabelCharGenHelp.AutoSize = True
         LabelCharGenHelp.ForeColor = SystemColors.GrayText
         LabelCharGenHelp.Location = New Point(7, 29)
@@ -586,9 +689,76 @@ Partial Class EditFace_Form
         LabelCharGenHelp.Size = New Size(602, 15)
         LabelCharGenHelp.TabIndex = 1
         LabelCharGenHelp.Text = "Marks the NPC as a chargen template.  The engine will remorph every time. Recommended false + build chargen"
-        ' 
+        '
+        ' GroupBoxSseHeadTexture — SSE-only (item 6 de la migracion). RaceMenu aplica el NPC_.FTST tambien
+        ' (PresetInterface.cpp:160). Visible=False en el Designer: PopulateSseHeadTextureSection lo prende
+        ' bajo SSE, igual que PanelSseCustomHair mas arriba.
+        '
+        GroupBoxSseHeadTexture.AutoSize = True
+        GroupBoxSseHeadTexture.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxSseHeadTexture.Controls.Add(FlowSseHeadTex)
+        GroupBoxSseHeadTexture.Dock = DockStyle.Fill
+        GroupBoxSseHeadTexture.Location = New Point(3, 681)
+        GroupBoxSseHeadTexture.Name = "GroupBoxSseHeadTexture"
+        GroupBoxSseHeadTexture.Size = New Size(812, 60)
+        GroupBoxSseHeadTexture.TabIndex = 3
+        GroupBoxSseHeadTexture.TabStop = False
+        GroupBoxSseHeadTexture.Text = "Head texture (FTST)"
+        GroupBoxSseHeadTexture.Visible = False
+        '
+        ' FlowSseHeadTex
+        '
+        FlowSseHeadTex.AutoSize = True
+        FlowSseHeadTex.Controls.Add(LabelSseHeadTex)
+        FlowSseHeadTex.Controls.Add(ButtonSseHeadTexPick)
+        FlowSseHeadTex.Controls.Add(ButtonSseHeadTexDefault)
+        FlowSseHeadTex.Controls.Add(ButtonSseHeadTexClear)
+        FlowSseHeadTex.Dock = DockStyle.Fill
+        FlowSseHeadTex.FlowDirection = FlowDirection.LeftToRight
+        FlowSseHeadTex.Location = New Point(3, 19)
+        FlowSseHeadTex.Name = "FlowSseHeadTex"
+        FlowSseHeadTex.Padding = New Padding(4)
+        FlowSseHeadTex.Size = New Size(806, 38)
+        FlowSseHeadTex.TabIndex = 0
+        FlowSseHeadTex.WrapContents = False
+        '
+        ' LabelSseHeadTex
+        '
+        LabelSseHeadTex.AutoSize = True
+        LabelSseHeadTex.Margin = New Padding(3, 9, 12, 3)
+        LabelSseHeadTex.Name = "LabelSseHeadTex"
+        LabelSseHeadTex.Size = New Size(0, 15)
+        LabelSseHeadTex.TabIndex = 0
+        '
+        ' ButtonSseHeadTexPick
+        '
+        ButtonSseHeadTexPick.AutoSize = True
+        ButtonSseHeadTexPick.Location = New Point(15, 4)
+        ButtonSseHeadTexPick.Name = "ButtonSseHeadTexPick"
+        ButtonSseHeadTexPick.Size = New Size(87, 25)
+        ButtonSseHeadTexPick.TabIndex = 1
+        ButtonSseHeadTexPick.Text = "Change…"
+        '
+        ' ButtonSseHeadTexDefault
+        '
+        ButtonSseHeadTexDefault.AutoSize = True
+        ButtonSseHeadTexDefault.Location = New Point(108, 4)
+        ButtonSseHeadTexDefault.Name = "ButtonSseHeadTexDefault"
+        ButtonSseHeadTexDefault.Size = New Size(140, 25)
+        ButtonSseHeadTexDefault.TabIndex = 2
+        ButtonSseHeadTexDefault.Text = "Use record default"
+        '
+        ' ButtonSseHeadTexClear
+        '
+        ButtonSseHeadTexClear.AutoSize = True
+        ButtonSseHeadTexClear.Location = New Point(254, 4)
+        ButtonSseHeadTexClear.Name = "ButtonSseHeadTexClear"
+        ButtonSseHeadTexClear.Size = New Size(128, 25)
+        ButtonSseHeadTexClear.TabIndex = 3
+        ButtonSseHeadTexClear.Text = "Clear (no FTST)"
+        '
         ' TabPageSseMorphs
-        ' 
+        '
         TabPageSseMorphs.Controls.Add(PanelSseMorphs)
         TabPageSseMorphs.Location = New Point(4, 24)
         TabPageSseMorphs.Name = "TabPageSseMorphs"
@@ -596,17 +766,17 @@ Partial Class EditFace_Form
         TabPageSseMorphs.Size = New Size(830, 690)
         TabPageSseMorphs.TabIndex = 1
         TabPageSseMorphs.Text = "Morphs (SSE)"
-        ' 
+        '
         ' PanelSseMorphs
-        ' 
+        '
         PanelSseMorphs.Dock = DockStyle.Fill
         PanelSseMorphs.Location = New Point(6, 6)
         PanelSseMorphs.Name = "PanelSseMorphs"
         PanelSseMorphs.Size = New Size(818, 678)
         PanelSseMorphs.TabIndex = 0
-        ' 
+        '
         ' TabPageSseTints
-        ' 
+        '
         TabPageSseTints.Controls.Add(PanelSseTints)
         TabPageSseTints.Location = New Point(4, 24)
         TabPageSseTints.Name = "TabPageSseTints"
@@ -614,17 +784,328 @@ Partial Class EditFace_Form
         TabPageSseTints.Size = New Size(830, 690)
         TabPageSseTints.TabIndex = 2
         TabPageSseTints.Text = "Tints (SSE)"
-        ' 
+        '
         ' PanelSseTints
-        ' 
+        '
+        PanelSseTints.Controls.Add(SseTintSplit)
         PanelSseTints.Dock = DockStyle.Fill
         PanelSseTints.Location = New Point(6, 6)
         PanelSseTints.Name = "PanelSseTints"
         PanelSseTints.Size = New Size(818, 678)
         PanelSseTints.TabIndex = 0
-        ' 
+        '
+        ' SseTintSplit — item 7 + C1 de la migracion (PopulateSseTintTab pasa a ser solo repoblacion).
+        '
+        SseTintSplit.ColumnCount = 2
+        SseTintSplit.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 300F))
+        SseTintSplit.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseTintSplit.Controls.Add(SseTintListHost, 0, 0)
+        SseTintSplit.Controls.Add(GroupBoxSseTintDetail, 1, 0)
+        SseTintSplit.Dock = DockStyle.Fill
+        SseTintSplit.Location = New Point(0, 0)
+        SseTintSplit.Name = "SseTintSplit"
+        SseTintSplit.RowCount = 1
+        SseTintSplit.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseTintSplit.Size = New Size(818, 678)
+        SseTintSplit.TabIndex = 0
+        '
+        ' SseTintListHost
+        '
+        SseTintListHost.ColumnCount = 1
+        SseTintListHost.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseTintListHost.Controls.Add(LabelSseTintLayers, 0, 0)
+        SseTintListHost.Controls.Add(ListBoxSseTintLayers, 0, 1)
+        SseTintListHost.Dock = DockStyle.Fill
+        SseTintListHost.Location = New Point(0, 0)
+        SseTintListHost.Name = "SseTintListHost"
+        SseTintListHost.RowCount = 2
+        SseTintListHost.RowStyles.Add(New RowStyle(SizeType.Absolute, 22F))
+        SseTintListHost.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseTintListHost.Size = New Size(300, 678)
+        SseTintListHost.TabIndex = 0
+        '
+        ' LabelSseTintLayers
+        '
+        LabelSseTintLayers.Dock = DockStyle.Fill
+        LabelSseTintLayers.Font = New Font(Me.Font, FontStyle.Bold)
+        LabelSseTintLayers.Location = New Point(0, 0)
+        LabelSseTintLayers.Name = "LabelSseTintLayers"
+        LabelSseTintLayers.Size = New Size(300, 22)
+        LabelSseTintLayers.TabIndex = 0
+        LabelSseTintLayers.Text = "RACE tint layers"
+        LabelSseTintLayers.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' ListBoxSseTintLayers
+        '
+        ListBoxSseTintLayers.Dock = DockStyle.Fill
+        ListBoxSseTintLayers.DrawMode = DrawMode.OwnerDrawFixed
+        ListBoxSseTintLayers.IntegralHeight = False
+        ListBoxSseTintLayers.ItemHeight = 20
+        ListBoxSseTintLayers.Location = New Point(0, 22)
+        ListBoxSseTintLayers.Name = "ListBoxSseTintLayers"
+        ListBoxSseTintLayers.Size = New Size(300, 656)
+        ListBoxSseTintLayers.TabIndex = 1
+        '
+        ' GroupBoxSseTintDetail — el TOP BORDER lo empuja el header de 22px de SseTintListHost para que
+        ' alinee con el borde superior de la lista de la izquierda (mismo truco que el builder original).
+        '
+        GroupBoxSseTintDetail.Controls.Add(PanelSseTintDetail)
+        GroupBoxSseTintDetail.Dock = DockStyle.Fill
+        GroupBoxSseTintDetail.Location = New Point(306, 22)
+        GroupBoxSseTintDetail.Margin = New Padding(6, 22, 4, 4)
+        GroupBoxSseTintDetail.Name = "GroupBoxSseTintDetail"
+        GroupBoxSseTintDetail.Size = New Size(508, 652)
+        GroupBoxSseTintDetail.TabIndex = 1
+        GroupBoxSseTintDetail.TabStop = False
+        GroupBoxSseTintDetail.Text = "Selected layer"
+        '
+        ' PanelSseTintDetail
+        '
+        PanelSseTintDetail.AutoScroll = True
+        PanelSseTintDetail.Controls.Add(SseTintDetailLayout)
+        PanelSseTintDetail.Controls.Add(LabelSseTintEmpty)
+        PanelSseTintDetail.Dock = DockStyle.Fill
+        PanelSseTintDetail.Location = New Point(3, 19)
+        PanelSseTintDetail.Name = "PanelSseTintDetail"
+        PanelSseTintDetail.Padding = New Padding(8, 6, 8, 8)
+        PanelSseTintDetail.Size = New Size(502, 630)
+        PanelSseTintDetail.TabIndex = 0
+        '
+        ' SseTintDetailLayout
+        '
+        SseTintDetailLayout.AutoSize = True
+        SseTintDetailLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        SseTintDetailLayout.ColumnCount = 2
+        SseTintDetailLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 128F))
+        SseTintDetailLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseTintDetailLayout.Controls.Add(LabelSseTintColorSourceCaption, 0, 0)
+        SseTintDetailLayout.Controls.Add(ComboBoxSseTintPreset, 1, 0)
+        SseTintDetailLayout.Controls.Add(LabelSseTintColorCaption, 0, 1)
+        SseTintDetailLayout.Controls.Add(SseTintColorRow, 1, 1)
+        SseTintDetailLayout.Controls.Add(LabelSseTintCoverageCaption, 0, 2)
+        SseTintDetailLayout.Controls.Add(SliderSseTintCoverage, 1, 2)
+        SseTintDetailLayout.Controls.Add(LabelSseTintMaskCaption, 0, 3)
+        SseTintDetailLayout.Controls.Add(LabelSseTintMask, 1, 3)
+        SseTintDetailLayout.Controls.Add(SseTintMaskButtons, 1, 4)
+        SseTintDetailLayout.Dock = DockStyle.Top
+        SseTintDetailLayout.Location = New Point(8, 6)
+        SseTintDetailLayout.Name = "SseTintDetailLayout"
+        SseTintDetailLayout.RowCount = 5
+        SseTintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 34F))
+        SseTintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 34F))
+        SseTintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 34F))
+        SseTintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 34F))
+        ' Fila 4 mide 68 (el doble de una fila normal): aloja las DOS filas internas de SseTintMaskButtons —
+        ' la de acciones por capa (Choose…/Clear/Reset to RACE default) y, debajo, la de "Reset ALL tints".
+        ' Con 34 el TableLayoutPanel interno queda recortado y la segunda fila no se ve.
+        SseTintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 68F))
+        SseTintDetailLayout.Size = New Size(486, 205)
+        SseTintDetailLayout.TabIndex = 0
+        '
+        ' LabelSseTintColorSourceCaption
+        '
+        LabelSseTintColorSourceCaption.Dock = DockStyle.Fill
+        LabelSseTintColorSourceCaption.Location = New Point(3, 0)
+        LabelSseTintColorSourceCaption.Margin = New Padding(3, 0, 3, 0)
+        LabelSseTintColorSourceCaption.Name = "LabelSseTintColorSourceCaption"
+        LabelSseTintColorSourceCaption.Size = New Size(122, 34)
+        LabelSseTintColorSourceCaption.TabIndex = 0
+        LabelSseTintColorSourceCaption.Text = "Color source:"
+        LabelSseTintColorSourceCaption.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' ComboBoxSseTintPreset
+        '
+        ComboBoxSseTintPreset.Dock = DockStyle.Fill
+        ComboBoxSseTintPreset.DrawMode = DrawMode.OwnerDrawFixed
+        ComboBoxSseTintPreset.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxSseTintPreset.Location = New Point(131, 4)
+        ComboBoxSseTintPreset.Margin = New Padding(3, 4, 3, 3)
+        ComboBoxSseTintPreset.Name = "ComboBoxSseTintPreset"
+        ComboBoxSseTintPreset.Size = New Size(352, 23)
+        ComboBoxSseTintPreset.TabIndex = 1
+        '
+        ' LabelSseTintColorCaption
+        '
+        LabelSseTintColorCaption.Dock = DockStyle.Fill
+        LabelSseTintColorCaption.Location = New Point(3, 34)
+        LabelSseTintColorCaption.Margin = New Padding(3, 0, 3, 0)
+        LabelSseTintColorCaption.Name = "LabelSseTintColorCaption"
+        LabelSseTintColorCaption.Size = New Size(122, 34)
+        LabelSseTintColorCaption.TabIndex = 2
+        LabelSseTintColorCaption.Text = "Color:"
+        LabelSseTintColorCaption.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' SseTintColorRow
+        '
+        SseTintColorRow.ColumnCount = 2
+        SseTintColorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseTintColorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92F))
+        SseTintColorRow.Controls.Add(ButtonSseTintSwatch, 0, 0)
+        SseTintColorRow.Controls.Add(ButtonSseTintCustom, 1, 0)
+        SseTintColorRow.Dock = DockStyle.Fill
+        SseTintColorRow.Location = New Point(131, 34)
+        SseTintColorRow.Margin = New Padding(0)
+        SseTintColorRow.Name = "SseTintColorRow"
+        SseTintColorRow.RowCount = 1
+        SseTintColorRow.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseTintColorRow.Size = New Size(355, 34)
+        SseTintColorRow.TabIndex = 3
+        '
+        ' ButtonSseTintSwatch
+        '
+        ButtonSseTintSwatch.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ButtonSseTintSwatch.Enabled = False
+        ButtonSseTintSwatch.FlatStyle = FlatStyle.Popup
+        ButtonSseTintSwatch.Height = 26
+        ButtonSseTintSwatch.Location = New Point(3, 4)
+        ButtonSseTintSwatch.Margin = New Padding(3, 4, 3, 3)
+        ButtonSseTintSwatch.Name = "ButtonSseTintSwatch"
+        ButtonSseTintSwatch.Size = New Size(257, 26)
+        ButtonSseTintSwatch.TabIndex = 0
+        '
+        ' ButtonSseTintCustom
+        '
+        ButtonSseTintCustom.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ButtonSseTintCustom.Height = 26
+        ButtonSseTintCustom.Location = New Point(266, 4)
+        ButtonSseTintCustom.Margin = New Padding(3, 4, 3, 3)
+        ButtonSseTintCustom.Name = "ButtonSseTintCustom"
+        ButtonSseTintCustom.Size = New Size(86, 26)
+        ButtonSseTintCustom.TabIndex = 1
+        ButtonSseTintCustom.Text = "Custom…"
+        ToolTipSseTint.SetToolTip(ButtonSseTintCustom, "Pick a free RGB colour (TIAS = -1 = custom, like RaceMenu / the CK colour picker).")
+        '
+        ' LabelSseTintCoverageCaption
+        '
+        LabelSseTintCoverageCaption.Dock = DockStyle.Fill
+        LabelSseTintCoverageCaption.Location = New Point(3, 68)
+        LabelSseTintCoverageCaption.Margin = New Padding(3, 0, 3, 0)
+        LabelSseTintCoverageCaption.Name = "LabelSseTintCoverageCaption"
+        LabelSseTintCoverageCaption.Size = New Size(122, 34)
+        LabelSseTintCoverageCaption.TabIndex = 4
+        LabelSseTintCoverageCaption.Text = "Coverage (TINV):"
+        LabelSseTintCoverageCaption.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' SliderSseTintCoverage — Value NO se fija aca (00-reglas-ui-y-vb / diseno §2.4bis): el default 0 ya
+        ' cae dentro de [0,1] y no dispara clamp ni evento, asi que no hace falta sembrarlo desde code-behind.
+        '
+        SliderSseTintCoverage.DisplayFormat = "0.00"
+        SliderSseTintCoverage.Dock = DockStyle.Fill
+        SliderSseTintCoverage.Height = 26
+        SliderSseTintCoverage.LargeChange = 0.1R
+        SliderSseTintCoverage.Location = New Point(131, 72)
+        SliderSseTintCoverage.Margin = New Padding(3, 4, 3, 3)
+        SliderSseTintCoverage.Maximum = 1R
+        SliderSseTintCoverage.Name = "SliderSseTintCoverage"
+        SliderSseTintCoverage.Size = New Size(352, 26)
+        SliderSseTintCoverage.SmallChange = 0.01R
+        SliderSseTintCoverage.TabIndex = 5
+        '
+        ' LabelSseTintMaskCaption
+        '
+        LabelSseTintMaskCaption.Dock = DockStyle.Fill
+        LabelSseTintMaskCaption.Location = New Point(3, 102)
+        LabelSseTintMaskCaption.Margin = New Padding(3, 0, 3, 0)
+        LabelSseTintMaskCaption.Name = "LabelSseTintMaskCaption"
+        LabelSseTintMaskCaption.Size = New Size(122, 34)
+        LabelSseTintMaskCaption.TabIndex = 6
+        LabelSseTintMaskCaption.Text = "Warpaint mask:"
+        LabelSseTintMaskCaption.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' LabelSseTintMask — texto y tooltip son DATA-DRIVEN (SelectSseTintLayer los siembra por capa); acá
+        ' sólo el layout.
+        '
+        LabelSseTintMask.AutoEllipsis = True
+        LabelSseTintMask.Dock = DockStyle.Fill
+        LabelSseTintMask.Location = New Point(134, 102)
+        LabelSseTintMask.Margin = New Padding(3, 0, 3, 0)
+        LabelSseTintMask.Name = "LabelSseTintMask"
+        LabelSseTintMask.Size = New Size(349, 34)
+        LabelSseTintMask.TabIndex = 7
+        LabelSseTintMask.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' SseTintMaskButtons — fila 1 (Choose…/Clear/Reset a la capa) + fila 2 (Reset ALL, ColumnSpan 3, para
+        ' que su ancho salga de las MISMAS ColumnStyles que los tres botones de arriba).
+        '
+        SseTintMaskButtons.ColumnCount = 4
+        SseTintMaskButtons.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92F))
+        SseTintMaskButtons.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92F))
+        SseTintMaskButtons.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        SseTintMaskButtons.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseTintMaskButtons.Controls.Add(ButtonSseTintMaskPick, 0, 0)
+        SseTintMaskButtons.Controls.Add(ButtonSseTintMaskClear, 1, 0)
+        SseTintMaskButtons.Controls.Add(ButtonSseTintReset, 2, 0)
+        SseTintMaskButtons.Controls.Add(ButtonSseTintResetAll, 0, 1)
+        SseTintMaskButtons.Dock = DockStyle.Fill
+        SseTintMaskButtons.Location = New Point(131, 136)
+        SseTintMaskButtons.Margin = New Padding(0)
+        SseTintMaskButtons.Name = "SseTintMaskButtons"
+        SseTintMaskButtons.RowCount = 2
+        SseTintMaskButtons.RowStyles.Add(New RowStyle(SizeType.Absolute, 34F))
+        SseTintMaskButtons.RowStyles.Add(New RowStyle(SizeType.Absolute, 34F))
+        SseTintMaskButtons.Size = New Size(352, 68)
+        SseTintMaskButtons.TabIndex = 8
+        '
+        ' ButtonSseTintMaskPick
+        '
+        ButtonSseTintMaskPick.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ButtonSseTintMaskPick.Height = 26
+        ButtonSseTintMaskPick.Location = New Point(3, 2)
+        ButtonSseTintMaskPick.Margin = New Padding(3, 2, 3, 3)
+        ButtonSseTintMaskPick.Name = "ButtonSseTintMaskPick"
+        ButtonSseTintMaskPick.Size = New Size(86, 26)
+        ButtonSseTintMaskPick.TabIndex = 0
+        ButtonSseTintMaskPick.Text = "Choose…"
+        ToolTipSseTint.SetToolTip(ButtonSseTintMaskPick, "Warpaint (RaceMenu): pick a tint mask registered by a mod. Empty = uses the RACE's own mask.")
+        '
+        ' ButtonSseTintMaskClear
+        '
+        ButtonSseTintMaskClear.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ButtonSseTintMaskClear.Height = 26
+        ButtonSseTintMaskClear.Location = New Point(95, 2)
+        ButtonSseTintMaskClear.Margin = New Padding(3, 2, 3, 3)
+        ButtonSseTintMaskClear.Name = "ButtonSseTintMaskClear"
+        ButtonSseTintMaskClear.Size = New Size(86, 26)
+        ButtonSseTintMaskClear.TabIndex = 1
+        ButtonSseTintMaskClear.Text = "Clear"
+        '
+        ' ButtonSseTintReset
+        '
+        ButtonSseTintReset.Anchor = AnchorStyles.Left
+        ButtonSseTintReset.AutoSize = True
+        ButtonSseTintReset.Height = 26
+        ButtonSseTintReset.Location = New Point(190, 2)
+        ButtonSseTintReset.Margin = New Padding(9, 2, 3, 3)
+        ButtonSseTintReset.Name = "ButtonSseTintReset"
+        ButtonSseTintReset.Size = New Size(147, 26)
+        ButtonSseTintReset.TabIndex = 2
+        ButtonSseTintReset.Text = "Reset to RACE default"
+        '
+        ' ButtonSseTintResetAll
+        '
+        ButtonSseTintResetAll.Dock = DockStyle.Fill
+        ButtonSseTintResetAll.Height = 26
+        ButtonSseTintResetAll.Location = New Point(3, 36)
+        ButtonSseTintResetAll.Margin = New Padding(3, 2, 3, 3)
+        ButtonSseTintResetAll.Name = "ButtonSseTintResetAll"
+        SseTintMaskButtons.SetColumnSpan(ButtonSseTintResetAll, 3)
+        ButtonSseTintResetAll.Size = New Size(340, 26)
+        ButtonSseTintResetAll.TabIndex = 3
+        ButtonSseTintResetAll.Text = "Reset all tints to RACE default"
+        ToolTipSseTint.SetToolTip(ButtonSseTintResetAll, "Reset EVERY tint layer to its RACE default (colour, intensity and warpaint mask) — the same as pressing 'Reset to RACE default' on each layer one by one. Asks for confirmation; 'Reset section' and Cancel still undo it.")
+        '
+        ' LabelSseTintEmpty — camino "0 capas" (antes resuelto con Controls.Clear()).
+        '
+        LabelSseTintEmpty.AutoSize = True
+        LabelSseTintEmpty.Location = New Point(8, 6)
+        LabelSseTintEmpty.Name = "LabelSseTintEmpty"
+        LabelSseTintEmpty.Size = New Size(280, 15)
+        LabelSseTintEmpty.TabIndex = 1
+        LabelSseTintEmpty.Text = "(this race declares no tint layers for this gender)"
+        LabelSseTintEmpty.Visible = False
+        '
         ' TabPageSseSculpt
-        ' 
+        '
         TabPageSseSculpt.Controls.Add(ListSseSculpt)
         TabPageSseSculpt.Controls.Add(SseSculptButtonRow)
         TabPageSseSculpt.Location = New Point(4, 24)
@@ -633,9 +1114,9 @@ Partial Class EditFace_Form
         TabPageSseSculpt.Size = New Size(830, 690)
         TabPageSseSculpt.TabIndex = 3
         TabPageSseSculpt.Text = "Sculpt (SSE)"
-        ' 
+        '
         ' ListSseSculpt
-        ' 
+        '
         ListSseSculpt.Dock = DockStyle.Fill
         ListSseSculpt.FullRowSelect = True
         ListSseSculpt.HideSelection = False
@@ -682,8 +1163,445 @@ Partial Class EditFace_Form
         ButtonDeleteSseSculpt.TabIndex = 1
         ButtonDeleteSseSculpt.Text = "Delete selected sculpt"
         '
+        ' TabPageSseRaceMenu — item 1 de la migracion. Bajo FO4 se remueve del TabControl (rama Else del
+        ' ctor); el filtro y el flow quedan siempre presentes, sembrados/ocultos por PopulateSseRaceMenuTab.
+        '
+        TabPageSseRaceMenu.Controls.Add(SseRaceMenuRoot)
+        TabPageSseRaceMenu.Controls.Add(LabelSseRaceMenuEmpty)
+        TabPageSseRaceMenu.Location = New Point(4, 24)
+        TabPageSseRaceMenu.Name = "TabPageSseRaceMenu"
+        TabPageSseRaceMenu.Padding = New Padding(6)
+        TabPageSseRaceMenu.Size = New Size(830, 690)
+        TabPageSseRaceMenu.TabIndex = 4
+        TabPageSseRaceMenu.Text = "RaceMenu · Sliders"
+        '
+        ' SseRaceMenuRoot
+        '
+        SseRaceMenuRoot.ColumnCount = 1
+        SseRaceMenuRoot.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseRaceMenuRoot.Controls.Add(TextBoxSseRaceMenuFilter, 0, 0)
+        SseRaceMenuRoot.Controls.Add(FlowSseRaceMenu, 0, 1)
+        SseRaceMenuRoot.Dock = DockStyle.Fill
+        SseRaceMenuRoot.Location = New Point(6, 6)
+        SseRaceMenuRoot.Name = "SseRaceMenuRoot"
+        SseRaceMenuRoot.RowCount = 2
+        SseRaceMenuRoot.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseRaceMenuRoot.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseRaceMenuRoot.Size = New Size(818, 678)
+        SseRaceMenuRoot.TabIndex = 0
+        '
+        ' TextBoxSseRaceMenuFilter
+        '
+        TextBoxSseRaceMenuFilter.Dock = DockStyle.Top
+        TextBoxSseRaceMenuFilter.Location = New Point(3, 3)
+        TextBoxSseRaceMenuFilter.Margin = New Padding(3)
+        TextBoxSseRaceMenuFilter.Name = "TextBoxSseRaceMenuFilter"
+        TextBoxSseRaceMenuFilter.PlaceholderText = "Filter sliders…"
+        TextBoxSseRaceMenuFilter.Size = New Size(812, 23)
+        TextBoxSseRaceMenuFilter.TabIndex = 0
+        '
+        ' FlowSseRaceMenu — sin hijos en el Designer: las filas/headers son 100% data-driven (catalogo de
+        ' sliders por raza) y las siembra PopulateSseRaceMenuTab.
+        '
+        FlowSseRaceMenu.AutoScroll = True
+        FlowSseRaceMenu.Dock = DockStyle.Fill
+        FlowSseRaceMenu.FlowDirection = FlowDirection.TopDown
+        FlowSseRaceMenu.Location = New Point(3, 32)
+        FlowSseRaceMenu.Name = "FlowSseRaceMenu"
+        FlowSseRaceMenu.Padding = New Padding(4)
+        FlowSseRaceMenu.Size = New Size(812, 643)
+        FlowSseRaceMenu.TabIndex = 1
+        FlowSseRaceMenu.WrapContents = False
+        '
+        ' LabelSseRaceMenuEmpty
+        '
+        LabelSseRaceMenuEmpty.AutoSize = False
+        LabelSseRaceMenuEmpty.Dock = DockStyle.Fill
+        LabelSseRaceMenuEmpty.ForeColor = SystemColors.GrayText
+        LabelSseRaceMenuEmpty.Location = New Point(6, 6)
+        LabelSseRaceMenuEmpty.Name = "LabelSseRaceMenuEmpty"
+        LabelSseRaceMenuEmpty.Padding = New Padding(10)
+        LabelSseRaceMenuEmpty.Size = New Size(818, 678)
+        LabelSseRaceMenuEmpty.TabIndex = 1
+        LabelSseRaceMenuEmpty.Visible = False
+        '
+        ' TabPageSseFaceOverlays — item 2 de la migracion (layout 100% estatico). Bajo FO4 se remueve del
+        ' TabControl (rama Else del ctor).
+        '
+        TabPageSseFaceOverlays.Controls.Add(SseFaceOvRoot)
+        TabPageSseFaceOverlays.Location = New Point(4, 24)
+        TabPageSseFaceOverlays.Name = "TabPageSseFaceOverlays"
+        TabPageSseFaceOverlays.Padding = New Padding(6)
+        TabPageSseFaceOverlays.Size = New Size(830, 690)
+        TabPageSseFaceOverlays.TabIndex = 5
+        TabPageSseFaceOverlays.Text = "RaceMenu · Face Paint"
+        '
+        ' SseFaceOvRoot
+        '
+        SseFaceOvRoot.ColumnCount = 1
+        SseFaceOvRoot.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseFaceOvRoot.Controls.Add(LabelSseFaceOvHeader, 0, 0)
+        SseFaceOvRoot.Controls.Add(SseFaceOvBody, 0, 1)
+        SseFaceOvRoot.Dock = DockStyle.Fill
+        SseFaceOvRoot.Location = New Point(6, 6)
+        SseFaceOvRoot.Name = "SseFaceOvRoot"
+        SseFaceOvRoot.RowCount = 2
+        SseFaceOvRoot.RowStyles.Add(New RowStyle(SizeType.Absolute, 30F))
+        SseFaceOvRoot.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseFaceOvRoot.Size = New Size(818, 678)
+        SseFaceOvRoot.TabIndex = 0
+        '
+        ' LabelSseFaceOvHeader
+        '
+        LabelSseFaceOvHeader.Dock = DockStyle.Fill
+        LabelSseFaceOvHeader.Location = New Point(0, 0)
+        LabelSseFaceOvHeader.Name = "LabelSseFaceOvHeader"
+        LabelSseFaceOvHeader.Padding = New Padding(3, 6, 3, 0)
+        LabelSseFaceOvHeader.Size = New Size(818, 30)
+        LabelSseFaceOvHeader.TabIndex = 0
+        LabelSseFaceOvHeader.Text = "Face paint overlays. Choose a paint on the left, then Add → to apply it to this NPC."
+        '
+        ' SseFaceOvBody — mismo paradigma de 2 listas + botones que el editor de overlays de FO4/EditBody.
+        '
+        SseFaceOvBody.ColumnCount = 3
+        SseFaceOvBody.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42F))
+        SseFaceOvBody.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        SseFaceOvBody.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58F))
+        SseFaceOvBody.Controls.Add(GroupBoxSseFacePaints, 0, 0)
+        SseFaceOvBody.Controls.Add(FlowSseFaceOvButtons, 1, 0)
+        SseFaceOvBody.Controls.Add(GroupBoxSseFaceOvApplied, 2, 0)
+        SseFaceOvBody.Dock = DockStyle.Fill
+        SseFaceOvBody.Location = New Point(0, 30)
+        SseFaceOvBody.Name = "SseFaceOvBody"
+        SseFaceOvBody.RowCount = 1
+        SseFaceOvBody.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseFaceOvBody.Size = New Size(818, 648)
+        SseFaceOvBody.TabIndex = 1
+        '
+        ' GroupBoxSseFacePaints — col 0: catalogo FACE (filtro + lista), union de registros AddFacePaint.
+        '
+        GroupBoxSseFacePaints.Controls.Add(SseFaceOvCatalogLayout)
+        GroupBoxSseFacePaints.Dock = DockStyle.Fill
+        GroupBoxSseFacePaints.Location = New Point(3, 3)
+        GroupBoxSseFacePaints.Name = "GroupBoxSseFacePaints"
+        GroupBoxSseFacePaints.Size = New Size(337, 642)
+        GroupBoxSseFacePaints.TabIndex = 0
+        GroupBoxSseFacePaints.TabStop = False
+        GroupBoxSseFacePaints.Text = "Face paints (RaceMenu)"
+        '
+        ' SseFaceOvCatalogLayout
+        '
+        SseFaceOvCatalogLayout.ColumnCount = 1
+        SseFaceOvCatalogLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseFaceOvCatalogLayout.Controls.Add(TextBoxSseFaceOvFilter, 0, 0)
+        SseFaceOvCatalogLayout.Controls.Add(ListBoxSseFacePaintCatalog, 0, 1)
+        SseFaceOvCatalogLayout.Dock = DockStyle.Fill
+        SseFaceOvCatalogLayout.Location = New Point(3, 19)
+        SseFaceOvCatalogLayout.Name = "SseFaceOvCatalogLayout"
+        SseFaceOvCatalogLayout.RowCount = 2
+        SseFaceOvCatalogLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 28F))
+        SseFaceOvCatalogLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseFaceOvCatalogLayout.Size = New Size(331, 620)
+        SseFaceOvCatalogLayout.TabIndex = 0
+        '
+        ' TextBoxSseFaceOvFilter
+        '
+        TextBoxSseFaceOvFilter.Dock = DockStyle.Fill
+        TextBoxSseFaceOvFilter.Location = New Point(3, 3)
+        TextBoxSseFaceOvFilter.Margin = New Padding(3)
+        TextBoxSseFaceOvFilter.Name = "TextBoxSseFaceOvFilter"
+        TextBoxSseFaceOvFilter.PlaceholderText = "Filter paints…"
+        TextBoxSseFaceOvFilter.Size = New Size(325, 23)
+        TextBoxSseFaceOvFilter.TabIndex = 0
+        '
+        ' ListBoxSseFacePaintCatalog — DrawMode SSE-only: NO se comparte con FO4 (regla §2.7 del diseno), asi
+        ' que se puede fijar aca sin cambiar el dibujado de ningun ListBox de Fallout 4.
+        '
+        ListBoxSseFacePaintCatalog.Dock = DockStyle.Fill
+        ListBoxSseFacePaintCatalog.DrawMode = DrawMode.OwnerDrawFixed
+        ListBoxSseFacePaintCatalog.IntegralHeight = False
+        ListBoxSseFacePaintCatalog.Location = New Point(3, 31)
+        ListBoxSseFacePaintCatalog.Name = "ListBoxSseFacePaintCatalog"
+        ListBoxSseFacePaintCatalog.Size = New Size(325, 586)
+        ListBoxSseFacePaintCatalog.TabIndex = 1
+        '
+        ' FlowSseFaceOvButtons — col 1: Add →/← Remove + Up/Down (reordena el Ovl{n} draw order).
+        '
+        FlowSseFaceOvButtons.AutoSize = True
+        FlowSseFaceOvButtons.Controls.Add(ButtonSseFaceOvAdd)
+        FlowSseFaceOvButtons.Controls.Add(ButtonSseFaceOvRemove)
+        FlowSseFaceOvButtons.Controls.Add(ButtonSseFaceOvUp)
+        FlowSseFaceOvButtons.Controls.Add(ButtonSseFaceOvDown)
+        FlowSseFaceOvButtons.Dock = DockStyle.Fill
+        FlowSseFaceOvButtons.FlowDirection = FlowDirection.TopDown
+        FlowSseFaceOvButtons.Location = New Point(346, 3)
+        FlowSseFaceOvButtons.Margin = New Padding(4, 40, 4, 0)
+        FlowSseFaceOvButtons.Name = "FlowSseFaceOvButtons"
+        FlowSseFaceOvButtons.Size = New Size(84, 642)
+        FlowSseFaceOvButtons.TabIndex = 1
+        FlowSseFaceOvButtons.WrapContents = False
+        '
+        ' ButtonSseFaceOvAdd
+        '
+        ButtonSseFaceOvAdd.AutoSize = True
+        ButtonSseFaceOvAdd.Location = New Point(2, 2)
+        ButtonSseFaceOvAdd.Margin = New Padding(2)
+        ButtonSseFaceOvAdd.Name = "ButtonSseFaceOvAdd"
+        ButtonSseFaceOvAdd.Size = New Size(75, 25)
+        ButtonSseFaceOvAdd.TabIndex = 0
+        ButtonSseFaceOvAdd.Text = "Add →"
+        '
+        ' ButtonSseFaceOvRemove
+        '
+        ButtonSseFaceOvRemove.AutoSize = True
+        ButtonSseFaceOvRemove.Location = New Point(2, 29)
+        ButtonSseFaceOvRemove.Margin = New Padding(2)
+        ButtonSseFaceOvRemove.Name = "ButtonSseFaceOvRemove"
+        ButtonSseFaceOvRemove.Size = New Size(90, 25)
+        ButtonSseFaceOvRemove.TabIndex = 1
+        ButtonSseFaceOvRemove.Text = "← Remove"
+        '
+        ' ButtonSseFaceOvUp
+        '
+        ButtonSseFaceOvUp.AutoSize = True
+        ButtonSseFaceOvUp.Location = New Point(2, 68)
+        ButtonSseFaceOvUp.Margin = New Padding(2, 14, 2, 2)
+        ButtonSseFaceOvUp.Name = "ButtonSseFaceOvUp"
+        ButtonSseFaceOvUp.Size = New Size(75, 25)
+        ButtonSseFaceOvUp.TabIndex = 2
+        ButtonSseFaceOvUp.Text = "Up"
+        '
+        ' ButtonSseFaceOvDown
+        '
+        ButtonSseFaceOvDown.AutoSize = True
+        ButtonSseFaceOvDown.Location = New Point(2, 97)
+        ButtonSseFaceOvDown.Margin = New Padding(2)
+        ButtonSseFaceOvDown.Name = "ButtonSseFaceOvDown"
+        ButtonSseFaceOvDown.Size = New Size(75, 25)
+        ButtonSseFaceOvDown.TabIndex = 3
+        ButtonSseFaceOvDown.Text = "Down"
+        '
+        ' GroupBoxSseFaceOvApplied — col 2: overlays aplicados (arriba) + detalle de tint/opacidad (abajo).
+        '
+        GroupBoxSseFaceOvApplied.Controls.Add(SseFaceOvRightLayout)
+        GroupBoxSseFaceOvApplied.Dock = DockStyle.Fill
+        GroupBoxSseFaceOvApplied.Location = New Point(433, 3)
+        GroupBoxSseFaceOvApplied.Name = "GroupBoxSseFaceOvApplied"
+        GroupBoxSseFaceOvApplied.Size = New Size(382, 642)
+        GroupBoxSseFaceOvApplied.TabIndex = 2
+        GroupBoxSseFaceOvApplied.TabStop = False
+        GroupBoxSseFaceOvApplied.Text = "Applied face overlays"
+        '
+        ' SseFaceOvRightLayout
+        '
+        SseFaceOvRightLayout.ColumnCount = 1
+        SseFaceOvRightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseFaceOvRightLayout.Controls.Add(ListBoxSseFaceOvApplied, 0, 0)
+        SseFaceOvRightLayout.Controls.Add(SseFaceOvDetail, 0, 1)
+        SseFaceOvRightLayout.Dock = DockStyle.Fill
+        SseFaceOvRightLayout.Location = New Point(3, 19)
+        SseFaceOvRightLayout.Name = "SseFaceOvRightLayout"
+        SseFaceOvRightLayout.RowCount = 2
+        SseFaceOvRightLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 45F))
+        SseFaceOvRightLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 55F))
+        SseFaceOvRightLayout.Size = New Size(376, 620)
+        SseFaceOvRightLayout.TabIndex = 0
+        '
+        ' ListBoxSseFaceOvApplied — DrawMode SSE-only, mismo criterio que ListBoxSseFacePaintCatalog.
+        '
+        ListBoxSseFaceOvApplied.Dock = DockStyle.Fill
+        ListBoxSseFaceOvApplied.DrawMode = DrawMode.OwnerDrawFixed
+        ListBoxSseFaceOvApplied.IntegralHeight = False
+        ListBoxSseFaceOvApplied.Location = New Point(3, 3)
+        ListBoxSseFaceOvApplied.Name = "ListBoxSseFaceOvApplied"
+        ListBoxSseFaceOvApplied.Size = New Size(370, 273)
+        ListBoxSseFaceOvApplied.TabIndex = 0
+        '
+        ' SseFaceOvDetail — Texture (solo lectura) + Normal + Tint/Color + Opacity + Magic + nota. Los dos
+        ' checkboxes van en la COLUMNA 1, no en la 0: la 0 es Absolute 62 (dimensionada para "Texture:"/
+        ' "Normal:") y un CheckBox AutoSize ahi queda al limite o recortado segun DPI/fuente.
+        '
+        SseFaceOvDetail.AutoScroll = True
+        SseFaceOvDetail.ColumnCount = 2
+        SseFaceOvDetail.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 62F))
+        SseFaceOvDetail.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseFaceOvDetail.Controls.Add(LabelSseFaceOvTexture, 0, 0)
+        SseFaceOvDetail.Controls.Add(SseFaceOvDiffuseRow, 1, 0)
+        SseFaceOvDetail.Controls.Add(LabelSseFaceOvNormal, 0, 1)
+        SseFaceOvDetail.Controls.Add(SseFaceOvNormalRow, 1, 1)
+        SseFaceOvDetail.Controls.Add(CheckBoxSseFaceOvTint, 0, 2)
+        SseFaceOvDetail.Controls.Add(ButtonSseFaceOvTintColor, 1, 2)
+        SseFaceOvDetail.Controls.Add(LabelSseFaceOvOpacity, 0, 3)
+        SseFaceOvDetail.Controls.Add(SliderSseFaceOvAlpha, 1, 3)
+        SseFaceOvDetail.Controls.Add(FlowSseFaceOvMagic, 1, 4)
+        SseFaceOvDetail.Controls.Add(LabelSseFaceOvMagicNote, 1, 5)
+        SseFaceOvDetail.Dock = DockStyle.Fill
+        SseFaceOvDetail.Location = New Point(3, 282)
+        SseFaceOvDetail.Name = "SseFaceOvDetail"
+        SseFaceOvDetail.RowCount = 7
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SseFaceOvDetail.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseFaceOvDetail.Size = New Size(370, 335)
+        SseFaceOvDetail.TabIndex = 1
+        '
+        ' LabelSseFaceOvTexture
+        '
+        LabelSseFaceOvTexture.Anchor = AnchorStyles.Left
+        LabelSseFaceOvTexture.AutoSize = True
+        LabelSseFaceOvTexture.Location = New Point(3, 9)
+        LabelSseFaceOvTexture.Margin = New Padding(3, 9, 3, 0)
+        LabelSseFaceOvTexture.Name = "LabelSseFaceOvTexture"
+        LabelSseFaceOvTexture.Size = New Size(52, 15)
+        LabelSseFaceOvTexture.TabIndex = 0
+        LabelSseFaceOvTexture.Text = "Texture:"
+        '
+        ' SseFaceOvDiffuseRow — ex FaceOvFlow(diffuse textbox) sin botones: 1x1, Percent100, AutoSize.
+        '
+        SseFaceOvDiffuseRow.AutoSize = True
+        SseFaceOvDiffuseRow.ColumnCount = 1
+        SseFaceOvDiffuseRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseFaceOvDiffuseRow.Controls.Add(TextBoxSseFaceOvDiffuse, 0, 0)
+        SseFaceOvDiffuseRow.Dock = DockStyle.Fill
+        SseFaceOvDiffuseRow.Location = New Point(65, 4)
+        SseFaceOvDiffuseRow.Margin = New Padding(0, 4, 6, 0)
+        SseFaceOvDiffuseRow.Name = "SseFaceOvDiffuseRow"
+        SseFaceOvDiffuseRow.RowCount = 1
+        SseFaceOvDiffuseRow.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseFaceOvDiffuseRow.Size = New Size(299, 23)
+        SseFaceOvDiffuseRow.TabIndex = 1
+        '
+        ' TextBoxSseFaceOvDiffuse
+        '
+        TextBoxSseFaceOvDiffuse.Dock = DockStyle.Fill
+        TextBoxSseFaceOvDiffuse.Location = New Point(0, 0)
+        TextBoxSseFaceOvDiffuse.Name = "TextBoxSseFaceOvDiffuse"
+        TextBoxSseFaceOvDiffuse.ReadOnly = True
+        TextBoxSseFaceOvDiffuse.Size = New Size(299, 23)
+        TextBoxSseFaceOvDiffuse.TabIndex = 0
+        '
+        ' LabelSseFaceOvNormal
+        '
+        LabelSseFaceOvNormal.Anchor = AnchorStyles.Left
+        LabelSseFaceOvNormal.AutoSize = True
+        LabelSseFaceOvNormal.Location = New Point(3, 36)
+        LabelSseFaceOvNormal.Margin = New Padding(3, 9, 3, 0)
+        LabelSseFaceOvNormal.Name = "LabelSseFaceOvNormal"
+        LabelSseFaceOvNormal.Size = New Size(52, 15)
+        LabelSseFaceOvNormal.TabIndex = 2
+        LabelSseFaceOvNormal.Text = "Normal:"
+        '
+        ' SseFaceOvNormalRow — ex FaceOvFlow(normal textbox) sin botones.
+        '
+        SseFaceOvNormalRow.AutoSize = True
+        SseFaceOvNormalRow.ColumnCount = 1
+        SseFaceOvNormalRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SseFaceOvNormalRow.Controls.Add(TextBoxSseFaceOvNormal, 0, 0)
+        SseFaceOvNormalRow.Dock = DockStyle.Fill
+        SseFaceOvNormalRow.Location = New Point(65, 31)
+        SseFaceOvNormalRow.Margin = New Padding(0, 4, 6, 0)
+        SseFaceOvNormalRow.Name = "SseFaceOvNormalRow"
+        SseFaceOvNormalRow.RowCount = 1
+        SseFaceOvNormalRow.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SseFaceOvNormalRow.Size = New Size(299, 23)
+        SseFaceOvNormalRow.TabIndex = 3
+        '
+        ' TextBoxSseFaceOvNormal
+        '
+        TextBoxSseFaceOvNormal.Dock = DockStyle.Fill
+        TextBoxSseFaceOvNormal.Location = New Point(0, 0)
+        TextBoxSseFaceOvNormal.Name = "TextBoxSseFaceOvNormal"
+        TextBoxSseFaceOvNormal.ReadOnly = True
+        TextBoxSseFaceOvNormal.Size = New Size(299, 23)
+        TextBoxSseFaceOvNormal.TabIndex = 0
+        '
+        ' CheckBoxSseFaceOvTint
+        '
+        CheckBoxSseFaceOvTint.AutoSize = True
+        CheckBoxSseFaceOvTint.Location = New Point(3, 67)
+        CheckBoxSseFaceOvTint.Margin = New Padding(3, 9, 3, 0)
+        CheckBoxSseFaceOvTint.Name = "CheckBoxSseFaceOvTint"
+        CheckBoxSseFaceOvTint.Size = New Size(44, 19)
+        CheckBoxSseFaceOvTint.TabIndex = 4
+        CheckBoxSseFaceOvTint.Text = "Tint"
+        '
+        ' ButtonSseFaceOvTintColor
+        '
+        ButtonSseFaceOvTintColor.Anchor = AnchorStyles.Left
+        ButtonSseFaceOvTintColor.AutoSize = True
+        ButtonSseFaceOvTintColor.Location = New Point(65, 63)
+        ButtonSseFaceOvTintColor.Name = "ButtonSseFaceOvTintColor"
+        ButtonSseFaceOvTintColor.Size = New Size(75, 25)
+        ButtonSseFaceOvTintColor.TabIndex = 5
+        ButtonSseFaceOvTintColor.Text = "Color…"
+        '
+        ' LabelSseFaceOvOpacity
+        '
+        LabelSseFaceOvOpacity.Anchor = AnchorStyles.Left
+        LabelSseFaceOvOpacity.AutoSize = True
+        LabelSseFaceOvOpacity.Location = New Point(3, 101)
+        LabelSseFaceOvOpacity.Margin = New Padding(3, 9, 3, 0)
+        LabelSseFaceOvOpacity.Name = "LabelSseFaceOvOpacity"
+        LabelSseFaceOvOpacity.Size = New Size(53, 15)
+        LabelSseFaceOvOpacity.TabIndex = 6
+        LabelSseFaceOvOpacity.Text = "Opacity:"
+        '
+        ' SliderSseFaceOvAlpha — Value NO se fija aca (00-reglas-ui-y-vb / diseno §2.4bis): lo siembra
+        ' UpdateFaceOvDetail, que ya corre envuelto en _suspendEvents y bien despues de InitializeComponent.
+        '
+        SliderSseFaceOvAlpha.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        SliderSseFaceOvAlpha.DisplayFormat = "0.00"
+        SliderSseFaceOvAlpha.Height = 26
+        SliderSseFaceOvAlpha.LargeChange = 0.1R
+        SliderSseFaceOvAlpha.Location = New Point(65, 97)
+        SliderSseFaceOvAlpha.Margin = New Padding(3, 4, 8, 3)
+        SliderSseFaceOvAlpha.Maximum = 1R
+        SliderSseFaceOvAlpha.Name = "SliderSseFaceOvAlpha"
+        SliderSseFaceOvAlpha.Size = New Size(291, 26)
+        SliderSseFaceOvAlpha.SmallChange = 0.01R
+        SliderSseFaceOvAlpha.TabIndex = 7
+        '
+        ' FlowSseFaceOvMagic — gemelo del de Edit Body: el checkbox va en su propio flow para no competir
+        ' con la columna 0 (ver el comentario de SseFaceOvDetail).
+        '
+        FlowSseFaceOvMagic.Anchor = AnchorStyles.Left
+        FlowSseFaceOvMagic.AutoSize = True
+        FlowSseFaceOvMagic.Controls.Add(CheckBoxSseFaceOvMagic)
+        FlowSseFaceOvMagic.FlowDirection = FlowDirection.LeftToRight
+        FlowSseFaceOvMagic.Location = New Point(65, 130)
+        FlowSseFaceOvMagic.Margin = New Padding(0)
+        FlowSseFaceOvMagic.Name = "FlowSseFaceOvMagic"
+        FlowSseFaceOvMagic.Size = New Size(150, 25)
+        FlowSseFaceOvMagic.TabIndex = 8
+        FlowSseFaceOvMagic.WrapContents = False
+        '
+        ' CheckBoxSseFaceOvMagic
+        '
+        CheckBoxSseFaceOvMagic.AutoSize = True
+        CheckBoxSseFaceOvMagic.Location = New Point(3, 3)
+        CheckBoxSseFaceOvMagic.Margin = New Padding(0, 9, 12, 0)
+        CheckBoxSseFaceOvMagic.Name = "CheckBoxSseFaceOvMagic"
+        CheckBoxSseFaceOvMagic.Size = New Size(135, 19)
+        CheckBoxSseFaceOvMagic.TabIndex = 0
+        CheckBoxSseFaceOvMagic.Text = "Magic (spell effect)"
+        '
+        ' LabelSseFaceOvMagicNote
+        '
+        LabelSseFaceOvMagicNote.AutoSize = True
+        LabelSseFaceOvMagicNote.ForeColor = SystemColors.GrayText
+        LabelSseFaceOvMagicNote.Location = New Point(65, 158)
+        LabelSseFaceOvMagicNote.Margin = New Padding(3, 2, 3, 0)
+        LabelSseFaceOvMagicNote.Name = "LabelSseFaceOvMagicNote"
+        LabelSseFaceOvMagicNote.Size = New Size(285, 60)
+        LabelSseFaceOvMagicNote.TabIndex = 9
+        LabelSseFaceOvMagicNote.Text = "Magic face paint comes from a separate slot pool (iSpellOverlays in the skee64 ini). This app paints it like any other face paint, but never bakes it into the head texture — the helper script carries it."
+        '
         ' TabPageTints
-        ' 
+        '
         TabPageTints.Controls.Add(TintsLayout)
         TabPageTints.Location = New Point(4, 24)
         TabPageTints.Name = "TabPageTints"
@@ -691,9 +1609,9 @@ Partial Class EditFace_Form
         TabPageTints.Size = New Size(830, 690)
         TabPageTints.TabIndex = 1
         TabPageTints.Text = "Face Tints"
-        ' 
+        '
         ' TintsLayout
-        ' 
+        '
         TintsLayout.ColumnCount = 1
         TintsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         TintsLayout.Controls.Add(TextBoxTintFilter, 0, 0)
@@ -711,18 +1629,18 @@ Partial Class EditFace_Form
         TintsLayout.RowStyles.Add(New RowStyle())
         TintsLayout.Size = New Size(818, 678)
         TintsLayout.TabIndex = 0
-        ' 
+        '
         ' TextBoxTintFilter
-        ' 
+        '
         TextBoxTintFilter.Dock = DockStyle.Fill
         TextBoxTintFilter.Location = New Point(7, 7)
         TextBoxTintFilter.Name = "TextBoxTintFilter"
         TextBoxTintFilter.PlaceholderText = "Filter by group or layer name…"
         TextBoxTintFilter.Size = New Size(804, 23)
         TextBoxTintFilter.TabIndex = 0
-        ' 
+        '
         ' ListViewTints
-        ' 
+        '
         ListViewTints.Columns.AddRange(New ColumnHeader() {ColumnTintGroup, ColumnTintSlot, ColumnTintLayer, ColumnTintColor, ColumnTintPercent})
         ListViewTints.Dock = DockStyle.Fill
         ListViewTints.FullRowSelect = True
@@ -733,34 +1651,34 @@ Partial Class EditFace_Form
         ListViewTints.TabIndex = 0
         ListViewTints.UseCompatibleStateImageBehavior = False
         ListViewTints.View = View.Details
-        ' 
+        '
         ' ColumnTintGroup
-        ' 
+        '
         ColumnTintGroup.Text = "Group"
         ColumnTintGroup.Width = 110
-        ' 
+        '
         ' ColumnTintSlot
-        ' 
+        '
         ColumnTintSlot.Text = "Slot"
         ColumnTintSlot.Width = 100
-        ' 
+        '
         ' ColumnTintLayer
-        ' 
+        '
         ColumnTintLayer.Text = "Layer"
         ColumnTintLayer.Width = 280
-        ' 
+        '
         ' ColumnTintColor
-        ' 
+        '
         ColumnTintColor.Text = "Color"
         ColumnTintColor.Width = 100
-        ' 
+        '
         ' ColumnTintPercent
-        ' 
+        '
         ColumnTintPercent.Text = "%"
         ColumnTintPercent.Width = 50
-        ' 
+        '
         ' TintsButtonRow
-        ' 
+        '
         TintsButtonRow.AutoSize = True
         TintsButtonRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         TintsButtonRow.Controls.Add(ButtonAddTint)
@@ -772,27 +1690,27 @@ Partial Class EditFace_Form
         TintsButtonRow.Name = "TintsButtonRow"
         TintsButtonRow.Size = New Size(804, 31)
         TintsButtonRow.TabIndex = 1
-        ' 
+        '
         ' ButtonAddTint
-        ' 
+        '
         ButtonAddTint.AutoSize = True
         ButtonAddTint.Location = New Point(3, 3)
         ButtonAddTint.Name = "ButtonAddTint"
         ButtonAddTint.Size = New Size(75, 25)
         ButtonAddTint.TabIndex = 0
         ButtonAddTint.Text = "Add…"
-        ' 
+        '
         ' ButtonRemoveTint
-        ' 
+        '
         ButtonRemoveTint.AutoSize = True
         ButtonRemoveTint.Location = New Point(84, 3)
         ButtonRemoveTint.Name = "ButtonRemoveTint"
         ButtonRemoveTint.Size = New Size(75, 25)
         ButtonRemoveTint.TabIndex = 1
         ButtonRemoveTint.Text = "Remove"
-        ' 
+        '
         ' ButtonRemoveAllInCategory
-        ' 
+        '
         ButtonRemoveAllInCategory.AutoSize = True
         ButtonRemoveAllInCategory.AutoSizeMode = AutoSizeMode.GrowAndShrink
         ButtonRemoveAllInCategory.Location = New Point(165, 3)
@@ -800,9 +1718,9 @@ Partial Class EditFace_Form
         ButtonRemoveAllInCategory.Size = New Size(124, 25)
         ButtonRemoveAllInCategory.TabIndex = 2
         ButtonRemoveAllInCategory.Text = "Remove all category"
-        ' 
+        '
         ' ButtonRemoveZeroedTints
-        ' 
+        '
         ButtonRemoveZeroedTints.AutoSize = True
         ButtonRemoveZeroedTints.AutoSizeMode = AutoSizeMode.GrowAndShrink
         ButtonRemoveZeroedTints.Location = New Point(295, 3)
@@ -810,9 +1728,9 @@ Partial Class EditFace_Form
         ButtonRemoveZeroedTints.Size = New Size(113, 25)
         ButtonRemoveZeroedTints.TabIndex = 3
         ButtonRemoveZeroedTints.Text = "Remove all zeroed"
-        ' 
+        '
         ' PanelTintDetail
-        ' 
+        '
         PanelTintDetail.AutoSize = True
         PanelTintDetail.AutoSizeMode = AutoSizeMode.GrowAndShrink
         PanelTintDetail.Controls.Add(TintDetailLayout)
@@ -823,9 +1741,9 @@ Partial Class EditFace_Form
         PanelTintDetail.TabIndex = 2
         PanelTintDetail.TabStop = False
         PanelTintDetail.Text = "Selected layer"
-        ' 
+        '
         ' TintDetailLayout
-        ' 
+        '
         TintDetailLayout.AutoSize = True
         TintDetailLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         TintDetailLayout.ColumnCount = 3
@@ -851,18 +1769,18 @@ Partial Class EditFace_Form
         TintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         TintDetailLayout.Size = New Size(798, 136)
         TintDetailLayout.TabIndex = 0
-        ' 
+        '
         ' LabelTintLayerCaption
-        ' 
+        '
         LabelTintLayerCaption.AutoSize = True
         LabelTintLayerCaption.Location = New Point(7, 4)
         LabelTintLayerCaption.Name = "LabelTintLayerCaption"
         LabelTintLayerCaption.Size = New Size(38, 15)
         LabelTintLayerCaption.TabIndex = 0
         LabelTintLayerCaption.Text = "Layer:"
-        ' 
+        '
         ' LabelTintLayerName
-        ' 
+        '
         LabelTintLayerName.AutoSize = True
         TintDetailLayout.SetColumnSpan(LabelTintLayerName, 2)
         LabelTintLayerName.Font = New Font("Segoe UI", 9F, FontStyle.Bold)
@@ -871,18 +1789,18 @@ Partial Class EditFace_Form
         LabelTintLayerName.Size = New Size(43, 15)
         LabelTintLayerName.TabIndex = 1
         LabelTintLayerName.Text = "(none)"
-        ' 
+        '
         ' LabelTintPaletteCaption
-        ' 
+        '
         LabelTintPaletteCaption.AutoSize = True
         LabelTintPaletteCaption.Location = New Point(7, 40)
         LabelTintPaletteCaption.Name = "LabelTintPaletteCaption"
         LabelTintPaletteCaption.Size = New Size(39, 15)
         LabelTintPaletteCaption.TabIndex = 2
         LabelTintPaletteCaption.Text = "Color:"
-        ' 
+        '
         ' ComboBoxTintPalette
-        ' 
+        '
         ComboBoxTintPalette.Dock = DockStyle.Fill
         ComboBoxTintPalette.DropDownStyle = ComboBoxStyle.DropDownList
         ComboBoxTintPalette.Location = New Point(67, 42)
@@ -890,9 +1808,9 @@ Partial Class EditFace_Form
         ComboBoxTintPalette.Name = "ComboBoxTintPalette"
         ComboBoxTintPalette.Size = New Size(623, 23)
         ComboBoxTintPalette.TabIndex = 3
-        ' 
+        '
         ' ButtonTintCustomRGB
-        ' 
+        '
         ButtonTintCustomRGB.Dock = DockStyle.Fill
         ButtonTintCustomRGB.Location = New Point(695, 43)
         ButtonTintCustomRGB.MinimumSize = New Size(96, 0)
@@ -901,9 +1819,9 @@ Partial Class EditFace_Form
         ButtonTintCustomRGB.Size = New Size(96, 50)
         ButtonTintCustomRGB.TabIndex = 4
         ButtonTintCustomRGB.Text = "Custom RGB…"
-        ' 
+        '
         ' PanelTintColorSwatch
-        ' 
+        '
         PanelTintColorSwatch.BackColor = Color.White
         PanelTintColorSwatch.BorderStyle = BorderStyle.FixedSingle
         PanelTintColorSwatch.Dock = DockStyle.Fill
@@ -912,18 +1830,18 @@ Partial Class EditFace_Form
         PanelTintColorSwatch.Name = "PanelTintColorSwatch"
         PanelTintColorSwatch.Size = New Size(623, 16)
         PanelTintColorSwatch.TabIndex = 5
-        ' 
+        '
         ' LabelTintPercentCaption
-        ' 
+        '
         LabelTintPercentCaption.AutoSize = True
         LabelTintPercentCaption.Location = New Point(7, 96)
         LabelTintPercentCaption.Name = "LabelTintPercentCaption"
         LabelTintPercentCaption.Size = New Size(55, 15)
         LabelTintPercentCaption.TabIndex = 6
         LabelTintPercentCaption.Text = "Intensity:"
-        ' 
+        '
         ' TrackBarTintPercent
-        ' 
+        '
         TrackBarTintPercent.AccentColor = SystemColors.HotTrack
         TrackBarTintPercent.AllowExtremeValues = True
         TrackBarTintPercent.BackColor = SystemColors.Control
@@ -938,9 +1856,9 @@ Partial Class EditFace_Form
         TrackBarTintPercent.ThumbColor = SystemColors.HotTrack
         TrackBarTintPercent.ThumbRadius = 4F
         TrackBarTintPercent.TrackColor = SystemColors.ControlDark
-        ' 
+        '
         ' TabPageVertex
-        ' 
+        '
         TabPageVertex.Controls.Add(VertexMorphsPanel)
         TabPageVertex.Location = New Point(4, 24)
         TabPageVertex.Name = "TabPageVertex"
@@ -948,17 +1866,17 @@ Partial Class EditFace_Form
         TabPageVertex.Size = New Size(830, 690)
         TabPageVertex.TabIndex = 2
         TabPageVertex.Text = "Vertex Morphs"
-        ' 
+        '
         ' VertexMorphsPanel
-        ' 
+        '
         VertexMorphsPanel.Dock = DockStyle.Fill
         VertexMorphsPanel.Location = New Point(6, 6)
         VertexMorphsPanel.Name = "VertexMorphsPanel"
         VertexMorphsPanel.Size = New Size(818, 678)
         VertexMorphsPanel.TabIndex = 0
-        ' 
+        '
         ' TabPageBoneRegions
-        ' 
+        '
         TabPageBoneRegions.Controls.Add(BoneRegionsRoot)
         TabPageBoneRegions.Location = New Point(4, 24)
         TabPageBoneRegions.Name = "TabPageBoneRegions"
@@ -966,9 +1884,9 @@ Partial Class EditFace_Form
         TabPageBoneRegions.Size = New Size(830, 690)
         TabPageBoneRegions.TabIndex = 3
         TabPageBoneRegions.Text = "Bone Regions"
-        ' 
+        '
         ' BoneRegionsRoot
-        ' 
+        '
         BoneRegionsRoot.ColumnCount = 1
         BoneRegionsRoot.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         BoneRegionsRoot.Controls.Add(BoneRegionsContainer, 0, 0)
@@ -981,17 +1899,40 @@ Partial Class EditFace_Form
         BoneRegionsRoot.RowStyles.Add(New RowStyle())
         BoneRegionsRoot.Size = New Size(818, 678)
         BoneRegionsRoot.TabIndex = 0
-        ' 
-        ' BoneRegionsContainer
-        ' 
+        '
+        ' BoneRegionsContainer — item 5 de la migracion: el TabControl y el label vacio quedan en el
+        ' Designer; las TabPage por grupo y las tarjetas (BoneRegionCard) las sigue armando
+        ' BuildBoneRegionsUI, que ahora puebla BoneRegionsTabs en vez de fabricar su propio TabControl.
+        '
+        BoneRegionsContainer.Controls.Add(BoneRegionsTabs)
+        BoneRegionsContainer.Controls.Add(LabelBoneRegionsEmpty)
         BoneRegionsContainer.Dock = DockStyle.Fill
         BoneRegionsContainer.Location = New Point(3, 3)
         BoneRegionsContainer.Name = "BoneRegionsContainer"
         BoneRegionsContainer.Size = New Size(812, 606)
         BoneRegionsContainer.TabIndex = 0
-        ' 
+        '
+        ' BoneRegionsTabs — arranca con CERO TabPages (las agrega BuildBoneRegionsUI, una por grupo).
+        '
+        BoneRegionsTabs.Dock = DockStyle.Fill
+        BoneRegionsTabs.Location = New Point(0, 0)
+        BoneRegionsTabs.Name = "BoneRegionsTabs"
+        BoneRegionsTabs.Size = New Size(812, 606)
+        BoneRegionsTabs.TabIndex = 0
+        '
+        ' LabelBoneRegionsEmpty
+        '
+        LabelBoneRegionsEmpty.AutoSize = True
+        LabelBoneRegionsEmpty.ForeColor = Color.Gray
+        LabelBoneRegionsEmpty.Location = New Point(0, 0)
+        LabelBoneRegionsEmpty.Name = "LabelBoneRegionsEmpty"
+        LabelBoneRegionsEmpty.Padding = New Padding(8)
+        LabelBoneRegionsEmpty.Size = New Size(100, 31)
+        LabelBoneRegionsEmpty.TabIndex = 1
+        LabelBoneRegionsEmpty.Visible = False
+        '
         ' GroupBoxFmin
-        ' 
+        '
         GroupBoxFmin.AutoSize = True
         GroupBoxFmin.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxFmin.Controls.Add(FminLayout)
@@ -1002,9 +1943,9 @@ Partial Class EditFace_Form
         GroupBoxFmin.TabIndex = 1
         GroupBoxFmin.TabStop = False
         GroupBoxFmin.Text = "Facial Morph Intensity (NPC.FMIN — multiplier on FMRS deltas)"
-        ' 
+        '
         ' FminLayout
-        ' 
+        '
         FminLayout.AutoSize = True
         FminLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         FminLayout.ColumnCount = 3
@@ -1021,9 +1962,9 @@ Partial Class EditFace_Form
         FminLayout.RowStyles.Add(New RowStyle())
         FminLayout.Size = New Size(806, 38)
         FminLayout.TabIndex = 0
-        ' 
+        '
         ' LabelFminCaption
-        ' 
+        '
         LabelFminCaption.AutoSize = True
         LabelFminCaption.Location = New Point(7, 4)
         LabelFminCaption.Name = "LabelFminCaption"
@@ -1031,9 +1972,9 @@ Partial Class EditFace_Form
         LabelFminCaption.TabIndex = 0
         LabelFminCaption.Text = "Intensity (0..4):"
         LabelFminCaption.TextAlign = ContentAlignment.MiddleLeft
-        ' 
+        '
         ' TrackBarFmin
-        ' 
+        '
         TrackBarFmin.AccentColor = SystemColors.HotTrack
         TrackBarFmin.AllowExtremeValues = True
         TrackBarFmin.BackColor = SystemColors.Control
@@ -1052,9 +1993,9 @@ Partial Class EditFace_Form
         TrackBarFmin.ThumbColor = SystemColors.HotTrack
         TrackBarFmin.ThumbRadius = 4F
         TrackBarFmin.TrackColor = SystemColors.ControlDark
-        ' 
+        '
         ' BottomLayout
-        ' 
+        '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         BottomLayout.Controls.Add(ButtonOk)
@@ -1067,33 +2008,33 @@ Partial Class EditFace_Form
         BottomLayout.Padding = New Padding(0, 6, 0, 0)
         BottomLayout.Size = New Size(838, 35)
         BottomLayout.TabIndex = 1
-        ' 
+        '
         ' ButtonOk
-        ' 
+        '
         ButtonOk.Location = New Point(755, 9)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(80, 23)
         ButtonOk.TabIndex = 0
         ButtonOk.Text = "OK"
-        ' 
+        '
         ' ButtonCancel
-        ' 
+        '
         ButtonCancel.Location = New Point(669, 9)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(80, 23)
         ButtonCancel.TabIndex = 1
         ButtonCancel.Text = "Cancel"
-        ' 
+        '
         ' ButtonResetSection
-        ' 
+        '
         ButtonResetSection.Location = New Point(553, 9)
         ButtonResetSection.Name = "ButtonResetSection"
         ButtonResetSection.Size = New Size(110, 23)
         ButtonResetSection.TabIndex = 2
         ButtonResetSection.Text = "Reset section"
-        ' 
+        '
         ' PreviewSidebar
-        ' 
+        '
         PreviewSidebar.ColumnCount = 1
         PreviewSidebar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         PreviewSidebar.Controls.Add(RenderTogglesPanel, 0, 0)
@@ -1106,9 +2047,9 @@ Partial Class EditFace_Form
         PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         PreviewSidebar.Size = New Size(696, 781)
         PreviewSidebar.TabIndex = 0
-        ' 
+        '
         ' RenderTogglesPanel
-        ' 
+        '
         RenderTogglesPanel.AutoSize = True
         RenderTogglesPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
         RenderTogglesPanel.Controls.Add(CheckBoxRenderGore)
@@ -1118,9 +2059,9 @@ Partial Class EditFace_Form
         RenderTogglesPanel.Padding = New Padding(2)
         RenderTogglesPanel.Size = New Size(690, 27)
         RenderTogglesPanel.TabIndex = 0
-        ' 
+        '
         ' CheckBoxRenderGore
-        ' 
+        '
         CheckBoxRenderGore.AutoSize = True
         CheckBoxRenderGore.Location = New Point(6, 4)
         CheckBoxRenderGore.Margin = New Padding(4, 2, 8, 2)
@@ -1128,17 +2069,17 @@ Partial Class EditFace_Form
         CheckBoxRenderGore.Size = New Size(90, 19)
         CheckBoxRenderGore.TabIndex = 0
         CheckBoxRenderGore.Text = "Render gore"
-        ' 
+        '
         ' PreviewHostPanel
-        ' 
+        '
         PreviewHostPanel.Dock = DockStyle.Fill
         PreviewHostPanel.Location = New Point(3, 36)
         PreviewHostPanel.Name = "PreviewHostPanel"
         PreviewHostPanel.Size = New Size(690, 742)
         PreviewHostPanel.TabIndex = 0
-        ' 
+        '
         ' EditFace_Form
-        ' 
+        '
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
         ClientSize = New Size(1560, 781)
@@ -1168,12 +2109,43 @@ Partial Class EditFace_Form
         GroupBoxFaceFlags.PerformLayout()
         FaceFlagsLayout.ResumeLayout(False)
         FaceFlagsLayout.PerformLayout()
+        GroupBoxSseHeadTexture.ResumeLayout(False)
+        FlowSseHeadTex.ResumeLayout(False)
+        FlowSseHeadTex.PerformLayout()
         TabPageSseMorphs.ResumeLayout(False)
         TabPageSseTints.ResumeLayout(False)
+        PanelSseTints.ResumeLayout(False)
+        SseTintSplit.ResumeLayout(False)
+        SseTintListHost.ResumeLayout(False)
+        GroupBoxSseTintDetail.ResumeLayout(False)
+        PanelSseTintDetail.ResumeLayout(False)
+        SseTintDetailLayout.ResumeLayout(False)
+        SseTintColorRow.ResumeLayout(False)
+        SseTintMaskButtons.ResumeLayout(False)
         TabPageSseSculpt.ResumeLayout(False)
         TabPageSseSculpt.PerformLayout()
         SseSculptButtonRow.ResumeLayout(False)
         SseSculptButtonRow.PerformLayout()
+        TabPageSseRaceMenu.ResumeLayout(False)
+        SseRaceMenuRoot.ResumeLayout(False)
+        SseRaceMenuRoot.PerformLayout()
+        TabPageSseFaceOverlays.ResumeLayout(False)
+        SseFaceOvRoot.ResumeLayout(False)
+        SseFaceOvBody.ResumeLayout(False)
+        GroupBoxSseFacePaints.ResumeLayout(False)
+        SseFaceOvCatalogLayout.ResumeLayout(False)
+        SseFaceOvCatalogLayout.PerformLayout()
+        FlowSseFaceOvButtons.ResumeLayout(False)
+        FlowSseFaceOvButtons.PerformLayout()
+        GroupBoxSseFaceOvApplied.ResumeLayout(False)
+        SseFaceOvRightLayout.ResumeLayout(False)
+        SseFaceOvDetail.ResumeLayout(False)
+        SseFaceOvDiffuseRow.ResumeLayout(False)
+        SseFaceOvDiffuseRow.PerformLayout()
+        SseFaceOvNormalRow.ResumeLayout(False)
+        SseFaceOvNormalRow.PerformLayout()
+        FlowSseFaceOvMagic.ResumeLayout(False)
+        FlowSseFaceOvMagic.PerformLayout()
         TabPageTints.ResumeLayout(False)
         TintsLayout.ResumeLayout(False)
         TintsLayout.PerformLayout()
@@ -1187,6 +2159,7 @@ Partial Class EditFace_Form
         TabPageBoneRegions.ResumeLayout(False)
         BoneRegionsRoot.ResumeLayout(False)
         BoneRegionsRoot.PerformLayout()
+        BoneRegionsContainer.ResumeLayout(False)
         GroupBoxFmin.ResumeLayout(False)
         GroupBoxFmin.PerformLayout()
         FminLayout.ResumeLayout(False)
@@ -1261,6 +2234,74 @@ Partial Class EditFace_Form
     Friend WithEvents CheckBoxIsCharGenFacePreset As System.Windows.Forms.CheckBox
     Friend WithEvents LabelCharGenHelp As System.Windows.Forms.Label
 
+    Friend WithEvents GroupBoxSseHeadTexture As System.Windows.Forms.GroupBox
+    Friend WithEvents FlowSseHeadTex As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents LabelSseHeadTex As System.Windows.Forms.Label
+    Friend WithEvents ButtonSseHeadTexPick As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseHeadTexDefault As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseHeadTexClear As System.Windows.Forms.Button
+
+    Friend WithEvents TabPageSseRaceMenu As System.Windows.Forms.TabPage
+    Friend WithEvents SseRaceMenuRoot As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents TextBoxSseRaceMenuFilter As System.Windows.Forms.TextBox
+    Friend WithEvents FlowSseRaceMenu As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents LabelSseRaceMenuEmpty As System.Windows.Forms.Label
+
+    Friend WithEvents TabPageSseFaceOverlays As System.Windows.Forms.TabPage
+    Friend WithEvents SseFaceOvRoot As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSseFaceOvHeader As System.Windows.Forms.Label
+    Friend WithEvents SseFaceOvBody As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents GroupBoxSseFacePaints As System.Windows.Forms.GroupBox
+    Friend WithEvents SseFaceOvCatalogLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents TextBoxSseFaceOvFilter As System.Windows.Forms.TextBox
+    Friend WithEvents ListBoxSseFacePaintCatalog As System.Windows.Forms.ListBox
+    Friend WithEvents FlowSseFaceOvButtons As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonSseFaceOvAdd As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseFaceOvRemove As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseFaceOvUp As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseFaceOvDown As System.Windows.Forms.Button
+    Friend WithEvents GroupBoxSseFaceOvApplied As System.Windows.Forms.GroupBox
+    Friend WithEvents SseFaceOvRightLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ListBoxSseFaceOvApplied As System.Windows.Forms.ListBox
+    Friend WithEvents SseFaceOvDetail As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSseFaceOvTexture As System.Windows.Forms.Label
+    Friend WithEvents SseFaceOvDiffuseRow As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents TextBoxSseFaceOvDiffuse As System.Windows.Forms.TextBox
+    Friend WithEvents LabelSseFaceOvNormal As System.Windows.Forms.Label
+    Friend WithEvents SseFaceOvNormalRow As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents TextBoxSseFaceOvNormal As System.Windows.Forms.TextBox
+    Friend WithEvents CheckBoxSseFaceOvTint As System.Windows.Forms.CheckBox
+    Friend WithEvents ButtonSseFaceOvTintColor As System.Windows.Forms.Button
+    Friend WithEvents LabelSseFaceOvOpacity As System.Windows.Forms.Label
+    Friend WithEvents SliderSseFaceOvAlpha As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents FlowSseFaceOvMagic As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents CheckBoxSseFaceOvMagic As System.Windows.Forms.CheckBox
+    Friend WithEvents LabelSseFaceOvMagicNote As System.Windows.Forms.Label
+
+    Friend WithEvents SseTintSplit As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents SseTintListHost As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSseTintLayers As System.Windows.Forms.Label
+    Friend WithEvents ListBoxSseTintLayers As DoubleBufferedListBox
+    Friend WithEvents GroupBoxSseTintDetail As System.Windows.Forms.GroupBox
+    Friend WithEvents PanelSseTintDetail As System.Windows.Forms.Panel
+    Friend WithEvents SseTintDetailLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSseTintColorSourceCaption As System.Windows.Forms.Label
+    Friend WithEvents ComboBoxSseTintPreset As System.Windows.Forms.ComboBox
+    Friend WithEvents LabelSseTintColorCaption As System.Windows.Forms.Label
+    Friend WithEvents SseTintColorRow As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonSseTintSwatch As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseTintCustom As System.Windows.Forms.Button
+    Friend WithEvents LabelSseTintCoverageCaption As System.Windows.Forms.Label
+    Friend WithEvents SliderSseTintCoverage As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelSseTintMaskCaption As System.Windows.Forms.Label
+    Friend WithEvents LabelSseTintMask As System.Windows.Forms.Label
+    Friend WithEvents SseTintMaskButtons As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonSseTintMaskPick As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseTintMaskClear As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseTintReset As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseTintResetAll As System.Windows.Forms.Button
+    Friend WithEvents LabelSseTintEmpty As System.Windows.Forms.Label
+    Friend WithEvents ToolTipSseTint As System.Windows.Forms.ToolTip
 
     Friend WithEvents TintsLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents ListViewTints As System.Windows.Forms.ListView
@@ -1291,6 +2332,8 @@ Partial Class EditFace_Form
 
     Friend WithEvents BoneRegionsRoot As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents BoneRegionsContainer As System.Windows.Forms.Panel
+    Friend WithEvents BoneRegionsTabs As System.Windows.Forms.TabControl
+    Friend WithEvents LabelBoneRegionsEmpty As System.Windows.Forms.Label
 
     Friend WithEvents GroupBoxFmin As System.Windows.Forms.GroupBox
     Friend WithEvents FminLayout As System.Windows.Forms.TableLayoutPanel

@@ -61,7 +61,9 @@ Friend NotInheritable Class NpcTemplateHelpers
         If Not seenLists.Add(lvlnFormID) Then Return
         Dim rec = pluginManager.GetRecord(lvlnFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "LVLN" Then Return
-        Dim lvln = RecordParsers.ParseLVLN(rec, pluginManager)
+        ' Tolerante: lo consume el editor y el apply del Save; un LVLN roto no puede reventar ahi.
+        Dim lvln = RecordParsers.TryParseLVLN(rec, pluginManager)
+        If lvln Is Nothing Then Return
         For Each entry In lvln.Entries
             If entry.FormID = 0UI Then Continue For
             Dim entryRec = pluginManager.GetRecord(entry.FormID)

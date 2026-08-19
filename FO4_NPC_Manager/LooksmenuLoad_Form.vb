@@ -423,9 +423,9 @@ Public Class LooksmenuLoad_Form
         Return built
     End Function
 
-    ''' <summary>"Show incompatible": the exhaustive breakdown, in the same read-only monospace modal the SSE
-    ''' morph reconstruction uses for its preview report — the content is a fixed-width table of findings, and
-    ''' a label/tooltip can't hold it.</summary>
+    ''' <summary>"Show incompatible": the exhaustive breakdown, in the shared read-only monospace report modal
+    ''' (<see cref="TextReport_Form"/>) — the content is a fixed-width table of findings, and a label/tooltip
+    ''' can't hold it.</summary>
     Private Sub ButtonShowIncompatible_Click(sender As Object, e As EventArgs) Handles ButtonShowIncompatible.Click
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
         If item Is Nothing Then Return
@@ -434,51 +434,15 @@ Public Class LooksmenuLoad_Form
         ' ⛔ EL TÍTULO DECÍA "Incompatible / missing content" Y ESO DESHACÍA EL CARTEL: el usuario lee "Fully
         ' compatible", abre el reporte, y la ventana lo recibe con un título que dice lo contrario. La falsa alarma no
         ' se eliminaba, se movía un clic más adentro.
-        Using f As New Form With {
-            .Text = $"What this preset does — {IO.Path.GetFileNameWithoutExtension(item.Preset.SourcePath)}",
-            .StartPosition = FormStartPosition.CenterParent,
-            .Size = New Size(860, 620),
-            .MinimizeBox = False, .MaximizeBox = True, .ShowInTaskbar = False}
-            ' TabStop=False so the initial focus lands on the button instead of the TextBox — a focused
-            ' multiline TextBox auto-selects ALL its content, which shows the whole report highlighted.
-            Dim txt As New TextBox With {
-                .Multiline = True, .ReadOnly = True, .Dock = DockStyle.Fill,
-                .ScrollBars = ScrollBars.Both, .WordWrap = False, .TabStop = False,
-                .Font = New Font(FontFamily.GenericMonospace, 8.5F)}
-            ' ⛔ SIN ESTO EL REPORTE SE PUEDE CORTAR EN SILENCIO: el MaxLength por default de un TextBox son 32767
-            ' caracteres y se aplica también a la asignación POR CÓDIGO, sin ninguna señal de que cortó. Con dos notas
-            ' de varios párrafos más la lista de huesos, un reporte largo se acerca a ese techo.
-            ' ⛔ Y va ANTES de asignar el Text, no después: al revés el texto ya entró recortado.
-            txt.MaxLength = Integer.MaxValue
-            txt.Text = NormalizeEol(text)
-            Dim bar As New Panel With {.Dock = DockStyle.Bottom, .Height = 40, .Padding = New Padding(6)}
-            Dim btnClose As New Button With {.Text = "Close", .DialogResult = DialogResult.Cancel,
-                                             .Dock = DockStyle.Right, .Width = 110}
-            Dim btnCopy As New Button With {.Text = "Copy", .Dock = DockStyle.Right, .Width = 110}
-            AddHandler btnCopy.Click, Sub()
-                                          Try
-                                              If txt.TextLength > 0 Then Clipboard.SetText(txt.Text)
-                                          Catch
-                                          End Try
-                                      End Sub
-            bar.Controls.Add(btnClose)
-            bar.Controls.Add(btnCopy)
-            f.Controls.Add(txt)
-            f.Controls.Add(bar)
-            txt.BringToFront()
-            f.AcceptButton = btnClose
-            f.CancelButton = btnClose
-            AddHandler f.Shown, Sub() txt.Select(0, 0)
+        ' El modal en sí ya no se arma acá: era el MISMO formulario que el preview de "Regenerate morphs" de
+        ' EditFace, escrito dos veces — y una de las dos copias no tenía el fix del MaxLength, así que ahí el
+        ' reporte largo se truncaba a 32767 caracteres en silencio. Ahora los dos usan TextReport_Form.
+        Using f As New TextReport_Form(
+            $"What this preset does — {IO.Path.GetFileNameWithoutExtension(item.Preset.SourcePath)}",
+            text, showCopy:=True)
             f.ShowDialog(Me)
         End Using
     End Sub
-
-    ''' <summary>Normalize line endings to CRLF WITHOUT doubling them (a plain Replace(vbLf, vbCrLf) turns each
-    ''' existing CRLF into CR+CRLF and inserts blank lines in the TextBox).</summary>
-    Private Shared Function NormalizeEol(s As String) As String
-        If String.IsNullOrEmpty(s) Then Return ""
-        Return s.Replace(vbCrLf, vbLf).Replace(vbCr, vbLf).Replace(vbLf, vbCrLf)
-    End Function
 
     Private Sub ButtonOk_Click(sender As Object, e As EventArgs) Handles ButtonOk.Click
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)

@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text
 
 ''' <summary>Emits the SKEE64 (RaceMenu) BodyGen .ini pair (<c>templates.ini</c> +
@@ -33,7 +33,7 @@ Public Module SseBodyGenIniWriter
         ''' <c>Skyrim.esm</c>). The engine matches morphs.ini rows by master plugin — this must be
         ''' the source master, not the override plugin we are saving to.</summary>
         Public MasterPluginFileName As String = ""
-        ''' <summary>NPC's local 24-bit FormID as 6-digit uppercase hex.</summary>
+        ''' <summary>NPC's OBJECT ID del dueño en hex de 6 dígitos (12 bits si el master es light, 24 si es completo — ToFaceGenLocalFormID); NO el local de 24 bits.</summary>
         Public LocalFormIDHex As String = ""
         ''' <summary>Gender filter: <c>"male"</c>, <c>"female"</c>, or empty (apply to both). Matches
         ''' the optional third pipe-separated token of the <c>ModName|FormIDHex[|Gender][|Race]</c>
@@ -159,8 +159,13 @@ Public Module SseBodyGenIniWriter
     Private Sub WriteAtomic(path As String, content As String)
         Dim tmp = path & ".tmp"
         File.WriteAllText(tmp, content, New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
-        If File.Exists(path) Then File.Delete(path)
-        File.Move(tmp, path)
+        ' Misma ley atómica que SaveNpcEspWriter y LoadOrderActivator: Delete+Move deja una ventana en la que
+        ' el archivo no existe. File.Replace exige que el destino exista; el Move queda para el caso nuevo.
+        If File.Exists(path) Then
+            File.Replace(tmp, path, Nothing, ignoreMetadataErrors:=True)
+        Else
+            File.Move(tmp, path)
+        End If
     End Sub
 
     Private Sub TryDeleteFile(path As String)

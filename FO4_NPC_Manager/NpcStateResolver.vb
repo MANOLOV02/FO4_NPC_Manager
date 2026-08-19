@@ -553,8 +553,13 @@ Friend NotInheritable Class NpcStateResolver
         If Not _lvlnDataCache.TryGetValue(lvlnFormID, lvln) Then
             Dim lvlnRec = GetRecordMemoized(lvlnFormID, recordMemo)
             If lvlnRec Is Nothing OrElse lvlnRec.Header.Signature <> "LVLN" Then Return 0UI
-            lvln = RecordParsers.ParseLVLN(lvlnRec, _ctx.PluginManager)
+            ' ⛔ Este fallback re-parsea un record que la caché puede haber salteado A PROPÓSITO: el barrido de
+            ' arranque excluye los LVLN que no parsean (y lo reporta). Sin el Try, un LVLN roto que un template
+            ' referencie volvía a lanzar acá — o sea en tiempo de RESOLUCIÓN DE ESTADO, con el usuario mirando
+            ' un NPC. Sin lista no hay leaf que elegir: se devuelve 0, que es lo mismo que una lista vacía.
+            lvln = RecordParsers.TryParseLVLN(lvlnRec, _ctx.PluginManager)
         End If
+        If lvln Is Nothing Then Return 0UI
 
         ' Build weighted list of leaf NPC FormIDs: each entry contributes Count copies
         Dim weightedLeaves As New List(Of UInteger)()

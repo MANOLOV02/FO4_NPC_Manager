@@ -249,12 +249,17 @@ Public Module PresetCategoryFilter
                     p.HasFaceTintLayers = True
                 End If
 
+                ' El ajuste manual del tono del cuerpo (QNAM) se filtra CON los tints, no aparte: es un ajuste
+                ' de tinte de piel y sigue la misma decision del usuario. Game-agnostico, por eso va fuera del
+                ' If de arriba. Sin baseline queda Nothing = "sin ajuste", que es el estado neutro correcto.
+                p.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(If(baseline Is Nothing, Nothing, baseline.SkinToneOffset))
+
             Case PresetCategory.FaceVertexMorphs
                 If isSse Then
                     ' NAM9 (18 floats) + NAMA (4 type uints) + the RaceMenu custom morphs (no record source).
                     If baseline IsNot Nothing AndAlso baseline.HasSseMorphs AndAlso baseline.SseNam9 IsNot Nothing Then
                         p.SseNam9 = DirectCast(baseline.SseNam9.Clone(), Single())
-                        p.SseNama = If(baseline.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(baseline.SseNama.Clone(), UInteger()))
+                        p.SseNama = If(baseline.SseNama Is Nothing, SseNam9MorphMap.DefaultNamaVector(), DirectCast(baseline.SseNama.Clone(), UInteger()))
                         p.HasSseMorphs = True
                     Else
                         Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
@@ -267,16 +272,26 @@ Public Module PresetCategoryFilter
                         Next
                         Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
                         For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
-                            If raw IsNot Nothing AndAlso raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4 Then
-                                Dim tv = BitConverter.ToUInt32(raw.NamaRaw, f * 4)
-                                If tv = SseNam9MorphMap.NamaUnset Then tv = 0UI
-                                nama(f) = tv
-                            End If
+                            ' ⛔ El centinela "sin tipo asignado" viaja INTACTO — misma ley y mismo motivo que en
+                            ' MainForm.BuildPresetFromState; colapsarlo a 0 convierte "sin tipo" en "tipo 0" y le
+                            ' cambia la cara al NPC. Los dos sitios tienen que decir lo mismo.
+                            nama(f) = If(raw IsNot Nothing AndAlso raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4,
+                                         BitConverter.ToUInt32(raw.NamaRaw, f * 4),
+                                         SseNam9MorphMap.NamaUnset)
                         Next
                         p.SseNam9 = nam9
                         p.SseNama = nama
                         p.HasSseMorphs = (raw IsNot Nothing AndAlso (raw.Nam9Raw IsNot Nothing OrElse raw.NamaRaw IsNot Nothing))
                     End If
+                    ' ⛔ El slot 18 (VampireMorph) es parte de ESTA categoría y también tiene que revertirse.
+                    ' `BuildFiltered` arranca clonando el preset ORIGEN y `ClonePreset` copia SseVampireMorph, así
+                    ' que sin esta línea un Load/Paste con "Face vertex morphs" DESTILDADO dejaba el VampireMorph
+                    ' del origen sobre un target al que se le preservó todo el resto de la cara — y de ahí viajaba
+                    ' al .jslot exportado del target. (Al ESP no llega: NpcRecordOverlay sólo pisa los índices
+                    ' 0..17 y preserva el 18 del raw.)
+                    p.SseVampireMorph = If(baseline IsNot Nothing AndAlso baseline.SseVampireMorph.HasValue,
+                                           baseline.SseVampireMorph,
+                                           SseNam9MorphMap.VampireMorphFromNam9Raw(If(raw Is Nothing, Nothing, raw.Nam9Raw)))
                 Else
                     p.ChargenFaceMorphs.Clear()
                     Dim src = If(baseline IsNot Nothing AndAlso baseline.HasChargenFaceMorphs, baseline.ChargenFaceMorphs,

@@ -48,6 +48,13 @@ Public Module NpcOverrideSaver
         ''' succeeded (Success stays True); some NPCs' FaceGen BA2 may be unbaked.</summary>
         Public BakeCancelled As Boolean
         Public WriterResult As SaveNpcEspWriter.SaveResult
+        ''' <summary>El sidecar <c>.bssliders</c> se escribió DE VERDAD en esta corrida.
+        ''' <para>⛔ Es el RESULTADO, no la intención (<c>SaveTarget.WriteBssliders</c>). MainForm lo usa para
+        ''' decidir si marca los NPC como limpios y si la fila del sidecar existe en disco; pasarle la intención
+        ''' hacía que, si la escritura del sidecar fallaba (archivo de sólo lectura, carpeta de overwrite del mod
+        ''' manager, juego abierto), el ESP quedara bien pero la app diera los NPC por guardados y "Save all
+        ''' changed" ya no los incluyera — los body morphs vivían sólo en memoria.</para></summary>
+        Public SidecarWritten As Boolean = False
         ''' <summary>Final list of NPC FormIDs in the saved plugin (preserved existing + every new
         ''' override). Used by MainForm to update the auto-gen plugin cache.</summary>
         Public SavedFormIDs As New List(Of UInteger)
@@ -395,6 +402,27 @@ Public Module NpcOverrideSaver
             reader.Load(target.TargetPath)
             existingMasters.AddRange(reader.Masters)
             existingNextObjectId = reader.NextObjectId
+
+            ' ⛔ LOS BYTES SALEN DEL DISCO PERO LOS FormID SE RESUELVEN CONTRA LA COPIA CARGADA.
+            ' `existingMasters` y `skipLocalFormIDs` vienen de este reader fresco, mientras que cada
+            ' ResolveReferencedFormID de abajo usa la MAST que el PluginManager cargó al abrir la sesión. Si el
+            ' ESP cambió en disco en el medio, las dos listas divergen y NADA lo nota: xEdit inserta un master
+            ' ORDENADO (SortMasters, wbImplementation.pas:6220-6256), o sea que CORRE el índice de todos los que
+            ' ya estaban, y entonces cada OTFT/LVLI/ARMO/CLFM preservado queda resuelto contra el índice
+            ' equivocado y `skipLocalFormIDs` descarta el record que no era.
+            ' ExistingTargetBlockReason valida "está cargado" y "no le faltan masters", nunca "la MAST del disco
+            ' es la que tengo en memoria". Se compara acá y se aborta: corromper referencias en silencio dentro
+            ' de un archivo que después se distribuye es peor que pedir una recarga.
+            Dim loadedCopy = ctx.PluginManager.GetPluginByName(reader.FileName)
+            If loadedCopy IsNot Nothing AndAlso
+               Not loadedCopy.Masters.SequenceEqual(reader.Masters, StringComparer.OrdinalIgnoreCase) Then
+                Throw New InvalidDataException(
+                    $"'{reader.FileName}' changed on disk since it was loaded: its master list is now [" &
+                    String.Join(", ", reader.Masters) & "] but this session has [" &
+                    String.Join(", ", loadedCopy.Masters) & "]. Saving now would resolve the plugin's existing " &
+                    "records against the wrong masters and silently repoint their references. Reload the load " &
+                    "order (re-open the Preflight) and try again.")
+            End If
 
             ' Build the set of LOCAL FormIDs (as the target plugin's MAST list sees them) for every
             ' NPC being written, so we drop the records we're about to replace. Mirror of the engine
@@ -949,8 +977,13 @@ Public Module NpcOverrideSaver
 
         result.WriterResult = writeRes
         result.DraftFormIdMap = writeRes.DraftFormIdMap
+        ' ⛔ `SavedFormIDs` es 100% GLOBAL. `existingRec.Header.FormID` (y el de refreshedVmadFormIDs) viene de
+        ' un PluginReader FRESCO del archivo destino, o sea que es LOCAL: mezclarlo con los globales de
+        ' writeInputs dejaba el set en DOS espacios de numeración a la vez. Ese set repuebla
+        ' ExistingPlugin.NpcFormIDs, que se compara contra el FormID global del NPC seleccionado, así que el
+        ' aviso "este plugin ya sobreescribe este NPC" aparecía o no según si la app se había reiniciado.
         For Each existingRec In existingRecords
-            result.SavedFormIDs.Add(existingRec.Header.FormID)
+            result.SavedFormIDs.Add(ctx.PluginManager.ResolveReferencedFormID(existingRec.SourcePluginName, existingRec.Header.FormID))
         Next
         ' Los preservados a los que se les refrescó el VMAD salieron de existingRecords y ahora viajan en
         ' `entries` — se siguen contando como guardados igual (Phase 2b').
@@ -975,6 +1008,24 @@ Public Module NpcOverrideSaver
             Dim sidecarExisted = existingSidecar IsNot Nothing
             Dim mergedSidecar = If(existingSidecar, New BssliderSidecar.SidecarFile())
             mergedSidecar.Plugin = IO.Path.GetFileName(target.TargetPath)
+
+            ' ⛔ LA CLAVE DEL SIDECAR SE NORMALIZA ACÁ, UNA VEZ, Y ESTE ES EL ÚNICO LUGAR QUE HACE FALTA.
+            ' La ley ("el hex es el OBJECT ID pelado del dueño: 12 bits si es light, 24 si es full") vive en
+            ' BssliderSidecar.BuildIdentifier, pero los emisores del morphs.ini tomaban los 24 bits crudos de
+            ' TryParseIdentifier, o sea una SEGUNDA ley. Con una fila escrita por una build vieja (que
+            ' enmascaraba con 0xFFFFFF) y un master ESL, el hex lleva embebido el light slot de aquella sesión y
+            ' f4ee lo ORea sin máscara (BodyGenInterface.cpp:319-321) ⇒ slot bogus ⇒ los morphs de ese NPC caen
+            ' sobre otro record o sobre ninguno.
+            ' Normalizar el DICCIONARIO —y no cada consumidor— hace que la ley la imponga el DATO y no la
+            ' disciplina: cualquier consumidor futuro la hereda sin saber que existe. Y como el Write de abajo
+            ' persiste lo normalizado, el sidecar queda MIGRADO en disco al primer guardado y la forma vieja
+            ' desaparece para siempre. Por eso FoldLegacyKeys (que sólo plegaba las del NPC que se re-grababa,
+            ' dejando las otras N-1 rotas) ya no existe.
+            Dim foldedRows = BssliderSidecar.NormalizeKeys(mergedSidecar.Npcs, ctx.PluginManager)
+            If foldedRows > 0 Then
+                Logger.LogLazy(Function() $"[SAVE] sidecar: {foldedRows} fila(s) con la forma vieja de identificador " &
+                                          "se migraron a la canónica (object id pelado).")
+            End If
 
             ' Merge the saved NPCs only when the user asked to persist body data (writeInputs already excludes the
             ' removed ones). entries are built in writeInputs order in Phase 1, so entries(i) ↔ writeInputs(i).
@@ -1005,6 +1056,13 @@ Public Module NpcOverrideSaver
                     mergedSidecar.PayloadSalt = ctx.ApplyScriptSalt
                 End If
                 BssliderSidecar.Write(sidecarPath, mergedSidecar)
+                ' ⛔ `target.WriteBssliders`, NO `True`. El bloque también corre para PODAR un NPC removido con
+                ' el checkbox destildado; ahí MergeOneNpcIntoSidecar NO corrió, así que las filas de los NPC
+                ' guardados NO se re-armaron. El consumidor (ApplyPostSaveReadback) usa esto para decidir si
+                ' `_sidecarBackedNpcs` refleja el disco, y su invariante es "residual conservado ⟺ fila en
+                ' disco" — que sólo vale si hubo merge. Con `True` a secas, un Reset posterior sobre ese NPC
+                ' dejaba de marcarlo dirty y el revert nunca llegaba al disco.
+                result.SidecarWritten = target.WriteBssliders
             End If
 
             ' Re-emit BodyGen when the user asked OR a removal must drop the NPC from an EXISTING .ini (Emit
@@ -1892,10 +1950,10 @@ Public Module NpcOverrideSaver
         If String.IsNullOrEmpty(masterName) Then masterName = "Unknown.esp"
         Dim identifier = BssliderSidecar.BuildIdentifier(masterName, npcFormID)
 
-        ' Fold any row this NPC still has under an older identifier form onto the canonical key, so the
-        ' write below replaces it instead of adding a second row. The rule lives next to BuildIdentifier
-        ' because it IS the same law (what the key means), and keeping it there is what makes it testable.
-        BssliderSidecar.FoldLegacyKeys(merged.Npcs, identifier, masterName, npcFormID)
+        ' ⛔ Acá NO se pliega nada: el diccionario entero ya vino normalizado por
+        ' BssliderSidecar.NormalizeKeys, que corre una sola vez al leer el sidecar (ver ExecuteWritePhases).
+        ' El fold viejo corría UNA VEZ POR NPC GUARDADO, así que las filas de los NPC que NO entraban en este
+        ' guardado sobrevivían con la forma vieja y salían así al morphs.ini.
 
         ' Overlay → entry via the ONE preset↔entry mirror (BssliderSidecar.EntryFromPreset). The field
         ' list used to be duplicated here and in HydratePresets/StripEspFieldsFromOverlay, and the copies
@@ -2211,7 +2269,10 @@ Public Module NpcOverrideSaver
                 .SourcePluginName = rec.SourcePluginName,
                 .OriginalHeader = rec.Header})
             existingRecords.RemoveAt(i)
-            moved.Add(rec.Header.FormID)
+            ' GLOBAL, no el local del reader: alimenta SavedFormIDs, que vive entero en espacio global.
+            ' `parsed.FormID` ya lo es (RefreshPreservedApplyScripts lo resolvió unas líneas arriba, igual que
+            ' SerializeExistingRecord), así que se usa ése en vez de re-resolver.
+            moved.Add(parsed.FormID)
         Next
 
         If Logger.Enabled Then
@@ -2255,7 +2316,7 @@ Public Module NpcOverrideSaver
             If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then Continue For
 
             Dim editorId = If(e.EditorId, "")
-            Dim templateName = "NPCM_" & BodyGenIniWriter.SanitizeTemplateName(editorId)
+            Dim templateName = BodyGenTemplateName(editorId, masterName, localFid, AddressOf BodyGenIniWriter.SanitizeTemplateName)
             entries.Add(New BodyGenIniWriter.NpcEntry With {
                 .TemplateName = templateName,
                 .MasterPluginFileName = masterName,
@@ -2267,6 +2328,28 @@ Public Module NpcOverrideSaver
 
         BodyGenIniWriter.Emit(ctx.DataPath, baseName, entries)
     End Sub
+
+    ''' <summary>Nombre del template de BodyGen para un NPC: <c>NPCM_&lt;EDID saneado&gt;_&lt;object id hex&gt;</c>.
+    ''' <para>⛔ El nombre es la CLAVE del mapa de templates y tiene que ser ÚNICO. Antes era sólo
+    ''' <c>NPCM_&lt;EDID saneado&gt;</c> y era el único identificador de la app que NO pasaba por
+    ''' <c>MakeUniqueEditorId</c>. El saneo reemplaza todo carácter que no sea ASCII alfanumérico por <c>_</c> y
+    ''' mapea el vacío a <c>"Unnamed"</c> (BodyGenIniWriter.vb:126-134), así que chocaban: dos EDID vacíos, un
+    ''' <c>"Foo Bar"</c> contra un <c>"Foo_Bar"</c>, y —el caso que más pesa— <b>dos EDID no-ASCII cualesquiera
+    ''' del mismo largo</b>, que colapsan a la misma cadena de guiones bajos (una lista de mods rusa o china).
+    ''' Los dos motores hacen <c>bodyGenTemplates[templateName] = bodyGenSets</c> (f4ee BodyGenInterface.cpp:151,
+    ''' skee64 BodyMorphInterface.cpp:1429): <b>gana el último</b>, en silencio, y un NPC se lleva el cuerpo de
+    ''' otro. <c>Emit</c> sólo ORDENA por nombre, no deduplica.</para>
+    ''' <para>El object id desempata sin perder legibilidad — el <c>.ini</c> se sigue leyendo a ojo, que es lo
+    ''' que hace falta para diagnosticar. Los dos <c>.ini</c> se regeneran enteros en cada guardado y los morphs
+    ''' aplicados se persisten en el co-save por nombre de MORPH, no de template, así que cambiar el nombre no
+    ''' invalida nada de lo que el jugador ya tenga.</para></summary>
+    Private Function BodyGenTemplateName(editorId As String, masterPluginName As String, localFormID As UInteger,
+                                         sanitize As Func(Of String, String)) As String
+        ' ⛔ El object id SOLO no alcanza: 0x800 es el primer record nuevo de CADA plugin, así que dos NPC de
+        ' masters distintos con EDID que sanean igual (dos cirílicos del mismo largo colapsan a la misma cadena
+        ' de guiones bajos) volvían a chocar. El master entra en la clave, que es lo único que los distingue.
+        Return "NPCM_" & sanitize(If(editorId, "")) & "_" & sanitize(If(masterPluginName, "")) & "_" & localFormID.ToString("X6")
+    End Function
 
     ''' <summary>SSE branch of <see cref="EmitBodyGenFromSidecar"/>: translate the merged sidecar into
     ''' <see cref="SseBodyGenIniWriter"/> entries and emit the skee64 .ini pair. Morph values come from
@@ -2305,7 +2388,7 @@ Public Module NpcOverrideSaver
             If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then Continue For
 
             Dim editorId = If(e.EditorId, "")
-            Dim templateName = "NPCM_" & SseBodyGenIniWriter.SanitizeTemplateName(editorId)
+            Dim templateName = BodyGenTemplateName(editorId, masterName, localFid, AddressOf SseBodyGenIniWriter.SanitizeTemplateName)
             entries.Add(New SseBodyGenIniWriter.NpcEntry With {
                 .TemplateName = templateName,
                 .MasterPluginFileName = masterName,

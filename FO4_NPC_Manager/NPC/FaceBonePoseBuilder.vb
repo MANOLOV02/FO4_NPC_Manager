@@ -236,7 +236,8 @@ Public Module FaceBonePoseBuilder
     ''' zero — regardless of the region's Defaults.
     '''
     ''' ⛔ Do NOT compare against the region Default. That was the old editor rule
-    ''' (EditFace_Form.RegionLiveComponents) and it contradicts the engine: with a non-zero
+    ''' (BoneRegionCard.RegionLiveComponents, que hasta la migración al Designer vivía en
+    ''' EditFace_Form) and it contradicts the engine: with a non-zero
     ''' Default it would both hide live axes (min=max=0 but Default≠0 → reported live... and
     ''' worse, min≠0 with min=Default → reported dead while the engine still moves the bone).
     ''' Inert in vanilla only because all 32 regions across the 6 shipped JSONs have

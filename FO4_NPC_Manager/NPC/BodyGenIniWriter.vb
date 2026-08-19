@@ -32,8 +32,11 @@ Public Module BodyGenIniWriter
         ''' <c>Fallout4.esm</c>). The engine matches morphs.ini rows by master plugin, so this
         ''' must be the source master — not the override plugin we are saving to.</summary>
         Public MasterPluginFileName As String = ""
-        ''' <summary>NPC's local 24-bit FormID as 6-digit uppercase hex. Same convention LM uses
-        ''' (and the same BodyGenInterface parser accepts).</summary>
+        ''' <summary>OBJECT ID del dueño en hex de 6 dígitos: 12 bits útiles si el master es light, 24 si es
+        ''' completo (PluginManager.ToFaceGenLocalFormID). ⛔ NO es "el local de 24 bits": para un master ESL eso
+        ''' arrastraría el light slot de la sesión que lo escribió, y f4ee ORea 24 bits CRUDOS sin enmascarar
+        ''' (BodyGenInterface.cpp:319-321), con lo que el slot viejo se mezcla con el actual y da uno tercero.
+        ''' El valor llega ya canónico porque BssliderSidecar.NormalizeKeys normaliza la clave del sidecar.</summary>
         Public LocalFormIDHex As String = ""
         ''' <summary>Gender filter: <c>"male"</c>, <c>"female"</c>, or empty (apply to both).
         ''' Matches the third pipe-separated token <c>BodyGenInterface.cpp:185+</c> accepts.</summary>
@@ -155,8 +158,13 @@ Public Module BodyGenIniWriter
     Private Sub WriteAtomic(path As String, content As String)
         Dim tmp = path & ".tmp"
         File.WriteAllText(tmp, content, New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
-        If File.Exists(path) Then File.Delete(path)
-        File.Move(tmp, path)
+        ' Misma ley atómica que SaveNpcEspWriter y LoadOrderActivator: Delete+Move deja una ventana en la que
+        ' el archivo no existe. File.Replace exige que el destino exista; el Move queda para el caso nuevo.
+        If File.Exists(path) Then
+            File.Replace(tmp, path, Nothing, ignoreMetadataErrors:=True)
+        Else
+            File.Move(tmp, path)
+        End If
     End Sub
 
     Private Sub TryDeleteFile(path As String)

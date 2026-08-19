@@ -127,6 +127,13 @@ Public Module LooksmenuLoader
         Public SseNam9 As Single() = Nothing
         Public SseNama As UInteger() = Nothing
         Public HasSseMorphs As Boolean = False
+        ''' <summary>El slot 18 del NAM9 (VampireMorph), que NO entra en <see cref="SseNam9"/>: el NAM9 son 19
+        ''' floats (76 bytes) y el modelo editable dimensiona 18 sliders. Nothing = no se conoce.
+        ''' <para>⛔ Existe porque <c>ToJslot</c> lo escribía con una CONSTANTE (FLT_MAX = "no es vampiro"), así
+        ''' que un load→save le pisaba el valor real. Medido: 1 de los 48 presets del usuario trae 0 ahí, y el
+        ''' render propio SÍ lee ese slot (NpcMorphResolver.vb:427-431). Sin conocerlo se sigue emitiendo el
+        ''' centinela, que es el default correcto.</para></summary>
+        Public SseVampireMorph As Single? = Nothing
         ' SSE (Skyrim) face tints: the edited flat TINI/TINC/TINV/TIAS subrecord list. When HasSseTints, the
         ' overlay swaps it into shadow.SseTintRaw so the composer (render + bake) uses the edit, and Save ESP
         ' emits it. FO4 leaves these unset (no-op; FO4 tints live in FaceTintLayers).
@@ -842,6 +849,7 @@ Public Module LooksmenuLoader
         ' independent; carry HasSseMorphs with them. FO4 leaves these Nothing/False so this no-ops there.
         c.SseNam9 = If(p.SseNam9 Is Nothing, Nothing, CType(p.SseNam9.Clone(), Single()))
         c.SseNama = If(p.SseNama Is Nothing, Nothing, CType(p.SseNama.Clone(), UInteger()))
+        c.SseVampireMorph = p.SseVampireMorph
         c.HasSseMorphs = p.HasSseMorphs
 
         ' SSE face tints (flat TINI/TINC/TINV/TIAS list) — deep-copy each subrecord (cloning its byte array).
@@ -980,7 +988,21 @@ Public Module LooksmenuLoader
     '''   • Hex format throughout: "%X" uppercase, no zero-padding. Verified against actual
     '''     LooksMenu-saved JSON files (e.g. "4D7", "72A", "525").
     ''' </summary>
+    ''' <summary>Serializa el preset al JSON de LooksMenu. Overload de conveniencia que descarta la lista de
+    ''' campos omitidos; usar el de tres argumentos cuando haya que avisarle al usuario.</summary>
     Public Function SerializePreset(preset As LooksmenuPreset, pluginManager As PluginManager) As String
+        Dim ignored As List(Of String) = Nothing
+        Return SerializePreset(preset, pluginManager, ignored)
+    End Function
+
+    ''' <summary>Serializa el preset al JSON de LooksMenu.</summary>
+    ''' <param name="omittedFields">Campos <c>_npcm_*</c> que NO se pudieron nombrar y por lo tanto quedaron
+    ''' FUERA del preset (uno por línea, ya redactado para mostrarle al usuario). Vacío = salió completo.
+    ''' ⛔ Existe porque omitir la key es la respuesta correcta pero MUDA: el usuario guardaría un preset
+    ''' creyendo que lleva su outfit/piel y no lo lleva. El caso típico es un draft sin guardar todavía.</param>
+    Public Function SerializePreset(preset As LooksmenuPreset, pluginManager As PluginManager,
+                                    ByRef omittedFields As List(Of String)) As String
+        omittedFields = New List(Of String)
         If preset Is Nothing Then Return ""
 
         Using ms As New MemoryStream()
@@ -1241,24 +1263,20 @@ Public Module LooksmenuLoader
                 ' Independientes entre sí; la precedencia en aplicación la resuelve
                 ' NpcRecordOverlay (orden: NPC.WNAM primero, luego LM SkinTemplate pisa si está
                 ' set), mismo orden que el overlay aplica a render.
-                If preset.SkinFormIDOverride.HasValue Then
-                    Dim sfId = FormatFormIdentifier(preset.SkinFormIDOverride.Value, pluginManager)
-                    ' Empty string = clear semantic (engine cae a RACE.WNAM). Emitimos string siempre
-                    ' (incluso vacío) cuando HasValue=True para distinguir de "key absent" = preserve.
-                    w.WriteString("_npcm_SkinFormID", sfId)
-                End If
-                If preset.DefaultOutfitFormIDOverride.HasValue Then
-                    Dim ofId = FormatFormIdentifier(preset.DefaultOutfitFormIDOverride.Value, pluginManager)
-                    ' Empty string = "no outfit" (Some(0)). String siempre presente cuando HasValue=True
-                    ' para distinguir de "key absent" = preserve raw NPC.DOFT.
-                    w.WriteString("_npcm_DefaultOutfit", ofId)
-                End If
-                If preset.SleepOutfitFormIDOverride.HasValue Then
-                    Dim sofId = FormatFormIdentifier(preset.SleepOutfitFormIDOverride.Value, pluginManager)
-                    ' Empty string = "no sleep outfit" (Some(0)). String siempre presente cuando HasValue=True
-                    ' para distinguir de "key absent" = preserve raw NPC.SOFT.
-                    w.WriteString("_npcm_SleepOutfit", sofId)
-                End If
+                ' ⛔⛔ LOS TRES ESTADOS, DEL LADO DEL ESCRITOR. El campo vale `Nothing`=preservar (key AUSENTE),
+                ' `Some(0)`=CLEAR explícito (string VACÍO) o un valor=override (el identificador).
+                ' `FormatFormIdentifier` devuelve "" en DOS casos que no son lo mismo: el valor 0, y "no pude
+                ' nombrar el plugin dueño". Emitir "" en el segundo caso le dice al lector CLEAR — y el lector
+                ' (:610-681) lo obedece: NpcRecordOverlay:131/157 apaga la piel o el outfit del NPC.
+                ' Camino de rutina: un outfit recién creado en Edit Outfit tiene FormID provisional 0xFF00xxxx
+                ' (OutfitDraft.DraftFormIdHighByte), y 0xFF NUNCA es un slot (MAX_FULL_SLOT = 0xFD), así que
+                ' GetOriginatingPluginName devuelve "" ⇒ el preset salía diciendo "sin outfit" ⇒ NPC DESNUDO.
+                ' Canónico: f4ee saltea el form que no resuelve y no toca al actor — `if(!form) continue`
+                ' (CharGenInterface.cpp:328-330). Omitir la key es exactamente eso, y es la simetría del
+                ' `ElseIf Logger.Enabled` que el LECTOR ya tiene en :630-638.
+                EmitNpcmFormIdentifier(w, "_npcm_SkinFormID", "skin", preset.SkinFormIDOverride, pluginManager, omittedFields)
+                EmitNpcmFormIdentifier(w, "_npcm_DefaultOutfit", "default outfit", preset.DefaultOutfitFormIDOverride, pluginManager, omittedFields)
+                EmitNpcmFormIdentifier(w, "_npcm_SleepOutfit", "sleep outfit", preset.SleepOutfitFormIDOverride, pluginManager, omittedFields)
                 If preset.IsCharGenFacePreset.HasValue Then
                     w.WriteBoolean("_npcm_IsCharGenPreset", preset.IsCharGenFacePreset.Value)
                 End If
@@ -1307,6 +1325,35 @@ Public Module LooksmenuLoader
         Next
         Return sb.ToString()
     End Function
+
+    ''' <summary>Emite una key <c>_npcm_*</c> respetando sus TRES estados, o la OMITE cuando el FormID no se
+    ''' puede nombrar. Ver el bloque de comentarios del llamador para el porqué.
+    ''' <list type="bullet">
+    ''' <item><c>Nothing</c> ⇒ key ausente = "preservar lo que tenga el NPC".</item>
+    ''' <item><c>0</c> ⇒ string vacío = CLEAR explícito (el único caso en que "" es correcto).</item>
+    ''' <item>valor con identificador ⇒ el identificador.</item>
+    ''' <item>valor SIN identificador ⇒ <b>key omitida</b> (= preservar) + log + se anota en
+    ''' <paramref name="omittedFields"/> para que la UI lo pueda decir.</item>
+    ''' </list></summary>
+    Private Sub EmitNpcmFormIdentifier(w As Utf8JsonWriter, keyName As String, label As String,
+                                       value As UInteger?, pluginManager As PluginManager,
+                                       omittedFields As List(Of String))
+        If Not value.HasValue Then Return
+        If value.Value = 0UI Then
+            w.WriteString(keyName, "")   ' CLEAR explícito
+            Return
+        End If
+        Dim ident = FormatFormIdentifier(value.Value, pluginManager)
+        If ident <> "" Then
+            w.WriteString(keyName, ident)
+            Return
+        End If
+        Dim fid = value.Value
+        Logger.LogLazy(Function() $"[LMSave] {keyName} {fid:X8}: no pertenece a ningún plugin cargado " &
+                                  "(típicamente un record todavía sin guardar al ESP), así que la key se OMITE " &
+                                  "— el preset preserva lo que tenga el NPC en vez de borrárselo.")
+        omittedFields.Add($"{label} (FormID {fid:X8})")
+    End Sub
 
     ''' <summary>Inverse of ResolveFormIdentifier: take a global FormID, find its owning plugin
     ''' in the load order, and emit "Plugin.esp|HEX" with the local 24-bit FormID.</summary>

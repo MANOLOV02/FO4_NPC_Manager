@@ -403,16 +403,28 @@ Friend Module BakeAllRunner
 
             Dim allNpcRecords = pm.GetNPCs()
             Dim targets As New List(Of (Fid As UInteger, Name As String, Race As UInteger, Female As Boolean))
+            Dim parseFailures As Integer = 0
+            Dim parseFirstFailure As String = ""
             For Each rec In allNpcRecords
                 If espTarget <> "" AndAlso Not String.Equals(rec.SourcePluginName, espTarget, StringComparison.OrdinalIgnoreCase) Then Continue For
                 Try
                     Dim npc = RecordParsers.ParseNPC(rec, If(rec.SourcePluginName <> "", rec.SourcePluginName, "Unknown"), pm)
                     If npc Is Nothing Then Continue For
                     targets.Add((npc.FormID, npc.ToString(), npc.RaceFormID, npc.IsFemale))
-                Catch
-                    ' Unparseable record — nothing to bake; the GUI's ParseAllNPCs swallows these too.
+                Catch ex As Exception
+                    ' Un record que no parsea no se hornea. El comentario viejo decia "la GUI tambien se los
+                    ' traga": ya no. La GUI los cuenta, los nombra y saca un aviso que dice literalmente que
+                    ' faltarian de cualquier bake — asi que callarlos ACA seria dejar la consecuencia del lado
+                    ' silencioso y que el usuario distribuya un FaceGen incompleto sin senal.
+                    parseFailures += 1
+                    If parseFirstFailure = "" Then _
+                        parseFirstFailure = $"{rec.SourcePluginName}:{rec.Header.FormID:X8} — {ex.GetType().Name}: {ex.Message}"
                 End Try
             Next
+            If parseFailures > 0 Then
+                log($"  ⚠ WARNING: {parseFailures} NPC_ record(s) could not be parsed and will NOT be baked.")
+                log($"    First: {parseFirstFailure}")
+            End If
 
             ' ⛔ FGBAKE_GROUP_BY_RACE SE ELIMINO (decision del usuario). Agrupaba por (raza,sexo) y evictaba el
             ' cache en cada borde para acotar memoria. Es INCOMPATIBLE con el loop paralelo: la evicción hacía

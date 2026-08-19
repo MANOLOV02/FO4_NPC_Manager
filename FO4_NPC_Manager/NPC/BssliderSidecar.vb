@@ -1102,36 +1102,64 @@ Public Module BssliderSidecar
     ''' "same master + same object id ⇒ same NPC" reasoning does not hold and folding must not touch them.</summary>
     Friend Const UNKNOWN_MASTER As String = "Unknown.esp"
 
-    Friend Function FoldLegacyKeys(npcs As Dictionary(Of String, NpcEntry),
-                                   canonicalIdentifier As String,
-                                   masterPluginName As String,
-                                   globalFormID As UInteger) As Integer
-        If npcs Is Nothing OrElse (globalFormID >> 24) <> &HFEUI Then Return 0
-        ' ⛔ Never fold under the placeholder name. Everything that failed to resolve is filed under it, so
-        ' two rows sharing it can be completely unrelated NPCs from different plugins — deleting one would
-        ' destroy morphs the user set up, which is far worse than leaving a duplicate row behind.
-        If String.IsNullOrEmpty(masterPluginName) OrElse
-           String.Equals(masterPluginName, UNKNOWN_MASTER, StringComparison.OrdinalIgnoreCase) Then Return 0
-        ' Within ONE light plugin the object id is 12 bits wide by definition, so those 12 bits identify the
-        ' record uniquely and the match below is exact rather than a guess. That is only true because the
-        ' master name is a real, specific plugin — hence the guard above.
-        Dim obj12 = globalFormID And &HFFFUI
-        Dim stale = npcs.Keys.Where(
-            Function(k)
-                If String.Equals(k, canonicalIdentifier, StringComparison.OrdinalIgnoreCase) Then Return False
-                Dim m As String = "" : Dim loc As UInteger = 0UI
-                If Not TryParseIdentifier(k, m, loc) Then Return False
-                Return String.Equals(m, masterPluginName, StringComparison.OrdinalIgnoreCase) AndAlso
-                       (loc And &HFFFUI) = obj12
-            End Function).ToList()
-        For Each k In stale
-            npcs.Remove(k)
-        Next
-        Return stale.Count
+    ''' <summary>Normaliza IN PLACE todas las claves del sidecar a la forma canónica de
+    ''' <see cref="BuildIdentifier"/> (master + OBJECT ID pelado). Devuelve cuántas filas se movieron o
+    ''' descartaron. Se corre UNA vez, al leer el sidecar en el guardado — ver el llamador.
+    ''' <para>⛔ Reemplaza al viejo <c>FoldLegacyKeys</c>, que sólo plegaba las filas del NPC que se estaba
+    ''' re-grabando: las otras N-1 sobrevivían con la forma vieja y salían así al <c>morphs.ini</c>. Normalizar
+    ''' el diccionario entero hace que la ley la imponga el DATO, no cada consumidor.</para>
+    ''' <para>Reglas, en orden:
+    ''' <list type="number">
+    ''' <item>Clave que no parsea ⇒ se deja intacta (no la entendemos, no la tocamos).</item>
+    ''' <item>Master que no resuelve ⇒ se deja intacta. Sin saber si el dueño es light no se puede saber a qué
+    ''' ancho enmascarar. Esto cubre solo el bucket <c>Unknown.esp</c>, sin caso especial.</item>
+    ''' <item>Ya canónica ⇒ nada.</item>
+    ''' <item>Distinta y el destino está libre ⇒ se mueve la fila.</item>
+    ''' <item>Distinta y el destino YA existe ⇒ gana la canónica y la vieja se descarta, con log. El usuario
+    ''' aceptó explícitamente perder filas legacy antes que mantener dos leyes; igual se nombra cuál se fue.</item>
+    ''' </list></para>
+    ''' <para>⚠️ Se itera sobre una COPIA de las claves: se muta el diccionario adentro del bucle.</para></summary>
+    Friend Function NormalizeKeys(npcs As Dictionary(Of String, NpcEntry), pluginManager As PluginManager) As Integer
+        If pluginManager Is Nothing Then Return 0
+        Return NormalizeKeys(npcs, Function(k) LooksmenuLoader.ResolveFormIdentifier(k, pluginManager))
     End Function
 
+    ''' <summary>Igual que el overload de arriba, con el resolvedor INYECTADO. Existe para que el gate pueda
+    ''' ejercitar EL MISMO recorrido (el de las colisiones y el de las claves que no resuelven) sin montar un
+    ''' load order en disco — probar una copia de la ley contra otra copia no prueba nada.</summary>
+    Friend Function NormalizeKeys(npcs As Dictionary(Of String, NpcEntry),
+                                  resolveGlobal As Func(Of String, UInteger)) As Integer
+        If npcs Is Nothing OrElse npcs.Count = 0 OrElse resolveGlobal Is Nothing Then Return 0
+        Dim changed As Integer = 0
+        For Each oldKey In npcs.Keys.ToList()
+            Dim master As String = "" : Dim localFid As UInteger = 0UI
+            If Not TryParseIdentifier(oldKey, master, localFid) Then Continue For
+            Dim globalFid = resolveGlobal(oldKey)
+            If globalFid = 0UI Then Continue For   ' master no cargado (incluye Unknown.esp) ⇒ no se toca
+            Dim canonical = BuildIdentifier(master, globalFid)
+            If String.Equals(canonical, oldKey, StringComparison.OrdinalIgnoreCase) Then Continue For
+            Dim entry = npcs(oldKey)
+            npcs.Remove(oldKey)
+            If npcs.ContainsKey(canonical) Then
+                Dim ok = oldKey, ck = canonical
+                Logger.LogLazy(Function() $"[SIDECAR] '{ok}' colapsa sobre '{ck}', que ya existe: se descarta la " &
+                                          "fila con la forma vieja y se conserva la canónica.")
+            Else
+                npcs(canonical) = entry
+            End If
+            changed += 1
+        Next
+        Return changed
+    End Function
+
+    ''' <summary>La clave de una fila del sidecar: <c>Master.esp|OBJECTID</c>, con el object id PELADO.
+    ''' <para>El placeholder para un master irresoluble se aplica ACÁ, no en cada llamador: el emisor lo ponía
+    ''' (<c>MergeOneNpcIntoSidecar</c>) y el camino de BORRADO no, así que la fila se escribía bajo
+    ''' <c>Unknown.esp|…</c> y se buscaba bajo <c>|…</c> — el mark-to-delete no la borraba nunca. Una ley, un
+    ''' lugar.</para></summary>
     Public Function BuildIdentifier(masterPluginName As String, globalFormID As UInteger) As String
-        Return $"{If(masterPluginName, "")}|{PluginManager.ToFaceGenLocalFormID(globalFormID):X6}"
+        Dim master = If(String.IsNullOrEmpty(masterPluginName), UNKNOWN_MASTER, masterPluginName)
+        Return $"{master}|{PluginManager.ToFaceGenLocalFormID(globalFormID):X6}"
     End Function
 
     ''' <summary>Reverse of <see cref="BuildIdentifier"/>: split <c>"Master.esp|HEX6"</c> into

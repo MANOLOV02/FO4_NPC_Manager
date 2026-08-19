@@ -1129,9 +1129,11 @@ Friend NotInheritable Class NpcMaterialResolver
     End Function
 
     ' ===== Ghoul female head-rear (nape) vanilla-UV texture clone =====
-    ' Bare-id of FemaleHeadHumanRearTEMP (vanilla 0x0004D0E9, PartType 9). Load-order prefix in the
-    ' high byte differs per plugin chain (vanilla Fallout4.esm=0x00, overrides=0x01..0xFF); the
-    ' record ID is shared, so all comparisons mask the low 24 bits.
+    ' Bare-id of FemaleHeadHumanRearTEMP (vanilla 0x0004D0E9, PartType 9).
+    ' ⚠️ El comentario anterior justificaba la máscara diciendo que "los overrides usan 0x01..0xFF en el byte
+    ' alto". Es FALSO: un override CONSERVA el FormID del master, así que el byte alto de este record es
+    ' siempre el slot de Fallout4.esm. La máscara es inocua en la práctica (un ESL no puede poseer un object id
+    ' de 0x4D0E9, que no entra en 12 bits) pero el razonamiento que la sostenía no era cierto.
     Private Const FemaleHeadHumanRearTEMPBareID As UInteger = &H4D0E9UI
     Private Const HeadRearEffectivePartType As Integer = 9
 

@@ -78,8 +78,14 @@ Public Module RaceMenuPresetMapper
         ' y ese constructor NO copia SseUnresolvedHeadParts. O sea que la app NO hace load→save de un archivo
         ' de preset, en ningún juego. Se deja como red LATENTE: el día que exista ese camino, sin ella el dato
         ' se pierde en silencio.
-        ' ⛔ NO leer este comentario como "la app preserva presets del usuario": no los preserva porque no los
-        ' re-escribe. Afirmarlo al revés costó dos diagnósticos de bloqueante que no existían.
+        ' ⛔⛔ MATIZ QUE FALTABA, Y QUE HACE ALCANZABLES DEFECTOS REALES: es cierto que la app no hace
+        ' load→save del ARCHIVO, pero los DATOS sí hacen el viaje completo. ApplyJslotToPreset deja en
+        ' `_appliedPresets` los SseBodyOverlays (con su RawValues), SseNodeTransforms (con su Raw),
+        ' SseSkinOverrides, SseSculptParts, SseCustomMorphs y demás, y BuildPresetFromState los copia tal
+        ' cual (MainForm.vb:10015-10041) antes de que ToJslot los re-serialice. O sea: cargar el .jslot del
+        ' usuario y guardar SÍ puede corromperlo. Leer esto como "no hay round-trip, no hay riesgo" es el
+        ' error opuesto al que el comentario venía a evitar — y los dos ya costaron un diagnóstico malo.
+        ' Lo único que efectivamente NO viaja es SseUnresolvedHeadParts: ese campo no se copia.
         If preset.SseUnresolvedHeadParts IsNot Nothing Then
             For Each h In preset.SseUnresolvedHeadParts
                 If h Is Nothing Then Continue For
@@ -130,7 +136,11 @@ Public Module RaceMenuPresetMapper
             If nam9 IsNot Nothing AndAlso i < nam9.Length Then v = nam9(i)
             j.SliderMorphs.Add(v)
         Next
-        j.SliderMorphs.Add(3.402823466E+38F)   ' VampireMorph sentinel (= not a vampire), EditFace_Form.vb:603.
+        ' Slot 18 = VampireMorph. ⛔ Se emitía SIEMPRE la constante centinela, así que un load→save pisaba el
+        ' valor real del NPC (1 de los 48 presets medidos trae 0 acá, y el render propio lee ese slot —
+        ' NpcMorphResolver.vb:427-431). Ahora sale el que traiga el preset; el centinela queda como default
+        ' para cuando no se conoce, que es lo que significa "no es vampiro" (EditFace_Form.vb:603).
+        j.SliderMorphs.Add(If(preset.SseVampireMorph.HasValue, preset.SseVampireMorph.Value, 3.402823466E+38F))
 
         ' ---- FACE: NAMA face-part presets → morphs.default.presets (symmetric with ApplyJslotToPreset). Emitted
         ' only when the preset carries NAMA; preserves the 0xFFFFFFFF unset sentinel per family.
@@ -184,8 +194,15 @@ Public Module RaceMenuPresetMapper
         Next
 
         ' ---- BODY: actor.weight ← SseWeight (EditBody_Form.vb:1085).
-        j.Weight = CDbl(If(preset.SseWeight.HasValue, preset.SseWeight.Value, 0.0F))
-        j.HadWeight = preset.SseWeight.HasValue   ' sin peso en el carrier, el .jslot sale SIN la key
+        ' ⛔ El fallback es 100.0F, NO 0.0F. `Save` emite `actor.weight` SIEMPRE (el motor la lee sin gate:
+        ' PresetInterface.cpp:1019 + :174), así que un carrier sin peso ya no significa "no escribas la key" —
+        ' significa "escribí un 0", y eso deja al actor en peso 0 in-game. 100 es el mismo default que usa
+        ' BuildPresetFromState cuando el record no trae NAM7.
+        ' ⛔ `HadWeight` NO se borra: sigue vivo en el sentido jslot→preset (`If j.HadWeight Then preset.SseWeight
+        ' = …`, más abajo en ApplyJslotToPreset, y lo setea el parser en RaceMenuJslot.Load). Lo que dejó de
+        ' tener sentido es ESCRIBIRLO acá: la emisión de `actor.weight` es incondicional, así que el flag ya no
+        ' gatea nada en el camino de salida. Borrar la propiedad haría que todo preset cargado traiga SseWeight=0.
+        j.Weight = CDbl(If(preset.SseWeight.HasValue, preset.SseWeight.Value, 100.0F))
 
         ' ---- BODY: bodyMorphs ← keyed (or flat fallback under a synthetic key), replicated from
         ' EditBody_Form.BuildJslotBodyMorphs (:1125-1144).
@@ -339,11 +356,15 @@ Public Module RaceMenuPresetMapper
             nam9(i) = j.SliderMorphs(i)
         Next
         preset.SseNam9 = nam9
+        ' Slot 18 (VampireMorph) va aparte porque no entra en los 18 sliders editables. Se captura para que
+        ' ToJslot lo devuelva en vez de la constante centinela. Ver LooksmenuPreset.SseVampireMorph.
+        If j.SliderMorphs.Count > SseNam9MorphMap.Nam9SliderCount Then
+            preset.SseVampireMorph = j.SliderMorphs(SseNam9MorphMap.Nam9SliderCount)
+        End If
         ' NAMA face-part presets (nose/brow/eyes/lip TYPE) → the NPC's NAMA vector. skee applies
         ' morphs.default.presets (PresetInterface.cpp:1540-1543); previously the jslot value was preserved in Raw but
         ' never applied. 0xFFFFFFFF = "unset/default" per family, preserved (never forced to a real type 0).
-        Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
-        For i = 0 To nama.Length - 1 : nama(i) = &HFFFFFFFFUI : Next
+        Dim nama = SseNam9MorphMap.DefaultNamaVector()   ' una sola ley para "sin tipo asignado"
         If preset.SseNama IsNot Nothing Then
             For i = 0 To Math.Min(preset.SseNama.Length, nama.Length) - 1 : nama(i) = preset.SseNama(i) : Next
         End If

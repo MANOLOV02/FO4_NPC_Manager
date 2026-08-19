@@ -2473,7 +2473,18 @@ Public Class MainForm
             ToolStripProgressBar1.Visible = False
 
             SetStatus("Parsing NPC records...")
+            _pendingLoadWarnings.Clear()
             Await Task.Run(Sub() ParseAllNPCs())
+
+            ' Los avisos de records que no parsean se acumulan en el worker y se muestran ACA: ya volvimos al
+            ' hilo de UI y hay owner, asi que el box es modal de verdad. Ver _pendingLoadWarnings.
+            If _pendingLoadWarnings.Count > 0 Then
+                MessageBox.Show(Me,
+                    String.Join(vbCrLf & vbCrLf, _pendingLoadWarnings) & vbCrLf & vbCrLf &
+                    "The rest of the load order loaded normally.",
+                    "Records skipped", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                _pendingLoadWarnings.Clear()
+            End If
 
             PopulateNPCTree()
 
@@ -2490,6 +2501,15 @@ Public Class MainForm
         End Try
     End Sub
 
+
+    ''' <summary>Avisos de la carga (records que no parsean) juntados por el WORKER y mostrados por el hilo
+    ''' de UI despues del Await, con owner.
+    ''' <para>NO se muestran donde se producen: `ParseAllNPCs` corre siempre dentro de `Await Task.Run`, y
+    ''' `LoadDataAsync` se lanza SIN await desde el ctor, asi que MainForm ya esta visible y bombeando
+    ''' mensajes. Un `MessageBox` creado en un hilo del pool y sin owner no es modal respecto de la ventana
+    ''' principal: se va atras al primer click y deja la carga colgada, con el worker bloqueado y la UI libre
+    ''' para re-entrar a `PopulateNPCTree` -> `RebuildTreeModelCache` sobre los mismos diccionarios.</para></summary>
+    Private ReadOnly _pendingLoadWarnings As New List(Of String)
 
     Private Sub ParseAllNPCs()
         _allNPCs.Clear()
@@ -2511,14 +2531,46 @@ Public Class MainForm
         Dim npcRecords = _pluginManager.GetNPCs()
         Dim getNpcsMs = sw.ElapsedMilliseconds
         sw.Restart()
+        ' ⛔ El `Catch` pelado que había acá ANULABA los fail-loud que los parsers construyeron a propósito.
+        ' RecordParsers lanza deliberadamente en varios sitios ("fail loud rather than silently corrupt"), y en
+        ' este camino —el que carga TODOS los NPC— se los tragaba enteros: el NPC no aparecía en el árbol y no
+        ' había un solo mensaje. El gate existía, era correcto, y no se podía observar.
+        Dim parseFailures As New List(Of String)
+        Dim parseFailureTotal As Integer = 0
         For Each rec In npcRecords
             Try
                 Dim pluginName = If(rec.SourcePluginName <> "", rec.SourcePluginName, "Unknown")
                 Dim npc = RecordParsers.ParseNPC(rec, pluginName, _pluginManager)
                 _allNPCs.Add(npc)
-            Catch
+            Catch ex As Exception
+                ' Se sigue cargando el resto (un record roto no puede costar la sesión entera), pero se cuenta
+                ' y se nombra. El primer puñado va al log con detalle; el total se reporta al terminar.
+                parseFailureTotal += 1
+                If parseFailures.Count < 20 Then
+                    parseFailures.Add($"{rec.SourcePluginName}:{rec.Header.FormID:X8} — {ex.GetType().Name}: {ex.Message}")
+                End If
             End Try
         Next
+        If parseFailureTotal > 0 Then
+            ' ⛔⛔ EL AVISO NO PUEDE VIVIR SOLO EN EL LOGGER: en Release `Logger.Enabled` está clavado en False
+            ' (Logger.vb:31-37; el único que prende AllowInReleaseBuilds es el CLI), así que `LogLazy` sale en su
+            ' primera línea y el usuario final ve EXACTAMENTE lo mismo que antes — el NPC ausente del árbol y ni
+            ' un mensaje. Un "fail loud" que sólo grita en Debug no es un fail loud.
+            ' El MessageBox espeja el que ya usa el Preflight para los plugins excluidos por master faltante.
+            Dim n = parseFailureTotal
+            Dim detail = String.Join(vbLf & "    ", parseFailures)
+            Logger.LogLazy(Function() $"[LOAD] {n} NPC_ record(s) could not be parsed and are ABSENT from the " &
+                                      "list (they would also be absent from any bake):" & vbLf & "    " & detail)
+            ' ⛔ NO se muestra acá: ParseAllNPCs corre SIEMPRE dentro de `Await Task.Run` (:2476), o sea en un
+            ' hilo del pool. Un MessageBox desde ahí no es modal respecto de MainForm (que ya está visible y
+            ' bombeando mensajes, porque LoadDataAsync se lanza sin await desde el ctor): el usuario clickea la
+            ' ventana principal, el box se va atrás y la carga queda colgada. Se ACUMULA y lo muestra el hilo de
+            ' UI después del Await, con owner — igual que el aviso del Save.
+            _pendingLoadWarnings.Add(
+                $"{n} NPC record(s) could not be parsed and are NOT in the list — they would also be missing " &
+                "from any bake." & vbCrLf & "First failures:" & vbCrLf & "  " &
+                String.Join(vbCrLf & "  ", parseFailures))
+        End If
         Dim parseMs = sw.ElapsedMilliseconds
         sw.Restart()
         ' Resolve inherited FullName for NPCs that inherit BaseData from a template
@@ -2563,7 +2615,10 @@ Public Class MainForm
                 End If
             Case "LVLN"
                 ' Pick first NPC entry from the LVLN to get a representative name
-                Dim lvln = RecordParsers.ParseLVLN(rec, _pluginManager)
+                ' Tolerante: este camino corre ANTES de que exista _lvlnDataCache, asi que un LVLN roto
+                ' tumbaba la carga entera. Ver RecordParsers.TryParseLVLN.
+                Dim lvln = RecordParsers.TryParseLVLN(rec, _pluginManager)
+                If lvln Is Nothing Then Return ""
                 For Each entry In lvln.Entries
                     If entry.FormID = 0UI Then Continue For
                     Dim resolved = ResolveInheritedFullName(entry.FormID, visited)
@@ -4088,8 +4143,20 @@ Public Class MainForm
         Dim nestedLVLNFormIDs As New HashSet(Of UInteger)()
         Dim allLVLNRecords = _pluginManager.GetRecordsOfType("LVLN")
 
+        ' ⛔ ParseLVLN pasó a LANZAR ante un MODS malformado (el gate game-aware de Material Swap vs Alternate
+        ' Textures). Sin este Catch, UN solo LVLN roto —un plugin mal mergeado, uno editado a mano— impedía
+        ' construir la lista de NPC entera. Un record roto no puede costar la sesión: se saltea, se cuenta y se
+        ' nombra, igual que el bulk parse de NPC_ de más arriba.
+        Dim lvlnFailures As Integer = 0
+        Dim lvlnFirstFailure As String = ""
         For Each rec In allLVLNRecords
-            Dim lvln = RecordParsers.ParseLVLN(rec, _pluginManager)
+            Dim lvln = RecordParsers.TryParseLVLN(rec, _pluginManager)
+            If lvln Is Nothing Then
+                lvlnFailures += 1
+                If lvlnFirstFailure = "" Then _
+                    lvlnFirstFailure = $"{rec.SourcePluginName}:{rec.Header.FormID:X8}"
+                Continue For
+            End If
             _lvlnDataCache(lvln.FormID) = lvln
 
             For Each entry In lvln.Entries
@@ -4100,6 +4167,16 @@ Public Class MainForm
                 End If
             Next
         Next
+
+        If lvlnFailures > 0 Then
+            Dim nL = lvlnFailures, firstL = lvlnFirstFailure
+            Logger.LogLazy(Function() $"[LOAD] {nL} LVLN record(s) could not be parsed and were skipped " &
+                                      $"(their leveled lists are absent from the NPC classification). First: {firstL}")
+            ' Mismo motivo que el aviso de NPC_ (logger apagado en Release) y misma mecánica (hilo de fondo).
+            _pendingLoadWarnings.Add(
+                $"{nL} leveled NPC list(s) could not be parsed and were skipped — the NPCs they spawn are not " &
+                "classified as encounter spawns." & vbCrLf & "First: " & firstL)
+        End If
 
         ' Final LVLNs = all LVLNs that are NOT referenced as entries inside another LVLN
         For Each lvlnFormID In _lvlnDataCache.Keys
@@ -4114,8 +4191,12 @@ Public Class MainForm
                                End Function)
 
         ' Collect NPCs in leveled lists (encounter spawns)
-        For Each rec In allLVLNRecords
-            CollectNPCsFromLVLNRecursive(rec.Header.FormID, _npcsInGameWorld, New HashSet(Of UInteger)())
+        ' ⛔ Se recorre `_lvlnDataCache`, NO `allLVLNRecords`: la caché ya excluye los LVLN que no parsearon.
+        ' Recorrer la lista cruda volvía a pasar el MISMO record roto por ParseLVLN (GetRecord devuelve el mismo
+        ' objeto, PluginManager.BuildTypeIndex sale de AllRecords), así que la excepción salía igual y el
+        ' try/catch de arriba quedaba inerte: la carga entera seguía muriendo por un solo record.
+        For Each lvlnFid In _lvlnDataCache.Keys.ToList()
+            CollectNPCsFromLVLNRecursive(lvlnFid, _npcsInGameWorld, New HashSet(Of UInteger)())
         Next
 
         ' Warm _lvlnLeavesCache: pre-compute flattened NPC FormID list for every LVLN. Recursion
@@ -4182,7 +4263,11 @@ Public Class MainForm
         If rec Is Nothing OrElse rec.Header.Signature <> "LVLN" Then Return
 
         visited.Add(lvlnFormID)
-        Dim lvln = RecordParsers.ParseLVLN(rec, _pluginManager)
+        ' La caché es la fuente: la llenó el barrido de arranque, que ya saltea (y reporta) los LVLN que no
+        ' parsean. Re-parsear acá reintroducía la excepción por la puerta de al lado — un LVLN anidado roto
+        ' alcanzaba para tumbar la carga aunque el bucle de arriba lo hubiera salteado.
+        Dim lvln As LVLN_Data = Nothing
+        If Not _lvlnDataCache.TryGetValue(lvlnFormID, lvln) OrElse lvln Is Nothing Then Return
 
         For Each entry In lvln.Entries
             If entry.FormID = 0UI Then Continue For
@@ -8496,9 +8581,17 @@ Public Class MainForm
                 ' Leveled NPC - get first NPC_ entry
                 Dim lvln As LVLN_Data = Nothing
                 If Not _detailsLvlnCache.TryGetValue(sourceFormID, lvln) Then
-                    lvln = RecordParsers.ParseLVLN(sourceRec, _pluginManager)
-                    _detailsLvlnCache(sourceFormID) = lvln
+                    lvln = RecordParsers.TryParseLVLN(sourceRec, _pluginManager)
+                    ' ⛔ El Nothing NO se cachea a proposito: si un dia el LVLN se arregla en disco y se
+                    ' recarga el plugin, un Nothing cacheado lo seguiria mostrando roto hasta reiniciar.
+                    If lvln IsNot Nothing Then _detailsLvlnCache(sourceFormID) = lvln
                 End If
+                ' ⛔ TryParseLVLN es el tolerante: devuelve Nothing en el LVLN malformado que existe para
+                ' tolerar. Sin este guard el .Entries de abajo tira NRE dentro de un handler Handles
+                ' (TreeViewNPCs_AfterSelect -> PopulateRecordDetails, que tiene Finally pero NO Catch).
+                ' Mismo patron que los otros 4 call sites: NpcTemplateHelpers:66, NpcStateResolver:562,
+                ' MainForm:2621, MainForm:4154.
+                If lvln Is Nothing Then Return current
                 Dim firstNpcId = lvln.Entries.Select(Function(e) e.FormID).
                     FirstOrDefault(Function(fid)
                                        Dim r = _pluginManager.GetRecord(fid)
@@ -9830,6 +9923,11 @@ Public Class MainForm
             ' LM SkinTemplate id is overlay-only (no record source). Carry through so Copy Look
             ' captures it and Save Looksmenu emits it.
             preset.SkinTemplateId = If(overlay.SkinTemplateId, "")
+            ' Ajuste manual del tono del cuerpo (QNAM): overlay-only igual que los de arriba, y PARTE DEL LOOK
+            ' -es la correccion que hace que ese cuerpo y esa cara se lean como la misma piel-, asi que viaja
+            ' con Copy Look. Se filtra junto con los TINTS (PresetCategoryFilter, categoria FaceTints): es un
+            ' ajuste de tinte, no una categoria nueva.
+            preset.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(overlay.SkinToneOffset)
         End If
 
         ' NPC.WNAM skin override: capturamos la skin EFECTIVA que se está renderizando ahora —
@@ -9837,8 +9935,12 @@ Public Class MainForm
         ' RACE.WNAM si ambos son 0 (ver ApplyRaceFallbacks / RecomputeEffectiveSkinFormID).
         ' Capturar state.SkinFormID directamente vs overlay-only garantiza que Copy → Paste
         ' transfiera el skin AUNQUE el NPC source no tenga overlay explícito (caso típico:
-        ' vanilla NPC con WNAM autoreado). SerializePreset (Save Looksmenu) NO emite este campo
-        ' al JSON — es overlay/clipboard only, no afecta el round-trip JSON ↔ LM in-game.
+        ' vanilla NPC con WNAM autoreado).
+        ' ⚠️ SerializePreset SÍ emite este campo (`_npcm_SkinFormID`, LooksmenuLoader.vb). El comentario decía
+        ' lo contrario y quedó de cuando era clipboard-only. Consecuencia REAL, deliberada y compartida con
+        ' DOFT/SOFT: como se captura la piel EFECTIVA (incluye el fallback RACE.WNAM), todo preset guardado
+        ' PINNEA esa ARMO, y cargarlo sobre un NPC de otra raza se la impone. Es la misma ley que los dos
+        ' campos de abajo; si algún día se quiere cambiar, se cambian los TRES juntos.
         preset.SkinFormIDOverride = state.SkinFormID
 
         ' NPC.DOFT default outfit: capturamos el outfit EFECTIVO (post-override) igual que skin.
@@ -9938,8 +10040,18 @@ Public Class MainForm
             ' --- Head morphs (NAM9 18 floats + NAMA 4 type uints): overlay if set, else parse the record. ---
             If overlay IsNot Nothing AndAlso overlay.HasSseMorphs AndAlso overlay.SseNam9 IsNot Nothing Then
                 preset.SseNam9 = DirectCast(overlay.SseNam9.Clone(), Single())
-                preset.SseNama = If(overlay.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(overlay.SseNama.Clone(), UInteger()))
+                ' ⛔ Sin SseNama el vector va a CENTINELAS, no a ceros: 0 es un tipo REAL y esta rama estaba
+                ' diciendo lo contrario que la de abajo sobre el mismo campo. Ver DefaultNamaVector.
+                preset.SseNama = If(overlay.SseNama Is Nothing, SseNam9MorphMap.DefaultNamaVector(), DirectCast(overlay.SseNama.Clone(), UInteger()))
                 preset.HasSseMorphs = True
+                ' ⛔ EL SLOT 18 TAMBIÉN VIAJA POR ACÁ. Estaba sólo en la rama del `Else`, así que el arreglo era
+                ' INERTE justo en el camino normal: basta con haber cargado un .jslot o tocado UN slider en Edit
+                ' Face para que exista overlay, y entonces "Save RaceMenu Preset" volvía a emitir la constante
+                ' centinela y pisaba el VampireMorph real del NPC. El overlay lo trae si vino de un .jslot; si no,
+                ' se cae al record, que es la fuente de verdad cuando el editor no lo tocó.
+                preset.SseVampireMorph = If(overlay.SseVampireMorph.HasValue,
+                                            overlay.SseVampireMorph,
+                                            VampireMorphFromNam9(raw))
             Else
                 Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
                 For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
@@ -9951,12 +10063,23 @@ Public Class MainForm
                 Next
                 Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
                 For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
-                    If raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4 Then
-                        Dim tv = BitConverter.ToUInt32(raw.NamaRaw, f * 4)
-                        If tv = SseNam9MorphMap.NamaUnset Then tv = 0UI
-                        nama(f) = tv
-                    End If
+                    ' ⛔ El centinela 0xFFFFFFFF ("esta familia NO tiene tipo asignado") viaja INTACTO.
+                    ' Acá se colapsaba a 0, que es un tipo REAL — y el lector del .jslot hace lo contrario y lo
+                    ' documenta ("0xFFFFFFFF = unset/default, preserved (never forced to a real type 0)",
+                    ' RaceMenuPresetMapper.vb:345-352). Con el colapso, guardar un preset de un NPC sin NAMA y
+                    ' recargarlo le CAMBIA LA CARA: skee asigna el tipo tal cual (`presets[i] = value`,
+                    ' PresetInterface.cpp:1052-1058) y la app misma los distingue (NpcMorphResolver:587-591 no
+                    ' hace nada con el centinela y aplica el morph "Default" con peso 1.0 con el 0).
+                    ' Medido: en los 48 presets reales conviven 43 centinelas y 27 ceros, o sea que RaceMenu
+                    ' escribe los dos y el centinela es un valor legítimo del formato.
+                    ' El sitio gemelo es PresetCategoryFilter.vb (misma ley, mismo motivo).
+                    nama(f) = If(raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4,
+                                 BitConverter.ToUInt32(raw.NamaRaw, f * 4),
+                                 SseNam9MorphMap.NamaUnset)
                 Next
+                ' Slot 18 del NAM9 (VampireMorph): fuera de los 18 sliders editables, pero parte del record. Se
+                ' captura para que ToJslot no lo reemplace por su constante. Ver LooksmenuPreset.SseVampireMorph.
+                preset.SseVampireMorph = VampireMorphFromNam9(raw)
                 preset.SseNam9 = nam9
                 preset.SseNama = nama
                 preset.HasSseMorphs = (raw.Nam9Raw IsNot Nothing OrElse raw.NamaRaw IsNot Nothing)
@@ -10846,8 +10969,22 @@ Public Class MainForm
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
 
             Try
-                Dim json = LooksmenuLoader.SerializePreset(preset, _pluginManager)
+                ' Los campos que no se pudieron nombrar quedan FUERA del preset a propósito (preservar es más
+                ' seguro que borrar), pero eso tiene que decirse: si no, el usuario guarda creyendo que el
+                ' outfit/piel viajó. El caso típico es un record recién creado que todavía no se guardó al ESP.
+                Dim omitted As List(Of String) = Nothing
+                Dim json = LooksmenuLoader.SerializePreset(preset, _pluginManager, omitted)
                 IO.File.WriteAllText(dlg.FileName, json, New System.Text.UTF8Encoding(False))
+                If omitted IsNot Nothing AndAlso omitted.Count > 0 Then
+                    MessageBox.Show(
+                        "The preset was saved, but these fields could NOT be included because the record they " &
+                        "point at does not belong to any loaded plugin yet:" & vbCrLf & vbCrLf &
+                        "  • " & String.Join(vbCrLf & "  • ", omitted) & vbCrLf & vbCrLf &
+                        "Save the plugin (Save ESP) first and then re-save the preset if you want them in it. " &
+                        "They were left out rather than written as ""none"", so loading this preset will keep " &
+                        "whatever the target NPC already has instead of clearing it.",
+                        "Save LooksMenu", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                End If
             Catch ex As Exception
                 MessageBox.Show($"Failed to write preset: {ex.Message}", "Save LooksMenu",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
@@ -11021,7 +11158,23 @@ Public Class MainForm
             target = dlg.Result
             execResult = dlg.ExecutionResult
         End Using
-        If target Is Nothing OrElse execResult Is Nothing OrElse Not execResult.Success Then Return
+        If target Is Nothing OrElse execResult Is Nothing Then Return
+        ' ⛔⛔ "EL ESP SE ESCRIBIÓ" NO ES LO MISMO QUE "EL GUARDADO SALIÓ BIEN", y pegarlos duplicaba records.
+        ' El ESP es el punto de no retorno, pero DESPUÉS van el sidecar, los .ini de BodyGen y InstallPex (que
+        ' lanza a propósito). Con `Not execResult.Success Then Return` cualquier excepción de esas fases se
+        ' llevaba puesto el readback y, con él, PromoteSavedDrafts. Al reintentar, el OTFT/ARMO ya escrito se
+        ' preserva con su FormID REAL mientras el draft en memoria sigue en 0xFF…, y `alreadyEmitted`
+        ' (NpcOverrideSaver.vb:623) sólo contiene FormID reales ⇒ se emite OTRA VEZ como record nuevo, con `_2`
+        ' pegado al EditorID y sin un aviso. Repetible por cada reintento, y viaja al plugin que se distribuye.
+        ' Disparadores reales: Data\Scripts de sólo lectura, carpeta virtual del mod manager, juego abierto.
+        ' Con `WriterResult` presente el archivo YA está en disco, así que el estado en memoria tiene que
+        ' alinearse con él igual; la falla de la fase posterior se reporta aparte, no se esconde.
+        Dim espWasWritten = execResult.WriterResult IsNot Nothing
+        If Not execResult.Success AndAlso Not espWasWritten Then Return
+        ' Falla PARCIAL (el ESP salió, una fase posterior no): el diálogo ya se lo dijo al usuario con el
+        ' detalle. El box de "Saved N NPCs" del final se suprime — dos diálogos seguidos, el segundo diciendo
+        ' que salió todo bien, es peor que no decir nada.
+        Dim savePartiallyFailed = Not execResult.Success
 
         ' Drafts written this save (OTFT outfits + LVLI leveled lists) are PROMOTED to real records inside
         ' ApplyPostSaveReadback: once the saved plugin is re-mounted, every reference still pointing at a
@@ -11057,7 +11210,7 @@ Public Class MainForm
         ' in load order), strip the now-persisted ESP fields from each overlay (keeping non-ESP
         ' BodyMorphs/Skin), clear the dirty marks, regroup in the tree, and re-render the loaded NPC.
         Await ApplyPostSaveReadback(execResult.WrittenNpcFormIDs, target.TargetPath, execResult.DraftFormIdMap,
-                                    sidecarWritten:=target.WriteBssliders)
+                                    sidecarWritten:=execResult.SidecarWritten)
 
         ' Part 3 — delete the removed NPCs' CharGen bake LOOSE files (NIF + _d/_msn/_s DDS, incl. debug _2 variants).
         ' Safe (disk-only). The BA2-packed bakes are left as a TODO (see DeleteFaceGenLooseFiles remarks).
@@ -11119,8 +11272,13 @@ Public Class MainForm
         ' a bare "Save ESP/ESM" over a body that quietly reports missing textures.
         Dim boxTitle = If(execResult.VerifierIcon = MessageBoxIcon.Warning,
                           "Save ESP/ESM — completed with warnings", "Save ESP/ESM")
-        MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
-                        boxTitle, MessageBoxButtons.OK, execResult.VerifierIcon)
+        ' ⛔ En una falla PARCIAL el diálogo de Save ya mostró el detalle de qué fase reventó. Sacar acá un
+        ' "Saved N NPCs" liso sería contradecirlo con el último diálogo que ve el usuario, que es el que se
+        ' recuerda.
+        If Not savePartiallyFailed Then
+            MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
+                            boxTitle, MessageBoxButtons.OK, execResult.VerifierIcon)
+        End If
     End Function
 
     ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>, under
@@ -11850,7 +12008,7 @@ Public Class MainForm
     Private Function ScanForAutoGeneratedPlugins(targetNpcFormID As UInteger) As List(Of SaveEsp_Form.ExistingPlugin)
         If _autoGenPluginsCache Is Nothing Then
             ' Fallback: cache wasn't seeded by Preflight (defensive — shouldn't normally happen).
-            _autoGenPluginsCache = SaveEsp_Form.ScanAutoGeneratedPlugins(_dataPath)
+            _autoGenPluginsCache = SaveEsp_Form.ScanAutoGeneratedPlugins(_dataPath, _pluginManager)
         End If
 
         ' Refresh the per-target-NPC flag without re-loading anything from disk. The cached
@@ -11862,6 +12020,14 @@ Public Class MainForm
         Return _autoGenPluginsCache
     End Function
 
+    ''' <summary>Slot 18 del NAM9 (VampireMorph) de un record, o Nothing si el record no lo trae.
+    ''' UNA sola lectura para las DOS ramas de BuildPresetFromState: tenerla en una sola era el defecto —
+    ''' el arreglo quedaba inerte justo en el camino con overlay, que es el normal.</summary>
+    Private Shared Function VampireMorphFromNam9(raw As NPC_Data) As Single?
+        Return SseNam9MorphMap.VampireMorphFromNam9Raw(If(raw Is Nothing, Nothing, raw.Nam9Raw))
+    End Function
+
+
     ''' <summary>Add a newly-written plugin to the cache without re-scanning disk. Called by
     ''' the Save handler after a successful write of a NEW plugin.</summary>
     Private Sub RegisterSavedPluginInCache(savedPath As String, savedNpcFormIDs As IEnumerable(Of UInteger), isEsm As Boolean, isLight As Boolean)
@@ -11872,6 +12038,9 @@ Public Class MainForm
                 Exit Sub
             End If
         Next
+        ' `ids` YA son todos los NPC_ del archivo: SavedFormIDs = preservados + escritos, y el saver los
+        ' resuelve a global uno por uno, asi que no hay filtrado que pueda achicar la cuenta. Coincide con el
+        ' `npcTotal` del barrido de Data. Ver ExistingPlugin.NpcCount.
         Dim ids As New HashSet(Of UInteger)(savedNpcFormIDs)
         _autoGenPluginsCache.Add(New SaveEsp_Form.ExistingPlugin With {
             .FullPath = savedPath,
@@ -11906,6 +12075,8 @@ Public Class MainForm
         For Each cached In _autoGenPluginsCache
             If String.Equals(cached.FullPath, savedPath, StringComparison.OrdinalIgnoreCase) Then
                 cached.NpcFormIDs = New HashSet(Of UInteger)(savedNpcFormIDs)
+                ' Idem: NpcFormIDs post-save son todos los del archivo (preservados + escritos), no un
+                ' subconjunto resuelto. Ver ExistingPlugin.NpcCount.
                 cached.NpcCount = cached.NpcFormIDs.Count
                 cached.IsEsm = isEsm
                 cached.IsLight = isLight

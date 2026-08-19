@@ -389,7 +389,7 @@ Public Module SseMorphReverseEngineer
         res.Nam9 = nam9
 
         ' "Desde": el estado EFECTIVO actual — overlay si tomó posesión, si no el record crudo. Misma
-        ' regla que LoadSseMorphValues (EditFace_Form.vb:1267) para que el diálogo y el tab coincidan.
+        ' regla que LoadSseMorphValues (EditFace_Form.vb) para que el diálogo y el tab coincidan.
         Dim before(SseNam9MorphMap.Nam9SliderCount - 1) As Single
         Dim curEffective = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets)
         Dim beforeRaw = If(curEffective IsNot Nothing, curEffective.Nam9Raw, Nothing)
