@@ -82,6 +82,7 @@ Public Class Preflight_Form
     Public Property LoadedSidecars As Dictionary(Of String, BssliderSidecar.SidecarFile)
 
     Private Sub Preflight_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+        WireOrderTooltips()
         ' Seed the game selector from the persisted config, then let an already-configured exe filename
         ' auto-correct it (Fallout4.exe → FO4, SkyrimSE.exe → Skyrim). This keeps returning FO4 users on
         ' FO4 even though the shared library's Game default is Skyrim. SelectedIndexChanged persists the
@@ -302,9 +303,30 @@ Public Class Preflight_Form
         If savedSelection.Count > 0 Then
             _checkedPlugins.Clear()
             For Each pluginName In savedSelection : _checkedPlugins.Add(pluginName) : Next
+
+            ' ⛔ La seleccion guardada NO es un set: es el Plugins.txt virtual del usuario, CON su orden, que
+            ' pudo haber acomodado a mano con ▲/▼. Restaurar solo los tildes y dejar las filas donde las puso
+            ' el barrido (activos por load order + inactivos ALFABETICOS) perdia ese orden en silencio y con el
+            ' la precedencia de overrides y de BA2. Las filas guardadas van primero, en su orden; el resto
+            ' detras, como estaban.
+            Dim byName = _allRows.ToDictionary(Function(r) r.Name, Function(r) r, StringComparer.OrdinalIgnoreCase)
+            Dim reordered As New List(Of PluginRow)()
+            Dim placed As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            For Each pluginName In savedSelection
+                Dim row As PluginRow = Nothing
+                If byName.TryGetValue(pluginName, row) AndAlso placed.Add(pluginName) Then reordered.Add(row)
+            Next
+            For Each row In _allRows
+                If Not placed.Contains(row.Name) Then reordered.Add(row)
+            Next
+            _allRows.Clear()
+            _allRows.AddRange(reordered)
         End If
         CheckBoxPersistSelection.Checked = (savedSelection.Count > 0)
 
+        ' ⛔ El plan se resuelve ANTES del primer render: el orden efectivo no depende del barrido de
+        ' masters, así que la columna "Load #" tiene que salir poblada de entrada.
+        RebuildPlan()
         ApplyFilter()
 
         ' Masters are needed before we can validate dependencies and enable OK. Read them off the
@@ -322,7 +344,11 @@ Public Class Preflight_Form
         Dim names = _allRows.Select(Function(r) r.Name).ToList()
         If names.Count = 0 Then
             _mastersReady = True
+            RebuildPlan()
             RecomputeValidation()
+            ' ⛔ Sin este ApplyFilter la grilla nunca reflejaba el resultado del barrido: los colores
+            ' de conflicto y la columna "Load #" quedaban como estaban al abrir.
+            ApplyFilter()
             Return
         End If
 
@@ -339,7 +365,11 @@ Public Class Preflight_Form
             _mastersByName.Clear()
             For Each kvp In result : _mastersByName(kvp.Key) = kvp.Value : Next
             _mastersReady = True
+            RebuildPlan()
             RecomputeValidation()
+            ' ⛔ Sin este ApplyFilter la grilla nunca reflejaba el resultado del barrido: los colores
+            ' de conflicto y la columna "Load #" quedaban como estaban al abrir.
+            ApplyFilter()
         Catch ex As Exception
             If token <> _mastersSweepToken OrElse IsDisposed Then Return
             Logger.LogLazy(Function() $"[PREFLIGHT] Masters sweep failed: {ex.Message}")
@@ -419,13 +449,17 @@ Public Class Preflight_Form
             Next
         Next
 
+
         For Each it As ListViewItem In ListViewPlugins.Items
             ApplyRowColor(it)
         Next
 
-        ' OK requires (a) at least one plugin checked (empty selection has nothing to load) AND
-        ' (b) no checked plugin with unsatisfied masters.
-        ButtonOk.Enabled = (_checkedPlugins.Count > 0 AndAlso _brokenPlugins.Count = 0)
+        ' OK requires (a) at least one plugin checked (empty selection has nothing to load), (b) no checked
+        ' plugin with unsatisfied masters, and (c) ningun conflicto IRREPARABLE de grupo. Los conflictos de
+        ' orden REPARABLES no bloquean: LoadOrderPlanner los deja en cero salvo header corrupto, y si quedara
+        ' el aviso lo dice. Bloquear por algo que la app puede arreglar sola seria un callejon sin salida.
+        Dim groupConflictCount = If(_plan Is Nothing, 0, _plan.GroupConflicts.Count)
+        ButtonOk.Enabled = (_checkedPlugins.Count > 0 AndAlso _brokenPlugins.Count = 0 AndAlso groupConflictCount = 0)
         ' "Check Masters" affordance: shown whenever a checked plugin is broken. Clicking ticks the
         ' fixable masters (present on disk) transitively and reports any that are missing on disk.
         ButtonCheckMasters.Visible = (_brokenPlugins.Count > 0)
@@ -500,7 +534,12 @@ Public Class Preflight_Form
     ''' unsatisfied master, gray if inactive, default otherwise. Row.IsActive is carried in
     ''' it.Tag by ApplyFilter so this stays a pure lookup.</summary>
     Private Sub ApplyRowColor(it As ListViewItem)
-        If _brokenPlugins.Contains(it.Text) Then
+        If _plan IsNot Nothing AndAlso (_plan.GroupConflicts.Contains(it.Text, StringComparer.OrdinalIgnoreCase) OrElse
+                                        _plan.UnresolvedOrderConflicts.Contains(it.Text, StringComparer.OrdinalIgnoreCase)) Then
+            ' Naranja = carga en un orden que el motor no acepta (antes que un master suyo). Distinto del rojo,
+            ' que es "le falta un master": uno se arregla moviendo, el otro tildando.
+            it.ForeColor = Color.DarkOrange
+        ElseIf _brokenPlugins.Contains(it.Text) Then
             it.ForeColor = Color.Red
         ElseIf TypeOf it.Tag Is Boolean AndAlso Not CBool(it.Tag) Then
             it.ForeColor = SystemColors.GrayText
@@ -513,16 +552,23 @@ Public Class Preflight_Form
     ''' insensitive substring on filename). Restores check state from _checkedPlugins so a
     ''' filter pass doesn't wipe what the user has ticked. Suspends ItemChecked event handling
     ''' during the bulk set so the user-driven handler doesn't fire on every programmatic check.</summary>
+
     Private Sub ApplyFilter()
         Dim filter As String = If(TextBoxFilter.Text, "").Trim()
         _suspendItemChecked = True
         ListViewPlugins.BeginUpdate()
         Try
             ListViewPlugins.Items.Clear()
+            ' Columna "#": el indice EFECTIVO del motor, no el de la grilla. Hace visible la particion, que si
+            ' no seria sorpresiva (mover un .esp arriba de un .esm no cambia nada, y con el numero a la vista
+            ' se entiende por que). "-" = no tildado, o sea que no entra al load order.
+            Dim eff = If(_plan?.EffectiveIndex, New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase))
             For Each row In _allRows
                 If filter.Length > 0 AndAlso row.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+                Dim slot As Integer
                 Dim it As New ListViewItem(row.Name)
                 it.SubItems.Add(If(row.IsActive, "Active", "Inactive"))
+                it.SubItems.Add(If(eff.TryGetValue(row.Name, slot), slot.ToString(), "-"))
                 it.Tag = row.IsActive
                 it.Checked = _checkedPlugins.Contains(row.Name)
                 ApplyRowColor(it)
@@ -536,6 +582,241 @@ Public Class Preflight_Form
         UpdateStatusLabel()
     End Sub
 
+#Region "Orden de carga — la grilla ES un Plugins.txt virtual"
+
+    ' ⛔ NINGUNA ley vive acá. La grilla del Preflight es un Plugins.txt virtual: las filas tildadas SON el load
+    ' order y su posición ES el miPluginsTxtIndex. Resolver eso al orden que va a usar el motor (partición por
+    ' grupo master) y detectar los conflictos de masters es trabajo de `LoadOrderPlanner`, en la librería, donde
+    ' entra todo por parámetro y el probe puede llamarlo. Este region es UI: mover filas, pintar y avisar.
+
+    ''' <summary>Último plan resuelto. Se recalcula en cada cambio de tilde o de orden; de acá salen la columna
+    ''' "Load #", los colores y el aviso, así que la UI nunca deriva nada por su cuenta.</summary>
+    Private _plan As LoadOrderPlanner.Plan = Nothing
+
+    ''' <summary>True desde que el usuario mueve una fila: a partir de ahí el orden de la grilla es SUYO y se
+    ''' persiste tal cual, en vez de re-derivarse del load order del juego en el próximo Preflight.</summary>
+    ''' <summary>Índice de la columna "Load #" en los SubItems (0 = Plugin, 1 = State, 2 = Load #).
+    ''' Nombrada para que reordenar columnas en el Designer no deje un 2 suelto en el código.</summary>
+    Private Const COL_ORDER As Integer = 2
+
+    ''' <summary>True cuando el último <see cref="RebuildPlan"/> MOVIÓ filas: la grilla hay que
+    ''' reconstruirla, no sólo repintarla. Ver <see cref="RefreshPlanColumnsInPlace"/>.</summary>
+    Private _planReorderedRows As Boolean = False
+
+    Private _orderIsUserDefined As Boolean = False
+
+    ''' <summary>Índice de una fila por nombre en <c>_allRows</c>, o -1. Hace falta porque <c>PluginRow</c> es una
+    ''' Structure (:58): no se puede comparar por referencia ni usar <c>Is Nothing</c>, y <c>List.IndexOf</c>
+    ''' compararía por VALOR con el <c>Equals</c> reflexivo de <c>ValueType</c>.</summary>
+    Private Function IndexOfRow(name As String) As Integer
+        For i = 0 To _allRows.Count - 1
+            If String.Equals(_allRows(i).Name, name, StringComparison.OrdinalIgnoreCase) Then Return i
+        Next
+        Return -1
+    End Function
+
+    ''' <summary>Resuelve el plan y APLICA el orden reparado a <c>_allRows</c>.
+    ''' <para>⛔ NO exige que el barrido de masters haya terminado. El ORDEN EFECTIVO no depende de los masters
+    ''' — sale del orden literal más la partición del motor — y sólo el diagnóstico de conflictos los necesita.
+    ''' Atarlo al barrido dejaba la columna "Load #" en "-" hasta que el usuario tocara algo: el bug que reportó
+    ''' con el diálogo recién abierto.</para>
+    ''' <para>Deja <see cref="_planReorderedRows"/> en True si movió filas, para que el caller sepa que hay que
+    ''' RECONSTRUIR la grilla y no sólo repintarla.</para></summary>
+    Private Sub RebuildPlan()
+        Dim masters = If(_mastersReady, _mastersByName,
+                         New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase))
+        _plan = LoadOrderPlanner.Resolve(_allRows.Select(Function(r) r.Name),
+                                         _checkedPlugins, masters, Config_App.Current.DataPath)
+
+        If _plan.RowsReordered > 0 Then
+            Dim byName = _allRows.ToDictionary(Function(r) r.Name, Function(r) r, StringComparer.OrdinalIgnoreCase)
+            Dim reordered As New List(Of PluginRow)()
+            For Each n In _plan.LiteralOrder
+                Dim row As PluginRow = Nothing
+                If byName.TryGetValue(n, row) Then reordered.Add(row)
+            Next
+            If reordered.Count = _allRows.Count Then
+                _allRows.Clear()
+                _allRows.AddRange(reordered)
+                _planReorderedRows = True
+            End If
+        End If
+    End Sub
+
+    ''' <summary>Refresca la columna "Load #" y los colores SIN reconstruir la lista.
+    ''' <para>⛔⛔ Existe por un CRASH REAL que metí: llamar a <see cref="ApplyFilter"/> (que hace
+    ''' <c>Items.Clear()</c>) desde adentro del handler <c>ItemChecked</c> desprende el propio
+    ''' <c>ListViewItem</c> que el ListView está procesando, y al pedirle su objeto de accesibilidad tira
+    ''' <c>InvalidOperationException: no se puede obtener el objeto accessibility cuando ListViewItem no está
+    ''' asociado a listView</c>. O sea: un click en un tilde volteaba la app.</para>
+    ''' <para>Regla que queda: <b>nunca reconstruir la grilla desde adentro de un evento del ListView</b>. Lo
+    ''' que se puede actualizar en el lugar, se actualiza en el lugar; lo que exige reconstruir se difiere con
+    ''' <c>BeginInvoke</c> para que corra cuando el evento ya terminó.</para></summary>
+    Private Sub RefreshPlanColumnsInPlace()
+        Dim eff = If(_plan?.EffectiveIndex, New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase))
+        ListViewPlugins.BeginUpdate()
+        Try
+            For Each it As ListViewItem In ListViewPlugins.Items
+                Dim slot As Integer
+                Dim texto = If(eff.TryGetValue(it.Text, slot), slot.ToString(), "-")
+                If it.SubItems.Count > COL_ORDER AndAlso it.SubItems(COL_ORDER).Text <> texto Then
+                    it.SubItems(COL_ORDER).Text = texto
+                End If
+                ApplyRowColor(it)
+            Next
+        Finally
+            ListViewPlugins.EndUpdate()
+        End Try
+    End Sub
+
+    ''' <summary>Tildar/destildar cambia el load order (la lista tildada ES el load order), así que puede crear
+    ''' un conflicto de masters igual que mover una fila. Repinta en el lugar y sólo difiere la reconstrucción
+    ''' si el planner movió filas. Ver <see cref="RefreshPlanColumnsInPlace"/> para por qué no se reconstruye
+    ''' acá mismo.</summary>
+    Private Sub RevalidateAfterCheckChange()
+        RebuildPlan()
+        RecomputeValidation()
+        RefreshPlanColumnsInPlace()
+        If _planReorderedRows Then
+            _planReorderedRows = False
+            BeginInvoke(Sub()
+                            If IsDisposed Then Return
+                            ApplyFilter()
+                        End Sub)
+        End If
+    End Sub
+
+    ''' <summary>Vuelve el orden de la grilla al que dicta el JUEGO: <c>PluginManager.ReadActiveLoadOrder</c>
+    ''' (Plugins.txt / loadorder.txt + la partición por grupo master del motor) para los activos, y el resto
+    ''' alfabético detrás — exactamente el mismo criterio con el que se arma el diálogo la primera vez.
+    ''' <para>⛔ Toca el ORDEN y nada más: no cambia qué está tildado. Son dos ejes independientes y mezclarlos
+    ''' haría que "ordenar" borre una selección curada a mano.</para>
+    ''' <para>Después corre el planner igual que cualquier otro cambio, así que si el orden del juego dejara a
+    ''' alguien cargando antes de un master suyo, los masters se suben y se avisa.</para></summary>
+    Private Sub ResetOrderToGameLoadOrder()
+        _activeOrder = PluginManager.ReadActiveLoadOrder()
+        Dim porNombre = _allRows.ToDictionary(Function(r) r.Name, Function(r) r, StringComparer.OrdinalIgnoreCase)
+        Dim puestos As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim nuevo As New List(Of PluginRow)()
+        For Each n In _activeOrder
+            Dim row As PluginRow = Nothing
+            If porNombre.TryGetValue(n, row) AndAlso puestos.Add(n) Then nuevo.Add(row)
+        Next
+        For Each row In _allRows.Where(Function(r) Not puestos.Contains(r.Name)).
+                                 OrderBy(Function(r) r.Name, StringComparer.OrdinalIgnoreCase)
+            nuevo.Add(row)
+        Next
+        If nuevo.Count <> _allRows.Count Then Return          ' invariante rota: no se toca nada
+        _allRows.Clear()
+        _allRows.AddRange(nuevo)
+        _orderIsUserDefined = False
+        _planReorderedRows = False
+        RebuildPlan()
+        RecomputeValidation()
+        ApplyFilter()
+    End Sub
+
+    ''' <summary>Los tres botones de orden son simbolos; sin tooltip no se entiende ninguno.</summary>
+    Private Sub WireOrderTooltips()
+        Dim tip As New ToolTip()
+        tip.SetToolTip(ButtonMoveUp, "Move up (Alt+Up)")
+        tip.SetToolTip(ButtonMoveDown, "Move down (Alt+Down)")
+        tip.SetToolTip(ButtonResetOrder, "Reset order to the game load order (Plugins.txt / loadorder.txt)")
+    End Sub
+
+    Private Sub ButtonResetOrder_Click(sender As Object, e As EventArgs) Handles ButtonResetOrder.Click
+        ResetOrderToGameLoadOrder()
+    End Sub
+
+    ''' <summary>Mueve las filas seleccionadas una posición arriba (<paramref name="delta"/> = -1) o abajo (+1)
+    ''' dentro de <c>_allRows</c>, que es el orden literal de este Plugins.txt virtual.
+    ''' <para>⛔ El movimiento es RELATIVO AL VECINO VISIBLE, no al índice crudo: con un filtro puesto, "subir"
+    ''' tiene que dejar la fila arriba de la que el usuario VE arriba, saltando las ocultas. Moviendo de a un
+    ''' índice crudo el botón parecería no hacer nada cuando la fila de al lado está filtrada.</para>
+    ''' <para>Después de mover se re-resuelve el plan, que puede ARRASTRAR MASTERS para que el resultado siga
+    ''' siendo cargable. La selección se conserva.</para></summary>
+    Private Sub MoveSelection(delta As Integer)
+        If ListViewPlugins.SelectedItems.Count = 0 Then Return
+
+        Dim selNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each it As ListViewItem In ListViewPlugins.SelectedItems
+            selNames.Add(it.Text)
+        Next
+
+        ' Índices en _allRows de lo que se ve ahora, en orden.
+        Dim filter As String = If(TextBoxFilter.Text, "").Trim()
+        Dim visible As New List(Of Integer)()
+        For i = 0 To _allRows.Count - 1
+            If filter.Length > 0 AndAlso _allRows(i).Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            visible.Add(i)
+        Next
+
+        ' Posiciones DENTRO de `visible` que están seleccionadas.
+        Dim selVis = Enumerable.Range(0, visible.Count).
+                                Where(Function(k) selNames.Contains(_allRows(visible(k)).Name)).ToList()
+        If selVis.Count = 0 Then Return
+
+        Dim anchorVis As Integer
+        If delta < 0 Then
+            anchorVis = selVis.First() - 1
+            If anchorVis < 0 Then Return                      ' ya está arriba de todo lo visible
+        Else
+            anchorVis = selVis.Last() + 1
+            If anchorVis > visible.Count - 1 Then Return      ' ya está abajo de todo lo visible
+        End If
+
+        ' Sacar el bloque conservando su orden interno y reinsertarlo en la posición del vecino visible.
+        Dim block = selVis.Select(Function(k) _allRows(visible(k))).ToList()
+        Dim anchorName = _allRows(visible(anchorVis)).Name
+        For Each idx In selVis.Select(Function(k) visible(k)).OrderByDescending(Function(i) i)
+            _allRows.RemoveAt(idx)
+        Next
+        Dim at = IndexOfRow(anchorName)
+        If at < 0 Then Return
+        If delta > 0 Then at += 1
+        _allRows.InsertRange(at, block)
+
+        _orderIsUserDefined = True
+        RebuildPlan()
+        RecomputeValidation()
+        ApplyFilter()
+
+        ' Devolver la selección y dejar la primera a la vista.
+        ListViewPlugins.SelectedItems.Clear()
+        For Each it As ListViewItem In ListViewPlugins.Items
+            If selNames.Contains(it.Text) Then it.Selected = True
+        Next
+        If ListViewPlugins.SelectedItems.Count > 0 Then
+            ListViewPlugins.SelectedItems(0).EnsureVisible()
+        End If
+        ListViewPlugins.Focus()
+    End Sub
+
+    Private Sub ButtonMoveUp_Click(sender As Object, e As EventArgs) Handles ButtonMoveUp.Click
+        MoveSelection(-1)
+    End Sub
+
+    Private Sub ButtonMoveDown_Click(sender As Object, e As EventArgs) Handles ButtonMoveDown.Click
+        MoveSelection(1)
+    End Sub
+
+    ''' <summary>Alt+↑ / Alt+↓ hacen lo mismo que los botones. Alt y no ↑/↓ pelados porque ésas son la navegación
+    ''' normal del ListView y pisarlas rompería el teclado de la grilla.</summary>
+    Private Sub ListViewPlugins_KeyDown(sender As Object, e As KeyEventArgs) Handles ListViewPlugins.KeyDown
+        If Not e.Alt Then Return
+        If e.KeyCode = Keys.Up Then
+            MoveSelection(-1)
+            e.Handled = True
+            e.SuppressKeyPress = True
+        ElseIf e.KeyCode = Keys.Down Then
+            MoveSelection(1)
+            e.Handled = True
+            e.SuppressKeyPress = True
+        End If
+    End Sub
+
+#End Region
+
     ''' <summary>Refresh the status line: counts of shown/total/active/checked plus a warning
     ''' suffix when some checked plugins have missing masters. Single source for the label so the
     ''' filter, check toggles and bulk buttons all read consistently.</summary>
@@ -544,6 +825,21 @@ Public Class Preflight_Form
         Dim filter As String = If(TextBoxFilter.Text, "").Trim()
         Dim brokenSuffix As String = If(_brokenPlugins.Count > 0,
                                         $" — ⚠ {_brokenPlugins.Count} with missing master(s)", "")
+        Dim gc = If(_plan Is Nothing, New List(Of String)(), _plan.GroupConflicts)
+        Dim uc = If(_plan Is Nothing, New List(Of String)(), _plan.UnresolvedOrderConflicts)
+        Dim mm = If(_plan Is Nothing, 0, _plan.RowsReordered)
+        If gc.Count > 0 Then
+            ' Irreparable moviendo: el motor pone todo el grupo master adelante, asi que un .esm/.esl que
+            ' dependa de un .esp carga SIEMPRE antes que el. Se nombra el plugin para que se pueda accionar.
+            brokenSuffix &= $" — ⛔ {gc.Count} loads before a master that is NOT in the master group " &
+                            $"({String.Join(", ", gc.Take(3))}{If(gc.Count > 3, ", ...", "")}) " &
+                            "— reordering cannot fix this; untick it or untick the dependent."
+        End If
+        If uc.Count > 0 Then
+            brokenSuffix &= $" — ⚠ {uc.Count} still load before a master (corrupt header?)."
+        ElseIf mm > 0 Then
+            brokenSuffix &= $" — {mm} row(s) reordered so every master loads before what depends on it."
+        End If
         If filter.Length > 0 Then
             LabelStatus.Text = $"{ListViewPlugins.Items.Count} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked{brokenSuffix}."
         Else
@@ -563,7 +859,8 @@ Public Class Preflight_Form
             _checkedPlugins.Remove(e.Item.Text)
         End If
         ' One in-memory validation pass: repaints affected rows, gates OK, refreshes status counts.
-        RecomputeValidation()
+        ' Tildar cambia el load order, asi que puede romper el orden de masters: se repara y se re-renderiza.
+        RevalidateAfterCheckChange()
     End Sub
 
     Private Sub ButtonMarkAll_Click(sender As Object, e As EventArgs) Handles ButtonMarkAll.Click
@@ -585,9 +882,8 @@ Public Class Preflight_Form
         For Each row In _allRows
             If row.IsActive Then _checkedPlugins.Add(row.Name)
         Next
-        ApplyFilter()
-        ' Single validation pass after the bulk selection change (not per-row).
-        RecomputeValidation()
+        ' Single validation pass after the bulk selection change (not per-row). Repara el orden y renderiza.
+        RevalidateAfterCheckChange()
     End Sub
 
     ''' <summary>Apply <paramref name="checkedState"/> to every row currently visible in the
@@ -611,7 +907,7 @@ Public Class Preflight_Form
         End Try
 
         ' Single validation pass after the bulk check change (the per-item handler was suspended).
-        RecomputeValidation()
+        RevalidateAfterCheckChange()
     End Sub
 
     Private Async Sub ButtonOk_Click(sender As Object, e As EventArgs) Handles ButtonOk.Click
@@ -670,6 +966,23 @@ Public Class Preflight_Form
             If _checkedPlugins.Contains(row.Name) Then SelectedPlugins.Add(row.Name)
         Next
 
+        ' ⛔ Lo que se PERSISTE es el orden LITERAL de la grilla — el Plugins.txt virtual tal como el usuario lo
+        ' dejo — y no el particionado de abajo. Guardar el particionado haria que al reabrir se viera un orden
+        ' que el usuario nunca tipeo, y ademas la particion se re-aplica sola en cada apertura, asi que
+        ' guardarla es redundante. Es la misma separacion que hace el motor: Plugins.txt guarda el literal,
+        ' el orden efectivo se deriva.
+        Dim literalSelection = New List(Of String)(SelectedPlugins)
+
+        ' ⛔ Los INACTIVOS que el usuario tilda entran a _allRows appendeados al final y en orden ALFABÉTICO
+        ' (:282-287): nunca pasaron por Plugins.txt, así que no traen posición. Sin esta línea la lista quedaba
+        ' con DOS leyes — la mitad de arriba (los activos, que salen de ReadActiveLoadOrder) ya particionada por
+        ' grupo master, y la de abajo no. Un `.esm` tildado caía último y le ganaba TODO override, y su .ba2 todo
+        ' conflicto de textura (BuildArchivePriority asigna SourceOrder por posición en ESTA lista).
+        ' El motor particiona (wbLoadOrder.pas:202-216) y el Preflight existe para mostrar cómo va a quedar, así
+        ' que la selección entera se ordena con la MISMA función que el lector, no con una copia.
+        ' forcedCount = 0: acá no hay tramo forzado — los masters implícitos y el CC no son filas de esta grilla.
+        PluginManager.StablePartitionMasterGroup(SelectedPlugins, 0, Config_App.Current.DataPath)
+
         Config_App.SaveConfig()
 
         ' Remember this selection for the next preflight of THIS game (npc_config.json, per-game slot),
@@ -681,7 +994,7 @@ Public Class Preflight_Form
         ' still shows the same tick set so the user can untick the culprit instead of re-curating from
         ' the actives default.
         NPC_Config.SetPreflightSelection(Config_App.Current.Game,
-                                         If(CheckBoxPersistSelection.Checked, SelectedPlugins, Nothing))
+                                         If(CheckBoxPersistSelection.Checked, literalSelection, Nothing))
         NPC_Config.SaveConfig()
 
         ' Finalize plugin text encoding for the game the user settled on. Program.Main ran this once at

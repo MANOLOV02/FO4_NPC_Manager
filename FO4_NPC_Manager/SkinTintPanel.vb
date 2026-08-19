@@ -2,7 +2,7 @@
 Imports FO4_Base_Library
 
 ''' <summary>Lógica del tab "Skin Tint Adjustment" del editor de cuerpo (los controles viven en
-''' EditBody_Form.Designer.vb): ajusta el SKIN TONE del cuerpo (QNAM) con cuatro offsets — R/G/B y una
+''' SkinTintPanel.Designer.vb): ajusta el SKIN TONE del cuerpo (QNAM) con cuatro offsets — R/G/B y una
 ''' intensidad — para el caso en que el cuerpo y la cara vienen de mods distintos y el tono no matchea con
 ''' las reglas del motor.
 '''
@@ -24,7 +24,133 @@ Imports FO4_Base_Library
 ''' cada juego, no este formulario: en FO4 la intensidad ES el alpha del QNAM (la opacidad del soft-light del
 ''' cuerpo) y en SSE —donde el QNAM no tiene alpha— se PLIEGA dentro del color con el seed y la convención que
 ''' resuelve la config.</para></summary>
-Partial Public Class EditBody_Form
+Public Class SkinTintPanel
+
+    Public Sub New()
+        ' Sin esta llamada el control se construye VACIO y el tab sale en blanco -- compilando VERDE, porque
+        ' nada en el arbol exige que un UserControl tenga ctor. Es la misma clase de agujero que el
+        ' ToolTip(components) sin asignar de EditFace_Form (ver 20-app-ui-migracion-designer-npc-manager.md).
+        InitializeComponent()
+    End Sub
+
+    ' =====================================================================
+    ' Puente al host. Este control era un PARCIAL de EditBody_Form y leia sus campos directo; ahora es una
+    ' clase aparte, asi que los nueve miembros que necesita entran por aca. Se mantienen los MISMOS nombres
+    ' que tenian como campos del formulario para que el cuerpo del tab no cambie de forma.
+    ' El host se ata en Attach() y el evento del preview en OnPreviewReady(): el PreviewControl no existe al
+    ' construirse el formulario -se crea en su Shown-, y por eso el ColorPicked no puede engancharse antes.
+    ' =====================================================================
+    Private _host As EditBody_Form = Nothing
+
+    Private ReadOnly Property HostPreset As LooksmenuLoader.LooksmenuPreset
+        Get
+            If _host Is Nothing Then Return Nothing
+            Return _host.SkinTintPreset
+        End Get
+    End Property
+
+    Private ReadOnly Property HostPriorPreset As LooksmenuLoader.LooksmenuPreset
+        Get
+            If _host Is Nothing Then Return Nothing
+            Return _host.SkinTintPriorPreset
+        End Get
+    End Property
+
+    Private ReadOnly Property HostEditor As NpcRenderHost
+        Get
+            If _host Is Nothing Then Return Nothing
+            Return _host.SkinTintEditorHost
+        End Get
+    End Property
+
+    Private ReadOnly Property HostMain As MainForm
+        Get
+            If _host Is Nothing Then Return Nothing
+            Return _host.SkinTintMainForm
+        End Get
+    End Property
+
+    Private ReadOnly Property HostPreview As PreviewControl
+        Get
+            If _host Is Nothing Then Return Nothing
+            Return _host.SkinTintPreview
+        End Get
+    End Property
+
+    Private ReadOnly Property HostNpcFormID As UInteger
+        Get
+            If _host Is Nothing Then Return 0UI
+            Return _host.SkinTintNpcFormID
+        End Get
+    End Property
+
+    Private ReadOnly Property HostIsSse As Boolean
+        Get
+            If _host Is Nothing Then Return False
+            Return _host.SkinTintIsSse
+        End Get
+    End Property
+
+    ''' <summary>Se ESCRIBE (el sembrado de sliders lo levanta y lo restaura), asi que va con setter. Sigue
+    ''' siendo el flag del formulario: la supresion tiene que valer para todos sus tabs, no solo para este.</summary>
+    Private Property HostSuspendEvents As Boolean
+        Get
+            If _host Is Nothing Then Return False
+            Return _host.SkinTintSuspendEvents
+        End Get
+        Set(value As Boolean)
+            If _host IsNot Nothing Then _host.SkinTintSuspendEvents = value
+        End Set
+    End Property
+
+    ''' <summary>Ata el control a su formulario y siembra el tab. Lo llama el .ctor del host, antes de que
+    ''' exista el preview.</summary>
+    Friend Sub Attach(host As EditBody_Form)
+        _host = host
+        InitSkinTintTab()
+    End Sub
+
+    ''' <summary>El PreviewControl ya existe (el host lo crea en su Shown): recien ahora se puede enganchar el
+    ''' ColorPicked, que es lo que alimenta los dos pickers. Idempotente -RemoveHandler antes de AddHandler-
+    ''' porque el host puede rehacer el preview.</summary>
+    Friend Sub OnPreviewReady()
+        Dim ctl = HostPreview
+        If ctl Is Nothing Then Return
+        RemoveHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
+        AddHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
+        RefreshSkinTintAvailability()
+    End Sub
+
+    ''' <summary>Reenvio del SelectedIndexChanged de TabsBody: el control ya no puede escuchar el TabControl
+    ''' del formulario. <paramref name="mine"/> es True cuando el tab que quedo activo es el de este control.</summary>
+    Friend Sub OnHostTabChanged(mine As Boolean)
+        ' ⛔ Este reenvio llega DENTRO del InitializeComponent del host: agregarle las TabPage al TabControl ya
+        ' dispara su SelectedIndexChanged, y ahi el panel todavia no esta atado (Attach corre despues, en el
+        ' .ctor). Mismo caso que el ComboBoxSseOverlayZone de EditBody_Form.vb:2105. Sin host no hay nada que
+        ' refrescar ni picker que desarmar, asi que se sale.
+        If _host Is Nothing Then Return
+        ' Salir del tab desarma el picker SIEMPRE (el modo no puede sobrevivir a que el usuario se vaya).
+        If Not mine Then
+            DisarmSkinTintPicker()
+        Else
+            RefreshSkinTintAvailability()
+        End If
+    End Sub
+
+    ''' <summary>Reenvio del FormClosing del host. No se usa el Dispose del propio control: el orden en que
+    ''' Winforms destruye los hijos no esta garantizado y el picker tiene que desarmarse mientras el
+    ''' PreviewControl todavia esta vivo.</summary>
+    Friend Sub OnHostClosing()
+        If _host Is Nothing Then Return
+        ' Ultimo cinturon: el control se destruye enseguida, pero el modo no puede quedar prendido si algun
+        ' dia el preview se reusara. Idempotente y a prueba de disposed.
+        DisarmSkinTintPicker()
+        Dim ctl = HostPreview
+        If ctl IsNot Nothing Then RemoveHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
+        ' Las dos muestras son Bitmaps propios de este control.
+        SetSkinTintPatchImage(_stSourcePatchImage, Nothing, Nothing)
+        SetSkinTintPatchImage(_stTargetPatchImage, Nothing, Nothing)
+    End Sub
 
     ' ===== Presupuesto de la búsqueda. Ninguna es un límite del dato: son el techo del lazo. =====
     ''' <summary>Lado de la ventana que se promedia al muestrear. 1 píxel solo queda a merced de un brillo
@@ -147,19 +273,19 @@ Partial Public Class EditBody_Form
     ''' se puede re-medir si el encuadre sigue siendo el de su pick (es una POSICION de pantalla); si la camara
     ''' se movio se conserva el color latcheado y se avisa.</summary>
     Private Sub OnSkinTintSampleSizeChanged(sender As Object, e As EventArgs) Handles SliderSkinTintSampleSize.ValueChanged
-        If _suspendEvents OrElse _stBusy Then Return
+        If HostSuspendEvents OrElse _stBusy Then Return
         Dim snapped = SnapSkinTintSampleSize(SliderSkinTintSampleSize.Value)
         If Math.Abs(SliderSkinTintSampleSize.Value - snapped) > 0.001R Then
-            Dim prev = _suspendEvents
-            _suspendEvents = True
+            Dim prev = HostSuspendEvents
+            HostSuspendEvents = True
             Try
                 SliderSkinTintSampleSize.Value = snapped
             Finally
-                _suspendEvents = prev
+                HostSuspendEvents = prev
             End Try
         End If
 
-        Dim ctl = EditPreviewControl
+        Dim ctl = HostPreview
         If ctl Is Nothing OrElse ctl.IsDisposed Then Return
 
         Dim staleSource As Boolean = False
@@ -196,7 +322,7 @@ Partial Public Class EditBody_Form
     End Function
 
     Private Sub InitSkinTintTab()
-        If _isSSE Then
+        If HostIsSse Then
             LabelSkinTintIntensityMeaning.Text = "Intensity is folded into the colour (Skyrim's QNAM has no alpha): it moves the skin-tone layer's interpolation."
         End If
         SyncSkinTintSlidersFromOverlay()
@@ -208,29 +334,29 @@ Partial Public Class EditBody_Form
 
     ''' <summary>El offset VIVO del overlay, creándolo si hace falta. Nothing sólo si no hay preset.</summary>
     Private Function EnsureSkinTintOffset() As SkinToneQnamOffset
-        Dim p = Preset
+        Dim p = HostPreset
         If p Is Nothing Then Return Nothing
         If p.SkinToneOffset Is Nothing Then p.SkinToneOffset = New SkinToneQnamOffset()
         Return p.SkinToneOffset
     End Function
 
     Private Sub SyncSkinTintSlidersFromOverlay()
-        Dim p = Preset
+        Dim p = HostPreset
         Dim off As SkinToneQnamOffset = Nothing
         If p IsNot Nothing Then off = p.SkinToneOffset
         Dim r As Double = 0.0R, g As Double = 0.0R, b As Double = 0.0R, i As Double = 0.0R
         If off IsNot Nothing Then
             r = off.RUi : g = off.GUi : b = off.BUi : i = off.IntensityUi
         End If
-        Dim prev = _suspendEvents
-        _suspendEvents = True
+        Dim prev = HostSuspendEvents
+        HostSuspendEvents = True
         Try
             SliderSkinTintR.Value = Math.Round(r)
             SliderSkinTintG.Value = Math.Round(g)
             SliderSkinTintB.Value = Math.Round(b)
             SliderSkinTintIntensity.Value = Math.Round(i)
         Finally
-            _suspendEvents = prev
+            HostSuspendEvents = prev
         End Try
     End Sub
 
@@ -247,11 +373,11 @@ Partial Public Class EditBody_Form
     ''' cuerpo y se reescriben sus uniforms — no se recompone la cara ni se toca una textura, porque el ajuste
     ''' no entra por ahí. Devuelve False si el host todavía no tiene estado (preview sin render).</summary>
     Private Function ApplySkinTintOffsetLive(off As SkinToneQnamOffset, deferredRepaint As Boolean) As Boolean
-        Dim p = Preset
-        If p Is Nothing OrElse _editorHost Is Nothing OrElse _mainForm Is Nothing Then Return False
+        Dim p = HostPreset
+        If p Is Nothing OrElse HostEditor Is Nothing OrElse HostMain Is Nothing Then Return False
         p.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(off)
-        Dim ok As Boolean = _mainForm.RefreshBodySkinToneLive(p.SkinToneOffset, _editorHost)
-        Dim ctl = _editorHost.PreviewCtl
+        Dim ok As Boolean = HostMain.RefreshBodySkinToneLive(p.SkinToneOffset, HostEditor)
+        Dim ctl = HostEditor.PreviewCtl
         If ctl IsNot Nothing Then
             If deferredRepaint Then
                 ' RefreshRender solo ENCOLA el repintado (UpdateRequired + Invalidate). El Update() drena el
@@ -273,7 +399,7 @@ Partial Public Class EditBody_Form
     Private Sub OnSkinTintSliderChanged(sender As Object, e As EventArgs) _
         Handles SliderSkinTintR.ValueChanged, SliderSkinTintG.ValueChanged,
                 SliderSkinTintB.ValueChanged, SliderSkinTintIntensity.ValueChanged
-        If _suspendEvents OrElse _stBusy Then Return
+        If HostSuspendEvents OrElse _stBusy Then Return
         WriteSkinTintOffsetFromSliders()
         ApplySkinTintOffsetLive(EnsureSkinTintOffset(), deferredRepaint:=True)
         UpdateSkinTintStatus()
@@ -282,7 +408,7 @@ Partial Public Class EditBody_Form
     Private Sub OnSkinTintSliderDragEnded(sender As Object, e As EventArgs) _
         Handles SliderSkinTintR.DragEnded, SliderSkinTintG.DragEnded,
                 SliderSkinTintB.DragEnded, SliderSkinTintIntensity.DragEnded
-        If _suspendEvents OrElse _stBusy Then Return
+        If HostSuspendEvents OrElse _stBusy Then Return
         ' Al soltar el slider (no en cada tick) se vuelve a leer el píxel de destino: el número que el usuario
         ' está persiguiendo tiene que ser el que ve, no el de hace tres arrastres.
         ResampleSkinTintTarget()
@@ -302,11 +428,11 @@ Partial Public Class EditBody_Form
 
     ''' <summary>"Reset Section" del tab: vuelve al snapshot que el formulario tomó al abrirse (misma
     ''' semántica que el resto de las secciones), no a cero — el cero lo da el botón propio del tab.</summary>
-    Private Sub ResetSkinTintSection()
-        Dim p = Preset
+    Friend Sub ResetSkinTintSection()
+        Dim p = HostPreset
         If p Is Nothing Then Return
         Dim prior As SkinToneQnamOffset = Nothing
-        If _priorPreset IsNot Nothing Then prior = _priorPreset.SkinToneOffset
+        If HostPriorPreset IsNot Nothing Then prior = HostPriorPreset.SkinToneOffset
         p.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(prior)
         SyncSkinTintSlidersFromOverlay()
         ApplySkinTintOffsetLive(p.SkinToneOffset, deferredRepaint:=True)
@@ -335,12 +461,12 @@ Partial Public Class EditBody_Form
             DisarmSkinTintPicker()
             Return
         End If
-        If EditPreviewControl Is Nothing OrElse EditPreviewControl.IsDisposed Then
+        If HostPreview Is Nothing OrElse HostPreview.IsDisposed Then
             LabelSkinTintGate.Text = "The preview is not ready yet."
             Return
         End If
         _stPick = what
-        EditPreviewControl.ColorPickMode = True
+        HostPreview.ColorPickMode = True
         UpdateSkinTintPickButtons()
         LabelSkinTintGate.Text = ""
         If what = SkinTintPickTarget.Source Then
@@ -355,8 +481,8 @@ Partial Public Class EditBody_Form
     ''' las otras apps: dejarlo en modo picker le robaría el botón izquierdo a la cámara.</summary>
     Private Sub DisarmSkinTintPicker()
         _stPick = SkinTintPickTarget.None
-        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
-            EditPreviewControl.ColorPickMode = False
+        If HostPreview IsNot Nothing AndAlso Not HostPreview.IsDisposed Then
+            HostPreview.ColorPickMode = False
         End If
         UpdateSkinTintPickButtons()
     End Sub
@@ -374,7 +500,7 @@ Partial Public Class EditBody_Form
         End If
     End Sub
 
-    Private Sub EditPreviewControl_ColorPicked(sender As Object, e As PreviewControl.ColorPickedEventArgs) Handles EditPreviewControl.ColorPicked
+    Private Sub HostPreview_ColorPicked(sender As Object, e As PreviewControl.ColorPickedEventArgs)
         Dim what = _stPick
         DisarmSkinTintPicker()
         If what = SkinTintPickTarget.None OrElse e Is Nothing Then Return
@@ -390,8 +516,8 @@ Partial Public Class EditBody_Form
         Dim box As Integer = SkinTintSampleBox()
         Dim spread As Double = 0.0R
         Dim patchImg As Bitmap = Nothing
-        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
-            Dim patch = EditPreviewControl.ReadPixelPatch(e.X, e.Y, box, presentFrame:=False, wantImage:=True)
+        If HostPreview IsNot Nothing AndAlso Not HostPreview.IsDisposed Then
+            Dim patch = HostPreview.ReadPixelPatch(e.X, e.Y, box, presentFrame:=False, wantImage:=True)
             spread = patch.Spread
             patchImg = patch.Image
         End If
@@ -426,7 +552,7 @@ Partial Public Class EditBody_Form
     ''' elegido o si el encuadre cambió (el punto ya no apunta a lo mismo).</summary>
     Private Sub ResampleSkinTintTarget()
         If Not _stHasTarget OrElse SkinTintFrameMoved() Then Return
-        Dim ctl = EditPreviewControl
+        Dim ctl = HostPreview
         If ctl Is Nothing OrElse ctl.IsDisposed Then Return
         ' Mismo muestreo determinista que el auto-calc: si leyera el front despues de un swap encolado, el
         ' numero que se muestra podria ser el del ajuste ANTERIOR.
@@ -484,7 +610,7 @@ Partial Public Class EditBody_Form
     ''' <summary>Firma del encuadre (cámara + tamaño del control). Si cambia, los píxeles elegidos dejan de
     ''' apuntar a lo que el usuario eligió — y el auto-calc estaría optimizando contra otro punto.</summary>
     Private Function SkinTintCameraSignature() As String
-        Dim ctl = EditPreviewControl
+        Dim ctl = HostPreview
         If ctl Is Nothing OrElse ctl.IsDisposed OrElse ctl.camera Is Nothing Then Return ""
         Dim c = ctl.camera
         Return String.Format(Globalization.CultureInfo.InvariantCulture,
@@ -776,7 +902,7 @@ Partial Public Class EditBody_Form
             End If
             LabelSkinTintStatus.Text = msg
         Catch ex As Exception
-            Logger.LogLazy(Function() $"[SKINTINT] auto-calc failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
+            Logger.LogLazy(Function() $"[SKINTINT] auto-calc failed for NPC 0x{HostNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
             LabelSkinTintGate.Text = "Auto-calc failed: " & ex.Message
             ' Volver a lo que el usuario TENÍA: un fallo a mitad del lazo dejaría aplicado un candidato
             ' cualquiera. Acá sí se restaura el previo (no el cero): la corrida no llegó a concluir nada.
@@ -807,8 +933,8 @@ Partial Public Class EditBody_Form
     ''' tono pedido está fuera de lo que el QNAM puede dar sobre esta textura. Se consulta contra el valor
     ''' efectivo real (el que se va a escribir), no contra el offset.</summary>
     Private Function SkinTintOffsetAtRail(off As SkinToneQnamOffset) As Boolean
-        If _mainForm Is Nothing OrElse _editorHost Is Nothing Then Return False
-        Dim eff = _mainForm.ResolveBodySkinToneForHost(_editorHost)
+        If HostMain Is Nothing OrElse HostEditor Is Nothing Then Return False
+        Dim eff = HostMain.ResolveBodySkinToneForHost(HostEditor)
         If Not eff.HasValue Then Return False
         Return eff.Value.R = 0 OrElse eff.Value.R = 255 OrElse
                eff.Value.G = 0 OrElse eff.Value.G = 255 OrElse
@@ -884,7 +1010,7 @@ Partial Public Class EditBody_Form
     ''' lazo mediria el candidato equivocado.</summary>
     Private Function MeasureSkinTintTarget(cand As SkinToneQnamOffset) As Color
         If Not ApplySkinTintOffsetLive(cand, deferredRepaint:=False) Then Return Color.Empty
-        Dim ctl = EditPreviewControl
+        Dim ctl = HostPreview
         If ctl Is Nothing OrElse ctl.IsDisposed Then Return Color.Empty
         Dim c = ctl.ReadPixelDisplay(_stTargetPoint.X, _stTargetPoint.Y, SkinTintSampleBox(), presentFrame:=False)
         If c.IsEmpty Then Return Color.Empty
@@ -922,8 +1048,8 @@ Partial Public Class EditBody_Form
     ''' cual corre el soft-light del cuerpo. Un slider que no puede mover nada es peor que no tener slider.</summary>
     Friend Sub RefreshSkinTintAvailability()
         Dim tone As Nullable(Of Color) = Nothing
-        If _mainForm IsNot Nothing AndAlso _editorHost IsNot Nothing Then
-            tone = _mainForm.ResolveBaseSkinToneForHost(_editorHost)
+        If HostMain IsNot Nothing AndAlso HostEditor IsNot Nothing Then
+            tone = HostMain.ResolveBaseSkinToneForHost(HostEditor)
         End If
         Dim available As Boolean = tone.HasValue
         SetSkinTintControlsEnabled(available)
@@ -953,8 +1079,8 @@ Partial Public Class EditBody_Form
     Private Sub UpdateSkinTintStatus(Optional baseTone As Nullable(Of Color) = Nothing)
         ButtonSkinTintAuto.Enabled = _stHasSource AndAlso _stHasTarget AndAlso Not _stBusy
         Dim effective As Nullable(Of Color) = Nothing
-        If _mainForm IsNot Nothing AndAlso _editorHost IsNot Nothing Then
-            effective = _mainForm.ResolveBodySkinToneForHost(_editorHost)
+        If HostMain IsNot Nothing AndAlso HostEditor IsNot Nothing Then
+            effective = HostMain.ResolveBodySkinToneForHost(HostEditor)
         End If
         Dim parts As New List(Of String)
         If baseTone.HasValue Then
@@ -973,21 +1099,4 @@ Partial Public Class EditBody_Form
     ' Enganches del formulario
     ' =====================================================================
 
-    Private Sub SkinTintTabsBody_SelectedIndexChanged(sender As Object, e As EventArgs) Handles TabsBody.SelectedIndexChanged
-        ' Salir del tab desarma el picker SIEMPRE (el modo no puede sobrevivir a que el usuario se vaya).
-        If TabsBody.SelectedTab IsNot TabPageSkinTint Then
-            DisarmSkinTintPicker()
-        Else
-            RefreshSkinTintAvailability()
-        End If
-    End Sub
-
-    Private Sub SkinTintForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
-        ' Último cinturón: el control se destruye enseguida, pero el modo no puede quedar prendido si algún
-        ' día el preview se reusara. Idempotente y a prueba de disposed.
-        DisarmSkinTintPicker()
-        ' Las dos muestras son Bitmaps propios de este formulario.
-        SetSkinTintPatchImage(_stSourcePatchImage, Nothing, Nothing)
-        SetSkinTintPatchImage(_stTargetPatchImage, Nothing, Nothing)
-    End Sub
 End Class

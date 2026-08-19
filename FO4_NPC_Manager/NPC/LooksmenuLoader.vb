@@ -966,6 +966,13 @@ Public Module LooksmenuLoader
         }
     End Function
 
+    ''' <summary>Serializa el preset al JSON de LooksMenu. Overload de conveniencia que descarta la lista de
+    ''' campos omitidos; usar el de tres argumentos cuando haya que avisarle al usuario.</summary>
+    Public Function SerializePreset(preset As LooksmenuPreset, pluginManager As PluginManager) As String
+        Dim ignored As List(Of String) = Nothing
+        Return SerializePreset(preset, pluginManager, ignored)
+    End Function
+
     ''' <summary>Serialize a preset to a LooksMenu-canonical JSON string. Schema replicates
     ''' CharGenInterface.cpp SavePreset (lines 49-256) field-by-field. BodyMorphs, Overlays and Skin
     ''' (the three F4SE-only fields) ARE emitted so the preset round-trips with LooksMenu in-game.
@@ -988,14 +995,6 @@ Public Module LooksmenuLoader
     '''   • Hex format throughout: "%X" uppercase, no zero-padding. Verified against actual
     '''     LooksMenu-saved JSON files (e.g. "4D7", "72A", "525").
     ''' </summary>
-    ''' <summary>Serializa el preset al JSON de LooksMenu. Overload de conveniencia que descarta la lista de
-    ''' campos omitidos; usar el de tres argumentos cuando haya que avisarle al usuario.</summary>
-    Public Function SerializePreset(preset As LooksmenuPreset, pluginManager As PluginManager) As String
-        Dim ignored As List(Of String) = Nothing
-        Return SerializePreset(preset, pluginManager, ignored)
-    End Function
-
-    ''' <summary>Serializa el preset al JSON de LooksMenu.</summary>
     ''' <param name="omittedFields">Campos <c>_npcm_*</c> que NO se pudieron nombrar y por lo tanto quedaron
     ''' FUERA del preset (uno por línea, ya redactado para mostrarle al usuario). Vacío = salió completo.
     ''' ⛔ Existe porque omitir la key es la respuesta correcta pero MUDA: el usuario guardaría un preset

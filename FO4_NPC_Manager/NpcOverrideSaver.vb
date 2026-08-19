@@ -48,12 +48,16 @@ Public Module NpcOverrideSaver
         ''' succeeded (Success stays True); some NPCs' FaceGen BA2 may be unbaked.</summary>
         Public BakeCancelled As Boolean
         Public WriterResult As SaveNpcEspWriter.SaveResult
-        ''' <summary>El sidecar <c>.bssliders</c> se escribió DE VERDAD en esta corrida.
-        ''' <para>⛔ Es el RESULTADO, no la intención (<c>SaveTarget.WriteBssliders</c>). MainForm lo usa para
-        ''' decidir si marca los NPC como limpios y si la fila del sidecar existe en disco; pasarle la intención
-        ''' hacía que, si la escritura del sidecar fallaba (archivo de sólo lectura, carpeta de overwrite del mod
-        ''' manager, juego abierto), el ESP quedara bien pero la app diera los NPC por guardados y "Save all
-        ''' changed" ya no los incluyera — los body morphs vivían sólo en memoria.</para></summary>
+        ''' <summary>Las filas de los NPC guardados se re-armaron desde su overlay Y la escritura del sidecar
+        ''' no falló.
+        ''' <para>⛔ NO significa "se tocó el archivo": en el caso "sólo poda" el sidecar SÍ se reescribe y esto
+        ''' queda en False, porque lo que no corrió es el merge. Su consumidor
+        ''' (<c>ApplyPostSaveReadback</c>) lo usa para decidir si vale el invariante "residual conservado ⟺ fila
+        ''' en disco", que sólo tiene sentido si el merge efectivamente pasó.</para>
+        ''' <para>⛔ El doc viejo decía "es el RESULTADO, no la intención (<c>SaveTarget.WriteBssliders</c>)" y
+        ''' la asignación es literalmente <c>= target.WriteBssliders</c>. Reconciliarlo al revés — volverlo True
+        ''' cuando el archivo se toca — es exactamente la regresión que el comentario inline de la asignación
+        ''' advierte. La semántica del código es la correcta; el doc era el viejo.</para></summary>
         Public SidecarWritten As Boolean = False
         ''' <summary>Final list of NPC FormIDs in the saved plugin (preserved existing + every new
         ''' override). Used by MainForm to update the auto-gen plugin cache.</summary>

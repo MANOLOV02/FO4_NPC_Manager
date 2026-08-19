@@ -336,7 +336,7 @@ Public Class EditBody_Form
 
         ' Tab "Skin Tint Adjustment" (los dos juegos): offsets del QNAM del cuerpo. Los controles viven en el
         ' Designer; esto solo ajusta el texto game-aware y siembra los sliders desde el overlay.
-        InitSkinTintTab()
+        SkinTintPanelBody.Attach(Me)
 
         LoadValuesFromOverlay()
         InitOverlaysTab()
@@ -589,6 +589,72 @@ Public Class EditBody_Form
             Return p
         End Get
     End Property
+
+    ' =====================================================================
+    ' Puente hacia SkinTintPanel (el tab "Skin tint match"). Ese tab era un PARCIAL de esta clase y leia estos
+    ' miembros directo; desde que es un UserControl con clase propia -lo que saca de encima el choque de
+    ' nombres de .resx que rompia el build con MSB3577- necesita verlos por una superficie Friend.
+    ' Es SOLO relectura de estado que ya existe: no hay logica nueva aca.
+    ' =====================================================================
+    Friend ReadOnly Property SkinTintPreset As LooksmenuLoader.LooksmenuPreset
+        Get
+            Return Preset
+        End Get
+    End Property
+
+    Friend ReadOnly Property SkinTintPriorPreset As LooksmenuLoader.LooksmenuPreset
+        Get
+            Return _priorPreset
+        End Get
+    End Property
+
+    Friend ReadOnly Property SkinTintEditorHost As NpcRenderHost
+        Get
+            Return _editorHost
+        End Get
+    End Property
+
+    Friend ReadOnly Property SkinTintMainForm As MainForm
+        Get
+            Return _mainForm
+        End Get
+    End Property
+
+    Friend ReadOnly Property SkinTintPreview As PreviewControl
+        Get
+            Return EditPreviewControl
+        End Get
+    End Property
+
+    Friend ReadOnly Property SkinTintNpcFormID As UInteger
+        Get
+            Return _rootNpcFormID
+        End Get
+    End Property
+
+    Friend ReadOnly Property SkinTintIsSse As Boolean
+        Get
+            Return _isSSE
+        End Get
+    End Property
+
+    ''' <summary>La supresion de eventos es del FORMULARIO, no del tab: cuando el panel siembra sus sliders
+    ''' tiene que levantar el mismo flag que levanta el resto del editor.</summary>
+    Friend Property SkinTintSuspendEvents As Boolean
+        Get
+            Return _suspendEvents
+        End Get
+        Set(value As Boolean)
+            _suspendEvents = value
+        End Set
+    End Property
+
+    ''' <summary>Reenvio al panel del cambio de tab. Antes lo escuchaba el propio parcial con un Handles sobre
+    ''' TabsBody; ahora TabsBody es de este formulario y el panel no lo ve.</summary>
+    Private Sub SkinTintTabsBody_SelectedIndexChanged(sender As Object, e As EventArgs) Handles TabsBody.SelectedIndexChanged
+        If SkinTintPanelBody Is Nothing Then Return
+        SkinTintPanelBody.OnHostTabChanged(TabsBody.SelectedTab Is TabPageSkinTint)
+    End Sub
 
     ''' <summary>Build the 5 MRSV slider rows (Head/UpperTorso/Arms/LowerTorso/Legs).</summary>
     Private Sub CreateMrsvRows()
@@ -1232,7 +1298,7 @@ Public Class EditBody_Form
         ElseIf active Is TabPageSseSkinOverrides Then
             Await ResetSseSkinOverridesSection()
         ElseIf active Is TabPageSkinTint Then
-            ResetSkinTintSection()
+            SkinTintPanelBody.ResetSkinTintSection()
         End If
     End Sub
 
@@ -3392,7 +3458,7 @@ Public Class EditBody_Form
             End If
             ' El gate del tab de skin tint necesita el state del primer render (de ahi sale si el tono del
             ' cuerpo se deriva o no), asi que se evalua ACA y no en el .ctor.
-            RefreshSkinTintAvailability()
+            SkinTintPanelBody.OnPreviewReady()
         End If
     End Sub
 
@@ -3413,6 +3479,10 @@ Public Class EditBody_Form
         ' Alt+F4 (WinForms pone DialogResult=Cancel al cerrar un modal con la X, así que este único test
         ' cubre las cuatro vías). Mismo diseño que ArmoEditor_Form.vb:1677 y EditFace_Form.
         If DialogResult <> DialogResult.OK Then RevertOverlay()
+
+        ' El tab de skin tint desarma su picker y suelta sus dos Bitmaps ACA: su Dispose corre despues del
+        ' teardown del preview y el picker tiene que apagarse mientras el PreviewControl sigue vivo.
+        If SkinTintPanelBody IsNot Nothing Then SkinTintPanelBody.OnHostClosing()
 
         ' Quiesce the render loop FIRST — see EditFace_Form for the full rationale.
         ' Without this the safety-repaint heartbeat can drain a paint mid-host-Dispose

@@ -41,6 +41,10 @@ Partial Class Preflight_Form
         ButtonMarkAll = New Button()
         ButtonUnmarkAll = New Button()
         ListViewPlugins = New ListView()
+        ColumnHeaderOrder = New ColumnHeader()
+        ButtonResetOrder = New Button()
+        ButtonMoveUp = New Button()
+        ButtonMoveDown = New Button()
         ColumnHeaderPlugin = New ColumnHeader()
         ColumnHeaderState = New ColumnHeader()
         ButtonCheckMasters = New Button()
@@ -236,12 +240,12 @@ Partial Class Preflight_Form
         '
         ListViewPlugins.Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         ListViewPlugins.CheckBoxes = True
-        ListViewPlugins.Columns.AddRange(New ColumnHeader() {ColumnHeaderPlugin, ColumnHeaderState})
+        ListViewPlugins.Columns.AddRange(New ColumnHeader() {ColumnHeaderPlugin, ColumnHeaderState, ColumnHeaderOrder})
         ListViewPlugins.FullRowSelect = True
         ListViewPlugins.GridLines = True
         ListViewPlugins.Location = New Point(12, 156)
         ListViewPlugins.Name = "ListViewPlugins"
-        ListViewPlugins.Size = New Size(724, 465)
+        ListViewPlugins.Size = New Size(680, 465)
         ListViewPlugins.TabIndex = 8
         ListViewPlugins.UseCompatibleStateImageBehavior = False
         ListViewPlugins.View = View.Details
@@ -249,12 +253,47 @@ Partial Class Preflight_Form
         ' ColumnHeaderPlugin
         '
         ColumnHeaderPlugin.Text = "Plugin"
-        ColumnHeaderPlugin.Width = 520
+        ColumnHeaderPlugin.Width = 440
         '
         ' ColumnHeaderState
         '
         ColumnHeaderState.Text = "State"
-        ColumnHeaderState.Width = 180
+        ColumnHeaderState.Width = 110
+        '
+        ' ColumnHeaderOrder
+        '
+        ColumnHeaderOrder.Text = "Load #"
+        ColumnHeaderOrder.Width = 105
+        '
+        ' ButtonMoveUp
+        '
+        ButtonMoveUp.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+        ButtonMoveUp.Location = New Point(698, 156)
+        ButtonMoveUp.Name = "ButtonMoveUp"
+        ButtonMoveUp.Size = New Size(38, 30)
+        ButtonMoveUp.TabIndex = 16
+        ButtonMoveUp.Text = "▲"
+        ButtonMoveUp.UseVisualStyleBackColor = True
+        '
+        ' ButtonMoveDown
+        '
+        ButtonMoveDown.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+        ButtonMoveDown.Location = New Point(698, 190)
+        ButtonMoveDown.Name = "ButtonMoveDown"
+        ButtonMoveDown.Size = New Size(38, 30)
+        ButtonMoveDown.TabIndex = 17
+        ButtonMoveDown.Text = "▼"
+        ButtonMoveDown.UseVisualStyleBackColor = True
+        '
+        ' ButtonResetOrder
+        '
+        ButtonResetOrder.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+        ButtonResetOrder.Location = New Point(698, 224)
+        ButtonResetOrder.Name = "ButtonResetOrder"
+        ButtonResetOrder.Size = New Size(38, 30)
+        ButtonResetOrder.TabIndex = 18
+        ButtonResetOrder.Text = "⟲"
+        ButtonResetOrder.UseVisualStyleBackColor = True
         '
         ' ButtonCheckMasters
         '
@@ -353,6 +392,9 @@ Partial Class Preflight_Form
         Controls.Add(CheckBoxPersistSelection)
         Controls.Add(ButtonCheckMasters)
         Controls.Add(ListViewPlugins)
+        Controls.Add(ButtonResetOrder)
+        Controls.Add(ButtonMoveUp)
+        Controls.Add(ButtonMoveDown)
         Controls.Add(ButtonUnmarkAll)
         Controls.Add(ButtonMarkAll)
         Controls.Add(ButtonSelectActives)
@@ -400,6 +442,10 @@ Partial Class Preflight_Form
     Friend WithEvents ButtonMarkAll As Button
     Friend WithEvents ButtonUnmarkAll As Button
     Friend WithEvents ListViewPlugins As ListView
+    Friend WithEvents ColumnHeaderOrder As ColumnHeader
+    Friend WithEvents ButtonResetOrder As Button
+    Friend WithEvents ButtonMoveUp As Button
+    Friend WithEvents ButtonMoveDown As Button
     Friend WithEvents ColumnHeaderPlugin As ColumnHeader
     Friend WithEvents ColumnHeaderState As ColumnHeader
     Friend WithEvents ButtonCheckMasters As Button

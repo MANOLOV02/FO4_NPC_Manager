@@ -64,11 +64,6 @@
        shadows the BSA/BA2, so ours would replace RaceMenu's / LooksMenu's real implementation.
        See ..\Papyrus\README.md. -->
   <ItemGroup>
-    <EmbeddedResource Include="..\Papyrus\pex_sse\NPCM_Manolov_ApplySSE.pex" LogicalName="NpcManager.Papyrus.NPCM_Manolov_ApplySSE.pex" />
-    <EmbeddedResource Include="..\Papyrus\pex_fo4\NPCM_Manolov_ApplyFO4.pex" LogicalName="NpcManager.Papyrus.NPCM_Manolov_ApplyFO4.pex" />
-  </ItemGroup>
-
-  <ItemGroup>
     <!-- Tools/OverlaySlotGate: self-test del lector de skee64.ini y de las reglas de slot de overlay
          (SseCatalogs es Friend). Mismo criterio que ParityGate en FO4_Base_Library: el gate llega a los
          miembros Friend desde afuera y la superficie que se distribuye no cambia. El test es de PARSEO y

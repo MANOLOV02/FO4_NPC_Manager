@@ -2478,13 +2478,7 @@ Public Class MainForm
 
             ' Los avisos de records que no parsean se acumulan en el worker y se muestran ACA: ya volvimos al
             ' hilo de UI y hay owner, asi que el box es modal de verdad. Ver _pendingLoadWarnings.
-            If _pendingLoadWarnings.Count > 0 Then
-                MessageBox.Show(Me,
-                    String.Join(vbCrLf & vbCrLf, _pendingLoadWarnings) & vbCrLf & vbCrLf &
-                    "The rest of the load order loaded normally.",
-                    "Records skipped", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                _pendingLoadWarnings.Clear()
-            End If
+            FlushPendingLoadWarnings()
 
             PopulateNPCTree()
 
@@ -2509,6 +2503,33 @@ Public Class MainForm
     ''' mensajes. Un `MessageBox` creado en un hilo del pool y sin owner no es modal respecto de la ventana
     ''' principal: se va atras al primer click y deja la carga colgada, con el worker bloqueado y la UI libre
     ''' para re-entrar a `PopulateNPCTree` -> `RebuildTreeModelCache` sobre los mismos diccionarios.</para></summary>
+    ''' <summary>Muestra y vacía los avisos acumulados por el worker. Corre en el hilo de UI y con <c>Me</c>
+    ''' como owner, así que el box es modal de verdad.
+    ''' <para>⛔ Es un MÉTODO y no código pegado dentro de <c>LoadDataAsync</c> porque ese camino corre UNA sola
+    ''' vez, en el arranque. Los avisos también los produce <c>BuildNPCClassification</c>, al que se vuelve
+    ''' desde el rebuild post-Save y desde el camino frío de <c>PopulateNPCTree</c>. Sin drenar ahí, el caso con
+    ''' daño real es concreto: el readback post-save remonta el plugin RECIÉN ESCRITO y, si trae un LVLN que la
+    ''' app no puede releer, el aviso nace y muere sin que nadie lo vea — o sea que escribimos algo que no
+    ''' podemos volver a leer y nos callamos.</para>
+    ''' <para>Sin avisos pendientes no hace nada, así que es seguro llamarlo desde cualquier lado. Si lo llama
+    ''' un hilo de fondo se difiere al de UI en vez de abrir un box sin owner (que no sería modal y colgaría
+    ''' la carga detrás de la ventana principal).</para></summary>
+    Private Sub FlushPendingLoadWarnings()
+        If _pendingLoadWarnings.Count = 0 Then Return
+        ' Sin handle todavia no se puede ni diferir; los avisos quedan pendientes y los muestra el proximo
+        ' drenaje. Perder el aviso seria peor, pero reventar en el arranque tambien.
+        If IsDisposed OrElse Not IsHandleCreated Then Return
+        If InvokeRequired Then
+            BeginInvoke(Sub() FlushPendingLoadWarnings())
+            Return
+        End If
+        Dim texto = String.Join(vbCrLf & vbCrLf, _pendingLoadWarnings)
+        _pendingLoadWarnings.Clear()
+        MessageBox.Show(Me,
+            texto & vbCrLf & vbCrLf & "The rest of the load order loaded normally.",
+            "Records skipped", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+    End Sub
+
     Private ReadOnly _pendingLoadWarnings As New List(Of String)
 
     Private Sub ParseAllNPCs()
@@ -2661,6 +2682,16 @@ Public Class MainForm
         ' the referenced HDPT/ARMO/RACE labels), so they cannot survive a different plugin set. Not
         ' rebuilt here — the index goes back to being lazy and re-fills only if a facet is used again.
         _filterIndex?.InvalidateAll()
+
+        ' ⛔ Drenar ACA y no solo en LoadDataAsync: los tres productores de avisos cuelgan de
+        ' BuildNPCClassification, al que se vuelve desde el rebuild post-Save y desde el camino frio de
+        ' PopulateNPCTree. LoadDataAsync corre UNA vez, en el arranque, asi que todo lo que se acumulara
+        ' despues moria en silencio — incluido el caso feo: el readback post-save no puede releer un LVLN
+        ' del plugin que la app acaba de escribir. No hace nada si no hay nada pendiente.
+        ' ⛔ DIFERIDO: un MessageBox modal bombea mensajes, y abrirlo en medio del rebuild deja reentrar a
+        ' PopulateNPCTree -> RebuildTreeModelCache sobre los mismos diccionarios (la carrera que documenta
+        ' :2511). Se muestra cuando el rebuild ya termino.
+        If Not IsDisposed AndAlso IsHandleCreated Then BeginInvoke(Sub() FlushPendingLoadWarnings())
     End Sub
 
     ''' <summary>Filter the skin ARMO universe (built once at plugin load) by the race+gender of
@@ -4329,6 +4360,41 @@ Public Class MainForm
         Return False
     End Function
 
+    ''' <summary>Ancho (en dígitos) del prefijo de orden de carga de los nodos raíz: el que pida la posición
+    ''' más alta del load order cargado, con piso 3. Con 300 plugins da [000]..[299]; pasando los 1001 pasa a
+    ''' [0000] (los ESL cuentan en el mismo cupo, así que es alcanzable), y si después bajan, vuelve a 3.
+    ''' <para>Que sea variable NO puede mezclar anchos en pantalla, y está VERIFICADO, no asumido: las ÚNICAS
+    ''' tres mutaciones de <c>TreeViewNPCs.Nodes</c> son el <c>Clear()</c> de :4442 y los dos <c>Add()</c> de
+    ''' :4491 / :4616, y los únicos dos <c>.Text =</c> de un nodo raíz son :4490 y :4615 — los cinco
+    ''' dentro de ESTA misma pasada de <see cref="PopulateNPCTree"/>, que arranca borrando el árbol entero. No
+    ''' hay camino incremental que agregue o reetiquete un nodo de plugin sin repoblar todo, así que el árbol
+    ''' se repinta ENTERO con el ancho de esta lectura: o todo en 3 dígitos o todo en 4, nunca mezclado.</para>
+    ''' <para>Por eso se lee UNA vez acá y viaja como parámetro hasta <see cref="LoadOrderPrefix"/>: si cada
+    ''' nodo lo recalculara, un save que monta un plugin nuevo y cruza el umbral EN MEDIO del repoblado sí
+    ''' dejaría media lista con un ancho y media con otro.</para></summary>
+    Private Function LoadOrderTagWidth() As Integer
+        Dim n = If(_pluginManager Is Nothing, 0, _pluginManager.LoadedPluginCount)
+        Return Math.Max(3, Math.Max(0, n - 1).ToString().Length)
+    End Function
+
+    ''' <summary>Clave de orden del árbol: la posición EFECTIVA del plugin (la del merge real, no la línea del
+    ''' Plugins.txt). Los que no están cargados —el grupo "Unknown", o uno excluido por masters faltantes—
+    ''' devuelven <see cref="Integer.MaxValue"/> para caer al final en vez de encabezar la lista.</summary>
+    Private Function LoadOrderSortKey(pluginName As String) As Integer
+        Dim pos = If(_pluginManager Is Nothing, -1, _pluginManager.GetLoadOrderPosition(pluginName))
+        Return If(pos < 0, Integer.MaxValue, pos)
+    End Function
+
+    ''' <summary>Prefijo "[00042] " de un nodo raíz, con <paramref name="width"/> dígitos y cero a la izquierda.
+    ''' Plugin no cargado → "[?????] " del MISMO ancho, así la alineación no se rompe.
+    ''' <para>⛔ Es SÓLO texto del nodo. El nombre del plugin se sigue leyendo de <c>node.Name</c>
+    ''' ("PLUGIN_&lt;nombre&gt;"), nunca de <c>node.Text</c> — ver <see cref="SelectedPluginForFomodExport"/>.</para></summary>
+    Private Function LoadOrderPrefix(pluginName As String, width As Integer) As String
+        Dim pos = If(_pluginManager Is Nothing, -1, _pluginManager.GetLoadOrderPosition(pluginName))
+        If pos < 0 Then Return "[" & New String("?"c, width) & "] "
+        Return "[" & pos.ToString().PadLeft(width, "0"c) & "] "
+    End Function
+
     Private Sub PopulateNPCTree(Optional filter As String = "")
         If InvokeRequired Then
             Invoke(Sub() PopulateNPCTree(filter))
@@ -4368,6 +4434,9 @@ Public Class MainForm
         Dim showTemplate As Boolean = CheckBoxCatTemplate IsNot Nothing AndAlso CheckBoxCatTemplate.Checked
         Dim showUnused As Boolean = CheckBoxCatUnused IsNot Nothing AndAlso CheckBoxCatUnused.Checked
 
+        ' Prefijo de orden de carga de los nodos raiz. Ancho FIJO, leido UNA sola vez por repoblado.
+        Dim loadOrderWidth As Integer = LoadOrderTagWidth()
+
         TreeViewNPCs.SuspendLayout()
         TreeViewNPCs.BeginUpdate()
         TreeViewNPCs.Nodes.Clear()
@@ -4387,7 +4456,8 @@ Public Class MainForm
                                    (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter)) AndAlso
                                    (advIndex Is Nothing OrElse advIndex.MatchesAll(n, advTerms))).
                 GroupBy(Function(n) If(n.PluginName, "Unknown")).
-                OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
+                OrderBy(Function(g) LoadOrderSortKey(g.Key)).
+                ThenBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
             For Each pluginGroup In pluginSectionNpcs
                 Dim pluginNode As TreeNode = Nothing
@@ -4417,7 +4487,7 @@ Public Class MainForm
                 Next
 
                 If pluginNode IsNot Nothing Then
-                    pluginNode.Text = $"{pluginGroup.Key} ({matchCount})"
+                    pluginNode.Text = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}{pluginGroup.Key} ({matchCount})"
                     TreeViewNPCs.Nodes.Add(pluginNode)
                     If filterActive OrElse onlyChanged Then pluginNode.Expand()
                 End If
@@ -4474,7 +4544,8 @@ Public Class MainForm
                 ' Group final LVLNs by source plugin
                 Dim lvlnsByPlugin = visibleLvlns.
                     GroupBy(Function(x) If(x.Record.SourcePluginName, "Unknown")).
-                    OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
+                    OrderBy(Function(g) LoadOrderSortKey(g.Key)).
+                    ThenBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
                 For Each pluginGroup In lvlnsByPlugin
                     Dim pluginNode As TreeNode = Nothing
@@ -4541,7 +4612,7 @@ Public Class MainForm
                     Next
 
                     If pluginNode IsNot Nothing AndAlso pluginNode.Nodes.Count > 0 Then
-                        pluginNode.Text = $"[LVLN] {pluginGroup.Key} ({matchCount})"
+                        pluginNode.Text = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}[LVLN] {pluginGroup.Key} ({matchCount})"
                         TreeViewNPCs.Nodes.Add(pluginNode)
                         If filterActive OrElse onlyChanged Then pluginNode.Expand()
                     End If
