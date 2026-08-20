@@ -9,6 +9,7 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Pipeline de CANDIDATOS del preview: recolecta (ARMO/OTFT/head parts/chunks de robot) →
 ''' resuelve conflicto de slots y oclusión por headwear → carga los NIF y aplica los overrides de material
@@ -327,8 +328,8 @@ Friend NotInheritable Class NpcMeshCollector
                 If outfitRec Is Nothing OrElse outfitRec.Header.Signature <> "OTFT" Then
                     warnings.Add($"Default outfit {state.DefaultOutfitFormID:X8} is missing or not OTFT")
                 Else
-                    Dim outfit = Canon.CanonRecords.Outfit(outfitRec, _ctx.PluginManager)
-                    For Each itemFormID In outfit.ItemFormIDs
+                    Dim outfit = Canon.CanonRecords.Otft(outfitRec, _ctx.PluginManager)
+                    For Each itemFormID In outfit.Prendas()
                         CollectArmoCandidates(itemFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
                     Next
                 End If
@@ -1011,7 +1012,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' effective de ese parent. Cierra el bug donde Hairline standalone en NPC.PNAM no
         ' cascadeaba si el visit order ponía el Misc antes del parent.
         ' Shared rule = single source of truth with the bake's EnumerateHdptChain.
-        Dim effectivePartType = HeadPartResolver.ResolveEffectivePartType(hdpt.PartType, parentPartType, hdptFormID, miscToParentEffective)
+        Dim effectivePartType = HeadPartResolver.ResolveEffectivePartType(hdpt.TipoDeParte(), parentPartType, hdptFormID, miscToParentEffective)
 
         ' ⛔ NO agregar acá un gate por HDPT.RNAM: el motor NO filtra por "Valid Races" las head parts que un
         ' actor LLEVA — RNAM es filtro del CATÁLOGO del chargen (por eso los pickers sí lo aplican). Ponerlo
@@ -1019,14 +1020,14 @@ Friend NotInheritable Class NpcMeshCollector
         ' en las FormLists en RUNTIME por script, salían pelados. El gate real del motor es de RAZA
         ' (RACE.DATA bit 0x2) y lo aplica el caller. Ver 40-bake-reglas-comunes.md.
 
-        If hdpt.MeshPath <> "" Then
+        If hdpt.ModelModelFileName <> "" Then
             ' El `_faceBones` (rig de los 68 huesos de cara: Jaw, LipUpper_L, Cheek_R…) es lo que permite
             ' que el FMRS deforme la malla. Se recolecta para toda raza que construya cabeza FaceGen
             ' (RaceBuildsFaceGenHead — el bit 0x2, ya garantizado por el early-return de
             ' CollectHeadPartCandidates); `useFaceGen` acá sólo puede venir en False por el
             ' PreviewGenderOverride de los editores ARMA/ARMO ("Show other gender" dibuja una cabeza
             ' race-default del OTRO género, que no es la del NPC y no debe morfear con su FMRS).
-            Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hdpt.MeshPath)
+            Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hdpt.ModelModelFileName)
             ' ⭐ Camino head-bake: NO se redirige. Se dibuja la malla PLANA — que es lo que dibujan el motor y
             ' el CK — y el `_faceBones` queda como INSUMO para HeadBakeService. Medido: el FaceGeom del BA2 usa
             ' el UV del PLANO 227 a 0, y su base material es la del plano con el TNAM encima; dibujar el
@@ -1043,19 +1044,19 @@ Friend NotInheritable Class NpcMeshCollector
             ' path-keyed GL texture cache) is applied per-shape in ApplyShapeMaterialOverrides via the
             ' candidate's HeadPartHdptFormID gate. UsesBodyTexture stays the raw record value here —
             ' the previous override-proxy forcing (HumanRace 0x13746 + is-override heuristic) is gone.
-            Dim effectiveUsesBodyTexture = hdpt.UsesBodyTexture
+            Dim effectiveUsesBodyTexture = hdpt.UsaTexturaDelCuerpo()
 
             ' Trace del candidato HeadPart: qué HDPT, tipo raw/effective, mesh, el TXST (TNAM) y color.
             ' Se dibuja SIEMPRE la malla plana (head-bake); el `_faceBones` es insumo, no se dibuja.
             If Logger.Enabled Then
                 Dim hdptEidC = If(hdptRec.EditorID, "")
-                Dim rawTypeC = hdpt.PartType
+                Dim rawTypeC = hdpt.TipoDeParte()
                 Dim effTypeC = effectivePartType
-                Dim origMeshC = If(hdpt.MeshPath, "")
+                Dim origMeshC = If(hdpt.ModelModelFileName, "")
                 Dim finalKeyC = dictKey
                 Dim fbInputC = faceBonesInputKey
-                Dim tnamC = hdpt.TextureSetFormID
-                Dim colorC = hdpt.ColorFormID
+                Dim tnamC = hdpt.TextureSet
+                Dim colorC = hdpt.Color
                 Dim ubtC = effectiveUsesBodyTexture
                 Dim ufgC = useFaceGen
                 Logger.LogLazy(Function() $"[HDPT-CAND] hdpt=0x{hdptFormID:X8} eid='{hdptEidC}' rawType={rawTypeC} effType={effTypeC} useFaceGen={ufgC} TNAM=0x{tnamC:X8} color=0x{colorC:X8} usesBodyTex={ubtC} mesh='{origMeshC}' dictKey='{finalKeyC}' faceBonesInput='{fbInputC}'")
@@ -1072,15 +1073,15 @@ Friend NotInheritable Class NpcMeshCollector
                 .Priority = 0,
                 .Kind = MainForm.MeshCandidateKind.HeadPart,
                 .HeadPartType = effectivePartType,
-                .HeadPartTypeRaw = hdpt.PartType,
-                .HeadPartColorFormID = hdpt.ColorFormID,
-                .TextureSetFormID = hdpt.TextureSetFormID,
+                .HeadPartTypeRaw = hdpt.TipoDeParte(),
+                .HeadPartColorFormID = hdpt.Color,
+                .TextureSetFormID = hdpt.TextureSet,
                 .HeadPartHdptFormID = hdptFormID,
                 .UsesBodyTexture = effectiveUsesBodyTexture,
                 .Order = order,
-                .RaceMorphTriPath = hdpt.RaceMorphTriPath,
-                .ChargenMorphTriPath = hdpt.ChargenMorphTriPath,
-                .MeshMorphTriPath = hdpt.TriPath,
+                .RaceMorphTriPath = hdpt.ArchivoDeDeformacion(0UI),
+                .ChargenMorphTriPath = hdpt.ArchivoDeDeformacion(2UI),
+                .MeshMorphTriPath = hdpt.ArchivoDeDeformacion(1UI),
                 .Hide = (effectivePartType = 7),
                 .IsHnamExtra = (parentPartType >= 0)
             })
@@ -1089,7 +1090,7 @@ Friend NotInheritable Class NpcMeshCollector
 
         ' Pass the effective type down so nested extras also inherit
         Dim childParentType = If(effectivePartType <> 0, effectivePartType, parentPartType)
-        For Each extraPartFormID In hdpt.ExtraPartFormIDs
+        For Each extraPartFormID In hdpt.PartesExtra()
             CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, state, useFaceGen, miscToParentEffective)
         Next
     End Sub

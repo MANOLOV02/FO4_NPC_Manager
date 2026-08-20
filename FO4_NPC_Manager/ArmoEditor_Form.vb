@@ -1439,8 +1439,8 @@ Public Class ArmoEditor_Form
             ' its existing substitutions, not a blank one. Nothing ⇒ field empty/unresolved ⇒ fresh NEW draft.
             draft = _mainForm.BuildMswpOverrideDraftFromReal(currentFid)
             If draft Is Nothing Then
-                draft = New MswpDraft With {.FormID = _mainForm.AllocateDraftFormID(),
-                                            .EditorID = MswpDraft.EditorIdPrefix & "new", .IsNew = True}
+                draft = MswpDraft.Nuevo(_mainForm.AllocateDraftFormID(), Canon.CanonBridge.SessionGame())
+                If draft IsNot Nothing Then draft.Record.EditorID = MswpDraft.EditorIdPrefix & "new"
                 _mainForm.RegisterMswpDraft(draft)
             End If
         End If
@@ -1469,7 +1469,7 @@ Public Class ArmoEditor_Form
         Dim drafts As List(Of FormIdPickerEntry) = Nothing
         If includeMswpDrafts Then
             drafts = _mainForm.MswpDrafts().Select(Function(d) New FormIdPickerEntry With {
-                .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "MSWP"}).ToList()
+                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID, .Signature = "MSWP"}).ToList()
         End If
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, sigs, title, GetFid(target),
                                            allowNull, drafts)

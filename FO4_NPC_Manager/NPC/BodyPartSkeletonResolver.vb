@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>
 ''' Resolves the per-race extra-skeleton path declared in the BPTD record (Body Part Data)
@@ -39,12 +39,12 @@ Public Module BodyPartSkeletonResolver
             Return Nothing
         End If
 
-        Dim bptd = ActorRecordParsers.ParseBPTD(bptdRec, pluginManager)
-        If String.IsNullOrEmpty(bptd.ModelPath) Then
+        Dim bptd = Canon.CanonRecords.Bptd(bptdRec, pluginManager)
+        If String.IsNullOrEmpty(bptd.ModelModelFileName) Then
             Return Nothing
         End If
 
-        Return MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(bptd.ModelPath))
+        Return MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(bptd.ModelModelFileName))
     End Function
 
 End Module

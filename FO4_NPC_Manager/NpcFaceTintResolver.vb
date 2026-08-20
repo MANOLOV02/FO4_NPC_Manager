@@ -11,6 +11,7 @@ Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 ' Alias (no import plano): OpenGL4 trae PixelFormat/TextureUnit que chocan con System.Drawing.Imaging.
 Imports Gl4 = OpenTK.Graphics.OpenGL4
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Phase 2 of the MainForm split: FaceTint compositor EXECUTION — runs the
 ''' face-tint compositor + the skin SoftLight / subsurface pre-passes onto the GL textures,
@@ -193,9 +194,9 @@ Friend NotInheritable Class NpcFaceTintResolver
         If Logger.Enabled Then
             Dim browHcfid = state.HairColorFormID
             Dim browClfmDiag = _materialResolver.ResolveColorFormData(browHcfid)
-            Dim browRow As Single = If(browClfmDiag IsNot Nothing, browClfmDiag.RemappingIndex, -1.0F)
-            Dim browHasRemap As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.HasRemappingIndex)
-            Dim browHasColor As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.HasColor)
+            Dim browRow As Single = If(browClfmDiag IsNot Nothing, browClfmDiag.IndiceDePaleta(), -1.0F)
+            Dim browHasRemap As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.TieneIndiceDePaleta())
+            Dim browHasColor As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.TieneColor())
             Logger.LogLazy(Function() $"[BROW-LUT-RESOLVE] hairFid=0x{browHcfid:X8} hasColor={browHasColor} hasRemap={browHasRemap} row={browRow:F4}")
             Dim model0 = _hostProvider()?.PreviewCtl?.Model
             If model0 IsNot Nothing AndAlso model0.meshes IsNot Nothing Then

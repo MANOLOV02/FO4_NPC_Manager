@@ -1,6 +1,7 @@
 ﻿Imports System.Drawing
 Imports System.Globalization
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Editor de la cara de un NPC: HeadParts, HairColor, tints, flag ACBS IsCharGenFacePreset,
 ''' override de piel (NPC.WNAM), morphs de vertice (MSDK/MSDV), morphs de region osea (FMRI/FMRS) y FMIN.
@@ -194,8 +195,8 @@ Public Class EditFace_Form
     Private _currentTintVirtualLayer As NPC_FaceTintLayerData = Nothing
 
     ' Cached resolution dictionaries (built once at construction).
-    Private ReadOnly _allHeadPartsByFid As New Dictionary(Of UInteger, HDPT_Data)
-    Private ReadOnly _allHairColors As New List(Of Canon.ColorRecord)
+    Private ReadOnly _allHeadPartsByFid As New Dictionary(Of UInteger, Canon.IHdpt)
+    Private ReadOnly _allHairColors As New List(Of Canon.IClfm)
 
     ' Hair palette LUT (HairColor_Lgrad_d.dds) decoded once and reused for swatch sampling.
     ' For palette-mode CLFMs (HasRemappingIndex=True), the swatch fills with the row at
@@ -356,14 +357,14 @@ Public Class EditFace_Form
     ' Section 1 — caches and lookups (built once per form lifetime)
     ' =====================================================================
 
-    ''' <summary>Build the (FormID → HDPT_Data) lookup table for all loaded HDPTs. Used by:
+    ''' <summary>Build the (FormID → Canon.IHdpt) lookup table for all loaded HDPTs. Used by:
     '''   - the HeadParts list to display each entry's name, type and plugin.
     '''   - the HeadPart picker's RACE/gender filter (delegated to HeadPartPicker_Form).</summary>
     Private Sub BuildHeadPartCache()
         Dim hdptRecords = _pluginManager.GetRecordsOfType("HDPT")
         If hdptRecords Is Nothing Then Return
         For Each rec In hdptRecords
-            Dim hdpt = RecordParsers.ParseHDPT(rec, _pluginManager)
+            Dim hdpt = Canon.CanonRecords.Hdpt(rec, _pluginManager)
             If hdpt Is Nothing Then Continue For
             _allHeadPartsByFid(hdpt.FormID) = hdpt
         Next
@@ -395,13 +396,13 @@ Public Class EditFace_Form
         For Each fid In allowedSet
             Dim rec = _pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Continue For
-            Dim clfm = Canon.CanonRecords.Color(rec, _pluginManager)
+            Dim clfm = Canon.CanonRecords.Clfm(rec, _pluginManager)
             If clfm Is Nothing Then Continue For
             _allHairColors.Add(clfm)
         Next
         _allHairColors.Sort(Function(a, b)
-                                Dim na = If(a.FullName, "")
-                                Dim nb = If(b.FullName, "")
+                                Dim na = If(a.Name, "")
+                                Dim nb = If(b.Name, "")
                                 Dim cmp = String.Compare(na, nb, StringComparison.OrdinalIgnoreCase)
                                 If cmp <> 0 Then Return cmp
                                 Return String.Compare(If(a.EditorID, ""), If(b.EditorID, ""), StringComparison.OrdinalIgnoreCase)
@@ -2207,14 +2208,14 @@ Public Class EditFace_Form
                                        If list Is Nothing Then Return
                                        For Each fid In list
                                            If fid = 0UI Then Continue For
-                                           Dim hd As HDPT_Data = Nothing
+                                           Dim hd As Canon.IHdpt = Nothing
                                            If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
-                                           If hd.PartType = 0 Then
+                                           If hd.TipoDeParte() = 0 Then
                                                If seenMisc.Add(fid) Then freestandingMisc.Add(fid)
-                                           ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
+                                           ElseIf hd.TipoDeParte() >= 1 AndAlso hd.TipoDeParte() <= 9 Then
                                                ' NPC.PNAM passes after RACE defaults, so its
                                                ' assignment wins per type — last-write-wins.
-                                               mergedByType(hd.PartType) = fid
+                                               mergedByType(hd.TipoDeParte()) = fid
                                            End If
                                        Next
                                    End Sub
@@ -2462,9 +2463,9 @@ Public Class EditFace_Form
             ' Parents NPC-override (no Misc).
             Dim overriddenTypes As New HashSet(Of Integer)
             For Each fid In p.HeadPartFormIDs
-                Dim hd As HDPT_Data = Nothing
-                If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.PartType <> HdptTypeMisc Then
-                    overriddenTypes.Add(hd.PartType)
+                Dim hd As Canon.IHdpt = Nothing
+                If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.TipoDeParte() <> HdptTypeMisc Then
+                    overriddenTypes.Add(hd.TipoDeParte())
                     visibleParents.Add(fid)
                     visibleParentIsRaceDefault(fid) = False
                 End If
@@ -2472,10 +2473,10 @@ Public Class EditFace_Form
             ' Parents RACE-default (no Misc) que llenan PartTypes no override-ados.
             If raceDefaults IsNot Nothing Then
                 For Each fid In raceDefaults
-                    Dim hd As HDPT_Data = Nothing
+                    Dim hd As Canon.IHdpt = Nothing
                     If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
-                    If hd.PartType = HdptTypeMisc Then Continue For
-                    If overriddenTypes.Contains(hd.PartType) Then Continue For
+                    If hd.TipoDeParte() = HdptTypeMisc Then Continue For
+                    If overriddenTypes.Contains(hd.TipoDeParte()) Then Continue For
                     visibleParents.Add(fid)
                     visibleParentIsRaceDefault(fid) = True
                 Next
@@ -2486,12 +2487,12 @@ Public Class EditFace_Form
             Dim claimedAsExtra As New HashSet(Of UInteger)
             Dim extrasByParent As New Dictionary(Of UInteger, List(Of UInteger))
             For Each parentFid In visibleParents
-                Dim hd As HDPT_Data = Nothing
+                Dim hd As Canon.IHdpt = Nothing
                 If Not _allHeadPartsByFid.TryGetValue(parentFid, hd) Then Continue For
-                If hd.ExtraPartFormIDs Is Nothing OrElse hd.ExtraPartFormIDs.Count = 0 Then Continue For
+                If hd.PartesExtra() Is Nothing OrElse hd.PartesExtra().Count = 0 Then Continue For
                 Dim list As New List(Of UInteger)
-                For Each ex In hd.ExtraPartFormIDs
-                    Dim exData As HDPT_Data = Nothing
+                For Each ex In hd.PartesExtra()
+                    Dim exData As Canon.IHdpt = Nothing
                     If Not _allHeadPartsByFid.TryGetValue(ex, exData) Then Continue For
                     list.Add(ex)
                     claimedAsExtra.Add(ex)
@@ -2504,20 +2505,20 @@ Public Class EditFace_Form
             ' parent). Misc en preset NO claimedAsExtra (addons standalone legítimos: mouth shadow,
             ' AO/wet sueltos) salen como top-level normal.
             For Each fid In p.HeadPartFormIDs
-                Dim hd As HDPT_Data = Nothing
+                Dim hd As Canon.IHdpt = Nothing
                 If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
                     ' Unresolved: lo mostramos top-level para que el usuario vea el FormID roto.
                     ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
                     Continue For
                 End If
-                If hd.PartType = HdptTypeMisc AndAlso claimedAsExtra.Contains(fid) Then
+                If hd.TipoDeParte() = HdptTypeMisc AndAlso claimedAsExtra.Contains(fid) Then
                     ' Va a salir como sub-row del parent que la reclama. Skip top-level.
                     Continue For
                 End If
                 ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
                 ' Si es parent non-Misc, emit las HNAM-extras como sub-rows readonly.
                 Dim extras As List(Of UInteger) = Nothing
-                If hd.PartType <> HdptTypeMisc AndAlso extrasByParent.TryGetValue(fid, extras) Then
+                If hd.TipoDeParte() <> HdptTypeMisc AndAlso extrasByParent.TryGetValue(fid, extras) Then
                     For Each ex In extras
                         ListViewHeadParts.Items.Add(BuildHeadPartRow(ex, isRaceDefault:=False, isHnamExtra:=True))
                     Next
@@ -2528,10 +2529,10 @@ Public Class EditFace_Form
             ' fila top-level + sub-rows HNAM-extras (también readonly por IsRaceDefault).
             If raceDefaults IsNot Nothing Then
                 For Each fid In raceDefaults
-                    Dim hd As HDPT_Data = Nothing
+                    Dim hd As Canon.IHdpt = Nothing
                     If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
-                    If hd.PartType = HdptTypeMisc Then Continue For
-                    If overriddenTypes.Contains(hd.PartType) Then Continue For
+                    If hd.TipoDeParte() = HdptTypeMisc Then Continue For
+                    If overriddenTypes.Contains(hd.TipoDeParte()) Then Continue For
                     ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=True))
                     Dim extras As List(Of UInteger) = Nothing
                     If extrasByParent.TryGetValue(fid, extras) Then
@@ -2555,7 +2556,7 @@ Public Class EditFace_Form
     ''' parent-child relationship visible.</summary>
     Private Function BuildHeadPartRow(fid As UInteger, isRaceDefault As Boolean, Optional isHnamExtra As Boolean = False) As ListViewItem
         Dim tag As New HeadPartRowTag With {.FormID = fid, .IsRaceDefault = isRaceDefault, .IsHnamExtra = isHnamExtra}
-        Dim hd As HDPT_Data = Nothing
+        Dim hd As Canon.IHdpt = Nothing
         Dim hex = fid.ToString("X8")
         Dim indent As String = If(isHnamExtra, "    └─ ", "")
         If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
@@ -2571,12 +2572,12 @@ Public Class EditFace_Form
         Dim plugin As String = ""
         Dim rec = _pluginManager.GetRecord(fid)
         If rec IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(rec.SourcePluginName) Then plugin = rec.SourcePluginName
-        Dim typeText = indent & HdptTypeName(hd.PartType)
+        Dim typeText = indent & HdptTypeName(hd.TipoDeParte())
         If isRaceDefault Then typeText &= " (RACE)"
         If isHnamExtra Then typeText &= " (HNAM)"
         Dim row As New ListViewItem(typeText)
         row.SubItems.Add(If(hd.EditorID, ""))
-        row.SubItems.Add(If(hd.FullName, ""))
+        row.SubItems.Add(If(hd.Name, ""))
         row.SubItems.Add(plugin)
         row.SubItems.Add(hex)
         row.Tag = tag
@@ -2636,8 +2637,8 @@ Public Class EditFace_Form
                 ' (symmetric with OnRemoveHeadPart) — otherwise replacing a hair leaves its old
                 ' hairline as a Misc root with no palette.
                 Dim existingIdx = p.HeadPartFormIDs.FindIndex(Function(fid)
-                                                                  Dim hd As HDPT_Data = Nothing
-                                                                  Return _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.PartType = partType
+                                                                  Dim hd As Canon.IHdpt = Nothing
+                                                                  Return _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.TipoDeParte() = partType
                                                               End Function)
                 If existingIdx >= 0 Then
                     Dim oldParentFid = p.HeadPartFormIDs(existingIdx)
@@ -2686,8 +2687,8 @@ Public Class EditFace_Form
     ''' los HDPT del load order). Es el resolver que piden los helpers compartidos de
     ''' <see cref="HeadPartResolver"/>; vive en un solo sitio para que el seed y el swap decidan con el mismo
     ''' cache. Nothing para un FormID que no resuelve a HDPT.</summary>
-    Private Function ResolveHdptForCascade(fid As UInteger) As HDPT_Data
-        Dim hd As HDPT_Data = Nothing
+    Private Function ResolveHdptForCascade(fid As UInteger) As Canon.IHdpt
+        Dim hd As Canon.IHdpt = Nothing
         _allHeadPartsByFid.TryGetValue(fid, hd)
         Return hd
     End Function
@@ -2713,14 +2714,14 @@ Public Class EditFace_Form
             ComboBoxHairColor.Items.Clear()
             ComboBoxHairColor.Items.Add(New HairColorItem With {.FormID = 0UI, .Display = "(none / preserve)"})
             For Each clfm In _allHairColors
-                Dim disp = If(String.IsNullOrEmpty(clfm.FullName), clfm.EditorID, $"{clfm.FullName}  ({clfm.EditorID})")
+                Dim disp = If(String.IsNullOrEmpty(clfm.Name), clfm.EditorID, $"{clfm.Name}  ({clfm.EditorID})")
                 ComboBoxHairColor.Items.Add(New HairColorItem With {
                     .FormID = clfm.FormID,
                     .Display = disp,
-                    .Color = clfm.Color,
-                    .HasColor = clfm.HasColor,
-                    .HasRemappingIndex = clfm.HasRemappingIndex,
-                    .RemappingIndex = clfm.RemappingIndex
+                    .Color = clfm.ColorDe(),
+                    .HasColor = clfm.TieneColor(),
+                    .HasRemappingIndex = clfm.TieneIndiceDePaleta(),
+                    .RemappingIndex = clfm.IndiceDePaleta()
                 })
             Next
 
@@ -2744,18 +2745,18 @@ Public Class EditFace_Form
             If targetFid <> 0UI AndAlso Not _allHairColors.Any(Function(c) c.FormID = targetFid) Then
                 Dim extraRec = _pluginManager.GetRecord(targetFid)
                 If extraRec IsNot Nothing AndAlso extraRec.Header.Signature = "CLFM" Then
-                    Dim extra = Canon.CanonRecords.Color(extraRec, _pluginManager)
+                    Dim extra = Canon.CanonRecords.Clfm(extraRec, _pluginManager)
                     If extra IsNot Nothing Then
-                        Dim extraName = If(Not String.IsNullOrEmpty(extra.FullName),
-                                           $"{extra.FullName}  ({extra.EditorID})",
+                        Dim extraName = If(Not String.IsNullOrEmpty(extra.Name),
+                                           $"{extra.Name}  ({extra.EditorID})",
                                            If(String.IsNullOrEmpty(extra.EditorID), $"[{targetFid:X8}]", extra.EditorID))
                         ComboBoxHairColor.Items.Insert(1, New HairColorItem With {
                             .FormID = extra.FormID,
                             .Display = $"{extraName}  — not in race list",
-                            .Color = extra.Color,
-                            .HasColor = extra.HasColor,
-                            .HasRemappingIndex = extra.HasRemappingIndex,
-                            .RemappingIndex = extra.RemappingIndex
+                            .Color = extra.ColorDe(),
+                            .HasColor = extra.TieneColor(),
+                            .HasRemappingIndex = extra.TieneIndiceDePaleta(),
+                            .RemappingIndex = extra.IndiceDePaleta()
                         })
                     End If
                 End If
@@ -2933,15 +2934,15 @@ Public Class EditFace_Form
             If effectiveFid <> 0UI Then
                 Dim rec = _pluginManager.GetRecord(effectiveFid)
                 If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
-                    Dim clfm = Canon.CanonRecords.Color(rec, _pluginManager)
+                    Dim clfm = Canon.CanonRecords.Clfm(rec, _pluginManager)
                     If clfm IsNot Nothing Then
                         it = New HairColorItem With {
                             .FormID = effectiveFid,
                             .Display = "",
-                            .Color = clfm.Color,
-                            .HasColor = clfm.HasColor,
-                            .HasRemappingIndex = clfm.HasRemappingIndex,
-                            .RemappingIndex = clfm.RemappingIndex
+                            .Color = clfm.ColorDe(),
+                            .HasColor = clfm.TieneColor(),
+                            .HasRemappingIndex = clfm.TieneIndiceDePaleta(),
+                            .RemappingIndex = clfm.IndiceDePaleta()
                         }
                     End If
                 End If
@@ -3330,11 +3331,11 @@ Public Class EditFace_Form
                 Dim colorMatchIdx As Integer = -1
                 For posIdx = 0 To opt.TemplateColors.Count - 1
                     Dim tplCol = opt.TemplateColors(posIdx)
-                    Dim clfm As Canon.ColorRecord = Nothing
+                    Dim clfm As Canon.IClfm = Nothing
                     If tplCol.ColorFormID <> 0UI Then
                         Dim rec = _pluginManager.GetRecord(tplCol.ColorFormID)
                         If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
-                            clfm = Canon.CanonRecords.Color(rec, _pluginManager)
+                            clfm = Canon.CanonRecords.Clfm(rec, _pluginManager)
                         End If
                     End If
                     ' WinForms Panel.BackColor renders alpha != 255 as fully transparent (the
@@ -3344,12 +3345,12 @@ Public Class EditFace_Form
                     ' rendered tint still uses the layer's tl.Color (set on selection) which
                     ' itself comes from TEND bytes 1..3 (no alpha) so the render is unaffected.
                     Dim swatchColor As Color
-                    If clfm IsNot Nothing AndAlso clfm.HasColor Then
-                        swatchColor = Color.FromArgb(255, clfm.Color.R, clfm.Color.G, clfm.Color.B)
+                    If clfm IsNot Nothing AndAlso clfm.TieneColor() Then
+                        swatchColor = Color.FromArgb(255, clfm.ColorDe().R, clfm.ColorDe().G, clfm.ColorDe().B)
                     Else
                         swatchColor = Color.Gray
                     End If
-                    Dim displayName As String = If(clfm IsNot Nothing AndAlso Not String.IsNullOrEmpty(clfm.FullName), clfm.FullName,
+                    Dim displayName As String = If(clfm IsNot Nothing AndAlso Not String.IsNullOrEmpty(clfm.Name), clfm.Name,
                                                   If(clfm IsNot Nothing AndAlso Not String.IsNullOrEmpty(clfm.EditorID), clfm.EditorID,
                                                      $"#{tplCol.TemplateIndex}"))
                     ComboBoxTintPalette.Items.Add(New TintPaletteItem With {
@@ -3365,10 +3366,10 @@ Public Class EditFace_Form
                         indexMatchIdx = thisComboIdx
                     End If
                     ' PRIORIDAD 2 (fallback): primera entrada cuyo CLFM RGB matchea exacto el color del layer.
-                    If colorMatchIdx < 0 AndAlso clfm IsNot Nothing AndAlso clfm.HasColor _
-                       AndAlso clfm.Color.R = tl.Color.R _
-                       AndAlso clfm.Color.G = tl.Color.G _
-                       AndAlso clfm.Color.B = tl.Color.B Then
+                    If colorMatchIdx < 0 AndAlso clfm IsNot Nothing AndAlso clfm.TieneColor() _
+                       AndAlso clfm.ColorDe().R = tl.Color.R _
+                       AndAlso clfm.ColorDe().G = tl.Color.G _
+                       AndAlso clfm.ColorDe().B = tl.Color.B Then
                         colorMatchIdx = thisComboIdx
                     End If
                 Next
@@ -3606,9 +3607,9 @@ Public Class EditFace_Form
                 If firstTplCol.ColorFormID <> 0UI Then
                     Dim rec = _pluginManager.GetRecord(firstTplCol.ColorFormID)
                     If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
-                        Dim clfm = Canon.CanonRecords.Color(rec, _pluginManager)
-                        If clfm IsNot Nothing AndAlso clfm.HasColor Then
-                            newLayer.Color = clfm.Color
+                        Dim clfm = Canon.CanonRecords.Clfm(rec, _pluginManager)
+                        If clfm IsNot Nothing AndAlso clfm.TieneColor() Then
+                            newLayer.Color = clfm.ColorDe()
                             newLayer.TemplateColorIndex = CInt(firstTplCol.TemplateIndex)
                         End If
                     End If

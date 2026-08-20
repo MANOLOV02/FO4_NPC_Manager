@@ -1,6 +1,7 @@
 ﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>DEBUG-ONLY. Reconstruye un preset de RaceMenu (NAM9 + sculpt per-shape) a partir de un FaceGen YA
 ''' HORNEADO, para mods que shipean el .nif de facegeom pero no el .jslot.
@@ -192,9 +193,9 @@ Public Module SseMorphReverseEngineer
 
         For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
             Dim hdpt = entry.Hdpt
-            If hdpt Is Nothing OrElse String.IsNullOrEmpty(hdpt.MeshPath) Then Continue For
+            If hdpt Is Nothing OrElse String.IsNullOrEmpty(hdpt.ModelModelFileName) Then Continue For
 
-            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.MeshPath)
+            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.ModelModelFileName)
             Dim baseBytes As Byte() = Nothing
             Try
                 baseBytes = FilesDictionary_class.GetBytes(baseKey)
@@ -239,9 +240,9 @@ Public Module SseMorphReverseEngineer
                     Continue For
                 End If
 
-                Dim rRace = NpcMorphResolver.ResolveHphHeadPartTriPath(hdpt.RaceMorphTriPath, nv, NpcMorphResolver.HphTriSlot.Race, vertsOf)
-                Dim rChargen = NpcMorphResolver.ResolveHphHeadPartTriPath(hdpt.ChargenMorphTriPath, nv, NpcMorphResolver.HphTriSlot.Chargen, vertsOf)
-                Dim rMesh = NpcMorphResolver.ResolveHphHeadPartTriPath(hdpt.TriPath, nv, NpcMorphResolver.HphTriSlot.Mesh, vertsOf)
+                Dim rRace = NpcMorphResolver.ResolveHphHeadPartTriPath(hdpt.ArchivoDeDeformacion(0UI), nv, NpcMorphResolver.HphTriSlot.Race, vertsOf)
+                Dim rChargen = NpcMorphResolver.ResolveHphHeadPartTriPath(hdpt.ArchivoDeDeformacion(2UI), nv, NpcMorphResolver.HphTriSlot.Chargen, vertsOf)
+                Dim rMesh = NpcMorphResolver.ResolveHphHeadPartTriPath(hdpt.ArchivoDeDeformacion(1UI), nv, NpcMorphResolver.HphTriSlot.Mesh, vertsOf)
                 Dim triHead = FaceGenBuildPipeline.LoadMergedHeadTri(rRace, rChargen, state, rMesh)
 
                 Dim job As New ShapeJob With {
@@ -625,7 +626,7 @@ Public Module SseMorphReverseEngineer
     ' =====================================================================================
 
     Private Class ShapeJob
-        Public Property Hdpt As HDPT_Data
+        Public Property Hdpt As Canon.IHdpt
         Public Property ChargenTriPath As String
         Public Property ShapeName As String
         Public Property N As Integer
@@ -854,7 +855,7 @@ Public Module SseMorphReverseEngineer
 
     Private Function IsBeardLike(job As ShapeJob) As Boolean
         If job.Hdpt Is Nothing Then Return False
-        Return job.Hdpt.PartType = 4
+        Return job.Hdpt.TipoDeParte() = 4
     End Function
 
     ''' <summary>0xFFFFFFFF es el centinela "unset" del CK (no un tipo 0 real) — se muestra como tal para

@@ -1,4 +1,5 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Single source of truth for the FULL RaceMenu <c>.jslot</c> ↔ <see cref="LooksmenuLoader.LooksmenuPreset"/>
 ''' mapping (SSE only). Unifies the two per-editor mappings that today live split across the Edit Face and Edit Body
@@ -121,9 +122,9 @@ Public Module RaceMenuPresetMapper
         ElseIf preset.HairColorFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
             Dim clfmRec = pluginManager.GetRecord(preset.HairColorFormID)
             If clfmRec IsNot Nothing AndAlso clfmRec.Header.Signature = "CLFM" Then
-                Dim clfm = Canon.CanonRecords.Color(clfmRec, pluginManager)
-                If clfm IsNot Nothing AndAlso clfm.HasColor Then
-                    j.HairColor = (CInt(clfm.Color.R) << 16) Or (CInt(clfm.Color.G) << 8) Or CInt(clfm.Color.B)
+                Dim clfm = Canon.CanonRecords.Clfm(clfmRec, pluginManager)
+                If clfm IsNot Nothing AndAlso clfm.TieneColor() Then
+                    j.HairColor = (CInt(clfm.ColorDe().R) << 16) Or (CInt(clfm.ColorDe().G) << 8) Or CInt(clfm.ColorDe().B)
                     j.HadHairColor = True
                 End If
             End If

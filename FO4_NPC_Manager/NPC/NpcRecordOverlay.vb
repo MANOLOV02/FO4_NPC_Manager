@@ -1,4 +1,5 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' Reusable NPC record-parsing and LooksMenu preset overlay helpers. App-specific
@@ -58,7 +59,7 @@ Public Module NpcRecordOverlay
     Public Delegate Function ResolveLmSkinTemplateDelegate(templateId As String) As LmSkinTemplate
 
     ''' <summary>HDPT.PartType enum values matching xEdit wbDefinitionsFO4.pas:7373-7384. These
-    ''' are the values the parser surfaces in HDPT_Data.PartType and that the renderer reads via
+    ''' are the values the parser surfaces in Canon.IHdpt.PartType and that the renderer reads via
     ''' state.HeadPartFormIDs lookups — NOT the F4SE runtime BGSHeadPart::Type enum (which uses
     ''' different numbering). Used by ApplyLmHdptReplacement and by MainForm's overlay merge.</summary>
     Public Const HdptPartType_Misc As Byte = 0
@@ -305,7 +306,7 @@ Public Module NpcRecordOverlay
         '   8=Teeth, 9=HeadRear.
         ' (Note: the F4SE C++ enum uses different numbering — kTypeFace=0, kTypeHeadRear=2 etc.
         ' That's the runtime BGSHeadPart::Type, NOT the record PartType. Our parser already
-        ' surfaces the record value in HDPT_Data.PartType, so we match xEdit's numbering.)
+        ' surfaces the record value in Canon.IHdpt.PartType, so we match xEdit's numbering.)
         If lmTemplate IsNot Nothing Then
             Dim genderIdx As Integer = If(raw.IsFemale, 1, 0)
             ' The helper reads each HDPT's own PartType to decide which slot to replace,
@@ -577,8 +578,8 @@ Public Module NpcRecordOverlay
         ' headPart->type for the slot lookup, doesn't accept it as an argument).
         Dim targetPartType As Integer
         Try
-            Dim newHdpt = RecordParsers.ParseHDPT(newRec, pluginManager)
-            targetPartType = newHdpt.PartType
+            Dim newHdpt = Canon.CanonRecords.Hdpt(newRec, pluginManager)
+            targetPartType = newHdpt.TipoDeParte()
         Catch ex As Exception
             Logger.LogLazy(Function() $"[LM-HDPT-REPLACE] HDPT 0x{newHdptFormID:X8} parse failed; replacement skipped: {ex.GetType().Name}: {ex.Message}")
             Return
@@ -599,8 +600,8 @@ Public Module NpcRecordOverlay
             Dim r = pluginManager.GetRecord(headParts(i))
             If r Is Nothing OrElse r.Header.Signature <> "HDPT" Then Continue For
             Try
-                Dim hd = RecordParsers.ParseHDPT(r, pluginManager)
-                If hd.PartType = targetPartType Then
+                Dim hd = Canon.CanonRecords.Hdpt(r, pluginManager)
+                If hd.TipoDeParte() = targetPartType Then
                     If replaceIdx < 0 Then
                         replaceIdx = i
                     Else

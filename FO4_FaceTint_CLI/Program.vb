@@ -2,6 +2,7 @@
 Imports System.Linq
 Imports System.Text.Json
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' Headless FaceTint texture baker. Given an ESP name + NPC EditorID (or a --list of them), composes
@@ -702,8 +703,8 @@ Module Program
                 For Each e In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(roots, pm)
                     Dim eid = If(e.Hdpt.EditorID, "")
                     If eid = "" OrElse Not seen.Add(eid) Then Continue For
-                    mine.Add(Tuple.Create(CInt(e.Hdpt.PartType), CStr(eid)))
-                    mineFid.Add(Tuple.Create(e.Hdpt.FormID, CInt(e.Hdpt.PartType), CStr(eid)))
+                    mine.Add(Tuple.Create(CInt(e.Hdpt.TipoDeParte()), CStr(eid)))
+                    mineFid.Add(Tuple.Create(e.Hdpt.FormID, CInt(e.Hdpt.TipoDeParte()), CStr(eid)))
                 Next
                 Dim mineSorted = mine.OrderBy(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item2).ToList()
                 ' HIPOTESIS B: el orden del motor = la lista del NPC en orden, con las extra parts expandidas
@@ -731,10 +732,10 @@ Module Program
                            If fid = 0UI OrElse Not visited.Add(fid) Then Return
                            Dim hr2 = pm.GetRecord(fid)
                            If hr2 Is Nothing OrElse hr2.Header.Signature <> "HDPT" Then Return
-                           Dim hd2 = RecordParsers.ParseHDPT(hr2, pm)
+                           Dim hd2 = Canon.CanonRecords.Hdpt(hr2, pm)
                            If hd2 Is Nothing Then Return
-                           If hd2.ExtraPartFormIDs IsNot Nothing Then
-                               For Each ex In hd2.ExtraPartFormIDs : emit(ex) : Next
+                           If hd2.PartesExtra() IsNot Nothing Then
+                               For Each ex In hd2.PartesExtra() : emit(ex) : Next
                            End If
                            If Not String.IsNullOrEmpty(hd2.EditorID) Then h11.Add(hd2.EditorID)
                        End Sub
@@ -748,10 +749,10 @@ Module Program
                             If fid = 0UI OrElse Not visited2.Add(fid) Then Return
                             Dim hr3 = pm.GetRecord(fid)
                             If hr3 Is Nothing OrElse hr3.Header.Signature <> "HDPT" Then Return
-                            Dim hd3 = RecordParsers.ParseHDPT(hr3, pm)
+                            Dim hd3 = Canon.CanonRecords.Hdpt(hr3, pm)
                             If hd3 Is Nothing Then Return
-                            If hd3.ExtraPartFormIDs IsNot Nothing Then
-                                For Each ex In hd3.ExtraPartFormIDs : emit2(ex) : Next
+                            If hd3.PartesExtra() IsNot Nothing Then
+                                For Each ex In hd3.PartesExtra() : emit2(ex) : Next
                             End If
                             If Not String.IsNullOrEmpty(hd3.EditorID) Then h12.Add(hd3.EditorID)
                         End Sub
@@ -759,8 +760,8 @@ Module Program
                                                    Dim rr2 = pm.GetRecord(rf)
                                                    Dim pt2 = 99
                                                    If rr2 IsNot Nothing AndAlso rr2.Header.Signature = "HDPT" Then
-                                                       Dim hh = RecordParsers.ParseHDPT(rr2, pm)
-                                                       If hh IsNot Nothing Then pt2 = hh.PartType
+                                                       Dim hh = Canon.CanonRecords.Hdpt(rr2, pm)
+                                                       If hh IsNot Nothing Then pt2 = hh.TipoDeParte()
                                                    End If
                                                    Return Tuple.Create(pt2, rf)
                                                End Function).OrderBy(Function(z) z.Item1).Select(Function(z) z.Item2).ToList()
@@ -778,10 +779,10 @@ Module Program
                                              If fid = 0UI OrElse Not vis.Add(fid) Then Return
                                              Dim r4 = pm.GetRecord(fid)
                                              If r4 Is Nothing OrElse r4.Header.Signature <> "HDPT" Then Return
-                                             Dim h4 = RecordParsers.ParseHDPT(r4, pm)
+                                             Dim h4 = Canon.CanonRecords.Hdpt(r4, pm)
                                              If h4 Is Nothing Then Return
-                                             If h4.ExtraPartFormIDs IsNot Nothing Then
-                                                 For Each ex In Enumerable.Reverse(h4.ExtraPartFormIDs) : rec(ex) : Next
+                                             If h4.PartesExtra() IsNot Nothing Then
+                                                 For Each ex In Enumerable.Reverse(h4.PartesExtra()) : rec(ex) : Next
                                              End If
                                              If Not String.IsNullOrEmpty(h4.EditorID) Then outL.Add(h4.EditorID)
                                          End Sub
@@ -800,8 +801,8 @@ Module Program
                     Dim typeOfFid = Function(f As UInteger) As Integer
                                         Dim rr3 = pm.GetRecord(f)
                                         If rr3 Is Nothing OrElse rr3.Header.Signature <> "HDPT" Then Return 99
-                                        Dim hh3 = RecordParsers.ParseHDPT(rr3, pm)
-                                        Return If(hh3 Is Nothing, 99, hh3.PartType)
+                                        Dim hh3 = Canon.CanonRecords.Hdpt(rr3, pm)
+                                        Return If(hh3 Is Nothing, 99, hh3.TipoDeParte())
                                     End Function
                     Dim npcByType As New Dictionary(Of Integer, UInteger)
                     For Each rf In If(npc.HeadPartFormIDs, New List(Of UInteger)())
@@ -829,8 +830,8 @@ Module Program
                     Dim tOfFid = Function(f As UInteger) As Integer
                                      Dim rr5 = pm.GetRecord(f)
                                      If rr5 Is Nothing OrElse rr5.Header.Signature <> "HDPT" Then Return 99
-                                     Dim hh5 = RecordParsers.ParseHDPT(rr5, pm)
-                                     Return If(hh5 Is Nothing, 99, hh5.PartType)
+                                     Dim hh5 = Canon.CanonRecords.Hdpt(rr5, pm)
+                                     Return If(hh5 Is Nothing, 99, hh5.TipoDeParte())
                                  End Function
                     Dim pnam = If(npc.HeadPartFormIDs, New List(Of UInteger)())
                     Dim npcTypes As New HashSet(Of Integer)(pnam.Select(Function(f) tOfFid(f)))
@@ -848,8 +849,8 @@ Module Program
                 For Each z In mineFid
                     Dim r6 = pm.GetRecord(z.Item1)
                     If r6 IsNot Nothing AndAlso r6.Header.Signature = "HDPT" Then
-                        Dim h6 = RecordParsers.ParseHDPT(r6, pm)
-                        If h6 IsNot Nothing Then meshOf(z.Item3) = If(h6.MeshPath, "")
+                        Dim h6 = Canon.CanonRecords.Hdpt(r6, pm)
+                        If h6 IsNot Nothing Then meshOf(z.Item3) = If(h6.ModelModelFileName, "")
                     End If
                 Next
                 Dim allN = mineFid.Select(Function(z) z.Item3).ToList()
@@ -914,9 +915,9 @@ Module Program
                 For Each z In mineFid
                     Dim r7 = pm.GetRecord(z.Item1)
                     If r7 IsNot Nothing AndAlso r7.Header.Signature = "HDPT" Then
-                        Dim h7 = RecordParsers.ParseHDPT(r7, pm)
+                        Dim h7 = Canon.CanonRecords.Hdpt(r7, pm)
                         If h7 IsNot Nothing Then
-                            meshOf2(z.Item3) = If(h7.MeshPath, "")
+                            meshOf2(z.Item3) = If(h7.ModelModelFileName, "")
                             flagOf(z.Item3) = h7.Flags
                         End If
                     End If
@@ -1078,15 +1079,15 @@ Module Program
                                                                         z.Value.Header.Signature = "HDPT").
                                                       Select(Function(z) z.Value).
                                                       FirstOrDefault(Function(z)
-                                                                         Dim hh = RecordParsers.ParseHDPT(z, pm)
+                                                                         Dim hh = Canon.CanonRecords.Hdpt(z, pm)
                                                                          Return hh IsNot Nothing AndAlso String.Equals(hh.EditorID, nm, StringComparison.OrdinalIgnoreCase)
                                                                      End Function)
                             If hpRec IsNot Nothing Then
-                                Dim hh2 = RecordParsers.ParseHDPT(hpRec, pm)
+                                Dim hh2 = Canon.CanonRecords.Hdpt(hpRec, pm)
                                 Dim srcHdpt = hpRec.SourcePluginName
                                 Dim srcTxst = ""
-                                If hh2 IsNot Nothing AndAlso hh2.TextureSetFormID <> 0UI Then
-                                    Dim tr2 = pm.GetRecord(hh2.TextureSetFormID)
+                                If hh2 IsNot Nothing AndAlso hh2.TextureSet <> 0UI Then
+                                    Dim tr2 = pm.GetRecord(hh2.TextureSet)
                                     If tr2 IsNot Nothing Then srcTxst = tr2.SourcePluginName
                                 End If
                                 Dim later = Function(pl As String) As Boolean
@@ -1102,14 +1103,14 @@ Module Program
                             Dim esperado As String = Nothing
                             Dim myMesh As String = Nothing
                             If hpRec IsNot Nothing Then
-                                Dim hx = RecordParsers.ParseHDPT(hpRec, pm)
+                                Dim hx = Canon.CanonRecords.Hdpt(hpRec, pm)
                                 If hx IsNot Nothing Then
-                                    myMesh = hx.MeshPath
-                                    If hx.TextureSetFormID <> 0UI Then
-                                        Dim txr = pm.GetRecord(hx.TextureSetFormID)
+                                    myMesh = hx.ModelModelFileName
+                                    If hx.TextureSet <> 0UI Then
+                                        Dim txr = pm.GetRecord(hx.TextureSet)
                                         If txr IsNot Nothing AndAlso txr.Header.Signature = "TXST" Then
-                                            Dim tt = RecordParsers.ParseTXST(txr, pm)
-                                            If tt IsNot Nothing Then esperado = If(q = 0, tt.DiffuseTexture, If(q = 1, tt.NormalTexture, Nothing))
+                                            Dim tt = Canon.CanonRecords.Txst(txr, pm)
+                                            If tt IsNot Nothing Then esperado = If(q = 0, tt.Ranura(0), If(q = 1, tt.Ranura(1), Nothing))
                                         End If
                                     End If
                                 End If
@@ -1127,15 +1128,15 @@ Module Program
                                 If myMesh IsNot Nothing Then
                                     For Each kv2 In pm.AllRecords
                                         If kv2.Value Is Nothing OrElse kv2.Value.Header.Signature <> "HDPT" Then Continue For
-                                        Dim ho = RecordParsers.ParseHDPT(kv2.Value, pm)
-                                        If ho Is Nothing OrElse Not String.Equals(ho.MeshPath, myMesh, StringComparison.OrdinalIgnoreCase) Then Continue For
+                                        Dim ho = Canon.CanonRecords.Hdpt(kv2.Value, pm)
+                                        If ho Is Nothing OrElse Not String.Equals(ho.ModelModelFileName, myMesh, StringComparison.OrdinalIgnoreCase) Then Continue For
                                         If String.Equals(ho.EditorID, nm, StringComparison.OrdinalIgnoreCase) Then Continue For
-                                        If ho.TextureSetFormID = 0UI Then Continue For
-                                        Dim tr3 = pm.GetRecord(ho.TextureSetFormID)
+                                        If ho.TextureSet = 0UI Then Continue For
+                                        Dim tr3 = pm.GetRecord(ho.TextureSet)
                                         If tr3 Is Nothing OrElse tr3.Header.Signature <> "TXST" Then Continue For
-                                        Dim t3d = RecordParsers.ParseTXST(tr3, pm)
+                                        Dim t3d = Canon.CanonRecords.Txst(tr3, pm)
                                         If t3d Is Nothing Then Continue For
-                                        Dim otro = If(q = 0, t3d.DiffuseTexture, If(q = 1, t3d.NormalTexture, Nothing))
+                                        Dim otro = If(q = 0, t3d.Ranura(0), If(q = 1, t3d.Ranura(1), Nothing))
                                         If eq(va, otro) Then hermana = True : Exit For
                                     Next
                                 End If
@@ -1183,7 +1184,7 @@ Module Program
                 If npc Is Nothing OrElse npc.HeadPartFormIDs Is Nothing OrElse npc.HeadPartFormIDs.Count = 0 Then Continue For
                 tot += 1
                 ' malla -> lista de (hdpt, tnam). Se EXPANDEN las extra parts, que es lo que hace el motor.
-                Dim byMesh As New Dictionary(Of String, List(Of HDPT_Data))(StringComparer.OrdinalIgnoreCase)
+                Dim byMesh As New Dictionary(Of String, List(Of Canon.IHdpt))(StringComparer.OrdinalIgnoreCase)
                 Dim queue As New Queue(Of UInteger)(npc.HeadPartFormIDs)
                 Dim seenHp As New HashSet(Of UInteger)
                 While queue.Count > 0
@@ -1191,24 +1192,24 @@ Module Program
                     If fid = 0UI OrElse Not seenHp.Add(fid) Then Continue While
                     Dim hr = pm.GetRecord(fid)
                     If hr Is Nothing OrElse hr.Header.Signature <> "HDPT" Then Continue While
-                    Dim h = RecordParsers.ParseHDPT(hr, pm)
-                    If h Is Nothing OrElse String.IsNullOrEmpty(h.MeshPath) Then Continue While
-                    If h.ExtraPartFormIDs IsNot Nothing Then
-                        For Each e In h.ExtraPartFormIDs : queue.Enqueue(e) : Next
+                    Dim h = Canon.CanonRecords.Hdpt(hr, pm)
+                    If h Is Nothing OrElse String.IsNullOrEmpty(h.ModelModelFileName) Then Continue While
+                    If h.PartesExtra() IsNot Nothing Then
+                        For Each e In h.PartesExtra() : queue.Enqueue(e) : Next
                     End If
-                    If Not byMesh.ContainsKey(h.MeshPath) Then byMesh(h.MeshPath) = New List(Of HDPT_Data)
-                    byMesh(h.MeshPath).Add(h)
+                    If Not byMesh.ContainsKey(h.ModelModelFileName) Then byMesh(h.ModelModelFileName) = New List(Of Canon.IHdpt)
+                    byMesh(h.ModelModelFileName).Add(h)
                 End While
                 Dim hasCol = False
                 For Each mk In byMesh
                     If mk.Value.Count < 2 Then Continue For
                     ' sólo cuenta si los TNAM DIFIEREN: con el mismo TNAM el "gana el último" es inerte.
-                    Dim distinct = mk.Value.Select(Function(z) z.TextureSetFormID).Distinct().Count()
+                    Dim distinct = mk.Value.Select(Function(z) z.TextureSet).Distinct().Count()
                     If distinct < 2 Then Continue For
                     hasCol = True
                     Dim key = String.Join(" + ", mk.Value.Select(Function(z) z.EditorID).OrderBy(Function(z) z))
                     pairs(key) = If(pairs.ContainsKey(key), pairs(key), 0) + 1
-                    Dim tk = String.Join("/", mk.Value.Select(Function(z) z.PartType.ToString()).Distinct().OrderBy(Function(z) z))
+                    Dim tk = String.Join("/", mk.Value.Select(Function(z) z.TipoDeParte().ToString()).Distinct().OrderBy(Function(z) z))
                     byType(tk) = If(byType.ContainsKey(tk), byType(tk), 0) + 1
                 Next
                 If hasCol Then
@@ -1249,37 +1250,37 @@ Module Program
                 Dim rc = kv.Value
                 If rc Is Nothing OrElse rc.Header.Signature <> sig Then Continue For
                 If sig = "HDPT" Then
-                    Dim h = RecordParsers.ParseHDPT(rc, pm)
+                    Dim h = Canon.CanonRecords.Hdpt(rc, pm)
                     If h Is Nothing OrElse (sub_ <> "" AndAlso h.EditorID.IndexOf(sub_, StringComparison.OrdinalIgnoreCase) < 0) Then Continue For
                     n += 1
-                    Dim extra = If(h.ExtraPartFormIDs Is Nothing OrElse h.ExtraPartFormIDs.Count = 0, "-",
-                                   String.Join(",", h.ExtraPartFormIDs.Select(Function(e) $"0x{e:X8}")))
-                    Console.WriteLine($"HDPT 0x{kv.Key:X8}[{rc.SourcePluginName}] '{h.EditorID}' partType={h.PartType} flags=0x{h.Flags:X2} mesh='{h.MeshPath}' TNAM=0x{h.TextureSetFormID:X8} HNAM/extra={extra}")
+                    Dim extra = If(h.PartesExtra() Is Nothing OrElse h.PartesExtra().Count = 0, "-",
+                                   String.Join(",", h.PartesExtra().Select(Function(e) $"0x{e:X8}")))
+                    Console.WriteLine($"HDPT 0x{kv.Key:X8}[{rc.SourcePluginName}] '{h.EditorID}' partType={h.TipoDeParte()} flags=0x{h.Flags:X2} mesh='{h.ModelModelFileName}' TNAM=0x{h.TextureSet:X8} HNAM/extra={extra}")
                     ' NAM0/NAM1: el .tri sale del RECORD, no de una convencion de nombres sobre el mesh
                     ' (ver la ley "tri = solo del record"). Sin esto no se puede saber contra que .tri
                     ' se aplican los sliders MSDK/MSDV de un NPC.
-                    Console.WriteLine($"        tri: raceMorph='{h.RaceMorphTriPath}' tri='{h.TriPath}' chargenMorph='{h.ChargenMorphTriPath}'")
-                    If h.TextureSetFormID <> 0UI Then
-                        Dim tr = pm.GetRecord(h.TextureSetFormID)
+                    Console.WriteLine($"        tri: raceMorph='{h.ArchivoDeDeformacion(0UI)}' tri='{h.ArchivoDeDeformacion(1UI)}' chargenMorph='{h.ArchivoDeDeformacion(2UI)}'")
+                    If h.TextureSet <> 0UI Then
+                        Dim tr = pm.GetRecord(h.TextureSet)
                         If tr IsNot Nothing AndAlso tr.Header.Signature = "TXST" Then
-                            Dim t = RecordParsers.ParseTXST(tr, pm)
-                            Console.WriteLine($"        TNAM(gana {tr.SourcePluginName}) D='{t.DiffuseTexture}' N='{t.NormalTexture}'")
+                            Dim t = Canon.CanonRecords.Txst(tr, pm)
+                            Console.WriteLine($"        TNAM(gana {tr.SourcePluginName}) D='{t.Ranura(0)}' N='{t.Ranura(1)}'")
                         End If
                     End If
                 ElseIf sig = "TXST" Then
                     ' TXST: los 8 slots TX00..TX07 + MNAM. TX02 = Wrinkles, que es el que
                     ' `NpcMaterialResolver` puede imponer sobre el material y que termina en el
                     ' slot 5 del texture set del NIF cuando el shader es FaceTint.
-                    Dim t = RecordParsers.ParseTXST(rc, pm)
+                    Dim t = Canon.CanonRecords.Txst(rc, pm)
                     If t Is Nothing Then Continue For
-                    Dim hay = New String() {t.EditorID, t.DiffuseTexture, t.NormalTexture, t.WrinklesTexture,
-                                            t.GlowTexture, t.HeightTexture, t.EnvironmentTexture,
-                                            t.MultilayerTexture, t.SmoothSpecTexture, t.MaterialPath}
+                    Dim hay = New String() {t.EditorID, t.Ranura(0), t.Ranura(1), t.Ranura(2),
+                                            t.Ranura(3), t.Ranura(4), t.Ranura(5),
+                                            t.Ranura(6), t.Ranura(7), t.MaterialDe()}
                     If sub_ <> "" AndAlso Not hay.Any(Function(h) If(h, "").IndexOf(sub_, StringComparison.OrdinalIgnoreCase) >= 0) Then Continue For
                     n += 1
-                    Console.WriteLine($"TXST 0x{kv.Key:X8}[{rc.SourcePluginName}] '{t.EditorID}' flags=0x{t.Flags:X4} facegen={t.IsFacegenTextures}")
-                    Console.WriteLine($"        TX00(D)='{t.DiffuseTexture}'  TX01(N)='{t.NormalTexture}'  TX02(Wrinkles)='{t.WrinklesTexture}'")
-                    Console.WriteLine($"        TX03(G)='{t.GlowTexture}'  TX04(H)='{t.HeightTexture}'  TX05(Env)='{t.EnvironmentTexture}'  TX06(ML)='{t.MultilayerTexture}'  TX07(S)='{t.SmoothSpecTexture}'  MNAM='{t.MaterialPath}'")
+                    Console.WriteLine($"TXST 0x{kv.Key:X8}[{rc.SourcePluginName}] '{t.EditorID}' flags=0x{t.Flags:X4} facegen={t.EsDeCaraGenerada()}")
+                    Console.WriteLine($"        TX00(D)='{t.Ranura(0)}'  TX01(N)='{t.Ranura(1)}'  TX02(Wrinkles)='{t.Ranura(2)}'")
+                    Console.WriteLine($"        TX03(G)='{t.Ranura(3)}'  TX04(H)='{t.Ranura(4)}'  TX05(Env)='{t.Ranura(5)}'  TX06(ML)='{t.Ranura(6)}'  TX07(S)='{t.Ranura(7)}'  MNAM='{t.MaterialDe()}'")
                 End If
             Next
             Console.WriteLine($"[recscan] {n} records {sig} matchean '{sub_}'")
@@ -4307,8 +4308,8 @@ persist:
                             Dim col = "?"
                             Dim crec = pm.GetRecord(tc.ColorFormID)
                             If crec IsNot Nothing AndAlso crec.Header.Signature = "CLFM" Then
-                                Dim clfm = Canon.CanonRecords.Color(crec, pm)
-                                If clfm IsNot Nothing AndAlso clfm.HasColor Then col = $"ARGB(0x{clfm.Color.ToArgb():X8})"
+                                Dim clfm = Canon.CanonRecords.Clfm(crec, pm)
+                                If clfm IsNot Nothing AndAlso clfm.TieneColor() Then col = $"ARGB(0x{clfm.ColorDe().ToArgb():X8})"
                             End If
                             Console.WriteLine($"        tplCol tplIdx={tc.TemplateIndex} alpha={tc.Alpha:G6} blendOp={tc.BlendOperation}/{BlendName(tc.BlendOperation)} clfm=0x{tc.ColorFormID:X8} {col}")
                         Next
@@ -4709,14 +4710,14 @@ persist:
             Dim r = kv.Value
             If r Is Nothing OrElse r.Header.Signature <> "TXST" Then Continue For
             txstTotal += 1
-            Dim t = RecordParsers.ParseTXST(r, pm)
-            If t Is Nothing OrElse String.IsNullOrEmpty(t.MaterialPath) Then Continue For
+            Dim t = Canon.CanonRecords.Txst(r, pm)
+            If t Is Nothing OrElse String.IsNullOrEmpty(t.MaterialDe()) Then Continue For
             withMnam += 1
-            Dim mat = MaterialResolver.TryLoadMaterialFromDictionary(t.MaterialPath, New FO4UnifiedMaterial_Class(), Nothing, Nothing)
+            Dim mat = MaterialResolver.TryLoadMaterialFromDictionary(t.MaterialDe(), New FO4UnifiedMaterial_Class(), Nothing, Nothing)
             If mat Is Nothing Then
                 ' ⛔ NO degradar a "sin alpha": un MNAM que no carga es un dato DESCONOCIDO, no un cero.
                 mnamLoadFail += 1
-                Console.WriteLine($"  [MNAM-FAIL] txst=0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialPath}' → DID NOT LOAD (alpha UNKNOWN)")
+                Console.WriteLine($"  [MNAM-FAIL] txst=0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialDe()}' → DID NOT LOAD (alpha UNKNOWN)")
                 Continue For
             End If
             ' El predicado es AlphaBlendEnabled (el booleano real), NO `AlphaBlendMode <> 0`: el enum tiene
@@ -4724,7 +4725,7 @@ persist:
             ' cero mediria otra cosa. Los 3 campos que el resolver copia son AlphaTest / AlphaTestRef /
             ' AlphaBlendMode, y los dos que hacen VISIBLE el alpha son AlphaTest y AlphaBlendEnabled.
             If mat.AlphaTest OrElse mat.AlphaBlendEnabled Then
-                alphaTxst(kv.Key) = $"0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialPath}' alphaTest={mat.AlphaTest} ref={mat.AlphaTestRef} blendEnabled={mat.AlphaBlendEnabled} blendMode={mat.AlphaBlendMode}"
+                alphaTxst(kv.Key) = $"0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialDe()}' alphaTest={mat.AlphaTest} ref={mat.AlphaTestRef} blendEnabled={mat.AlphaBlendEnabled} blendMode={mat.AlphaBlendMode}"
             End If
         Next
         Console.WriteLine($"[TXST] total={txstTotal} conMNAM={withMnam} MNAM-no-carga={mnamLoadFail} conALPHA={alphaTxst.Count}")
@@ -4751,11 +4752,11 @@ persist:
                 If r Is Nothing Then Continue For
                 Select Case r.Header.Signature
                     Case "HDPT"
-                        Dim h = RecordParsers.ParseHDPT(r, pm)
-                        If h Is Nothing OrElse h.TextureSetFormID = 0UI OrElse Not alphaTxst.ContainsKey(h.TextureSetFormID) Then Continue For
-                        Dim isFace = (h.PartType = PartTypeFace)
+                        Dim h = Canon.CanonRecords.Hdpt(r, pm)
+                        If h Is Nothing OrElse h.TextureSet = 0UI OrElse Not alphaTxst.ContainsKey(h.TextureSet) Then Continue For
+                        Dim isFace = (h.TipoDeParte() = PartTypeFace)
                         If isFace Then faceRefs += 1 Else nonFaceRefs += 1
-                        Console.WriteLine($"  HDPT.TNAM 0x{kv.Key:X8} {h.EditorID} partType={h.PartType} usesBodyTex={h.UsesBodyTexture} → txst=0x{h.TextureSetFormID:X8}  [{If(isFace, "CARA", "NO-CARA")}]")
+                        Console.WriteLine($"  HDPT.TNAM 0x{kv.Key:X8} {h.EditorID} partType={h.TipoDeParte()} usesBodyTex={h.UsaTexturaDelCuerpo()} → txst=0x{h.TextureSet:X8}  [{If(isFace, "CARA", "NO-CARA")}]")
                     Case "NPC_"
                         Dim n = RecordParsers.ParseNPC(r, r.SourcePluginName, pm)
                         If n Is Nothing OrElse n.HeadTextureFormID = 0UI OrElse Not alphaTxst.ContainsKey(n.HeadTextureFormID) Then Continue For
@@ -5197,10 +5198,10 @@ persist:
             If verbose Then Console.WriteLine($"   [traza 0x{r.SrcFid:X8}] headParts={merged.Count}")
             For Each entry In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(merged, pm)
                 Dim hd = entry.Hdpt
-                If hd Is Nothing OrElse String.IsNullOrEmpty(hd.MeshPath) Then Continue For
-                Dim flatKey = FO4_NPC_Manager.NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hd.MeshPath)
+                If hd Is Nothing OrElse String.IsNullOrEmpty(hd.ModelModelFileName) Then Continue For
+                Dim flatKey = FO4_NPC_Manager.NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hd.ModelModelFileName)
                 Dim fbnsKey = FO4_NPC_Manager.MeshPathHelpers.TryGetFaceBonesVariant(flatKey)
-                If verbose Then Console.WriteLine($"      hdpt='{hd.EditorID}' mesh='{hd.MeshPath}' flatKey='{flatKey}' inDict={FilesDictionary_class.Dictionary.ContainsKey(flatKey)} fbns='{fbnsKey}'")
+                If verbose Then Console.WriteLine($"      hdpt='{hd.EditorID}' mesh='{hd.ModelModelFileName}' flatKey='{flatKey}' inDict={FilesDictionary_class.Dictionary.ContainsKey(flatKey)} fbns='{fbnsKey}'")
                 If fbnsKey = "" Then meshesNoFbns += 1 : Continue For   ' sin `_faceBones` no hay insumo ⇒ sin cambio
                 meshesWithFbns += 1
 
@@ -5246,8 +5247,8 @@ persist:
                     Try
                         baked = FO4_NPC_Manager.FaceGenBuildPipeline.ComputeBakedVertices(
                             st, flatNif, flatShape, fbnsNif, fbnsShape,
-                            hd.ChargenMorphTriPath, srcNif:=flatNif, srcShape:=flatShape,
-                            raceMorphTriPath:=hd.RaceMorphTriPath)
+                            hd.ArchivoDeDeformacion(2UI), srcNif:=flatNif, srcShape:=flatShape,
+                            raceMorphTriPath:=hd.ArchivoDeDeformacion(0UI))
                         If verbose AndAlso baked Is Nothing Then Console.WriteLine($"         shape '{nm}': ComputeBakedVertices returned Nothing")
                     Catch ex As Exception
                         If verbose Then Console.WriteLine($"         shape '{nm}': EXCEPTION {ex.GetType().Name}: {ex.Message}")
@@ -8839,8 +8840,8 @@ persist:
         ' Razas custom detectadas = las que el script habría insertado en alguna lista.
         Dim races As New HashSet(Of UInteger)
         For Each hdptRec In pm.GetRecordsOfType("HDPT")
-            Dim h = RecordParsers.ParseHDPT(hdptRec, pm)
-            If h Is Nothing OrElse h.ValidRacesFormID = 0UI Then Continue For
+            Dim h = Canon.CanonRecords.Hdpt(hdptRec, pm)
+            If h Is Nothing OrElse h.ValidRaces = 0UI Then Continue For
         Next
         For Each raceRec In pm.GetRecordsOfType("RACE")
             Dim rfid = pm.ResolveReferencedFormID(raceRec.SourcePluginName, raceRec.Header.FormID)
@@ -8856,8 +8857,8 @@ persist:
 
             ' Efecto real en el filtro de los catálogos: HDPT válidos con y sin la reconstrucción.
             Dim withCat = 0, withoutCat = 0
-            Dim cacheA As New Dictionary(Of UInteger, Canon.FormListRecord)
-            Dim cacheB As New Dictionary(Of UInteger, Canon.FormListRecord)
+            Dim cacheA As New Dictionary(Of UInteger, Canon.IFlst)
+            Dim cacheB As New Dictionary(Of UInteger, Canon.IFlst)
             Dim saved = FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog
             For Each hdptRec In pm.GetRecordsOfType("HDPT")
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
@@ -8879,7 +8880,7 @@ persist:
             If r Is Nothing Then Continue For
             If r.EditorID <> "NordRace" AndAlso r.EditorID <> "BretonRace" AndAlso r.EditorID <> "OrcRace" AndAlso r.EditorID <> "NordRaceVampire" Then Continue For
             Dim rfid = pm.ResolveReferencedFormID(raceRec.SourcePluginName, raceRec.Header.FormID)
-            Dim cache As New Dictionary(Of UInteger, Canon.FormListRecord)
+            Dim cache As New Dictionary(Of UInteger, Canon.IFlst)
             Dim n = 0
             For Each hdptRec In pm.GetRecordsOfType("HDPT")
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
@@ -9971,11 +9972,11 @@ persist:
             For Each hpId In npcData.HeadPartFormIDs
                 Dim rec = pm.GetRecord(hpId)
                 If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Console.WriteLine($"  HDPT 0x{hpId:X8} not resolved") : Continue For
-                Dim hdpt = RecordParsers.ParseHDPT(rec, pm)
-                Console.WriteLine($"  HDPT 0x{hpId:X8} '{rec.EditorID}' partType={hdpt.PartType} src='{rec.SourcePluginName}' mesh='{hdpt.MeshPath}'")
-                PrintTxst(pm, "    HDPT.TextureSet", hdpt.TextureSetFormID)
-                If String.IsNullOrWhiteSpace(hdpt.MeshPath) Then Continue For
-                Dim mp = hdpt.MeshPath.Replace("/"c, "\"c).TrimStart("\"c)
+                Dim hdpt = Canon.CanonRecords.Hdpt(rec, pm)
+                Console.WriteLine($"  HDPT 0x{hpId:X8} '{rec.EditorID}' partType={hdpt.TipoDeParte()} src='{rec.SourcePluginName}' mesh='{hdpt.ModelModelFileName}'")
+                PrintTxst(pm, "    HDPT.TextureSet", hdpt.TextureSet)
+                If String.IsNullOrWhiteSpace(hdpt.ModelModelFileName) Then Continue For
+                Dim mp = hdpt.ModelModelFileName.Replace("/"c, "\"c).TrimStart("\"c)
                 If Not mp.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) Then mp = "Meshes\" & mp
                 Dim nifBytes = FilesDictionary_class.GetBytes(mp)
                 If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then Console.WriteLine($"    NIF no bytes (key='{mp}')") : Continue For
@@ -10110,14 +10111,14 @@ persist:
             For Each hpId In npcData.HeadPartFormIDs
                 Dim rec = pm.GetRecord(hpId)
                 If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
-                Dim hdpt = RecordParsers.ParseHDPT(rec, pm)
-                If String.IsNullOrWhiteSpace(hdpt.MeshPath) Then Continue For
-                Dim mp = hdpt.MeshPath.Replace("/"c, "\"c).TrimStart("\"c)
+                Dim hdpt = Canon.CanonRecords.Hdpt(rec, pm)
+                If String.IsNullOrWhiteSpace(hdpt.ModelModelFileName) Then Continue For
+                Dim mp = hdpt.ModelModelFileName.Replace("/"c, "\"c).TrimStart("\"c)
                 If Not mp.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) Then mp = "Meshes\" & mp
                 Dim nifBytes = FilesDictionary_class.GetBytes(mp)
                 If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then Continue For
                 Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nifBytes)
-                Console.WriteLine($"  HDPT '{rec.EditorID}' mesh='{hdpt.MeshPath}'")
+                Console.WriteLine($"  HDPT '{rec.EditorID}' mesh='{hdpt.ModelModelFileName}'")
                 AnalyzeShapeSeam(nif, skelBind, skelNnam, False)
             Next
         End If
@@ -10306,12 +10307,12 @@ persist:
         If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then
             Console.WriteLine($"  {label}: 0x{formId:X8} is not TXST (sig={rec?.Header.Signature})") : Return
         End If
-        Dim t = RecordParsers.ParseTXST(rec, pm)
+        Dim t = Canon.CanonRecords.Txst(rec, pm)
         Console.WriteLine($"  {label}: 0x{formId:X8} src='{rec.SourcePluginName}'")
-        Console.WriteLine($"      D={DdsInfo(t.DiffuseTexture)}")
-        Console.WriteLine($"      N={DdsInfo(t.NormalTexture)}")
-        Console.WriteLine($"      S={DdsInfo(t.SmoothSpecTexture)}")
-        If Not String.IsNullOrEmpty(t.MaterialPath) Then Console.WriteLine($"      MNAM(bgsm)='{t.MaterialPath}'")
+        Console.WriteLine($"      D={DdsInfo(t.Ranura(0))}")
+        Console.WriteLine($"      N={DdsInfo(t.Ranura(1))}")
+        Console.WriteLine($"      S={DdsInfo(t.Ranura(7))}")
+        If Not String.IsNullOrEmpty(t.MaterialDe()) Then Console.WriteLine($"      MNAM(bgsm)='{t.MaterialDe()}'")
     End Sub
 
     ''' <summary>Path + dims (WxH) + tamaño del DDS para --info (sin decodificar full; lee el header).</summary>
@@ -10335,10 +10336,10 @@ persist:
         If txstId = 0UI Then Return
         Dim rec = pm.GetRecord(txstId)
         If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then Return
-        Dim txst = RecordParsers.ParseTXST(rec, pm)
-        d = txst.DiffuseTexture
-        n = txst.NormalTexture
-        s = txst.SmoothSpecTexture
+        Dim txst = Canon.CanonRecords.Txst(rec, pm)
+        d = txst.Ranura(0)
+        n = txst.Ranura(1)
+        s = txst.Ranura(7)
     End Sub
 
     Private Sub WriteChannel(dir As String, localId As UInteger, suffix As String, ch As FaceTintCpuCompositor.CpuChannelResult)

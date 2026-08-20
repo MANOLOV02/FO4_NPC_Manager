@@ -9,6 +9,7 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 Public Class MainForm
 
@@ -3065,7 +3066,7 @@ Public Class MainForm
     End Function
 
     ''' <summary>Display label for an OTFT FormID: EditorID if any, else hex. OTFTs carry no FULL name
-    ''' (Canon.OutfitRecord is FormID + EditorID + INAM array).</summary>
+    ''' (Canon.IOtft is FormID + EditorID + INAM array).</summary>
     Friend Function GetOutfitDisplayName(otftFID As UInteger) As String
         If otftFID = 0UI Then Return ""
         Dim draft = TryGetOutfitDraft(otftFID)
@@ -3368,16 +3369,10 @@ Public Class MainForm
         If fid = 0UI OrElse OutfitDraft.IsDraftFormID(fid) Then Return Nothing
         Dim rec = _pluginManager.GetRecord(fid)
         If rec Is Nothing OrElse rec.Header.Signature <> "MSWP" Then Return Nothing
-        Dim parsed = RecordParsers.ParseMSWP(rec, _pluginManager)
-        If parsed Is Nothing Then Return Nothing
-        Dim d As New MswpDraft With {.FormID = fid, .EditorID = parsed.EditorID, .TreeFolder = parsed.TreeFolder,
-                                     .IsOverride = True, .IsNew = False}
-        For Each s In parsed.Substitutions
-            d.Substitutions.Add(New MSWP_Substitution With {
-                .OriginalMaterial = s.OriginalMaterial, .ReplacementMaterial = s.ReplacementMaterial,
-                .TreeFolder = s.TreeFolder, .HasColorRemapIndex = s.HasColorRemapIndex,
-                .ColorRemapIndex = s.ColorRemapIndex})
-        Next
+        ' El borrador trabaja sobre una COPIA del record: cancelar el editor tiene que dejar
+        ' el original como estaba.
+        Dim d = MswpDraft.Edicion(rec, _pluginManager)
+        If d Is Nothing Then Return Nothing
         RegisterMswpDraft(d)
         Return d
     End Function
@@ -3403,7 +3398,7 @@ Public Class MainForm
             If String.Equals(d.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         For Each d In _mswpDrafts
-            If String.Equals(d.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
+            If String.Equals(d.Record.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         Return IsOutfitEditorIdAvailable(edid)
     End Function
@@ -3413,7 +3408,7 @@ Public Class MainForm
     Friend Function GetRecordDisplayNameForEditor(formID As UInteger) As String
         If formID = 0UI Then Return "(none)"
         Dim md = TryGetMswpDraft(formID)
-        If md IsNot Nothing Then Return md.EditorID & "  (new)"
+        If md IsNot Nothing Then Return md.Record.EditorID & "  (new)"
         Dim ad = TryGetArmoDraft(formID)
         If ad IsNot Nothing Then Return If(Not String.IsNullOrEmpty(ad.FullName), ad.FullName, ad.EditorID) & "  (new)"
         Dim aad = TryGetArmaDraft(formID)
@@ -3521,27 +3516,15 @@ Public Class MainForm
         Return data
     End Function
 
-    ''' <summary>Synthesize an <see cref="MSWP_Data"/> from an in-memory MSWP draft, or Nothing if
+    ''' <summary>Synthesize an <see cref="Canon.IMswp"/> from an in-memory MSWP draft, or Nothing if
     ''' <paramref name="fid"/> is not an MSWP draft. Deep-copies the substitution pairs so the render path
     ''' never mutates the draft. Synthesized FRESH on each call (no caching) so a live edit to the draft's
     ''' swaps shows on the next render. Mirror of <see cref="BuildArmoDataFromDraft"/>/<see cref="BuildArmaDataFromDraft"/>.</summary>
-    Private Function BuildMswpDataFromDraft(fid As UInteger) As MSWP_Data
+    Private Function BuildMswpDataFromDraft(fid As UInteger) As Canon.IMswp
         Dim d = TryGetMswpDraft(fid)
         If d Is Nothing Then Return Nothing
-        Dim data As New MSWP_Data With {
-            .FormID = d.FormID,
-            .EditorID = d.EditorID,
-            .TreeFolder = d.TreeFolder
-        }
-        For Each s In d.Substitutions
-            data.Substitutions.Add(New MSWP_Substitution With {
-                .OriginalMaterial = s.OriginalMaterial,
-                .ReplacementMaterial = s.ReplacementMaterial,
-                .TreeFolder = s.TreeFolder,
-                .HasColorRemapIndex = s.HasColorRemapIndex,
-                .ColorRemapIndex = s.ColorRemapIndex})
-        Next
-        Return data
+        ' El borrador ES el record: no hay nada que sintetizar.
+        Return d.Record
     End Function
 
     ''' <summary>Content signature of an MSWP DRAFT (EditorID + tree folder + every substitution) so an ARMA/ARMO
@@ -3552,11 +3535,11 @@ Public Class MainForm
         Dim d = TryGetMswpDraft(fid)
         If d Is Nothing Then Return ""
         Dim sb As New System.Text.StringBuilder()
-        sb.Append(d.EditorID).Append("~"c).Append(If(d.TreeFolder, ""))
-        For Each s In d.Substitutions
-            sb.Append("|"c).Append(If(s.OriginalMaterial, "")).Append(">"c).Append(If(s.ReplacementMaterial, "")).
-               Append("~"c).Append(If(s.TreeFolder, "")).
-               Append(If(s.HasColorRemapIndex, "#" & s.ColorRemapIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), ""))
+        sb.Append(d.Record.EditorID).Append("~"c).Append(If(d.Record.TreeFolder, ""))
+        For Each s In d.Record.MaterialSubstitutions
+            sb.Append("|"c).Append(If(s.SubstitutionOriginalMaterial, "")).Append(">"c).Append(If(s.SubstitutionReplacementMaterial, "")).
+               Append("~"c).Append(If(s.SubstitutionTreeFolderObsolete, "")).
+               Append(If(s.TieneIndiceDeColor(), "#" & s.SubstitutionColorRemappingIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), ""))
         Next
         Return sb.ToString()
     End Function
@@ -3756,7 +3739,7 @@ Public Class MainForm
         For Each otftFID In _outfitUniverse
             Dim rec = _pluginManager.GetRecord(otftFID)
             If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Continue For
-            For Each itemFID In Canon.CanonRecords.Outfit(rec, _pluginManager).ItemFormIDs
+            For Each itemFID In Canon.CanonRecords.Otft(rec, _pluginManager).Prendas()
                 If seen.Add(itemFID) AndAlso IsLeveledItem(itemFID) Then result.Add(itemFID)
             Next
         Next
@@ -3802,7 +3785,7 @@ Public Class MainForm
         If draft IsNot Nothing Then Return New List(Of UInteger)(draft.ItemFormIDs)
         Dim rec = _pluginManager.GetRecord(fid)
         If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Return New List(Of UInteger)
-        Return New List(Of UInteger)(Canon.CanonRecords.Outfit(rec, _pluginManager).ItemFormIDs)
+        Return New List(Of UInteger)(Canon.CanonRecords.Otft(rec, _pluginManager).Prendas())
     End Function
 
     ''' <summary>True if <paramref name="fid"/> is a leveled item list — a real LVLI record OR an author-built
@@ -8399,13 +8382,13 @@ Public Class MainForm
                     Dim hpRec = _pluginManager.GetRecord(hpFormID)
                     If hpRec IsNot Nothing Then
                         Dim hdpt = _ctx.ParseHdptCached(hpRec)
-                        Dim typeName = NpcManagerFormat.GetHeadPartTypeName(hdpt.PartType)
+                        Dim typeName = NpcManagerFormat.GetHeadPartTypeName(hdpt.TipoDeParte())
                         Dim hpChildNode = AddNode(hpNode, $"[{typeName}] {hdpt.EditorID}  [{hpFormID:X8}]")
-                        If hdpt.MeshPath <> "" Then AddNode(hpChildNode, $"Mesh: {hdpt.MeshPath}")
-                        If hdpt.TextureSetFormID <> 0UI Then AddNode(hpChildNode, $"TextureSet: {DescribeFormID(hdpt.TextureSetFormID)}")
-                        If hdpt.ColorFormID <> 0UI Then AddNode(hpChildNode, $"Color: {DescribeFormID(hdpt.ColorFormID)}")
-                        If hdpt.ExtraPartFormIDs.Count > 0 Then
-                            For Each epId In hdpt.ExtraPartFormIDs
+                        If hdpt.ModelModelFileName <> "" Then AddNode(hpChildNode, $"Mesh: {hdpt.ModelModelFileName}")
+                        If hdpt.TextureSet <> 0UI Then AddNode(hpChildNode, $"TextureSet: {DescribeFormID(hdpt.TextureSet)}")
+                        If hdpt.Color <> 0UI Then AddNode(hpChildNode, $"Color: {DescribeFormID(hdpt.Color)}")
+                        If hdpt.PartesExtra().Count > 0 Then
+                            For Each epId In hdpt.PartesExtra()
                                 AddNode(hpChildNode, $"Extra Part: {DescribeFormID(epId)}")
                             Next
                         End If
@@ -8632,8 +8615,8 @@ Public Class MainForm
         If outfitRec Is Nothing Then Return
 
         If outfitRec.Header.Signature = "OTFT" Then
-            Dim otft = Canon.CanonRecords.Outfit(outfitRec, _pluginManager)
-            For Each itemFormID In otft.ItemFormIDs
+            Dim otft = Canon.CanonRecords.Otft(outfitRec, _pluginManager)
+            For Each itemFormID In otft.Prendas()
                 ExpandOutfitItem(parentNode, itemFormID)
             Next
         End If
@@ -8945,7 +8928,7 @@ Public Class MainForm
                 Continue For
             End If
             Dim hd = _ctx.ParseHdptCached(rec)
-            Dim typeLabel = If(hd.PartType >= 0 AndAlso hd.PartType < hpTypeNames.Length, hpTypeNames(hd.PartType), $"type={hd.PartType}")
+            Dim typeLabel = If(hd.TipoDeParte() >= 0 AndAlso hd.TipoDeParte() < hpTypeNames.Length, hpTypeNames(hd.TipoDeParte()), $"type={hd.TipoDeParte()}")
         Next
         If selected.UnresolvedHeadParts.Count > 0 Then
             For Each raw In selected.UnresolvedHeadParts
@@ -9124,8 +9107,8 @@ Public Class MainForm
     ''' <summary>FormID → parsed HDPT resolver (cached via <c>_ctx.ParseHdptCached</c>) for the
     ''' head-part orphan-cascade helpers in <see cref="HeadPartResolver"/>. Returns Nothing for
     ''' non-HDPT or unresolved FormIDs.</summary>
-    Private Function ResolveHdptForOrphanCascade() As Func(Of UInteger, HDPT_Data)
-        Return Function(fid As UInteger) As HDPT_Data
+    Private Function ResolveHdptForOrphanCascade() As Func(Of UInteger, Canon.IHdpt)
+        Return Function(fid As UInteger) As Canon.IHdpt
                    If fid = 0UI Then Return Nothing
                    Dim r = _pluginManager.GetRecord(fid)
                    If r IsNot Nothing AndAlso r.Header.Signature = "HDPT" Then Return _ctx.ParseHdptCached(r)

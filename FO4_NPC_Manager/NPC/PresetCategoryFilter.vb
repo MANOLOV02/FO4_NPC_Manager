@@ -38,7 +38,7 @@ Public Module PresetCategoryFilter
                                   baseline As LooksmenuLoader.LooksmenuPreset,
                                   options As PresetCategoryOptions,
                                   isSse As Boolean,
-                                  Optional resolveHdpt As Func(Of UInteger, HDPT_Data) = Nothing,
+                                  Optional resolveHdpt As Func(Of UInteger, Canon.IHdpt) = Nothing,
                                   Optional resolveLmTemplate As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As LooksmenuLoader.LooksmenuPreset
         If source Is Nothing Then Return Nothing
         Dim p = LooksmenuLoader.ClonePreset(source)

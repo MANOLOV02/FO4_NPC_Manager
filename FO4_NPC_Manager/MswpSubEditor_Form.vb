@@ -1,6 +1,7 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.Linq
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Inline sub-editor for a Material Swap (MSWP) draft, opened from the ARMA/ARMO Editor's
 ''' "New / Edit MSWP…" button for a given gender. The substitutions grid is now pure READ-ONLY: each row is
@@ -24,7 +25,7 @@ Public Class MswpSubEditor_Form
     Private ReadOnly _meshMaterials As New List(Of String)
     ''' <summary>Working list of substitutions (source of truth). Loaded from the draft, mutated by the buttons/
     ''' modal, flushed back into the draft on OK. Never aliased to the draft's own list (copied in and out).</summary>
-    Private ReadOnly _subs As New List(Of MSWP_Substitution)
+    Private ReadOnly _subs As New List(Of Canon.SustitucionEditable)
     ''' <summary>Fixed type prefix for MSWP base EditorIDs ("npcm_MSWP_"). Save injects the &lt;plugin&gt; segment.</summary>
     Private ReadOnly _edidPrefix As String = MswpDraft.EditorIdPrefix
 
@@ -73,9 +74,9 @@ Public Class MswpSubEditor_Form
         If _draft Is Nothing Then
             EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, "")
         ElseIf _draft.IsNew Then
-            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, _draft.EditorID)
+            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, _draft.Record.EditorID)
         Else
-            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview, _draft.EditorID)
+            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview, _draft.Record.EditorID)
         End If
     End Sub
 
@@ -134,10 +135,10 @@ Public Class MswpSubEditor_Form
     Private Sub LoadSubsFromDraft()
         _subs.Clear()
         If _draft Is Nothing Then Return
-        For Each s In _draft.Substitutions
-            _subs.Add(New MSWP_Substitution With {
-                .OriginalMaterial = s.OriginalMaterial, .ReplacementMaterial = s.ReplacementMaterial,
-                .TreeFolder = s.TreeFolder, .HasColorRemapIndex = s.HasColorRemapIndex, .ColorRemapIndex = s.ColorRemapIndex})
+        ' Buffer de edicion: el usuario reordena, agrega y borra sobre esta lista, y al aceptar el
+        ' record se rehace desde ella. El record sigue siendo lo unico que se guarda.
+        For Each e In _draft.Record.MaterialSubstitutions
+            _subs.Add(New Canon.SustitucionEditable(e))
         Next
     End Sub
 
@@ -147,8 +148,8 @@ Public Class MswpSubEditor_Form
         Dim selIdx = If(GridSubs.CurrentRow IsNot Nothing, GridSubs.CurrentRow.Index, -1)
         GridSubs.Rows.Clear()
         For Each s In _subs
-            Dim remap = If(s.HasColorRemapIndex, s.ColorRemapIndex.ToString(CultureInfo.InvariantCulture), "")
-            GridSubs.Rows.Add(If(s.OriginalMaterial, ""), If(s.ReplacementMaterial, ""), remap)
+            Dim remap = If(s.TieneIndiceDeColor, s.IndiceDeColor.ToString(CultureInfo.InvariantCulture), "")
+            GridSubs.Rows.Add(If(s.MaterialOriginal, ""), If(s.MaterialReemplazo, ""), remap)
         Next
         If selIdx >= 0 AndAlso selIdx < GridSubs.Rows.Count Then
             GridSubs.Rows(selIdx).Selected = True
@@ -158,7 +159,7 @@ Public Class MswpSubEditor_Form
 
     ''' <summary>Add → open the modal on a fresh substitution; on OK append the returned copy.</summary>
     Private Sub OnAddSub(sender As Object, e As EventArgs)
-        Using dlg As New MswpSubEntryEditor_Form(_meshMaterials, New MSWP_Substitution())
+        Using dlg As New MswpSubEntryEditor_Form(_meshMaterials, New Canon.SustitucionEditable())
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultSub IsNot Nothing Then
                 _subs.Add(dlg.ResultSub)
                 RefreshGrid()
@@ -223,7 +224,7 @@ Public Class MswpSubEditor_Form
             Return
         End If
         ' Unchanged EditorID on the same draft is fine; a CHANGED one must be free.
-        If Not String.Equals(edid, _draft.EditorID, StringComparison.OrdinalIgnoreCase) _
+        If Not String.Equals(edid, _draft.Record.EditorID, StringComparison.OrdinalIgnoreCase) _
            AndAlso Not _mainForm.IsRecordEditorIdAvailable(edid) Then
             MessageBox.Show(Me, $"EditorID '{edid}' is already in use. Choose another.", "MSWP",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)
@@ -232,8 +233,8 @@ Public Class MswpSubEditor_Form
         End If
 
         ' Drop any content-less rows (no Original AND no Replacement) defensively — the modal already rejects them.
-        Dim subs = _subs.Where(Function(s) Not (String.IsNullOrEmpty(s.OriginalMaterial) AndAlso
-                                                String.IsNullOrEmpty(s.ReplacementMaterial))).ToList()
+        Dim subs = _subs.Where(Function(s) Not (String.IsNullOrEmpty(s.MaterialOriginal) AndAlso
+                                                String.IsNullOrEmpty(s.MaterialReemplazo))).ToList()
         If subs.Count = 0 Then
             MessageBox.Show(Me, "Add at least one material substitution (Original + Replacement) before saving.",
                             "MSWP", MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -241,9 +242,8 @@ Public Class MswpSubEditor_Form
             Return
         End If
 
-        _draft.EditorID = edid
-        _draft.Substitutions.Clear()
-        _draft.Substitutions.AddRange(subs)
+        _draft.Record.EditorID = edid
+        _draft.Record.ReemplazarSustituciones(subs)
         ' Dirty only on a REAL change (mirror of ArmA/ArmO): an OVERRIDE opened and OK'd without edits is not
         ' marked modified, so the saver won't re-emit an identical MSWP override. NEW drafts are always dirty.
         If Not _draft.IsNew Then

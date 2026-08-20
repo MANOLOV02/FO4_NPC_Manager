@@ -6,6 +6,7 @@ Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Graphics.OpenGL4
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' Build CharGen — hornea el FaceGen de un NPC (el <c>.nif</c> más sus texturas de cara) replicando
@@ -946,11 +947,11 @@ Public Module FaceGenBuilder
         ' que el pass normal mute los slots), para correr el replacer completo en cualquier NPC y salvar _2c.NIF.
         Dim sseForcedHead As INiShape = Nothing
         Dim sseForcedComplexion As String = Nothing, sseForcedNormal As String = Nothing, sseForcedDetail As String = Nothing
-        For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.PartType).ThenBy(Function(p) p.Key)
+        For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.TipoDeParte()).ThenBy(Function(p) p.Key)
             Dim hdptName = kv.Key
             Dim hdpt = kv.Value.Hdpt
             Dim effectiveHeadPartType = kv.Value.EffectivePartType
-            If String.IsNullOrEmpty(hdpt.MeshPath) Then
+            If String.IsNullOrEmpty(hdpt.ModelModelFileName) Then
                 hdptSourceMissing += 1
                 Dim hnLog = hdptName
                 Logger.LogLazy(Function() $"[FACEBAKE] HDPT '{hnLog}' has empty MeshPath; shape skipped")
@@ -963,7 +964,7 @@ Public Module FaceGenBuilder
             ' del ORIGINAL, no la del _facebones. El _facebones agrega face bones al skin
             ' partition para soporte runtime de FMRS pero CK al bakear los descarta.
             ' (faceBonesKey solo se usa para diagnóstico three-way; no se carga para clonar.)
-            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.MeshPath)
+            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.ModelModelFileName)
             Dim faceBonesKey = MeshPathHelpers.TryGetFaceBonesVariant(baseKey)
             Dim sourceKey = baseKey
 
@@ -1273,7 +1274,7 @@ Public Module FaceGenBuilder
                         ' artefacto del CK.
                         ' Corre con host (app) o headless-CPU (el CLI pasa host=Nothing y sin GL: sólo el
                         ' compositor CPU). El GL interno ya está gateado por needGl.
-                        If hdpt.PartType = PartTypeFace AndAlso state IsNot Nothing AndAlso BakeFaceTexturesEnabled Then
+                        If hdpt.TipoDeParte() = PartTypeFace AndAlso state IsNot Nothing AndAlso BakeFaceTexturesEnabled Then
                             If isSSEBake Then
                                 ' SSE bakes a single facetint _d DDS (CPU compose, no GL) to NIF slot 6, NOT
                                 ' the FO4 FaceCustomization D/N/S. Uses the overlaid tints so an Edit Face tint
@@ -1478,7 +1479,7 @@ Public Module FaceGenBuilder
                                         Logger.LogLazy(Function() $"[FACEGEN-FBNS] tier3 (single-shape fallback, NO tiene contraparte en el CK) npc=0x{npcFormID:X8} shape='{shNameT3}' fbns='{faceBonesKey}'")
                                     End If
                                     Dim tMs = Stopwatch.GetTimestamp()
-                                    Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, srcNif:=srcNif, srcShape:=srcShape, raceMorphTriPath:=hdpt.RaceMorphTriPath)
+                                    Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ArchivoDeDeformacion(2UI), srcNif:=srcNif, srcShape:=srcShape, raceMorphTriPath:=hdpt.ArchivoDeDeformacion(0UI))
                                     PhaseAdd(BakePhase.MorphSkin, tMs)
                                     If baked Then
                                         shapesMorphed += 1
@@ -1508,9 +1509,9 @@ Public Module FaceGenBuilder
                             ' el CK ignora, sobre-morpheando el pelo). â›” Es ley de SSE y solo se pasa ahi: en FO4
                             ' el peso corporal lo hornea otro mecanismo (MWGT como escala en los huesos *_skin) y
                             ' pasarlo aca lo aplicaria DOS veces.
-                            Dim hdptMeshTri As String = If(isSSEBake, hdpt.TriPath, Nothing)
+                            Dim hdptMeshTri As String = If(isSSEBake, hdpt.ArchivoDeDeformacion(1UI), Nothing)
                             Dim tMv = Stopwatch.GetTimestamp()
-                            FaceGenBuildPipeline.ApplyChargenMorphsInPlace(nif, cloned, hdpt.ChargenMorphTriPath, hdpt.RaceMorphTriPath, bakeState, hdptMeshTri)
+                            FaceGenBuildPipeline.ApplyChargenMorphsInPlace(nif, cloned, hdpt.ArchivoDeDeformacion(2UI), hdpt.ArchivoDeDeformacion(0UI), bakeState, hdptMeshTri)
                             PhaseAdd(BakePhase.MorphSkin, tMv)
                             shapesMorphed += 1
                             If Not isSSEBake Then shapesFo4NoFbnsMorphed += 1
@@ -1970,13 +1971,13 @@ Public Module FaceGenBuilder
     End Function
 
 
-    ''' <summary>Mapa de nombre de shape a su HDPT_Data, o sea que se permite en la salida horneada. Se siembra
+    ''' <summary>Mapa de nombre de shape a su Canon.IHdpt, o sea que se permite en la salida horneada. Se siembra
     ''' con <see cref="HeadPartResolver.MergeHeadPartsWithRaceDefaults"/> sobre state.HeadPartFormIDs (la lista
     ''' OVERLAIDA con fallback de raza, identica a la del render y NO el PNAM crudo), asi que los overrides de
     ''' LooksMenu/Edit-Face hornean exactamente lo que muestra el preview y los head parts por defecto de la
     ''' raza siguen entrando aunque el PNAM no los liste. Despues expande recursivamente por HNAM para incluir
     ''' los sub-parts tecnicos (pestanas, AO/wet, hairlines). Match case-insensitive.
-    ''' <para>Devuelve el HDPT_Data y no solo el nombre porque aguas abajo hacen falta MeshPath, los dos paths de
+    ''' <para>Devuelve el Canon.IHdpt y no solo el nombre porque aguas abajo hacen falta MeshPath, los dos paths de
     ''' .tri y el PartType para construir cada shape.</para></summary>
     Private Function BuildAllowedShapeMap(state As MainForm.NPCVisualState,
                                           pluginManager As PluginManager) As Dictionary(Of String, HeadPartResolver.HdptChainEntry)
@@ -2033,7 +2034,7 @@ Public Module FaceGenBuilder
 
         Dim otftRec = pluginManager.GetRecord(npcData.DefaultOutfitFormID)
         If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then Return (slots, hasLVLI)
-        Dim otft = Canon.CanonRecords.Outfit(otftRec, pluginManager)
+        Dim otft = Canon.CanonRecords.Otft(otftRec, pluginManager)
 
         ' Resolvers RecordParsers-direct (el bake no tiene NpcRenderContext; el OTFT es chico, sin cache).
         ' La LÓGICA vive en los cores compartidos con el render — acá sólo se cablean los parsers.
@@ -2076,7 +2077,7 @@ Public Module FaceGenBuilder
                                 End Function,
             .IsPowerArmorRace = raceIsPa}
 
-        For Each itemFID In otft.ItemFormIDs
+        For Each itemFID In otft.Prendas()
             If itemFID = 0UI Then Continue For
             Dim itemRec = pluginManager.GetRecord(itemFID)
             If itemRec Is Nothing Then Continue For
@@ -2136,7 +2137,7 @@ Public Module FaceGenBuilder
     ''' sin estado compartido.</para></summary>
     Private Function ResolveRenderResolvedShapeMaterial(srcNif As Nifcontent_Class_Manolo,
                                                         srcShape As INiShape,
-                                                        hdpt As HDPT_Data,
+                                                        hdpt As Canon.IHdpt,
                                                         effectiveHeadPartType As Integer,
                                                         state As MainForm.NPCVisualState,
                                                         pluginManager As PluginManager,
@@ -2172,11 +2173,11 @@ Public Module FaceGenBuilder
         Dim candidate As New MainForm.MeshCandidate With {
             .Kind = MainForm.MeshCandidateKind.HeadPart,
             .HeadPartType = effectiveHeadPartType,
-            .HeadPartTypeRaw = hdpt.PartType,
-            .TextureSetFormID = hdpt.TextureSetFormID,
+            .HeadPartTypeRaw = hdpt.TipoDeParte(),
+            .TextureSetFormID = hdpt.TextureSet,
             .HeadPartHdptFormID = hdpt.FormID,
-            .UsesBodyTexture = hdpt.UsesBodyTexture,
-            .HeadPartColorFormID = hdpt.ColorFormID
+            .UsesBodyTexture = hdpt.UsaTexturaDelCuerpo(),
+            .HeadPartColorFormID = hdpt.Color
         }
         ' UseSolidTint ya NO se asigna acá: es propiedad calculada sobre HeadPartColorFormID, con la MISMA
         ' definición medida (`CNAM <> 0`) que este sitio ya tenía. El render la construía distinto (flag DATA
@@ -2200,7 +2201,7 @@ Public Module FaceGenBuilder
                                                     cloned As INiShape,
                                                     srcNif As Nifcontent_Class_Manolo,
                                                     srcShape As INiShape,
-                                                    hdpt As HDPT_Data,
+                                                    hdpt As Canon.IHdpt,
                                                     effectiveHeadPartType As Integer,
                                                     state As MainForm.NPCVisualState,
                                                     pluginManager As PluginManager,
@@ -3339,7 +3340,7 @@ Public Module FaceGenBuilder
                                  cloned As INiShape,
                                  srcNif As Nifcontent_Class_Manolo,
                                  srcShape As INiShape,
-                                 hdpt As HDPT_Data,
+                                 hdpt As Canon.IHdpt,
                                  effectiveHeadPartType As Integer,
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                  npcFormID As UInteger,

@@ -9,6 +9,7 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Phase 2 of the MainForm split: material / texture-set / hair-palette / color-form
 ''' resolution extracted from MainForm into a standalone class (DI via NpcRenderContext). Increment 1
@@ -170,7 +171,7 @@ Friend NotInheritable Class NpcMaterialResolver
         ' Skyrim CLFM carries an RGB, not a RemappingIndex — so this only makes the precedence explicit.
         If hairColorFormID <> 0UI AndAlso Not presetHairRgb.HasValue Then
             Dim clfm = ResolveColorFormData(hairColorFormID)
-            If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
+            If clfm IsNot Nothing AndAlso clfm.TieneIndiceDePaleta() Then
                 ' PRESERVAR el opt-in de palette de la FUENTE (no forzarlo). Probado sobre el corpus
                 ' FaceGen vanilla (BeardRuleProbe 2026-06-13, 1100 shapes de barba, 7 diffuse): el flag
                 ' GreyscaleToPalette_Color es UNIFORME por barba (función de la barba fuente, NO del NPC,
@@ -184,7 +185,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim oldPalColor = material.GrayscaleToPaletteColor
                 Dim oldScale = material.GrayscaleToPaletteScale
                 Dim oldGreyTex = If(logEnabled, If(material.GreyscaleTexture, ""), Nothing)
-                material.GrayscaleToPaletteScale = clfm.RemappingIndex
+                material.GrayscaleToPaletteScale = clfm.IndiceDePaleta()
                 Dim palTex As String = ""
                 If sourceHadPalette Then
                     ' Priority: BGSM's own GreyscaleTexture first (per-shape, picked by the stylist
@@ -211,7 +212,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' fallback, que pisaría el HairTintColor de la fuente (CK no lo cambia en barbas OFF).
                 didPalette = True
                 If logEnabled Then
-                    Dim newScale = clfm.RemappingIndex
+                    Dim newScale = clfm.IndiceDePaleta()
                     Dim hairFidL = hairColorFormID
                     Dim palTexL = palTex
                     Dim srcHad = sourceHadPalette
@@ -335,7 +336,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' UsesBodyTexture, head-rear ghoul) lo dejan en 0 A PROPÓSITO: corren ANTES del loop de shapes y son
     ''' el camino que consume el BAKE por delegate, así que pasarles máscara cambiaría la salida horneada.</param>
     Friend Function ResolveActorSkinTextureSet(state As MainForm.NPCVisualState, region As MainForm.SkinRegion,
-                                               Optional shapeSlotMask As UInteger = 0UI) As TXST_Data
+                                               Optional shapeSlotMask As UInteger = 0UI) As Canon.ITxst
         If state Is Nothing OrElse state.SkinFormID = 0UI Then Return Nothing
 
         Dim armo = _ctx.GetParsedArmo(state.SkinFormID)
@@ -442,7 +443,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim aEid = arma.EditorID, rFid = state.RaceFormID
                 Logger.LogLazy(Function() $"[SKINTXST-RACEFALLBACK] ninguna ARMA race-válida cubrió la región; se acepta '{aEid}' (race del actor 0x{rFid:X8}) — regla BAKETEST2 N_D1/R_D1")
             End If
-            Return RecordParsers.ParseTXST(txstRec, _ctx.PluginManager)
+            Return Canon.CanonRecords.Txst(txstRec, _ctx.PluginManager)
         Next
 
         Return Nothing
@@ -573,7 +574,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' <param name="fo4FaceComposeInputsOnly">Solo FO4 + head part de cara, para las TRES procedencias del set
     ''' (FTST, RACE.DFT y el TNAM propio): la ley no depende de que record lo aporto. True => el caller aplica
     ''' solo TX00/TX01/TX07, las entradas del compose. Ver 40-bake-leyes-fo4 seccion 9.</param>
-    Friend Function ResolveTextureSet(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, ByRef isFaceTextureSource As Boolean, ByRef sseFaceAuxTextureSet As TXST_Data, ByRef fo4FaceComposeInputsOnly As Boolean) As TXST_Data
+    Friend Function ResolveTextureSet(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, ByRef isFaceTextureSource As Boolean, ByRef sseFaceAuxTextureSet As Canon.ITxst, ByRef fo4FaceComposeInputsOnly As Boolean) As Canon.ITxst
         isFaceTextureSource = False
         sseFaceAuxTextureSet = Nothing
         fo4FaceComposeInputsOnly = False
@@ -592,8 +593,8 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim bodyTxst = ResolveActorSkinTextureSet(state, MainForm.SkinRegion.Body)
                 If bodyTxst IsNot Nothing Then
                     If logEnabled Then
-                        Dim bFid = bodyTxst.FormID, bMnam = If(bodyTxst.MaterialPath, "")
-                        Dim bD = If(bodyTxst.DiffuseTexture, ""), bN = If(bodyTxst.NormalTexture, ""), bS = If(bodyTxst.SmoothSpecTexture, "")
+                        Dim bFid = bodyTxst.FormID, bMnam = If(bodyTxst.MaterialDe(), "")
+                        Dim bD = If(bodyTxst.Ranura(0), ""), bN = If(bodyTxst.Ranura(1), ""), bS = If(bodyTxst.Ranura(7), "")
                         Logger.LogLazy(Function() $"[TXST-RESOLVE] source=BodySkin(UsesBodyTexture) txst=0x{bFid:X8} mnam='{bMnam}' D='{bD}' N='{bN}' S='{bS}'")
                     End If
                     Return bodyTxst
@@ -637,10 +638,10 @@ Friend NotInheritable Class NpcMaterialResolver
                     If auxFid <> 0UI AndAlso auxFid <> textureSetFormID Then
                         Dim auxRec = _ctx.PluginManager.GetRecord(auxFid)
                         If auxRec IsNot Nothing AndAlso auxRec.Header.Signature = "TXST" Then
-                            sseFaceAuxTextureSet = RecordParsers.ParseTXST(auxRec, _ctx.PluginManager)
+                            sseFaceAuxTextureSet = Canon.CanonRecords.Txst(auxRec, _ctx.PluginManager)
                             If logEnabled Then
                                 Dim aSrc = auxSource, aP = sseFaceAuxTextureSet
-                                Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc} txst=0x{aP.FormID:X8} eid='{If(aP.EditorID, "")}' → capa SSE N/_sk/detail (base TNAM=diffuse-only) N='{If(aP.NormalTexture, "")}' sk='{If(aP.GlowTexture, "")}' det='{If(aP.HeightTexture, "")}'")
+                                Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc} txst=0x{aP.FormID:X8} eid='{If(aP.EditorID, "")}' → capa SSE N/_sk/detail (base TNAM=diffuse-only) N='{If(aP.Ranura(1), "")}' sk='{If(aP.Ranura(3), "")}' det='{If(aP.Ranura(4), "")}'")
                             End If
                         ElseIf logEnabled Then
                             Dim aFidL = auxFid, aSrc2 = auxSource
@@ -694,10 +695,10 @@ Friend NotInheritable Class NpcMaterialResolver
             Return Nothing
         End If
 
-        Dim parsed = RecordParsers.ParseTXST(rec, _ctx.PluginManager)
+        Dim parsed = Canon.CanonRecords.Txst(rec, _ctx.PluginManager)
         If logEnabled Then
-            Dim srcL2 = txstSource, pEid = If(parsed.EditorID, ""), pMnam = If(parsed.MaterialPath, "")
-            Dim pD = If(parsed.DiffuseTexture, ""), pN = If(parsed.NormalTexture, ""), pS = If(parsed.SmoothSpecTexture, ""), pW = If(parsed.WrinklesTexture, "")
+            Dim srcL2 = txstSource, pEid = If(parsed.EditorID, ""), pMnam = If(parsed.MaterialDe(), "")
+            Dim pD = If(parsed.Ranura(0), ""), pN = If(parsed.Ranura(1), ""), pS = If(parsed.Ranura(7), ""), pW = If(parsed.Ranura(2), "")
             ' DNAM flags (wbDefinitionsFO4.pas:7350): 0x0001 NoSpecularMap, 0x0002 FacegenTextures, 0x0004 HasModelSpaceNormal.
             ' Hipótesis: 'FacegenTextures' (0x0002) marca el set de complexión (full D/N/S en el bake) vs TXST normal.
             Dim pFlags = parsed.Flags
@@ -711,7 +712,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional npcDiffuseAlphaTest As Boolean = False)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As Canon.ITxst, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional npcDiffuseAlphaTest As Boolean = False)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
@@ -742,13 +743,13 @@ Friend NotInheritable Class NpcMaterialResolver
         ' wbDefinitionsTES5.pas:5581-5600 contra wbDefinitionsFO4.pas:7355) ⇒ acá MaterialPath es siempre "".
         ' Los TXST MNAM-only de FO4 entran por el camino normal de más abajo, que ya carga el MNAM.
         If forceDiffuseOnly Then
-            If TxstSlotDecision(textureSet.FormID, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
+            If TxstSlotDecision(textureSet.FormID, "Diffuse", textureSet.Ranura(0), material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = textureSet.Ranura(0)
             Return
         End If
 
         Dim mnamMaterialApplied As Boolean = False
-        If textureSet.MaterialPath <> "" Then
-            Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
+        If textureSet.MaterialDe() <> "" Then
+            Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialDe(), material, shap, nif)
             If overrideMaterial IsNot Nothing Then
                 mnamMaterialApplied = True
                 ' TEXTURES-ONLY + ALPHA: el MNAM del TXST aporta SOLO sus paths de textura más el alpha. El
@@ -780,9 +781,9 @@ Friend NotInheritable Class NpcMaterialResolver
                 material.AlphaTestRef = overrideMaterial.AlphaTestRef
                 material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
 
-                relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
+                relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialDe())
                 If logEnabled Then
-                    Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
+                    Dim mnamL = If(textureSet.MaterialDe(), ""), ubt = usesBodyTexture
                     Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → TEXTURES-ONLY (shader del fuente)")
                 End If
             End If
@@ -803,7 +804,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' <param name="fo4FaceComposeInputsOnly">⭐ SOLO FO4, texture set del head part de CARA — venga de
     ''' NPC.FTST, de RACE.DFT o del TNAM del propio head part (los tres, medido 2026-07-30). Ver la
     ''' REGLA MEDIDA en el cuerpo (bake controlado BAKETESTFO4.esp).</param>
-    Friend Shared Sub ApplyTextureSetToMaterial(material As FO4UnifiedMaterial_Class, textureSet As TXST_Data, Optional isHeadPartTextureSet As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False)
+    Friend Shared Sub ApplyTextureSetToMaterial(material As FO4UnifiedMaterial_Class, textureSet As Canon.ITxst, Optional isHeadPartTextureSet As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False)
         If material Is Nothing OrElse textureSet Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
@@ -853,34 +854,34 @@ Friend NotInheritable Class NpcMaterialResolver
 
         If logEnabled Then
             Dim txstEid = If(textureSet.EditorID, "")
-            Dim mnamLog = If(textureSet.MaterialPath, "")
+            Dim mnamLog = If(textureSet.MaterialDe(), "")
             Dim noSpecL = (textureSet.Flags And &H1US) <> 0US, msnL = (textureSet.Flags And &H4US) <> 0US
             Dim flagsL = textureSet.Flags, hpL = isHeadPartTextureSet, fgL = isFacegen, doL = diffuseOnly
             Logger.LogLazy(Function() $"[TXST-APPLY] txst=0x{txstFid:X8} eid='{txstEid}' flags=0x{flagsL:X4}(facegen={fgL},noSpec={noSpecL},msn={msnL}) headPart={hpL} → diffuseOnly={doL} mnam='{mnamLog}'")
         End If
 
         ' Diffuse (TX00): nunca se gatea. Resto: se salta solo si diffuseOnly (head-part sin flag Facegen).
-        If TxstSlotDecision(txstFid, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=diffuseOnly) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
+        If TxstSlotDecision(txstFid, "Diffuse", textureSet.Ranura(0), material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=diffuseOnly) Then material.Diffuse_or_Base_Texture = textureSet.Ranura(0)
         ' En SSE head part la ley del CK manda sobre el heurístico diffuseOnly (ver bloque de arriba).
-        If TxstSlotDecision(txstFid, "Normal", textureSet.NormalTexture, material.NormalTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowNormal, diffuseOnly)) Then material.NormalTexture = textureSet.NormalTexture
+        If TxstSlotDecision(txstFid, "Normal", textureSet.Ranura(1), material.NormalTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowNormal, diffuseOnly)) Then material.NormalTexture = textureSet.Ranura(1)
         ' Wrinkles / Envmap / InnerLayer: la ley del CK (0x141d0ea00) no los escribe para NINGÚN shader type ⇒
         ' en head part SSE quedan siempre del material inline del mesh.
-        If TxstSlotDecision(txstFid, "Wrinkles", textureSet.WrinklesTexture, material.WrinklesTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.WrinklesTexture = textureSet.WrinklesTexture
+        If TxstSlotDecision(txstFid, "Wrinkles", textureSet.Ranura(2), material.WrinklesTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.WrinklesTexture = textureSet.Ranura(2)
         ' Glow slot (TXST TX03). FO4 = emissive glow. SSE = "Glow/Detail Map" (wbDefinitionsTES5.pas:5588) que
         ' para piel/cara ES el _sk (subsurface). Debe ir a LightingTexture (subsurface, engine t12), NO al slot
         ' emisivo — espejo EXACTO de FO4UnifiedMaterial.ReadBgsmTexturesFromTextureSet (game-aware). FO4 sin cambios.
-        If TxstSlotDecision(txstFid, "Glow", textureSet.GlowTexture, material.GlowTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowSk, If(fo4FaceComposeInputsOnly, True, diffuseOnly))) Then
+        If TxstSlotDecision(txstFid, "Glow", textureSet.Ranura(3), material.GlowTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowSk, If(fo4FaceComposeInputsOnly, True, diffuseOnly))) Then
             Dim isSseTxst As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
             If isSseTxst AndAlso Not material.Glowmap AndAlso (material.SubsurfaceLighting OrElse material.RimLighting OrElse material.Facegen OrElse material.SkinTint) Then
-                material.LightingTexture = textureSet.GlowTexture
+                material.LightingTexture = textureSet.Ranura(3)
                 material.GlowTexture = ""
             Else
-                material.GlowTexture = textureSet.GlowTexture
+                material.GlowTexture = textureSet.Ranura(3)
             End If
         End If
-        If TxstSlotDecision(txstFid, "Height", textureSet.HeightTexture, material.DisplacementTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowDetail, If(fo4FaceComposeInputsOnly, True, diffuseOnly))) Then material.DisplacementTexture = textureSet.HeightTexture
-        If TxstSlotDecision(txstFid, "Envmap", textureSet.EnvironmentTexture, material.EnvmapTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.EnvmapTexture = textureSet.EnvironmentTexture
-        If TxstSlotDecision(txstFid, "InnerLayer", textureSet.MultilayerTexture, material.InnerLayerTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.InnerLayerTexture = textureSet.MultilayerTexture
+        If TxstSlotDecision(txstFid, "Height", textureSet.Ranura(4), material.DisplacementTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowDetail, If(fo4FaceComposeInputsOnly, True, diffuseOnly))) Then material.DisplacementTexture = textureSet.Ranura(4)
+        If TxstSlotDecision(txstFid, "Envmap", textureSet.Ranura(5), material.EnvmapTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.EnvmapTexture = textureSet.Ranura(5)
+        If TxstSlotDecision(txstFid, "InnerLayer", textureSet.Ranura(6), material.InnerLayerTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.InnerLayerTexture = textureSet.Ranura(6)
         ' ⭐ SSE head part: el TX07 NO es un slot de textura — nadie escribe el slot 7 (bake CK 0x141d0ea00,
         ' attach 0x14042BAA0, regen 0x14042BD90). El specular que usa el motor es el INLINE del mesh, así que
         ' pisarlo con el TX07 cambiaba el specular real en render Y bake; por eso el gate vive en este resolver
@@ -888,11 +889,11 @@ Friend NotInheritable Class NpcMaterialResolver
         ' FaceCustomization que el CK sí escribe. Ver 40-bake-leyes-sse.
         If sseHeadPart Then
             If logEnabled Then
-                Dim fidL7 = txstFid, curL7 = If(material.SmoothSpecTexture, ""), txL7 = If(textureSet.SmoothSpecTexture, "")
+                Dim fidL7 = txstFid, curL7 = If(material.SmoothSpecTexture, ""), txL7 = If(textureSet.Ranura(7), "")
                 Logger.LogLazy(Function() $"[TXST-SLOT] txst=0x{fidL7:X8} slot=SmoothSpec txstPath='{txL7}' → skip:SSE-HEADPART-TX07-NOT-A-SLOT (kept inline='{curL7}')")
             End If
-        ElseIf TxstSlotDecision(txstFid, "SmoothSpec", textureSet.SmoothSpecTexture, material.SmoothSpecTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then
-            material.SmoothSpecTexture = textureSet.SmoothSpecTexture
+        ElseIf TxstSlotDecision(txstFid, "SmoothSpec", textureSet.Ranura(7), material.SmoothSpecTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then
+            material.SmoothSpecTexture = textureSet.Ranura(7)
         End If
     End Sub
 
@@ -913,14 +914,14 @@ Friend NotInheritable Class NpcMaterialResolver
         End If
         Dim total = list.Count, facegenCount = 0
         For Each rec In list
-            Dim t = RecordParsers.ParseTXST(rec, _ctx.PluginManager)
+            Dim t = Canon.CanonRecords.Txst(rec, _ctx.PluginManager)
             Dim fg = (t.Flags And &H2US) <> 0US
             If fg Then facegenCount += 1
             Dim ns = (t.Flags And &H1US) <> 0US, ms = (t.Flags And &H4US) <> 0US
             Dim fid = t.FormID, eid = If(t.EditorID, ""), fl = t.Flags
-            Dim hasD = Not String.IsNullOrEmpty(t.DiffuseTexture)
-            Dim hasN = Not String.IsNullOrEmpty(t.NormalTexture)
-            Dim hasS = Not String.IsNullOrEmpty(t.SmoothSpecTexture)
+            Dim hasD = Not String.IsNullOrEmpty(t.Ranura(0))
+            Dim hasN = Not String.IsNullOrEmpty(t.Ranura(1))
+            Dim hasS = Not String.IsNullOrEmpty(t.Ranura(7))
             Dim src = If(rec.SourcePluginName, "")
             Logger.LogLazy(Function() $"[TXST-DUMP] 0x{fid:X8} '{eid}' flags=0x{fl:X4} facegen={fg} noSpec={ns} msn={ms} D={hasD} N={hasN} S={hasS} plugin='{src}'")
         Next
@@ -1054,17 +1055,17 @@ Friend NotInheritable Class NpcMaterialResolver
 
     Friend Function ResolveColorFormColor(formID As UInteger) As Nullable(Of Color)
         Dim clfm = ResolveColorFormData(formID)
-        If clfm Is Nothing OrElse Not clfm.HasColor Then Return Nothing
-        Return clfm.Color
+        If clfm Is Nothing OrElse Not clfm.TieneColor() Then Return Nothing
+        Return clfm.ColorDe()
     End Function
 
-    Friend Function ResolveColorFormData(formID As UInteger) As Canon.ColorRecord
+    Friend Function ResolveColorFormData(formID As UInteger) As Canon.IClfm
         If formID = 0UI Then Return Nothing
 
         Dim rec = _ctx.PluginManager.GetRecord(formID)
         If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Return Nothing
 
-        Return Canon.CanonRecords.Color(rec, _ctx.PluginManager)
+        Return Canon.CanonRecords.Clfm(rec, _ctx.PluginManager)
     End Function
 
     Friend Function ResolveSkinTintColor(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, headPartColor As Nullable(Of Color)) As Nullable(Of Color)
@@ -1219,8 +1220,8 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim srcN As String = ""
         Dim srcS As String = ""
         Dim bodyMnamLoaded As Boolean = False
-        If Not String.IsNullOrEmpty(bodyTxst.MaterialPath) Then
-            Dim bodyBgsm = LoadVanillaBodyMaterial(bodyTxst.MaterialPath, shape)
+        If Not String.IsNullOrEmpty(bodyTxst.MaterialDe()) Then
+            Dim bodyBgsm = LoadVanillaBodyMaterial(bodyTxst.MaterialDe(), shape)
             If bodyBgsm IsNot Nothing Then
                 bodyMnamLoaded = True
                 srcD = If(bodyBgsm.Diffuse_or_Base_Texture, "")
@@ -1229,12 +1230,12 @@ Friend NotInheritable Class NpcMaterialResolver
             End If
         End If
         If Not bodyMnamLoaded Then
-            If Not String.IsNullOrEmpty(bodyTxst.DiffuseTexture) Then srcD = bodyTxst.DiffuseTexture
-            If Not String.IsNullOrEmpty(bodyTxst.NormalTexture) Then srcN = bodyTxst.NormalTexture
-            If Not String.IsNullOrEmpty(bodyTxst.SmoothSpecTexture) Then srcS = bodyTxst.SmoothSpecTexture
+            If Not String.IsNullOrEmpty(bodyTxst.Ranura(0)) Then srcD = bodyTxst.Ranura(0)
+            If Not String.IsNullOrEmpty(bodyTxst.Ranura(1)) Then srcN = bodyTxst.Ranura(1)
+            If Not String.IsNullOrEmpty(bodyTxst.Ranura(7)) Then srcS = bodyTxst.Ranura(7)
         End If
 
-        Logger.LogLazy(Function() $"[DIAG-HEADREAR] resolve: mnam='{If(bodyTxst.MaterialPath, "")}' srcD='{srcD}' srcN='{srcN}' srcS='{srcS}'")
+        Logger.LogLazy(Function() $"[DIAG-HEADREAR] resolve: mnam='{If(bodyTxst.MaterialDe(), "")}' srcD='{srcD}' srcN='{srcN}' srcS='{srcS}'")
         Dim clonedD = CloneVanillaTextureToLoose(srcD)
         Dim clonedN = CloneVanillaTextureToLoose(srcN)
         Dim clonedS = CloneVanillaTextureToLoose(srcS)
@@ -1385,7 +1386,7 @@ Friend NotInheritable Class NpcMaterialResolver
         If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
             ' Draft-MSWP handling: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
             ' has NO real record, so the lib's FormID overload (GetRecord+ParseMSWP) can't resolve it. Resolve it
-            ' via the app's MswpDraftResolver instead — it returns the draft's ALREADY-PARSED MSWP_Data, which we
+            ' via the app's MswpDraftResolver instead — it returns the draft's ALREADY-PARSED Canon.IMswp, which we
             ' hand to the parsed-data overload so an UNSAVED swap applies live in the preview. An unresolvable
             ' draft (resolver Nothing / not registered) falls back to the skip-with-log behavior. A swap that
             ' references an EXISTING (real) MSWP — even from a draft ARMA/ARMO — is a normal FormID and takes the
@@ -1421,7 +1422,7 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim hairTintColor = ResolveHairTintColor(candidate, state, solidTintColor)
         Dim skinTintColor = ResolveSkinTintColor(candidate, state, solidTintColor)
         Dim isFaceTxstSource As Boolean = False
-        Dim sseFaceAux As TXST_Data = Nothing
+        Dim sseFaceAux As Canon.ITxst = Nothing
         Dim fo4FaceComposeOnly As Boolean = False
         Dim textureSet = ResolveTextureSet(candidate, state, isFaceTxstSource, sseFaceAux, fo4FaceComposeOnly)
 
@@ -1436,7 +1437,7 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim isOutfitCandidate As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit)
         Dim outfitSkinRegion As MainForm.SkinRegion = MainForm.SkinRegion.Body
         If isOutfitCandidate Then outfitSkinRegion = ResolveSkinRegionForOutfit(candidate)
-        Dim skinTxstByShapeMask As New Dictionary(Of UInteger, TXST_Data)()
+        Dim skinTxstByShapeMask As New Dictionary(Of UInteger, Canon.ITxst)()
 
         For Each shape In shapes
             MaterialResolver.EnsureShapeMaterialResolved(shape)
@@ -1536,14 +1537,14 @@ Friend NotInheritable Class NpcMaterialResolver
                     Dim auxShaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)
                     If auxShaderIsFace Then
                         Dim appliedN = False, appliedSk = False, appliedDet = False
-                        If Not String.IsNullOrEmpty(sseFaceAux.NormalTexture) Then
-                            mAux.NormalTexture = sseFaceAux.NormalTexture : appliedN = True
+                        If Not String.IsNullOrEmpty(sseFaceAux.Ranura(1)) Then
+                            mAux.NormalTexture = sseFaceAux.Ranura(1) : appliedN = True
                         End If
-                        If Not String.IsNullOrEmpty(sseFaceAux.GlowTexture) Then
-                            mAux.LightingTexture = sseFaceAux.GlowTexture : appliedSk = True
+                        If Not String.IsNullOrEmpty(sseFaceAux.Ranura(3)) Then
+                            mAux.LightingTexture = sseFaceAux.Ranura(3) : appliedSk = True
                         End If
-                        If Not String.IsNullOrEmpty(sseFaceAux.HeightTexture) Then
-                            mAux.DisplacementTexture = sseFaceAux.HeightTexture : appliedDet = True
+                        If Not String.IsNullOrEmpty(sseFaceAux.Ranura(4)) Then
+                            mAux.DisplacementTexture = sseFaceAux.Ranura(4) : appliedDet = True
                         End If
                         If logEnabled Then
                             Dim shNA = shape.ShapeName, aFid = sseFaceAux.FormID
@@ -1571,7 +1572,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' Piel del actor PARA ESTE SHAPE (ver el memo de arriba): la máscara sale de sus particiones
             ' BSDismember; 0 (FO4, o shape sin dismember) ⇒ SelectArmatureForShape cae en el primer cubridor
             ' de la región, que es exactamente el comportamiento histórico.
-            Dim actorBodySkinTxst As TXST_Data = Nothing
+            Dim actorBodySkinTxst As Canon.ITxst = Nothing
             If isOutfitCandidate Then
                 Dim shapeSlotMask As UInteger = ShapeBipedSlotMask(shape)
                 If Not skinTxstByShapeMask.TryGetValue(shapeSlotMask, actorBodySkinTxst) Then
@@ -1591,15 +1592,15 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' cargar el BGSM para extraer sus paths. NO copiamos otros params del BGSM (sólo
                 ' las texturas), preservando los params del material original del shape.
                 Dim skinMnamLoaded As Boolean = False
-                If actorBodySkinTxst.MaterialPath <> "" Then
-                    Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialPath, material, shape.NifShape, shape.NifContent)
+                If actorBodySkinTxst.MaterialDe() <> "" Then
+                    Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialDe(), material, shape.NifShape, shape.NifContent)
                     If bgsmMaterial IsNot Nothing Then
                         skinMnamLoaded = True
                         If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then material.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                         If bgsmMaterial.NormalTexture <> "" Then material.NormalTexture = bgsmMaterial.NormalTexture
                         If bgsmMaterial.SmoothSpecTexture <> "" Then material.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
                         If logEnabled Then
-                            Dim mnamL = If(actorBodySkinTxst.MaterialPath, "")
+                            Dim mnamL = If(actorBodySkinTxst.MaterialDe(), "")
                             Dim shapeL = shape.ShapeName
                             Logger.LogLazy(Function() $"[SKINSUB-MNAM] shape='{shapeL}' bodyBgsm='{mnamL}' → copia D/N/SmoothSpec del BGSM body (otros params del NIF; SKIP)")
                         End If

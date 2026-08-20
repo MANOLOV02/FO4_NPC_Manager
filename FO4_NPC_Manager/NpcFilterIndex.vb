@@ -1,6 +1,7 @@
 ﻿Imports System.Linq
 Imports System.Text
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Resolves advanced filter facets (<see cref="NpcFilterFacet"/>) for an NPC.
 '''
@@ -39,7 +40,7 @@ Friend NotInheritable Class NpcFilterIndex
     ' at it. Survive an NPC edit (an NPC_ save cannot change an HDPT/ARMO/RACE), cleared only on a
     ' load-order change.
     Private ReadOnly _recordLabels As New Dictionary(Of UInteger, String)()
-    Private ReadOnly _headParts As New Dictionary(Of UInteger, HDPT_Data)()
+    Private ReadOnly _headParts As New Dictionary(Of UInteger, Canon.IHdpt)()
 
     ' Per-NPC caches: dropped wholesale whenever any NPC record changes (an edit to a template source
     ' changes the effective values of everything downstream of it, so per-FormID eviction would be
@@ -273,20 +274,20 @@ Friend NotInheritable Class NpcFilterIndex
     Private Function HeadPartFacet(hdptFormID As UInteger) As NpcFilterFacet
         Dim hd = HeadPart(hdptFormID)
         If hd Is Nothing Then Return NpcFilterFacet.Face
-        Select Case hd.PartType
+        Select Case hd.TipoDeParte()
             Case FaceGenBuilder.PartTypeHair : Return NpcFilterFacet.Hair
             Case FaceGenBuilder.PartTypeEyes : Return NpcFilterFacet.Eyes
         End Select
         Return NpcFilterFacet.Face
     End Function
 
-    Private Function HeadPart(hdptFormID As UInteger) As HDPT_Data
-        Dim hd As HDPT_Data = Nothing
+    Private Function HeadPart(hdptFormID As UInteger) As Canon.IHdpt
+        Dim hd As Canon.IHdpt = Nothing
         If _headParts.TryGetValue(hdptFormID, hd) Then Return hd
         Dim rec = _pluginManager.GetRecord(hdptFormID)
         If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then
             Try
-                hd = RecordParsers.ParseHDPT(rec, _pluginManager)
+                hd = Canon.CanonRecords.Hdpt(rec, _pluginManager)
             Catch
                 hd = Nothing
             End Try
@@ -315,7 +316,7 @@ Friend NotInheritable Class NpcFilterIndex
             End If
             If rec.Header.Signature = "HDPT" Then
                 Dim hd = HeadPart(formID)
-                If hd IsNot Nothing AndAlso hd.MeshPath <> "" Then sb.Append(" "c).Append(hd.MeshPath)
+                If hd IsNot Nothing AndAlso hd.ModelModelFileName <> "" Then sb.Append(" "c).Append(hd.ModelModelFileName)
             End If
             label = sb.ToString()
         End If

@@ -1,6 +1,7 @@
 ﻿Imports System.IO
 Imports System.Text
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Exhaustive "what of this preset will NOT apply to this NPC" audit, shown by the preset browser
 ''' (<see cref="LooksmenuLoad_Form"/>) behind the "Show incompatible" button.
@@ -100,7 +101,7 @@ Public Module PresetCompatibilityReport
         Public RaceDisplayName As String = ""
         Public IsFemale As Boolean
         Public RaceDefaults As HashSet(Of UInteger)
-        Public FlstCache As Dictionary(Of UInteger, Canon.FormListRecord)
+        Public FlstCache As Dictionary(Of UInteger, Canon.IFlst)
         Public NpcHasBodyTri As Boolean = True
         ''' <summary>Ids of the F4SE overlay templates loaded for this NPC's gender (FO4). Nothing = the caller
         ''' couldn't supply the catalog, so overlay ids are reported as "not checked" instead of "missing".</summary>
@@ -120,7 +121,7 @@ Public Module PresetCompatibilityReport
         Dim p = ctx.Preset
         Dim pm = ctx.PluginManager
         ' IsHdptValidForRace indexes the FLST cache unconditionally — never hand it Nothing.
-        If ctx.FlstCache Is Nothing Then ctx.FlstCache = New Dictionary(Of UInteger, Canon.FormListRecord)
+        If ctx.FlstCache Is Nothing Then ctx.FlstCache = New Dictionary(Of UInteger, Canon.IFlst)
 
         r.Header.Add("Preset : " & DisplaySourcePath(p.SourcePath, ctx.DataPath))
         r.Header.Add($"NPC    : race {If(String.IsNullOrEmpty(ctx.RaceDisplayName), $"0x{ctx.RaceFormID:X8}", ctx.RaceDisplayName)} (0x{ctx.RaceFormID:X8})  •  {If(ctx.IsFemale, "Female", "Male")}")
@@ -231,7 +232,7 @@ Public Module PresetCompatibilityReport
                 Continue For
             End If
 
-            Dim hd = RecordParsers.ParseHDPT(rec, pm)
+            Dim hd = Canon.CanonRecords.Hdpt(rec, pm)
             Dim label = DescribeHdpt(fid, hd, pm)
             If noRaceInfo Then
                 ' Existence is all we can assert here — the note above says so.
@@ -248,13 +249,13 @@ Public Module PresetCompatibilityReport
             Dim reason As String
             If hd Is Nothing Then
                 reason = "the HDPT record couldn't be parsed."
-            ElseIf hd.ValidRacesFormID = 0UI Then
+            ElseIf hd.ValidRaces = 0UI Then
                 reason = "it declares no Valid Races (RNAM=0) and this RACE declares no head parts at all (non-humanoid race), so the engine drops it."
             Else
-                reason = $"its Valid Races list (FLST 0x{hd.ValidRacesFormID:X8}) doesn't include this race, and this RACE doesn't declare it as a gender default."
+                reason = $"its Valid Races list (FLST 0x{hd.ValidRaces:X8}) doesn't include this race, and this RACE doesn't declare it as a gender default."
             End If
             Dim consequence As String = ""
-            If hd IsNot Nothing AndAlso hd.PartType = 1 Then
+            If hd IsNot Nothing AndAlso hd.TipoDeParte() = 1 Then
                 consequence = "  ⚠ This is the BASE HEAD (Face): applying this preset would leave the NPC with NO head mesh."
             End If
             r.Issues.Add(New PresetIssue(PresetIssueKind.RaceIncompatible, "Head parts", $"{label} is not valid for this race",
@@ -264,15 +265,15 @@ Public Module PresetCompatibilityReport
         If okCount > 0 Then r.Resolved.Add($"{okCount} head part(s) resolve and pass the race gate")
     End Sub
 
-    Private Function DescribeHdpt(fid As UInteger, hd As HDPT_Data, pm As PluginManager) As String
+    Private Function DescribeHdpt(fid As UInteger, hd As Canon.IHdpt, pm As PluginManager) As String
         Dim name As String = ""
         Dim typeName As String = ""
         If hd IsNot Nothing Then
-            name = If(Not String.IsNullOrEmpty(hd.EditorID), hd.EditorID, hd.FullName)
-            If hd.PartType >= 0 AndAlso hd.PartType < HeadPartTypeNames.Length Then
-                typeName = HeadPartTypeNames(hd.PartType)
-            ElseIf hd.PartType >= 0 Then
-                typeName = $"type {hd.PartType}"
+            name = If(Not String.IsNullOrEmpty(hd.EditorID), hd.EditorID, hd.Name)
+            If hd.TipoDeParte() >= 0 AndAlso hd.TipoDeParte() < HeadPartTypeNames.Length Then
+                typeName = HeadPartTypeNames(hd.TipoDeParte())
+            ElseIf hd.TipoDeParte() >= 0 Then
+                typeName = $"type {hd.TipoDeParte()}"
             End If
         End If
         If String.IsNullOrEmpty(name) Then name = $"0x{fid:X8}"
@@ -450,8 +451,8 @@ Public Module PresetCompatibilityReport
         ' reporte existe para dar. Caso real: los 4 materiales de KSHairdos que apuntan a
         ' 'vhaircolor_lgrad_d.dds', que el mod nunca empaquetó.
         If ctx.IsSse Then Return
-        Dim clfm = Canon.CanonRecords.Color(rec, ctx.PluginManager)
-        If clfm Is Nothing OrElse Not clfm.HasRemappingIndex Then Return
+        Dim clfm = Canon.CanonRecords.Clfm(rec, ctx.PluginManager)
+        If clfm Is Nothing OrElse Not clfm.TieneIndiceDePaleta() Then Return
 
         LmHairColorLutLoader.EnsureLoaded(ctx.PluginManager, ctx.DataPath)
         ' Las DOS cosas de la MISMA lectura del snapshot: pedirlas por separado deja una ventana en la que un
@@ -462,17 +463,17 @@ Public Module PresetCompatibilityReport
         ' de textura faltante le atribuyera al haircolors.json el path del HNAM de la raza.
         Dim appliedCustom As String = Nothing
         Dim lut = LmHairColorLutLoader.ResolveBrowPaletteTexture(ctx.Race, p.HairColorFormID, appliedCustom)
-        ' ⛔ If(a, b) devuelve b sólo si a es Nothing, NO si es "". Canon.ColorRecord.FullName arranca en "" y sólo se
+        ' ⛔ If(a, b) devuelve b sólo si a es Nothing, NO si es "". Canon.IClfm.FullName arranca en "" y sólo se
         ' asigna si hay subrecord FULL, así que un CLFM sin FULL —común en packs generados— imprimía comillas
         ' vacías: "'' is a palette colour but…".
-        Dim colourName = If(String.IsNullOrEmpty(clfm.FullName),
+        Dim colourName = If(String.IsNullOrEmpty(clfm.Name),
                             If(String.IsNullOrEmpty(clfm.EditorID), $"0x{p.HairColorFormID:X8}", clfm.EditorID),
-                            clfm.FullName)
+                            clfm.Name)
 
         If String.IsNullOrEmpty(lut) Then
             r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Hair colour",
                                    $"'{colourName}' is a palette colour but {ctx.RaceDisplayName} declares no hair LUT",
-                                   $"The colour selects row {clfm.RemappingIndex:F4} of a palette texture the RACE doesn't name (no HNAM), so the eyebrow tint has nothing to sample — the engine skips it too. The hair MESH still tints from its own material."))
+                                   $"The colour selects row {clfm.IndiceDePaleta():F4} of a palette texture the RACE doesn't name (no HNAM), so the eyebrow tint has nothing to sample — the engine skips it too. The hair MESH still tints from its own material."))
             Return
         End If
 

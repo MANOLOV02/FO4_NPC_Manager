@@ -1,5 +1,6 @@
 ﻿Imports System.Text
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' Head-part resolution helpers for NPC_Manager. App-specific (not promoted to
@@ -33,7 +34,7 @@ Public Module HeadPartResolver
                                                    npcHeadPartFormIDs As IReadOnlyList(Of UInteger),
                                                    pluginManager As PluginManager,
                                                    Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing,
-                                                   Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As List(Of UInteger)
+                                                   Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As List(Of UInteger)
         Dim safeNpcParts As IReadOnlyList(Of UInteger) = If(npcHeadPartFormIDs, CType(New List(Of UInteger)(), IReadOnlyList(Of UInteger)))
         If raceFormID = 0UI Then Return safeNpcParts.ToList()
         Dim raceRec = pluginManager.GetRecord(raceFormID)
@@ -51,11 +52,11 @@ Public Module HeadPartResolver
         For Each defFID In raceDefaults
             Dim defRec = pluginManager.GetRecord(defFID)
             If defRec Is Nothing OrElse defRec.Header.Signature <> "HDPT" Then Continue For
-            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(defRec), RecordParsers.ParseHDPT(defRec, pluginManager))
-            If hdpt.PartType = 0 Then
+            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(defRec), Canon.CanonRecords.Hdpt(defRec, pluginManager))
+            If hdpt.TipoDeParte() = 0 Then
                 freestandingMisc.Add(defFID)
-            ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
-                mergedByType(hdpt.PartType) = defFID
+            ElseIf hdpt.TipoDeParte() >= 1 AndAlso hdpt.TipoDeParte() <= 9 Then
+                mergedByType(hdpt.TipoDeParte()) = defFID
             End If
         Next
 
@@ -74,13 +75,13 @@ Public Module HeadPartResolver
         For Each npcFID In safeNpcParts
             Dim npcRec = pluginManager.GetRecord(npcFID)
             If npcRec Is Nothing OrElse npcRec.Header.Signature <> "HDPT" Then Continue For
-            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(npcRec), RecordParsers.ParseHDPT(npcRec, pluginManager))
-            If hdpt.PartType = 0 Then
+            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(npcRec), Canon.CanonRecords.Hdpt(npcRec, pluginManager))
+            If hdpt.TipoDeParte() = 0 Then
                 freestandingMisc.Add(npcFID)
-            ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
-                If npcClaimedTypes.Add(hdpt.PartType) Then
-                    mergedByType(hdpt.PartType) = npcFID
-                ElseIf hdpt.PartType = 5 Then
+            ElseIf hdpt.TipoDeParte() >= 1 AndAlso hdpt.TipoDeParte() <= 9 Then
+                If npcClaimedTypes.Add(hdpt.TipoDeParte()) Then
+                    mergedByType(hdpt.TipoDeParte()) = npcFID
+                ElseIf hdpt.TipoDeParte() = 5 Then
                     ' La acumulacion es SOLO para PartType=5 (Scar). Medido sobre los 3158 FaceGeom del CK,
                     ' contando NPCs cuyo PNAM trae dos head parts del mismo tipo: en tipo 5 el extra esta en el
                     ' NIF del CK en 63 casos (los 52 ausentes tienen MODL vacio y no emiten shape en ninguno de
@@ -119,31 +120,31 @@ Public Module HeadPartResolver
                                        raceFormID As UInteger,
                                        isFemale As Boolean,
                                        pluginManager As PluginManager,
-                                       flstCache As Dictionary(Of UInteger, Canon.FormListRecord),
+                                       flstCache As Dictionary(Of UInteger, Canon.IFlst),
                                        Optional raceDefaults As HashSet(Of UInteger) = Nothing,
                                        Optional raceHasAnyHeadParts As Boolean = True,
-                                       Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As Boolean
+                                       Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As Boolean
         If hdptFormID = 0UI OrElse pluginManager Is Nothing Then Return False
         Dim rec = pluginManager.GetRecord(hdptFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Return False
-        Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), RecordParsers.ParseHDPT(rec, pluginManager))
+        Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
         If hdpt Is Nothing Then Return False
 
         ' Path (a): no race restriction declared. Pass only if the RACE itself uses head parts
         ' (humanoid). Non-humanoid races (dog/robot/creature) drop RNAM=0 HDPTs even though
         ' a buggy NPC.PNAM might list one — engine-faithful behavior.
-        If hdpt.ValidRacesFormID = 0UI Then Return raceHasAnyHeadParts
+        If hdpt.ValidRaces = 0UI Then Return raceHasAnyHeadParts
 
         ' Path (b): RNAM points to a FLST and the FLST contains the target race.
-        Dim flst As Canon.FormListRecord = Nothing
-        If Not flstCache.TryGetValue(hdpt.ValidRacesFormID, flst) Then
-            Dim flstRec = pluginManager.GetRecord(hdpt.ValidRacesFormID)
+        Dim flst As Canon.IFlst = Nothing
+        If Not flstCache.TryGetValue(hdpt.ValidRaces, flst) Then
+            Dim flstRec = pluginManager.GetRecord(hdpt.ValidRaces)
             If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
-                flst = Canon.CanonRecords.FormList(flstRec, pluginManager)
+                flst = Canon.CanonRecords.Flst(flstRec, pluginManager)
             End If
-            flstCache(hdpt.ValidRacesFormID) = flst
+            flstCache(hdpt.ValidRaces) = flst
         End If
-        If flst IsNot Nothing AndAlso flst.ItemFormIDs.Contains(raceFormID) Then Return True
+        If flst IsNot Nothing AndAlso flst.Miembros().Contains(raceFormID) Then Return True
 
         ' Path (b'): the FormList as the GAME would have it. RaceCompatibility's proxyRaces script INSERTS a mod's
         ' custom races into the vanilla head-part FormLists at runtime (once, on OnInit) — nothing of that is ever
@@ -151,7 +152,7 @@ Public Module HeadPartResolver
         ' catalog reconstructs that insertion from the QUST's VMAD + the mod's compiled script. Without it every
         ' custom-race NPC (COtR & co) would be offered ONLY its own mod's head parts and not a single vanilla hair.
         ' Empty catalog (no such mod installed, or FO4) ⇒ this is a no-op and the filter behaves exactly as before.
-        If RaceCompatCatalog IsNot Nothing AndAlso RaceCompatCatalog.ContainsRace(hdpt.ValidRacesFormID, raceFormID) Then Return True
+        If RaceCompatCatalog IsNot Nothing AndAlso RaceCompatCatalog.ContainsRace(hdpt.ValidRaces, raceFormID) Then Return True
 
         ' Path (c): the NPC's RACE record declares this HDPT as a gender-default.
         If raceDefaults IsNot Nothing AndAlso raceDefaults.Contains(hdptFormID) Then Return True
@@ -176,7 +177,7 @@ Public Module HeadPartResolver
                                                isFemale As Boolean,
                                                pluginManager As PluginManager,
                                                race As RACE_Data,
-                                               flstCache As Dictionary(Of UInteger, Canon.FormListRecord),
+                                               flstCache As Dictionary(Of UInteger, Canon.IFlst),
                                                raceDefaults As HashSet(Of UInteger),
                                                Optional ignoreFaceBaseHeadPart As Boolean = False) As Boolean
         If preset Is Nothing OrElse pluginManager Is Nothing Then Return False
@@ -195,8 +196,8 @@ Public Module HeadPartResolver
                 If ignoreFaceBaseHeadPart Then
                     Dim hrec = pluginManager.GetRecord(fid)
                     If hrec IsNot Nothing AndAlso hrec.Header.Signature = "HDPT" Then
-                        Dim hd = RecordParsers.ParseHDPT(hrec, pluginManager)
-                        If hd IsNot Nothing AndAlso hd.PartType = 1 Then
+                        Dim hd = Canon.CanonRecords.Hdpt(hrec, pluginManager)
+                        If hd IsNot Nothing AndAlso hd.TipoDeParte() = 1 Then
                             Dim fidFace = fid
                             Logger.LogLazy(Function() $"[LMLoad] '{presetName}': skipping base-head (Face) HDPT 0x{fidFace:X8} from race-compat gate (SSE — skee applies the preset sculpt over the NPC's own base head).")
                             Continue For
@@ -222,23 +223,23 @@ Public Module HeadPartResolver
     ''' and <see cref="EnumerateHdptChain"/>.</summary>
     Public Function BuildMiscToParentEffective(rootFormIDs As IEnumerable(Of UInteger),
                                                pluginManager As PluginManager,
-                                               Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As Dictionary(Of UInteger, Integer)
+                                               Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As Dictionary(Of UInteger, Integer)
         Dim result As New Dictionary(Of UInteger, Integer)
         If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return result
-        Dim parsed As New Dictionary(Of UInteger, HDPT_Data)
+        Dim parsed As New Dictionary(Of UInteger, Canon.IHdpt)
         For Each fid In rootFormIDs
             If fid = 0UI OrElse parsed.ContainsKey(fid) Then Continue For
             Dim rec = pluginManager.GetRecord(fid)
-            If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then parsed(fid) = If(parseHdpt IsNot Nothing, parseHdpt(rec), RecordParsers.ParseHDPT(rec, pluginManager))
+            If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then parsed(fid) = If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
         Next
         For Each parentKv In parsed
-            Dim parentEff = parentKv.Value.PartType
+            Dim parentEff = parentKv.Value.TipoDeParte()
             If parentEff = 0 Then Continue For
-            If parentKv.Value.ExtraPartFormIDs Is Nothing Then Continue For
-            For Each extraFid In parentKv.Value.ExtraPartFormIDs
-                Dim extraData As HDPT_Data = Nothing
+            If parentKv.Value.PartesExtra() Is Nothing Then Continue For
+            For Each extraFid In parentKv.Value.PartesExtra()
+                Dim extraData As Canon.IHdpt = Nothing
                 If Not parsed.TryGetValue(extraFid, extraData) Then Continue For
-                If extraData.PartType <> 0 Then Continue For
+                If extraData.TipoDeParte() <> 0 Then Continue For
                 If Not result.ContainsKey(extraFid) Then result(extraFid) = parentEff
             Next
         Next
@@ -273,26 +274,26 @@ Public Module HeadPartResolver
     ''' EXACTAMENTE igual que el editor manual. El caller del saver DEBE gatear en "el preset realmente reemplazo
     ''' al padre de ese PartType": pasar un padre sin cambios no haria nada, pero el gate evita siquiera
     ''' considerar un extra cuyo padre quedo intacto.</para>
-    ''' <para><paramref name="resolveHdpt"/> mapea FormID a su <see cref="HDPT_Data"/> parseado; cada caller pasa
+    ''' <para><paramref name="resolveHdpt"/> mapea FormID a su <see cref="Canon.IHdpt"/> parseado; cada caller pasa
     ''' su propia cache.</para></summary>
     Public Sub CascadeRemoveOrphanedHnamMisc(headParts As List(Of UInteger),
                                              removedParentFid As UInteger,
-                                             resolveHdpt As Func(Of UInteger, HDPT_Data))
+                                             resolveHdpt As Func(Of UInteger, Canon.IHdpt))
         If headParts Is Nothing OrElse resolveHdpt Is Nothing Then Return
         Dim removedHdpt = resolveHdpt(removedParentFid)
         If removedHdpt Is Nothing Then Return
-        If removedHdpt.PartType = 0 Then Return   ' a Misc has no HNAM children to orphan
-        If removedHdpt.ExtraPartFormIDs Is Nothing OrElse removedHdpt.ExtraPartFormIDs.Count = 0 Then Return
+        If removedHdpt.TipoDeParte() = 0 Then Return   ' a Misc has no HNAM children to orphan
+        If removedHdpt.PartesExtra() Is Nothing OrElse removedHdpt.PartesExtra().Count = 0 Then Return
 
-        Dim extras As New HashSet(Of UInteger)(removedHdpt.ExtraPartFormIDs)
+        Dim extras As New HashSet(Of UInteger)(removedHdpt.PartesExtra())
         ' If another head part still in the list declares one of these extras in its HNAM, it's a live
         ' HNAM child of that parent — keep it (covers a hairline shared by the old and new hair).
         Dim claimedByOtherParent As New HashSet(Of UInteger)
         For Each otherFid In headParts
             If otherFid = removedParentFid Then Continue For
             Dim otherHdpt = resolveHdpt(otherFid)
-            If otherHdpt Is Nothing OrElse otherHdpt.ExtraPartFormIDs Is Nothing Then Continue For
-            For Each ex In otherHdpt.ExtraPartFormIDs
+            If otherHdpt Is Nothing OrElse otherHdpt.PartesExtra() Is Nothing Then Continue For
+            For Each ex In otherHdpt.PartesExtra()
                 If extras.Contains(ex) Then claimedByOtherParent.Add(ex)
             Next
         Next
@@ -301,7 +302,7 @@ Public Module HeadPartResolver
             If Not extras.Contains(fid) Then Continue For
             If claimedByOtherParent.Contains(fid) Then Continue For
             Dim extraHdpt = resolveHdpt(fid)
-            If extraHdpt Is Nothing OrElse extraHdpt.PartType <> 0 Then Continue For
+            If extraHdpt Is Nothing OrElse extraHdpt.TipoDeParte() <> 0 Then Continue For
             headParts.RemoveAt(i)
         Next
     End Sub
@@ -320,7 +321,7 @@ Public Module HeadPartResolver
     ''' reclamando un padre vivo.</para></summary>
     Public Function ComputeReplacedParentOrphanMisc(rawParts As IEnumerable(Of UInteger),
                                                     presetParts As IEnumerable(Of UInteger),
-                                                    resolveHdpt As Func(Of UInteger, HDPT_Data)) As HashSet(Of UInteger)
+                                                    resolveHdpt As Func(Of UInteger, Canon.IHdpt)) As HashSet(Of UInteger)
         Dim result As New HashSet(Of UInteger)
         If rawParts Is Nothing OrElse presetParts Is Nothing OrElse resolveHdpt Is Nothing Then Return result
 
@@ -332,11 +333,11 @@ Public Module HeadPartResolver
                            If fid = 0UI Then Return
                            Dim hd = resolveHdpt(fid)
                            If hd Is Nothing Then Return
-                           If hd.PartType = 0 Then
+                           If hd.TipoDeParte() = 0 Then
                                If seenMisc.Add(fid) Then miscList.Add(fid)
-                           ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
-                               mergedByType(hd.PartType) = fid   ' preset (classified 2nd) wins per type
-                               If isRaw Then rawByType(hd.PartType) = fid
+                           ElseIf hd.TipoDeParte() >= 1 AndAlso hd.TipoDeParte() <= 9 Then
+                               mergedByType(hd.TipoDeParte()) = fid   ' preset (classified 2nd) wins per type
+                               If isRaw Then rawByType(hd.TipoDeParte()) = fid
                            End If
                        End Sub
         For Each fid In rawParts : classify(fid, True) : Next
@@ -379,7 +380,7 @@ Public Module HeadPartResolver
     ''' need to color/treat a sub-part like its parent (e.g. hair palette on a hairline) must use
     ''' <see cref="EffectivePartType"/>, not <c>Hdpt.PartType</c>.</summary>
     Public Class HdptChainEntry
-        Public Property Hdpt As HDPT_Data
+        Public Property Hdpt As Canon.IHdpt
         Public Property EffectivePartType As Integer
     End Class
 
@@ -394,7 +395,7 @@ Public Module HeadPartResolver
     ''' promueve al tipo de ese padre, asi que el resultado no depende del orden.</para></summary>
     Public Iterator Function EnumerateHdptChain(rootFormIDs As IEnumerable(Of UInteger),
                                                 pluginManager As PluginManager,
-                                                Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As IEnumerable(Of HdptChainEntry)
+                                                Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As IEnumerable(Of HdptChainEntry)
         If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return
         Dim roots = rootFormIDs.Where(Function(f) f <> 0UI).ToList()
 
@@ -413,18 +414,18 @@ Public Module HeadPartResolver
             If Not visited.Add(fid) Then Continue While
             Dim rec = pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue While
-            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), RecordParsers.ParseHDPT(rec, pluginManager))
+            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
             If hdpt Is Nothing Then Continue While
 
             ' Effective type via the shared rule (same one the render walk uses).
-            Dim effectiveType = ResolveEffectivePartType(hdpt.PartType, item.ParentEff, fid, miscToParentEffective)
+            Dim effectiveType = ResolveEffectivePartType(hdpt.TipoDeParte(), item.ParentEff, fid, miscToParentEffective)
 
             Yield New HdptChainEntry With {.Hdpt = hdpt, .EffectivePartType = effectiveType}
 
             ' Children inherit this node's effective type (so a hairline under hair stays Hair).
             Dim childParentEff = If(effectiveType <> 0, effectiveType, item.ParentEff)
-            If hdpt.ExtraPartFormIDs IsNot Nothing Then
-                For Each extraFid In hdpt.ExtraPartFormIDs
+            If hdpt.PartesExtra() IsNot Nothing Then
+                For Each extraFid In hdpt.PartesExtra()
                     If extraFid <> 0UI Then queue.Enqueue((extraFid, childParentEff))
                 Next
             End If

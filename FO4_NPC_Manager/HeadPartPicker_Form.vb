@@ -1,4 +1,5 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Modal dialog that lets the user pick one HDPT for a given (RACE, gender, partType)
 ''' triple. Filters the master plugin HDPT enumeration by:
@@ -89,7 +90,7 @@ Public Class HeadPartPicker_Form
 
         ' Cache resolved FLSTs as we encounter them — vanilla has 3-4 distinct race FLSTs and
         ' parsing the same FLST 396 times is wasteful.
-        Dim flstCache As New Dictionary(Of UInteger, Canon.FormListRecord)
+        Dim flstCache As New Dictionary(Of UInteger, Canon.IFlst)
 
         Dim totalScanned As Integer = 0
         Dim filteredPartType As Integer = 0
@@ -100,11 +101,11 @@ Public Class HeadPartPicker_Form
 
         For Each rec In hdptRecords
             totalScanned += 1
-            Dim hdpt = RecordParsers.ParseHDPT(rec, _pluginManager)
+            Dim hdpt = Canon.CanonRecords.Hdpt(rec, _pluginManager)
             If hdpt Is Nothing Then Continue For
 
             ' Filter 1: PartType match.
-            If hdpt.PartType <> partType Then
+            If hdpt.TipoDeParte() <> partType Then
                 filteredPartType += 1
                 Continue For
             End If
@@ -149,7 +150,7 @@ Public Class HeadPartPicker_Form
             _candidates.Add(New Candidate With {
                 .FormID = hdpt.FormID,
                 .EditorID = If(hdpt.EditorID, ""),
-                .FullName = If(hdpt.FullName, ""),
+                .FullName = If(hdpt.Name, ""),
                 .Plugin = ResolvePluginName(rec)
             })
         Next
@@ -227,10 +228,10 @@ Public Class HeadPartPicker_Form
             For Each chainEntry In HeadPartResolver.EnumerateHdptChain({c.FormID}, _pluginManager)
                 Dim hdpt = chainEntry.Hdpt
                 chainCount += 1
-                If String.IsNullOrEmpty(hdpt.MeshPath) Then Continue For
+                If String.IsNullOrEmpty(hdpt.ModelModelFileName) Then Continue For
 
                 ' Resolve the NIF bytes via FilesDictionary (same path MainForm.vb:7305 uses).
-                Dim dictKey = NormalizeMeshKey(hdpt.MeshPath)
+                Dim dictKey = NormalizeMeshKey(hdpt.ModelModelFileName)
                 Dim loc As FilesDictionary_class.File_Location = Nothing
                 If Not FilesDictionary_class.Dictionary.TryGetValue(dictKey, loc) Then Continue For
                 Dim bytes As Byte() = Nothing
@@ -254,10 +255,10 @@ Public Class HeadPartPicker_Form
                 ' carry their own TNAM and apply it on their own iteration. Vanilla eye HDPTs
                 ' share femaleeyes.nif but each FemaleEyesHumanBlue/Brown/etc. has its own TXST,
                 ' so without this pass every eye colour renders the default brown.
-                If hdpt.TextureSetFormID <> 0UI Then
-                    Dim txstRec = _pluginManager.GetRecord(hdpt.TextureSetFormID)
+                If hdpt.TextureSet <> 0UI Then
+                    Dim txstRec = _pluginManager.GetRecord(hdpt.TextureSet)
                     If txstRec IsNot Nothing AndAlso txstRec.Header.Signature = "TXST" Then
-                        Dim txst = RecordParsers.ParseTXST(txstRec, _pluginManager)
+                        Dim txst = Canon.CanonRecords.Txst(txstRec, _pluginManager)
                         If txst IsNot Nothing Then
                             For Each shape In shapes
                                 MaterialResolver.EnsureShapeMaterialResolved(shape)
@@ -267,7 +268,7 @@ Public Class HeadPartPicker_Form
                                 ' head parts, camino de render puro que no escribe NIF. El alpha del material
                                 ' ya no se gatea por parte del cuerpo (el motor no distingue), así que el
                                 ' `isFaceHeadPart:=(hdpt.PartType = 1)` que iba acá dejó de existir.
-                                NpcMaterialResolver.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture, shape.NifShape, shape.NifContent, isHeadPartTextureSet:=True)
+                                NpcMaterialResolver.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsaTexturaDelCuerpo(), shape.NifShape, shape.NifContent, isHeadPartTextureSet:=True)
                             Next
                         End If
                     End If

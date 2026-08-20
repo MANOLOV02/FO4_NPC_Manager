@@ -27,7 +27,7 @@ Friend NotInheritable Class NpcRenderContext
     Private ReadOnly _armoCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMO_Data)()
     Private ReadOnly _armaCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMA_Data)()
     Private ReadOnly _raceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, RACE_Data)()
-    Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HDPT_Data)()
+    Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IHdpt)()
     Private ReadOnly _armorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HashSet(Of UInteger))()
 
     ''' <summary>Optional draft-resolver hook (set by MainForm). Given a FormID, returns a synthesized
@@ -47,10 +47,10 @@ Friend NotInheritable Class NpcRenderContext
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
     Public ArmaDraftResolver As Func(Of UInteger, ARMA_Data) = Nothing
     ''' <summary>Optional draft-resolver hook for MSWP drafts. Given a FormID, returns a synthesized
-    ''' <see cref="MSWP_Data"/> when the FormID is an in-memory MSWP draft, or Nothing when it is not.
+    ''' <see cref="Canon.IMswp"/> when the FormID is an in-memory MSWP draft, or Nothing when it is not.
     ''' Consumed by the material-override pipeline (NpcMaterialResolver) so an UNSAVED draft material-swap
     ''' applies in the live preview (a draft has no real record for the FormID overload to resolve).</summary>
-    Public MswpDraftResolver As Func(Of UInteger, MSWP_Data) = Nothing
+    Public MswpDraftResolver As Func(Of UInteger, Canon.IMswp) = Nothing
 
     ''' <summary>El <c>Data\</c> EFECTIVO de este contexto. Existe para que los registros que se cargan de
     ''' disco (tints custom de LooksMenu, LUTs de pelo) se lean del MISMO Data que el resto del contexto.
@@ -103,8 +103,8 @@ Friend NotInheritable Class NpcRenderContext
                 For Each rec In dfobs
                     If rec Is Nothing OrElse String.IsNullOrEmpty(rec.EditorID) Then Continue For
                     If Not PipboyDefaultObjectEditorIds.Any(Function(e) String.Equals(e, rec.EditorID, StringComparison.OrdinalIgnoreCase)) Then Continue For
-                    Dim d = Canon.CanonRecords.DefaultObject(rec, PluginManager)
-                    If d IsNot Nothing AndAlso d.ObjectFormID <> 0UI Then set_.Add(d.ObjectFormID)
+                    Dim d = Canon.CanonRecords.Dfob(rec, PluginManager)
+                    If d IsNot Nothing AndAlso d.Object <> 0UI Then set_.Add(d.Object)
                 Next
             End If
             _pipboyDeviceArmos = set_
@@ -234,9 +234,9 @@ Friend NotInheritable Class NpcRenderContext
     End Function
 
     ''' <summary>Parse (and cache) an HDPT from an already-fetched record, keyed by its FormID.</summary>
-    Public Function ParseHdptCached(hRec As PluginRecord) As HDPT_Data
+    Public Function ParseHdptCached(hRec As PluginRecord) As Canon.IHdpt
         If hRec Is Nothing Then Return Nothing
-        Return _hdptCache.GetOrAdd(hRec.Header.FormID, Function(fid) RecordParsers.ParseHDPT(hRec, PluginManager))
+        Return _hdptCache.GetOrAdd(hRec.Header.FormID, Function(fid) Canon.CanonRecords.Hdpt(hRec, PluginManager))
     End Function
 
     ''' <summary>Clear every parse cache. Call on load-order change (MainForm.ParseAllNPCs). Clears

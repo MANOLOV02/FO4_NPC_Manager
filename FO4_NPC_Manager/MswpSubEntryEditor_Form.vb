@@ -1,5 +1,6 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Modal editor for a SINGLE MSWP substitution (Original / Replacement / optional Color Remap),
 ''' opened from the Material Swap editor's substitutions grid (Add / Edit / double-click a row). Replaces the
@@ -10,20 +11,20 @@ Imports FO4_Base_Library
 ''' old grid combo was; it stays a DropDown (editable) so a swap whose Original isn't referenced by the mesh
 ''' can still be authored (the old free-text fallback). Replacement is typed or picked via the library
 ''' <see cref="DictionaryFilePicker_Form"/> (Materials\ + {.bgsm,.bgem}). On OK a fresh
-''' <see cref="MSWP_Substitution"/> is produced (deep-copied out); the caller reads it on DialogResult.OK.</summary>
+''' <see cref="Canon.SustitucionEditable"/> is produced (deep-copied out); the caller reads it on DialogResult.OK.</summary>
 Public Class MswpSubEntryEditor_Form
 
     ''' <summary>The edited substitution, valid only after <c>DialogResult.OK</c>. Fresh — the caller owns it.</summary>
-    Public ReadOnly Property ResultSub As MSWP_Substitution
+    Public ReadOnly Property ResultSub As Canon.SustitucionEditable
         Get
             Return _result
         End Get
     End Property
-    Private _result As MSWP_Substitution
+    Private _result As Canon.SustitucionEditable
 
     ''' <param name="meshMaterials">Material paths the gender mesh references — the Original combo items.</param>
     ''' <param name="sub">The substitution to edit. DEEP-COPIED in (never aliased); Nothing starts empty.</param>
-    Public Sub New(meshMaterials As IEnumerable(Of String), sub_ As MSWP_Substitution)
+    Public Sub New(meshMaterials As IEnumerable(Of String), sub_ As Canon.SustitucionEditable)
         InitializeComponent()
 
         If meshMaterials IsNot Nothing Then
@@ -32,16 +33,16 @@ Public Class MswpSubEntryEditor_Form
             Next
         End If
 
-        Dim src = If(sub_, New MSWP_Substitution())
+        Dim src = If(sub_, New Canon.SustitucionEditable())
         ' Show the current Original even when it isn't one of the mesh's materials (out-of-list authoring).
-        Dim orig = If(src.OriginalMaterial, "")
+        Dim orig = If(src.MaterialOriginal, "")
         If orig.Length > 0 AndAlso Not ComboOriginal.Items.Contains(orig) Then ComboOriginal.Items.Add(orig)
         ComboOriginal.Text = orig
-        TextBoxReplacement.Text = If(src.ReplacementMaterial, "")
+        TextBoxReplacement.Text = If(src.MaterialReemplazo, "")
 
         ' Color remap: a checkbox marks it present/absent; the 0–1 slider (4 decimals) holds the index.
-        CheckRemap.Checked = src.HasColorRemapIndex
-        SliderRemap.Value = If(src.HasColorRemapIndex, Math.Max(0.0, Math.Min(1.0, CDbl(src.ColorRemapIndex))), 0.0)
+        CheckRemap.Checked = src.TieneIndiceDeColor
+        SliderRemap.Value = If(src.TieneIndiceDeColor, Math.Max(0.0, Math.Min(1.0, CDbl(src.IndiceDeColor))), 0.0)
         SliderRemap.Enabled = CheckRemap.Checked
 
         AddHandler CheckRemap.CheckedChanged, Sub()
@@ -150,10 +151,10 @@ Public Class MswpSubEntryEditor_Form
             Return
         End If
 
-        Dim built As New MSWP_Substitution With {.OriginalMaterial = orig, .ReplacementMaterial = repl}
+        Dim built As New Canon.SustitucionEditable With {.MaterialOriginal = orig, .MaterialReemplazo = repl}
         If CheckRemap.Checked Then
-            built.HasColorRemapIndex = True
-            built.ColorRemapIndex = CSng(SliderRemap.Value)
+            built.TieneIndiceDeColor = True
+            built.IndiceDeColor = CSng(SliderRemap.Value)
         End If
 
         _result = built

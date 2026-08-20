@@ -4,6 +4,7 @@ Imports System.Threading
 Imports System.Threading.Tasks
 Imports System.Windows.Forms
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Orquestador del flujo de Save NPC override: arma las entries, escribe el plugin por
 ''' <see cref="SaveNpcEspWriter"/> y, opcionalmente, hornea el NIF de CharGen con sus texturas y las empaqueta
@@ -468,7 +469,7 @@ Public Module NpcOverrideSaver
                     If ctx.RecordsToRemove.Contains(globalFid) Then Continue For
                 End If
                 If rec.Header.Signature = "OTFT" Then
-                    Dim parsedOtft = Canon.CanonRecords.Outfit(rec, ctx.PluginManager)
+                    Dim parsedOtft = Canon.CanonRecords.Otft(rec, ctx.PluginManager)
                     Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedOtft.EditorID,
@@ -476,7 +477,7 @@ Public Module NpcOverrideSaver
                         .OriginalVcs1 = rec.Header.VCS1,
                         .OriginalVcs2 = rec.Header.VCS2
                     }
-                    oe.ItemArmoFormIDs.AddRange(parsedOtft.ItemFormIDs)
+                    oe.ItemArmoFormIDs.AddRange(parsedOtft.Prendas())
                     outfitEntries.Add(oe)
                     Continue For
                 End If
@@ -578,7 +579,7 @@ Public Module NpcOverrideSaver
                     Continue For
                 End If
                 If rec.Header.Signature = "MSWP" Then
-                    mswpEntries.Add(BuildMswpEntryFromParsed(RecordParsers.ParseMSWP(rec, ctx.PluginManager), rec, ctx))
+                    mswpEntries.Add(BuildMswpEntryFromParsed(Canon.CanonRecords.Mswp(rec, ctx.PluginManager), rec, ctx))
                     Continue For
                 End If
                 ' CLFM authored by a PRIOR save (an SSE hair colour materialized from a RaceMenu preset) —
@@ -677,7 +678,7 @@ Public Module NpcOverrideSaver
                     ' → don't emit" rule.
                     Dim overridden = ctx.PluginManager.GetRecord(d.FormID)
                     If overridden IsNot Nothing AndAlso overridden.Header.Signature = "OTFT" Then
-                        Dim origItems = Canon.CanonRecords.Outfit(overridden, ctx.PluginManager).ItemFormIDs
+                        Dim origItems = Canon.CanonRecords.Otft(overridden, ctx.PluginManager).Prendas()
                         If OutfitItemsEqual(d.ItemFormIDs, origItems) Then Continue For
                     End If
                     Dim preserved = outfitEntries.FirstOrDefault(Function(o) o.FormID = d.FormID)
@@ -1259,13 +1260,13 @@ Public Module NpcOverrideSaver
                     If fid = 0UI Then Return
                     Dim hpRec = ctx.PluginManager.GetRecord(fid)
                     If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Return
-                    Dim hd = RecordParsers.ParseHDPT(hpRec, ctx.PluginManager)
+                    Dim hd = Canon.CanonRecords.Hdpt(hpRec, ctx.PluginManager)
                     ' IsExtraPart flag = 0x08; same value used by MainForm.HeadPartFlagIsExtra.
                     If skipExtra AndAlso (hd.Flags And 8US) <> 0 Then Return
-                    If hd.PartType = 0 Then
+                    If hd.TipoDeParte() = 0 Then
                         freestandingMisc.Add(fid)
-                    ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
-                        mergedByType(hd.PartType) = fid
+                    ElseIf hd.TipoDeParte() >= 1 AndAlso hd.TipoDeParte() <= 9 Then
+                        mergedByType(hd.TipoDeParte()) = fid
                     End If
                 End Sub
             ' A COMPLETE superset preset (Edit Face — seeded from the raw record's PNAM including its
@@ -1588,24 +1589,18 @@ Public Module NpcOverrideSaver
                                     usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.MswpRecordEntry
         Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
         Dim vcs1 As UInteger, vcs2 As UShort
-        ResolveArmorDraftHeader(d.FormID, d.IsOverride, d.EditorID, "MSWP", espNameNoExt, usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, d.Record.EditorID, "MSWP", espNameNoExt, usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
         Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
             .FormID = d.FormID,
             .EditorID = finalEdid,
-            .TreeFolder = d.TreeFolder,
+            .TreeFolder = d.Record.TreeFolder,
             .IsOverride = d.IsOverride,
             .OriginalVcs1 = vcs1,
             .OriginalVcs2 = vcs2,
             .SourceRecord = src
         }
-        For Each s In d.Substitutions
-            e.Substitutions.Add(New MSWP_Substitution With {
-                .OriginalMaterial = s.OriginalMaterial,
-                .ReplacementMaterial = s.ReplacementMaterial,
-                .TreeFolder = s.TreeFolder,
-                .HasColorRemapIndex = s.HasColorRemapIndex,
-                .ColorRemapIndex = s.ColorRemapIndex})
-        Next
+        ' Las mismas sustituciones del borrador, sin copiarlas: son las que hay que escribir.
+        e.Substitutions.AddRange(d.Record.MaterialSubstitutions)
         Return e
     End Function
 
@@ -1760,9 +1755,9 @@ Public Module NpcOverrideSaver
     End Function
 
     ''' <summary>Build an <see cref="SaveNpcEspWriter.MswpRecordEntry"/> OVERRIDE entry from a PRESERVED record
-    ''' (Phase 2a). Mirrors <see cref="BuildMswpEntry"/>'s field map, sourcing from the parsed <see cref="MSWP_Data"/>.
+    ''' (Phase 2a). Mirrors <see cref="BuildMswpEntry"/>'s field map, sourcing from the parsed <see cref="Canon.IMswp"/>.
     ''' See <see cref="BuildArmoEntryFromParsed"/> for the header/FormID-resolution rationale.</summary>
-    Private Function BuildMswpEntryFromParsed(parsed As MSWP_Data, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.MswpRecordEntry
+    Private Function BuildMswpEntryFromParsed(parsed As Canon.IMswp, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.MswpRecordEntry
         Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
             .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
             .EditorID = parsed.EditorID,
@@ -1772,14 +1767,8 @@ Public Module NpcOverrideSaver
             .OriginalVcs2 = rec.Header.VCS2,
             .SourceRecord = rec
         }
-        For Each s In parsed.Substitutions
-            e.Substitutions.Add(New MSWP_Substitution With {
-                .OriginalMaterial = s.OriginalMaterial,
-                .ReplacementMaterial = s.ReplacementMaterial,
-                .TreeFolder = s.TreeFolder,
-                .HasColorRemapIndex = s.HasColorRemapIndex,
-                .ColorRemapIndex = s.ColorRemapIndex})
-        Next
+        ' Las sustituciones tal como estan en el record leido, sin copiarlas campo por campo.
+        e.Substitutions.AddRange(parsed.Sustituciones())
         Return e
     End Function
 
@@ -2020,9 +2009,9 @@ Public Module NpcOverrideSaver
                 If Not String.Equals(ctx.PluginManager.GetOriginatingPluginName(
                         ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)),
                         gameMasterName, StringComparison.OrdinalIgnoreCase) Then Continue For
-                Dim parsed = Canon.CanonRecords.Color(rec, ctx.PluginManager)
-                If parsed Is Nothing OrElse Not parsed.HasColor Then Continue For
-                Dim rgb = (CInt(parsed.Color.R) << 16) Or (CInt(parsed.Color.G) << 8) Or CInt(parsed.Color.B)
+                Dim parsed = Canon.CanonRecords.Clfm(rec, ctx.PluginManager)
+                If parsed Is Nothing OrElse Not parsed.TieneColor() Then Continue For
+                Dim rgb = (CInt(parsed.ColorDe().R) << 16) Or (CInt(parsed.ColorDe().G) << 8) Or CInt(parsed.ColorDe().B)
                 If Not byRgb.ContainsKey(rgb) Then
                     byRgb(rgb) = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)
                 End If
