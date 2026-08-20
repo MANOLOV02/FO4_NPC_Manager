@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text
 Imports FO4_Base_Library
 
@@ -100,7 +100,7 @@ Public Module PresetCompatibilityReport
         Public RaceDisplayName As String = ""
         Public IsFemale As Boolean
         Public RaceDefaults As HashSet(Of UInteger)
-        Public FlstCache As Dictionary(Of UInteger, FLST_Data)
+        Public FlstCache As Dictionary(Of UInteger, Canon.FormListRecord)
         Public NpcHasBodyTri As Boolean = True
         ''' <summary>Ids of the F4SE overlay templates loaded for this NPC's gender (FO4). Nothing = the caller
         ''' couldn't supply the catalog, so overlay ids are reported as "not checked" instead of "missing".</summary>
@@ -120,7 +120,7 @@ Public Module PresetCompatibilityReport
         Dim p = ctx.Preset
         Dim pm = ctx.PluginManager
         ' IsHdptValidForRace indexes the FLST cache unconditionally — never hand it Nothing.
-        If ctx.FlstCache Is Nothing Then ctx.FlstCache = New Dictionary(Of UInteger, FLST_Data)
+        If ctx.FlstCache Is Nothing Then ctx.FlstCache = New Dictionary(Of UInteger, Canon.FormListRecord)
 
         r.Header.Add("Preset : " & DisplaySourcePath(p.SourcePath, ctx.DataPath))
         r.Header.Add($"NPC    : race {If(String.IsNullOrEmpty(ctx.RaceDisplayName), $"0x{ctx.RaceFormID:X8}", ctx.RaceDisplayName)} (0x{ctx.RaceFormID:X8})  •  {If(ctx.IsFemale, "Female", "Male")}")
@@ -450,7 +450,7 @@ Public Module PresetCompatibilityReport
         ' reporte existe para dar. Caso real: los 4 materiales de KSHairdos que apuntan a
         ' 'vhaircolor_lgrad_d.dds', que el mod nunca empaquetó.
         If ctx.IsSse Then Return
-        Dim clfm = RecordParsers.ParseCLFM(rec, ctx.PluginManager)
+        Dim clfm = Canon.CanonRecords.Color(rec, ctx.PluginManager)
         If clfm Is Nothing OrElse Not clfm.HasRemappingIndex Then Return
 
         LmHairColorLutLoader.EnsureLoaded(ctx.PluginManager, ctx.DataPath)
@@ -462,7 +462,7 @@ Public Module PresetCompatibilityReport
         ' de textura faltante le atribuyera al haircolors.json el path del HNAM de la raza.
         Dim appliedCustom As String = Nothing
         Dim lut = LmHairColorLutLoader.ResolveBrowPaletteTexture(ctx.Race, p.HairColorFormID, appliedCustom)
-        ' ⛔ If(a, b) devuelve b sólo si a es Nothing, NO si es "". CLFM_Data.FullName arranca en "" y sólo se
+        ' ⛔ If(a, b) devuelve b sólo si a es Nothing, NO si es "". Canon.ColorRecord.FullName arranca en "" y sólo se
         ' asigna si hay subrecord FULL, así que un CLFM sin FULL —común en packs generados— imprimía comillas
         ' vacías: "'' is a palette colour but…".
         Dim colourName = If(String.IsNullOrEmpty(clfm.FullName),

@@ -195,7 +195,7 @@ Public Class EditFace_Form
 
     ' Cached resolution dictionaries (built once at construction).
     Private ReadOnly _allHeadPartsByFid As New Dictionary(Of UInteger, HDPT_Data)
-    Private ReadOnly _allHairColors As New List(Of CLFM_Data)
+    Private ReadOnly _allHairColors As New List(Of Canon.ColorRecord)
 
     ' Hair palette LUT (HairColor_Lgrad_d.dds) decoded once and reused for swatch sampling.
     ' For palette-mode CLFMs (HasRemappingIndex=True), the swatch fills with the row at
@@ -395,7 +395,7 @@ Public Class EditFace_Form
         For Each fid In allowedSet
             Dim rec = _pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Continue For
-            Dim clfm = RecordParsers.ParseCLFM(rec, _pluginManager)
+            Dim clfm = Canon.CanonRecords.Color(rec, _pluginManager)
             If clfm Is Nothing Then Continue For
             _allHairColors.Add(clfm)
         Next
@@ -2744,7 +2744,7 @@ Public Class EditFace_Form
             If targetFid <> 0UI AndAlso Not _allHairColors.Any(Function(c) c.FormID = targetFid) Then
                 Dim extraRec = _pluginManager.GetRecord(targetFid)
                 If extraRec IsNot Nothing AndAlso extraRec.Header.Signature = "CLFM" Then
-                    Dim extra = RecordParsers.ParseCLFM(extraRec, _pluginManager)
+                    Dim extra = Canon.CanonRecords.Color(extraRec, _pluginManager)
                     If extra IsNot Nothing Then
                         Dim extraName = If(Not String.IsNullOrEmpty(extra.FullName),
                                            $"{extra.FullName}  ({extra.EditorID})",
@@ -2933,7 +2933,7 @@ Public Class EditFace_Form
             If effectiveFid <> 0UI Then
                 Dim rec = _pluginManager.GetRecord(effectiveFid)
                 If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
-                    Dim clfm = RecordParsers.ParseCLFM(rec, _pluginManager)
+                    Dim clfm = Canon.CanonRecords.Color(rec, _pluginManager)
                     If clfm IsNot Nothing Then
                         it = New HairColorItem With {
                             .FormID = effectiveFid,
@@ -3330,11 +3330,11 @@ Public Class EditFace_Form
                 Dim colorMatchIdx As Integer = -1
                 For posIdx = 0 To opt.TemplateColors.Count - 1
                     Dim tplCol = opt.TemplateColors(posIdx)
-                    Dim clfm As CLFM_Data = Nothing
+                    Dim clfm As Canon.ColorRecord = Nothing
                     If tplCol.ColorFormID <> 0UI Then
                         Dim rec = _pluginManager.GetRecord(tplCol.ColorFormID)
                         If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
-                            clfm = RecordParsers.ParseCLFM(rec, _pluginManager)
+                            clfm = Canon.CanonRecords.Color(rec, _pluginManager)
                         End If
                     End If
                     ' WinForms Panel.BackColor renders alpha != 255 as fully transparent (the
@@ -3606,7 +3606,7 @@ Public Class EditFace_Form
                 If firstTplCol.ColorFormID <> 0UI Then
                     Dim rec = _pluginManager.GetRecord(firstTplCol.ColorFormID)
                     If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
-                        Dim clfm = RecordParsers.ParseCLFM(rec, _pluginManager)
+                        Dim clfm = Canon.CanonRecords.Color(rec, _pluginManager)
                         If clfm IsNot Nothing AndAlso clfm.HasColor Then
                             newLayer.Color = clfm.Color
                             newLayer.TemplateColorIndex = CInt(firstTplCol.TemplateIndex)

@@ -2033,7 +2033,7 @@ Public Module FaceGenBuilder
 
         Dim otftRec = pluginManager.GetRecord(npcData.DefaultOutfitFormID)
         If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then Return (slots, hasLVLI)
-        Dim otft = RecordParsers.ParseOTFT(otftRec, pluginManager)
+        Dim otft = Canon.CanonRecords.Outfit(otftRec, pluginManager)
 
         ' Resolvers RecordParsers-direct (el bake no tiene NpcRenderContext; el OTFT es chico, sin cache).
         ' La LÓGICA vive en los cores compartidos con el render — acá sólo se cablean los parsers.

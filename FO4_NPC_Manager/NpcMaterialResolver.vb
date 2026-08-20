@@ -1058,13 +1058,13 @@ Friend NotInheritable Class NpcMaterialResolver
         Return clfm.Color
     End Function
 
-    Friend Function ResolveColorFormData(formID As UInteger) As CLFM_Data
+    Friend Function ResolveColorFormData(formID As UInteger) As Canon.ColorRecord
         If formID = 0UI Then Return Nothing
 
         Dim rec = _ctx.PluginManager.GetRecord(formID)
         If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Return Nothing
 
-        Return RecordParsers.ParseCLFM(rec, _ctx.PluginManager)
+        Return Canon.CanonRecords.Color(rec, _ctx.PluginManager)
     End Function
 
     Friend Function ResolveSkinTintColor(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, headPartColor As Nullable(Of Color)) As Nullable(Of Color)

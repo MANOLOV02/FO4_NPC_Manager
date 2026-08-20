@@ -119,7 +119,7 @@ Public Module HeadPartResolver
                                        raceFormID As UInteger,
                                        isFemale As Boolean,
                                        pluginManager As PluginManager,
-                                       flstCache As Dictionary(Of UInteger, FLST_Data),
+                                       flstCache As Dictionary(Of UInteger, Canon.FormListRecord),
                                        Optional raceDefaults As HashSet(Of UInteger) = Nothing,
                                        Optional raceHasAnyHeadParts As Boolean = True,
                                        Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As Boolean
@@ -135,11 +135,11 @@ Public Module HeadPartResolver
         If hdpt.ValidRacesFormID = 0UI Then Return raceHasAnyHeadParts
 
         ' Path (b): RNAM points to a FLST and the FLST contains the target race.
-        Dim flst As FLST_Data = Nothing
+        Dim flst As Canon.FormListRecord = Nothing
         If Not flstCache.TryGetValue(hdpt.ValidRacesFormID, flst) Then
             Dim flstRec = pluginManager.GetRecord(hdpt.ValidRacesFormID)
             If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
-                flst = RecordParsers.ParseFLST(flstRec, pluginManager)
+                flst = Canon.CanonRecords.FormList(flstRec, pluginManager)
             End If
             flstCache(hdpt.ValidRacesFormID) = flst
         End If
@@ -176,7 +176,7 @@ Public Module HeadPartResolver
                                                isFemale As Boolean,
                                                pluginManager As PluginManager,
                                                race As RACE_Data,
-                                               flstCache As Dictionary(Of UInteger, FLST_Data),
+                                               flstCache As Dictionary(Of UInteger, Canon.FormListRecord),
                                                raceDefaults As HashSet(Of UInteger),
                                                Optional ignoreFaceBaseHeadPart As Boolean = False) As Boolean
         If preset Is Nothing OrElse pluginManager Is Nothing Then Return False

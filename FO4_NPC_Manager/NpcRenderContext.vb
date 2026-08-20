@@ -103,7 +103,7 @@ Friend NotInheritable Class NpcRenderContext
                 For Each rec In dfobs
                     If rec Is Nothing OrElse String.IsNullOrEmpty(rec.EditorID) Then Continue For
                     If Not PipboyDefaultObjectEditorIds.Any(Function(e) String.Equals(e, rec.EditorID, StringComparison.OrdinalIgnoreCase)) Then Continue For
-                    Dim d = SystemRecordParsers.ParseDFOB(rec, PluginManager)
+                    Dim d = Canon.CanonRecords.DefaultObject(rec, PluginManager)
                     If d IsNot Nothing AndAlso d.ObjectFormID <> 0UI Then set_.Add(d.ObjectFormID)
                 Next
             End If

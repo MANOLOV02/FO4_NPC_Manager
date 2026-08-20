@@ -327,7 +327,7 @@ Friend NotInheritable Class NpcMeshCollector
                 If outfitRec Is Nothing OrElse outfitRec.Header.Signature <> "OTFT" Then
                     warnings.Add($"Default outfit {state.DefaultOutfitFormID:X8} is missing or not OTFT")
                 Else
-                    Dim outfit = RecordParsers.ParseOTFT(outfitRec, _ctx.PluginManager)
+                    Dim outfit = Canon.CanonRecords.Outfit(outfitRec, _ctx.PluginManager)
                     For Each itemFormID In outfit.ItemFormIDs
                         CollectArmoCandidates(itemFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
                     Next

@@ -4307,7 +4307,7 @@ persist:
                             Dim col = "?"
                             Dim crec = pm.GetRecord(tc.ColorFormID)
                             If crec IsNot Nothing AndAlso crec.Header.Signature = "CLFM" Then
-                                Dim clfm = RecordParsers.ParseCLFM(crec, pm)
+                                Dim clfm = Canon.CanonRecords.Color(crec, pm)
                                 If clfm IsNot Nothing AndAlso clfm.HasColor Then col = $"ARGB(0x{clfm.Color.ToArgb():X8})"
                             End If
                             Console.WriteLine($"        tplCol tplIdx={tc.TemplateIndex} alpha={tc.Alpha:G6} blendOp={tc.BlendOperation}/{BlendName(tc.BlendOperation)} clfm=0x{tc.ColorFormID:X8} {col}")
@@ -8856,8 +8856,8 @@ persist:
 
             ' Efecto real en el filtro de los catálogos: HDPT válidos con y sin la reconstrucción.
             Dim withCat = 0, withoutCat = 0
-            Dim cacheA As New Dictionary(Of UInteger, FLST_Data)
-            Dim cacheB As New Dictionary(Of UInteger, FLST_Data)
+            Dim cacheA As New Dictionary(Of UInteger, Canon.FormListRecord)
+            Dim cacheB As New Dictionary(Of UInteger, Canon.FormListRecord)
             Dim saved = FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog
             For Each hdptRec In pm.GetRecordsOfType("HDPT")
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
@@ -8879,7 +8879,7 @@ persist:
             If r Is Nothing Then Continue For
             If r.EditorID <> "NordRace" AndAlso r.EditorID <> "BretonRace" AndAlso r.EditorID <> "OrcRace" AndAlso r.EditorID <> "NordRaceVampire" Then Continue For
             Dim rfid = pm.ResolveReferencedFormID(raceRec.SourcePluginName, raceRec.Header.FormID)
-            Dim cache As New Dictionary(Of UInteger, FLST_Data)
+            Dim cache As New Dictionary(Of UInteger, Canon.FormListRecord)
             Dim n = 0
             For Each hdptRec In pm.GetRecordsOfType("HDPT")
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)

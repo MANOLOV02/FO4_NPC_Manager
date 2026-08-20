@@ -468,7 +468,7 @@ Public Module NpcOverrideSaver
                     If ctx.RecordsToRemove.Contains(globalFid) Then Continue For
                 End If
                 If rec.Header.Signature = "OTFT" Then
-                    Dim parsedOtft = RecordParsers.ParseOTFT(rec, ctx.PluginManager)
+                    Dim parsedOtft = Canon.CanonRecords.Outfit(rec, ctx.PluginManager)
                     Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedOtft.EditorID,
@@ -588,7 +588,7 @@ Public Module NpcOverrideSaver
                 ' It also feeds the reuse index below, so a re-save re-points at the SAME FormID instead of
                 ' minting a new colour record on every save.
                 If rec.Header.Signature = "CLFM" Then
-                    ' ⭐ CNAM/FNAM se copian de los BYTES del record fuente, sin pasar por ParseCLFM. Un camino de
+                    ' CNAM/FNAM se copian de los BYTES del record fuente, sin pasar por la lectura de campos, porseCLFM. Un camino de
                     ' PRESERVACIÓN no puede depender de cómo se interprete el CNAM (en FO4 es una unión decidida
                     ' por FNAM; en Skyrim siempre RGBA): si la interpretación fallara, la re-escritura le cambiaría
                     ' el color al record en vez de preservarlo. Copiando los 4 bytes el round-trip es exacto por
@@ -677,7 +677,7 @@ Public Module NpcOverrideSaver
                     ' → don't emit" rule.
                     Dim overridden = ctx.PluginManager.GetRecord(d.FormID)
                     If overridden IsNot Nothing AndAlso overridden.Header.Signature = "OTFT" Then
-                        Dim origItems = RecordParsers.ParseOTFT(overridden, ctx.PluginManager).ItemFormIDs
+                        Dim origItems = Canon.CanonRecords.Outfit(overridden, ctx.PluginManager).ItemFormIDs
                         If OutfitItemsEqual(d.ItemFormIDs, origItems) Then Continue For
                     End If
                     Dim preserved = outfitEntries.FirstOrDefault(Function(o) o.FormID = d.FormID)
@@ -2020,7 +2020,7 @@ Public Module NpcOverrideSaver
                 If Not String.Equals(ctx.PluginManager.GetOriginatingPluginName(
                         ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)),
                         gameMasterName, StringComparison.OrdinalIgnoreCase) Then Continue For
-                Dim parsed = RecordParsers.ParseCLFM(rec, ctx.PluginManager)
+                Dim parsed = Canon.CanonRecords.Color(rec, ctx.PluginManager)
                 If parsed Is Nothing OrElse Not parsed.HasColor Then Continue For
                 Dim rgb = (CInt(parsed.Color.R) << 16) Or (CInt(parsed.Color.G) << 8) Or CInt(parsed.Color.B)
                 If Not byRgb.ContainsKey(rgb) Then

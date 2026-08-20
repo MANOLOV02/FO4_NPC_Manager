@@ -121,7 +121,7 @@ Public Module RaceMenuPresetMapper
         ElseIf preset.HairColorFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
             Dim clfmRec = pluginManager.GetRecord(preset.HairColorFormID)
             If clfmRec IsNot Nothing AndAlso clfmRec.Header.Signature = "CLFM" Then
-                Dim clfm = RecordParsers.ParseCLFM(clfmRec, pluginManager)
+                Dim clfm = Canon.CanonRecords.Color(clfmRec, pluginManager)
                 If clfm IsNot Nothing AndAlso clfm.HasColor Then
                     j.HairColor = (CInt(clfm.Color.R) << 16) Or (CInt(clfm.Color.G) << 8) Or CInt(clfm.Color.B)
                     j.HadHairColor = True

@@ -89,7 +89,7 @@ Public Class HeadPartPicker_Form
 
         ' Cache resolved FLSTs as we encounter them — vanilla has 3-4 distinct race FLSTs and
         ' parsing the same FLST 396 times is wasteful.
-        Dim flstCache As New Dictionary(Of UInteger, FLST_Data)
+        Dim flstCache As New Dictionary(Of UInteger, Canon.FormListRecord)
 
         Dim totalScanned As Integer = 0
         Dim filteredPartType As Integer = 0

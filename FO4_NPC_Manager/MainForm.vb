@@ -3065,7 +3065,7 @@ Public Class MainForm
     End Function
 
     ''' <summary>Display label for an OTFT FormID: EditorID if any, else hex. OTFTs carry no FULL name
-    ''' (OTFT_Data is FormID + EditorID + INAM array).</summary>
+    ''' (Canon.OutfitRecord is FormID + EditorID + INAM array).</summary>
     Friend Function GetOutfitDisplayName(otftFID As UInteger) As String
         If otftFID = 0UI Then Return ""
         Dim draft = TryGetOutfitDraft(otftFID)
@@ -3756,7 +3756,7 @@ Public Class MainForm
         For Each otftFID In _outfitUniverse
             Dim rec = _pluginManager.GetRecord(otftFID)
             If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Continue For
-            For Each itemFID In RecordParsers.ParseOTFT(rec, _pluginManager).ItemFormIDs
+            For Each itemFID In Canon.CanonRecords.Outfit(rec, _pluginManager).ItemFormIDs
                 If seen.Add(itemFID) AndAlso IsLeveledItem(itemFID) Then result.Add(itemFID)
             Next
         Next
@@ -3802,7 +3802,7 @@ Public Class MainForm
         If draft IsNot Nothing Then Return New List(Of UInteger)(draft.ItemFormIDs)
         Dim rec = _pluginManager.GetRecord(fid)
         If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Return New List(Of UInteger)
-        Return New List(Of UInteger)(RecordParsers.ParseOTFT(rec, _pluginManager).ItemFormIDs)
+        Return New List(Of UInteger)(Canon.CanonRecords.Outfit(rec, _pluginManager).ItemFormIDs)
     End Function
 
     ''' <summary>True if <paramref name="fid"/> is a leveled item list — a real LVLI record OR an author-built
@@ -8632,7 +8632,7 @@ Public Class MainForm
         If outfitRec Is Nothing Then Return
 
         If outfitRec.Header.Signature = "OTFT" Then
-            Dim otft = RecordParsers.ParseOTFT(outfitRec, _pluginManager)
+            Dim otft = Canon.CanonRecords.Outfit(outfitRec, _pluginManager)
             For Each itemFormID In otft.ItemFormIDs
                 ExpandOutfitItem(parentNode, itemFormID)
             Next

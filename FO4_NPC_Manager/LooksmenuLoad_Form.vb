@@ -86,7 +86,7 @@ Public Class LooksmenuLoad_Form
     Private ReadOnly _raceDisplayName As String = ""
     Private ReadOnly _raceDefaults As HashSet(Of UInteger)
     ' FLST cache reused across IsHdptValidForRace calls so each FLST is parsed once per session.
-    Private ReadOnly _flstCache As New Dictionary(Of UInteger, FLST_Data)
+    Private ReadOnly _flstCache As New Dictionary(Of UInteger, Canon.FormListRecord)
     ' Compatibility memoization — preset → bool. Each preset is checked once even if the
     ' user toggles the checkbox / re-runs ApplyFilter via the text-filter handler.
     Private ReadOnly _compatibilityCache As New Dictionary(Of LooksmenuLoader.LooksmenuPreset, Boolean)
