@@ -51,7 +51,7 @@ Public NotInheritable Class ShapeMaterialTranscriber
             Return Outcome.Written
         End If
 
-        ' ⛔ FO4: mientras el shape NOMBRE su .bgsm, ApplyMaterialToGeometry (0x142169BB0) reemplaza el
+        ' FO4: mientras el shape NOMBRE su .bgsm, ApplyMaterialToGeometry (0x142169BB0) reemplaza el
         ' material ENTERO y nada de lo que escribamos inline se lee. Por eso se transcribe TODA shape y no
         ' sólo la piel: con el gate viejo el PELO no entraba, salía nombrando su .BGSM y el motor le
         ' devolvía el color vanilla aunque el preview mostrara el del NPC.

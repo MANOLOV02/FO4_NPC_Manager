@@ -306,7 +306,7 @@ Public Class PoseCatalog
     ''' <c>CalienteTools\BodySlide</c>. Esa carpeta abuela es lo único que distingue los dos, y viaja
     ''' con la instalación esté donde esté.</para>
     '''
-    ''' <para>⛔⛔ ANTES ESTO EXIGÍA QUE EL EXE ESTUVIERA BAJO <c>&lt;Data&gt;</c>, Y ROMPÍA LA INSTALACIÓN
+    ''' <para>ANTES ESTO EXIGÍA QUE EL EXE ESTUVIERA BAJO <c>&lt;Data&gt;</c>, Y ROMPÍA LA INSTALACIÓN
     ''' MÁS COMÚN. Con Mod Organizer 2 —que es como se instala esto en la práctica— BodySlide vive en
     ''' <c>&lt;MO2&gt;\mods\BodySlide and Outfit Studio\...</c>: el <c>Data</c> "virtual" sólo existe dentro
     ''' del proceso del juego, vía USVFS. Un BodySlide perfectamente válido del juego activo daba False y
@@ -314,7 +314,7 @@ Public Class PoseCatalog
     ''' <c>Path.GetFullPath</c> no resuelve enlaces. Y la propia app se contradecía: la ruta PRIMARIA
     ''' (<c>NPC_Config.BodySlideExePath_*</c>) se acepta sin ninguna comprobación de estar bajo Data.</para>
     '''
-    ''' <para>⛔ Por eso la carga de la prueba está invertida: se descarta SÓLO si la carpeta dice
+    ''' <para>Por eso la carga de la prueba está invertida: se descarta SÓLO si la carpeta dice
     ''' explícitamente que es del otro juego. Si no se puede determinar, se acepta — que era el
     ''' comportamiento previo. El daño de rechazar de más (el combo de poses vacío, sin mensaje visible
     ''' en Release) resultó peor que el de aceptar de más.</para></summary>
@@ -339,14 +339,14 @@ Public Class PoseCatalog
         _escaneoHermanos = Nothing
     End Sub
 
-    ''' <summary>Resultado memoizado de <see cref="ResolveBsExeFromSiblingWm"/>. ⛔ Es lo ÚNICO caro de
+    ''' <summary>Resultado memoizado de <see cref="ResolveBsExeFromSiblingWm"/>. Es lo ÚNICO caro de
     ''' resolver la ruta —<c>EnumerateDirectories</c> sobre la carpeta padre del exe más un
     ''' <c>ReadAllText</c> + <c>JsonDocument.Parse</c> por cada hermana con <c>wm_config.json</c>— y
     ''' <c>EnsurePoseCatalog</c> lo pide en CADA render del preview. Memoizar acá deja el corte por caché
     ''' del catálogo mirando las rutas de verdad, que es lo que tiene que mirar.</summary>
     Private Shared _escaneoHermanos As String = Nothing
 
-    ''' <summary>Momento del último escaneo, para NO congelar un resultado VACIO. ⛔ Memoizar el "no
+    ''' <summary>Momento del último escaneo, para NO congelar un resultado VACIO. Memoizar el "no
     ''' encontré nada" para siempre reintroducía, por la rama del WM hermano, el mismo defecto que se
     ''' acababa de cerrar en la rama primaria: el usuario abre Wardrobe Manager, configura BodySlide ahí,
     ''' vuelve, y las poses no aparecen NUNCA hasta reiniciar — porque ningún camino alcanzable invalida
@@ -390,13 +390,13 @@ Public Class PoseCatalog
                         If el.ValueKind <> JsonValueKind.String Then Continue For
                         Dim exe = el.GetString()
                         If Not String.IsNullOrEmpty(exe) AndAlso File.Exists(exe) Then
-                            ' ⛔ HAY QUE CONFIRMAR QUE ESE BodySlide NO ES EL DEL OTRO JUEGO. `BSExePath` de
+                            ' HAY QUE CONFIRMAR QUE ESE BodySlide NO ES EL DEL OTRO JUEGO. `BSExePath` de
                             ' Wardrobe Manager es UNA SOLA propiedad, sin juego (WM_Config.vb): apunta al
                             ' BodySlide del último juego con el que se configuró WM, que no tiene por qué ser
                             ' el que este NPC Manager tiene abierto. Sin comprobar nada, con Skyrim activo y
                             ' un WM configurado para Fallout 4 se listaban las poses del BodySlide de FO4 y
                             ' —peor— "Export pose…" ESCRIBÍA en el PoseData de FO4, sin que nada lo dijera.
-                            ' ⛔ El criterio NO es "estar bajo <Data>": eso se probó y rompía Mod Organizer 2,
+                            ' El criterio NO es "estar bajo <Data>": eso se probó y rompía Mod Organizer 2,
                             ' que es la instalación normal. Ver el doc de EsDelOtroJuego.
                             If EsDelOtroJuego(exe, isSse) Then
                                 Logger.LogLazy(Function() $"[POSE-CAT] El BodySlide del Wardrobe Manager hermano ('{cfg}' -> '{exe}') " &

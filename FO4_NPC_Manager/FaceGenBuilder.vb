@@ -25,7 +25,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' </summary>
 Public Module FaceGenBuilder
 
-    ''' <summary>HDPT.PartType enum values per xEdit wbDefinitionsFO4.pas:7373-7384.</summary>
+    ''' <summary>HDPT.PartType enum values.</summary>
     Public Const PartTypeMisc As Integer = 0
     Public Const PartTypeFace As Integer = 1
     Public Const PartTypeEyes As Integer = 2
@@ -94,7 +94,7 @@ Public Module FaceGenBuilder
     ''' <summary>Enciende/apaga el BAKE de texturas de cara (SSE: facetint _d + fold de overlays; FO4:
     ''' FaceCustomization D/N/S). Default True = comportamiento normal de la app. El barrido de validación
     ''' de NIF del CLI lo apaga para no componer DDS (es el costo dominante del batch).
-    ''' ⚠️ OJO: apagarlo NO es neutro para el NIF — esas rutinas además REESCRIBEN slots del shader
+    ''' OJO: apagarlo NO es neutro para el NIF — esas rutinas además REESCRIBEN slots del shader
     ''' (SSE: slot 6 facetint y el slot 0 plegado; FO4: slots 0/1/7). Con esto en False, esos slots
     ''' quedan como los dejó la resolución de material, así que un barrido en este modo NO valida el
     ''' slot 6 (ni el fold del slot 0). Para declarar 100% hay que correr además una pasada con DDS.</summary>
@@ -104,19 +104,19 @@ Public Module FaceGenBuilder
     ''' D/_msn/_s de FaceCustomization) y SSE (el facetint _d). SOLO para barridos que validan el NIF
     ''' (--ssecomparebatch), donde los pixeles del DDS no se miran. Junto con
     ''' <see cref="FaceTintCpuCompositor.SkipPixelCompose"/> saca el costo per-NPC dominante del barrido FO4.
-    ''' ⛔ NO cambia lo que el bake escribe en el NIF: el texture-set se crea igual y los paths de los slots se
+    ''' NO cambia lo que el bake escribe en el NIF: el texture-set se crea igual y los paths de los slots se
     ''' escriben igual (son deterministas: formID + plugin + sufijo), como si el encode hubiera salido bien.
     ''' El decode de los sources NO se gatea: ya esta amortizado entre NPCs por BatchDecodeCache y ademas es lo
     ''' que determina que slots existen.</summary>
     Public Property SkipDdsEncode As Boolean = False
 
     ' =========================== INSTRUMENTACION DE FASES ==============================
-    ' ⭐ POR QUE EXISTE: el bake se venia optimizando midiendo SOLO el tiempo total, que dice SI mejoro pero
+    ' POR QUE EXISTE: el bake se venia optimizando midiendo SOLO el tiempo total, que dice SI mejoro pero
     ' no DONDE se va el tiempo. Medido aparte: el proceso usa 7,66 de 12 hilos (63,8 %) ⇒ ~36 % del wall
     ' corre en UN hilo, y sin este desglose no hay forma de saber cual fase es.
     ' Costo: unos pocos Stopwatch.GetTimestamp por NPC (no por pixel) sobre ~1,6 s ⇒ <0,01 %. Los acumuladores
     ' son Long con Interlocked ⇒ seguro si alguna vez se paraleliza el loop de NPCs.
-    ' ⭐ EL "other" SE ABRIO (2026-08-01). Antes las fases medidas eran tres y todo lo demas caia en un renglon
+    ' EL "other" SE ABRIO (2026-08-01). Antes las fases medidas eran tres y todo lo demas caia en un renglon
     ' "other (records/morphs/skin/cloning)": un bucket que se nombraba a si mismo pero no se podia atacar,
     ' porque no decia cual de esas cuatro cosas pesaba. Ahora cada una tiene su fase y el "other" que queda es
     ' de verdad el resto (parseo de materiales, oclusion, contadores, el shell del NIF).
@@ -152,7 +152,7 @@ Public Module FaceGenBuilder
     ' GATE SIMD: los self-tests de paridad, UNA sola vez por proceso, antes del primer bake.
     ' ===================================================================================
     ''' <summary>Resultado del gate, calculado UNA sola vez y de forma realmente atómica.
-    ''' <para>⛔ NO usar un <c>Interlocked.CompareExchange</c> sobre un flag "ya corrió": ese patrón marca
+    ''' <para>NO usar un <c>Interlocked.CompareExchange</c> sobre un flag "ya corrió": ese patrón marca
     ''' HECHO *antes* de correr los tests, así que un segundo hilo que entre durante ese ~1 s ve el flag en 1,
     ''' el resultado todavía vacío, y <b>se va sin gate</b> — justo lo que el gate existe para impedir. Y si los
     ''' tests LANZAN (la <c>AggregateException</c> de un <c>Parallel.ForEach</c>), el flag queda en 1 con el
@@ -164,16 +164,16 @@ Public Module FaceGenBuilder
 
     ''' <summary>Corre los self-tests de paridad vector-vs-escalar la PRIMERA vez que se hornea algo, y
     ''' cachea el resultado. Idempotente y thread-safe.
-    ''' <para>⛔ Si alguno falla, LANZA. No es una advertencia: si el camino vectorial no es bit-idéntico al
+    ''' <para>Si alguno falla, LANZA. No es una advertencia: si el camino vectorial no es bit-idéntico al
     ''' escalar, cada byte que se hornee a partir de ahí es basura silenciosa — y peor, distinta según la CPU.
     ''' Fallar acá cuesta un mensaje; no fallar cuesta un corpus entero mal horneado.</para>
-    ''' <para>⛔⛔ EL BARRIDO LO LLAMA UNA VEZ, ANTES DEL LOOP (BakeAllRunner). No alcanza con que el Lazy sea
+    ''' <para>EL BARRIDO LO LLAMA UNA VEZ, ANTES DEL LOOP (BakeAllRunner). No alcanza con que el Lazy sea
     ''' thread-safe: CUATRO de los self-tests corren <c>Parallel.ForEach</c> por dentro, y con el loop de NPCs
     ''' paralelo el primer hilo que entra se queda con la publicación del Lazy mientras los demás esperan ⇒
     ''' stall de arranque (no deadlock: Parallel usa el hilo llamador como worker, así que progresa).
-    ''' ⛔ NO sacar la llamada de <c>BuildCharGen</c>: ése es el gate del camino de la UI, que no pasa por el
+    ''' NO sacar la llamada de <c>BuildCharGen</c>: ése es el gate del camino de la UI, que no pasa por el
     ''' runner. Llamarlo dos veces es gratis — el Lazy ya corrió.</para></summary>
-    ''' <remarks>⛔ EL MENSAJE NO PUEDE AFIRMAR EL EJE EQUIVOCADO. Decía SIEMPRE "el camino vectorial NO es
+    ''' <remarks>EL MENSAJE NO PUEDE AFIRMAR EL EJE EQUIVOCADO. Decía SIEMPRE "el camino vectorial NO es
     ''' bit-identico al escalar", pero esta lista mezcla CINCO ejes (ver <see cref="ParityAxis"/>) y el
     ''' detalle que se adjunta trae el slug del test que falló. MEDIDO 2026-08-01: con
     ''' <c>Fold.SoftLight</c> en un modelo no-default falla <c>fold-golden</c> —un GOLDEN ABSOLUTO, no una
@@ -197,7 +197,7 @@ Public Module FaceGenBuilder
     ''' <summary>Eje de verificación al que pertenece cada self-test. El gate mezcla cosas que NO prueban lo
     ''' mismo, y reportarlas juntas fue el defecto: quien leía "BIT-IDENTICAL" se llevaba que el camino GPU
     ''' estaba cubierto, cuando ningún test de esta lista toca el GPU.
-    ''' <para>⛔⛔ QUEDAN DOS EJES, Y NO ES CASUALIDAD (2026-08-08). Los tres que faltan —GlslLexical,
+    ''' <para>QUEDAN DOS EJES, Y NO ES CASUALIDAD (2026-08-08). Los tres que faltan —GlslLexical,
     ''' GoldenAbsolute y LawConsistency— se fueron a Tools/ParityGate. El criterio: <b>en el binario sólo
     ''' viaja el test cuyo resultado DEPENDE DE LA MÁQUINA DEL USUARIO</b>, y lo único que depende del rig
     ''' ajeno es el ancho que elija <c>Vector(Of T)</c>. Un test de ley o de léxico da lo mismo acá que allá:
@@ -206,24 +206,24 @@ Public Module FaceGenBuilder
     Public Enum ParityAxis
         ''' <summary>escalar == V128 == V256 == Vector(Of T). Corre SIEMPRE (no depende de que haya SIMD).</summary>
         ScalarVsWidths
-        ''' <summary>espejo vectorial == escalar. ⛔ Sólo corre con SIMD acelerado: sin él, el espejo ni se usa
+        ''' <summary>espejo vectorial == escalar. Sólo corre con SIMD acelerado: sin él, el espejo ni se usa
         ''' y el test hace early-return devolviendo "" — que es indistinguible de "pasó".</summary>
         VectorVsScalar
     End Enum
 
-    ''' <summary>⭐ Los DIEZ self-tests que VIAJAN CON EL BINARIO, en orden, con su eje. Es la ÚNICA lista: la
+    ''' <summary>Los DIEZ self-tests que VIAJAN CON EL BINARIO, en orden, con su eje. Es la ÚNICA lista: la
     ''' consumen tanto <see cref="SimdParityFailure"/> (que aborta el bake) como <see cref="ParityAxesReport"/>
     ''' (que declara qué se cubrió).
     ''' <para>El de ANCHOS va primero: es la base de la que dependen los demás. Si los anchos divergen, el
     ''' MISMO binario hornea caras distintas según la CPU y un gate de bytes de UNA máquina no lo vería. Ese
     ''' es, exactamente, el único motivo por el que esta lista existe dentro de una app que se distribuye.</para>
-    ''' <para>⛔⛔ SE FUERON OCHO EL 2026-08-08, a <c>Tools/ParityGate</c>: <c>glsl-ascii</c>,
+    ''' <para>SE FUERON OCHO EL 2026-08-08, a <c>Tools/ParityGate</c>: <c>glsl-ascii</c>,
     ''' <c>fold-golden</c>, <c>accum-space</c>, <c>cache-keys</c>, <c>bilinear</c>, <c>resample-hoist</c>,
     ''' <c>qnam-face</c> y <c>softlight-inv</c>. NO se perdió cobertura —siguen corriendo, como gate de
     ''' BUILD— y NO pueden volver: su resultado no depende de la máquina del usuario, así que correrlos en su
     ''' proceso no descubre nada y le cuesta ~1 s en el primer Bake. Dos de ellos además MUTABAN globales de
     ''' producción en caliente. Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para>
-    ''' <para>⛔ SE FUE <c>sse-layer</c> (<c>SseFaceTintComposer.ComposeLayerSelfTest</c>) en la fase 5, y NO se
+    ''' <para>SE FUE <c>sse-layer</c> (<c>SseFaceTintComposer.ComposeLayerSelfTest</c>) en la fase 5, y NO se
     ''' perdió cobertura: contrastaba el espejo vectorial del loop de capas PROPIO de SSE, y ese loop se BORRÓ
     ''' —SSE compone por <c>FaceTintCpuCompositor.ComposeChannelAccum</c>, igual que Fallout—. Sus ejes (ley
     ''' SSE all-linear, los cuatro canales de máscara, largos que no son múltiplo del ancho, cobertura cero)
@@ -244,7 +244,7 @@ Public Module FaceGenBuilder
     ' `skin-blend`: corre la funcion REAL SkinningHelper.BlendBoneMatrices por sus dos caminos (con paleta
     ' plana ⇒ vectorial, sin paleta ⇒ escalar) y los compara bit a bit. El bake usa esa misma ley
     ' (SkinBakeMath / FaceGenBuildPipeline), asi que una divergencia ahi saldria a los vertices horneados.
-    ' ⛔ El comentario va ACA y no adentro del inicializador: VB no acepta una linea de comentario entre los
+    ' El comentario va ACA y no adentro del inicializador: VB no acepta una linea de comentario entre los
     ' elementos de un `From { ... }` (BC30201) — cuesta un build entero descubrirlo.
 
     ''' <summary>Corre los self-tests en orden. Devuelve "" si todos pasan, o el primer fallo (con su slug,
@@ -257,11 +257,11 @@ Public Module FaceGenBuilder
         Return ""
     End Function
 
-    ''' <summary>Qué EJES cubrió realmente esta corrida. ⛔ Existe porque un "BIT-IDENTICAL" pelado mentía por
+    ''' <summary>Qué EJES cubrió realmente esta corrida. Existe porque un "BIT-IDENTICAL" pelado mentía por
     ''' partida doble: (a) sin SIMD acelerado los siete tests de espejo vectorial hacen early-return y el gate
     ''' pasa VACÍO, y (b) ningún test de este gate mira el camino GPU, que se mide aparte y puede no haber
     ''' corrido. Cada eje se declara por separado, y el que no corrió dice NOT RUN, no "OK".</summary>
-    ''' <param name="failure">Lo que devolvió <see cref="SimdParityFailure"/>. ⛔ Sin esto el reporte decía
+    ''' <param name="failure">Lo que devolvió <see cref="SimdParityFailure"/>. Sin esto el reporte decía
     ''' BIT-IDENTICAL en el eje que acababa de fallar, y los ejes posteriores —que por el corto-circuito del
     ''' gate NI SIQUIERA CORRIERON— se anunciaban como verdes.</param>
     Public Function ParityAxesReport(Optional failure As String = "") As String
@@ -329,7 +329,7 @@ Public Module FaceGenBuilder
         ' en Double cubre el camino 4K de SSE, que redondea con OTRA ley que el byte-pack de FO4.
         ' El gate ya corrio ANTES del primer NPC (EnsureSimdParityGate). Aca sólo se REPORTA: si hubiera
         ' fallado, BuildCharGen habria lanzado y no habria bake que reportar.
-        ' ⛔ El veredicto va POR EJE: un "BIT-IDENTICAL" plano decia que estaba todo cubierto incluso cuando
+        ' El veredicto va POR EJE: un "BIT-IDENTICAL" plano decia que estaba todo cubierto incluso cuando
         ' los siete tests de espejo vectorial no habian corrido, y sin nombrar nunca al eje CPU-vs-GPU.
         Dim parity = _simdGate.Value          ' YA calculado por el gate; re-correrlo eran ~1,1 s por reporte
         sb.AppendLine($"   compose SIMD path: {simd}   lanes={FastPow.LaneCount}")
@@ -400,7 +400,7 @@ Public Module FaceGenBuilder
                                    w As Integer, h As Integer, npcFormID As UInteger,
                                    nSwaps As Integer, nLayers As Integer)
         Dim n = w * h
-        ' ⛔ Un tamaño distinto NO se promedia con lo demas: se CUENTA aparte y se loguea. Comparar buffers de
+        ' Un tamaño distinto NO se promedia con lo demas: se CUENTA aparte y se loguea. Comparar buffers de
         ' distinto largo daria un numero sin significado (o un crash), que es peor que no medir.
         If cpu.Length <> n * 4 OrElse gpu.Length <> n * 4 Then
             SyncLock _parityLock : _parSizeMismatch += 1 : End SyncLock
@@ -409,7 +409,7 @@ Public Module FaceGenBuilder
         End If
         Dim exact As Long = 0, sq As Double = 0.0, maxD As Integer = 0, alphaMis As Long = 0
         Dim worstX As Integer = -1, worstY As Integer = -1
-        ' ⭐ HISTOGRAMA DEL |delta| POR PIXEL. Es el discriminador barato entre las dos explicaciones posibles
+        ' HISTOGRAMA DEL |delta| POR PIXEL. Es el discriminador barato entre las dos explicaciones posibles
         ' de una divergencia CPU-vs-GPU:
         '   · PRECISION acumulada (float32 del FBO vs float64 del CPU): decaimiento SUAVE desde 0, la cola
         '     se extingue rapido y no hay estructura.
@@ -437,7 +437,7 @@ Public Module FaceGenBuilder
                 maxD = m
                 worstX = i Mod w : worstY = i \ w
             End If
-            ' ⭐ `exact` es COLOR-ONLY, coherente con el RMS (que tambien excluye el alpha). Antes exigia
+            ' `exact` es COLOR-ONLY, coherente con el RMS (que tambien excluye el alpha). Antes exigia
             ' ademas que el alpha coincidiera, y entonces el reporte podia decir "RMS 0,0000" al lado de
             ' "identicos 0 %" — dos numeros que se contradicen — justo en el caso que la doc declara fuera
             ' de alcance (el alpha lo deciden `keepBaseAlpha` en el CPU y `uForceOpaqueAlpha` en el GL, que
@@ -452,7 +452,7 @@ Public Module FaceGenBuilder
             Dim tail As Long = 0
             For k = 3 To 8 : tail += hist(k) : Next
             _parTailByChannel(chIdx) += tail
-            ' ⭐ LOCALIZACION POR FASE: los region swaps son un MODO APARTE del shader (uMode=1) con su
+            ' LOCALIZACION POR FASE: los region swaps son un MODO APARTE del shader (uMode=1) con su
             ' propio codigo, mientras el CPU los pasa por el MISMO ComposeOne que los tints. Si la cola
             ' vive SOLO en NPCs con swaps, la divergencia esta en esa rama; si aparece igual sin swaps,
             ' esta en el camino de tints. Es la medicion que separa las dos, en vez de proponer candidatos.
@@ -486,7 +486,7 @@ Public Module FaceGenBuilder
     Public Function ParityReport() As String
         SyncLock _parityLock
             If _parSlots = 0 Then
-                ' ⛔ NO se afirma la causa. Antes esto decia "el compositor GL no corrio (needGl=False)" sin
+                ' NO se afirma la causa. Antes esto decia "el compositor GL no corrio (needGl=False)" sin
                 ' haberlo comprobado, y hay otras rutas a cero slots (ResultId=0, GetTexImage que tira, el
                 ' buffer CPU ausente, o TODOS los slots descartados por tamaño). Afirmar una causa no medida es
                 ' justo lo que este instrumento existe para no hacer. Se listan los hechos que SI se saben.
@@ -506,7 +506,7 @@ Public Module FaceGenBuilder
             sb.AppendLine($"   identical pixels : {_parExact:N0} ({100.0 * _parExact / _parPixels:F3} %)  [colour only, same basis as the RMS]")
             sb.AppendLine($"   alpha mismatches : {_parAlphaMismatch:N0} ({100.0 * _parAlphaMismatch / _parPixels:F3} %)  [keepBaseAlpha vs uForceOpaqueAlpha - a different rule, not a compose diff]")
             sb.AppendLine($"   worst |delta|    : {_parMaxD}" & If(_parMaxD > 0, $"  at {_parWorst}", ""))
-            ' ⭐ HISTOGRAMA: es lo que separa PRECISION de BUG. float32-vs-float64 da un decaimiento suave que
+            ' HISTOGRAMA: es lo que separa PRECISION de BUG. float32-vs-float64 da un decaimiento suave que
             ' se extingue en 1-2; una poblacion con delta 3+ o un escalon significan que una rama de la ley NO
             ' coincide entre los dos compositores. Sin esto solo se ve "worst=8", que no distingue un pixel
             ' raro de media cara corrida.
@@ -695,8 +695,8 @@ Public Module FaceGenBuilder
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
                                  Optional lutDataPath As String = Nothing) As BuildResult
 
-        ' ⭐⭐ GATE SIMD, UNA VEZ POR PROCESO Y ANTES DE HORNEAR NADA.
-        ' ⛔ POR QUE ACA Y NO EN PhaseReport: los self-tests vivian SOLO adentro de PhaseReport(), y a
+        ' GATE SIMD, UNA VEZ POR PROCESO Y ANTES DE HORNEAR NADA.
+        ' POR QUE ACA Y NO EN PhaseReport: los self-tests vivian SOLO adentro de PhaseReport(), y a
         ' PhaseReport lo llama UNICAMENTE BakeAllRunner, DESPUES de terminar todo el barrido. O sea que
         ' (a) un bake normal desde la UI no los corria NUNCA — cero gate en produccion — y (b) en un barrido
         ' de corpus un MISMATCH aparecia despues de ~45 min, con los bytes YA escritos a disco.
@@ -708,7 +708,7 @@ Public Module FaceGenBuilder
         ' OpenTK es por HILO y a nivel proceso, y coexisten varios PreviewControl (MainForm, EditFace,
         ' EditBody...): el OnPaint de cualquiera hace MakeCurrent sobre el suyo y nos roba el contexto.
         ' Sin este guard las operaciones GL del bake apuntan al contexto que quedo activo.
-        ' ⛔ El gate es WriteGPUSandboxOutput (el flag que realmente corre GL), NO DebugMode: sin GL el
+        ' El gate es WriteGPUSandboxOutput (el flag que realmente corre GL), NO DebugMode: sin GL el
         ' bake es 100 % CPU y puede correr en un thread de fondo, donde MakeCurrent FALLARIA porque el
         ' contexto es del hilo de UI.
         If WriteGPUSandboxOutput Then
@@ -747,18 +747,18 @@ Public Module FaceGenBuilder
                 .FormID = npcFormID,
                 .RootNpcFormID = npcFormID,
                 .ModelSourceFormID = npcFormID,
-                .RaceFormID = npcData.RaceFormID,
-                .IsFemale = npcData.IsFemale,
-                .SkinFormID = npcData.SkinFormID,
-                .HeadTextureFormID = npcData.HeadTextureFormID,
-                .HairColorFormID = npcData.HairColorFormID,
+                .RaceFormID = npcData.Record.Race,
+                .IsFemale = npcData.Record.ConfigurationFlagsFemale,
+                .SkinFormID = npcData.Record.Skin,
+                .HeadTextureFormID = npcData.Record.HeadTexture,
+                .HairColorFormID = npcData.Record.HairColor,
                 .SseHairColorRgb = npcData.SseHairColorRgb,
-                .FacialHairColorFormID = npcData.FacialHairColorFormID,
-                .HasTextureLighting = npcData.HasTextureLighting,
-                .TextureLightingColor = npcData.TextureLightingColor,
-                .HeadDiffuseAlphaTest = (npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.AcbsFlags And &H1000000UI) <> 0UI
+                .FacialHairColorFormID = npcData.Record.ColorDeBarba(),
+                .HasTextureLighting = npcData.Record.TextureLightingRedPresente,
+                .TextureLightingColor = npcData.Record.ColorDeIluminacionDeTextura(),
+                .HeadDiffuseAlphaTest = (npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.Record.ConfigurationFlags And &H1000000UI) <> 0UI
             }
-            state.HeadPartFormIDs.AddRange(npcData.HeadPartFormIDs)
+            state.HeadPartFormIDs.AddRange(npcData.Record.PartesDeCabeza())
             ' Engine race fallbacks: NPC.WNAM=0 → RACE.SkinFormID, NPC head parts/texture/hair
             ' → RACE defaults, NPC.MWGT sentinel substitution. Same path the render uses; without
             ' it ResolveActorSkinTextureSet returns Nothing for NPCs that leave WNAM=0 (e.g.
@@ -817,7 +817,7 @@ Public Module FaceGenBuilder
         ' at clone time → an empty NIF gets written. RaceSupportsFaceGen reads RACE.DATA bit 0x2 and is
         ' the 0-exception discriminator. Uses the same race FormID source BuildAllowedShapeMap consumes
         ' (NPC_.RaceFormID; the LM overlay never rewrites the race).
-        Dim gateRaceFormID As UInteger = If(npcData IsNot Nothing, npcData.RaceFormID, 0UI)
+        Dim gateRaceFormID As UInteger = If(npcData IsNot Nothing, npcData.Record.Race, 0UI)
         If Not RaceUtil.RaceSupportsFaceGen(gateRaceFormID, pluginManager) Then
             result.Skipped = True
             result.Success = False
@@ -842,15 +842,15 @@ Public Module FaceGenBuilder
             Return result
         End If
 
-        ' ⛔⛔ GATE DEL WRAPPER NATIVO, EN EL CHOKEPOINT DEL BAKE. Por acá pasan TODAS las escrituras de
+        ' GATE DEL WRAPPER NATIVO, EN EL CHOKEPOINT DEL BAKE. Por acá pasan TODAS las escrituras de
         ' DDS de la app (GUI 1 NPC, GUI multiselección, Save ESP, --bake-all con y sin ventana, --bake-geom
         ' y el CLI) y todas las lecturas de texturas DX10 desde BA2. Con el wrapper desajustado cada source
         ' DX10 se lee como 0 bytes y el bake escribe caras equivocadas EN SILENCIO.
-        ' ⛔ VA ACÁ y no antes: un NPC que sale por `Skipped` (raza sin FaceGen, sin head parts) DESCARTA
+        ' VA ACÁ y no antes: un NPC que sale por `Skipped` (raza sin FaceGen, sin head parts) DESCARTA
         ' `TextureSlotsFailed` río abajo, así que reportarlo antes de este punto no se ve.
-        ' ⛔ NO va por `Logger`: está forzado a False en Release y ninguna de las dos GUI lo prende. El canal
+        ' NO va por `Logger`: está forzado a False en Release y ninguna de las dos GUI lo prende. El canal
         ' que SÍ se ve en los tres consumidores es `RecordTextureFailure` → `BuildResult`.
-        ' ⛔ NO reemplaza al gate de arranque de los modos headless: aquel ABORTA en 200 ms; éste reporta por
+        ' NO reemplaza al gate de arranque de los modos headless: aquel ABORTA en 200 ms; éste reporta por
         ' NPC y dejaría correr un barrido entero escribiendo NIF sin texturas. Son dos cosas distintas.
         Dim fallaWrapper = DirectXTexWrapperGate.Verificar()
         If fallaWrapper <> "" Then
@@ -896,18 +896,18 @@ Public Module FaceGenBuilder
         ' Raza EFECTIVA para las FacialBoneRegions: preferir el npcData overlaid (ya stampado con el
         ' override de raza del editor); probeNpcRaw es el parse crudo y tras un cambio de raza apuntaría
         ' a las regiones de la raza vieja.
-        Dim probeRaceFid As UInteger = If(npcData IsNot Nothing AndAlso npcData.RaceFormID <> 0UI,
-                                          npcData.RaceFormID, If(probeNpcRaw IsNot Nothing, probeNpcRaw.RaceFormID, 0UI))
+        Dim probeRaceFid As UInteger = If(npcData IsNot Nothing AndAlso npcData.Record.Race <> 0UI,
+                                          npcData.Record.Race, If(probeNpcRaw IsNot Nothing, probeNpcRaw.Record.Race, 0UI))
         If probeNpcRaw IsNot Nothing AndAlso probeRaceFid <> 0UI Then
             Dim raceRec = pluginManager.GetRecord(probeRaceFid)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-                Dim raceProbe = RecordParsers.ParseRACE(raceRec, pluginManager)
+                Dim raceProbe = Canon.CanonRecords.Race(raceRec, pluginManager)
                 ' BAKE == RENDER: resolve FMRI against the MERGED both-gender table, exactly like
                 ' NpcMorphPoseResolver.BuildFaceBoneTransforms does for the live render. The two
                 ' per-gender JSONs use disjoint ID namespaces, and 10 vanilla NPCs carry FMRI from
                 ' the opposite gender's namespace — own-gender-only lookup silently baked a neutral
                 ' head for them. See GetFacialBoneRegionsForFmriResolution for the measured evidence.
-                regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(raceProbe, probeNpcRaw.IsFemale)
+                regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(raceProbe, probeNpcRaw.Record.ConfigurationFlagsFemale)
             End If
         End If
         Dim bakeState As FaceGenBuildPipeline.BakeState =
@@ -932,8 +932,8 @@ Public Module FaceGenBuilder
         ' we only hand it the value, because it's NPC-level (the BGSM has no skin-tint-alpha field) —
         ' exactly the split used for the skin tone COLOR. Use the float (not Color.A/255). 1.0 if absent.
         Dim skinTintAlpha As Single = 1.0F
-        If bakeState IsNot Nothing AndAlso bakeState.NpcData IsNot Nothing AndAlso bakeState.NpcData.TextureLightingFloats IsNot Nothing Then
-            skinTintAlpha = bakeState.NpcData.TextureLightingFloats.A
+        If bakeState IsNot Nothing AndAlso bakeState.NpcData IsNot Nothing Then
+            skinTintAlpha = bakeState.NpcData.Record.AlphaDeIluminacionDeTextura()
         End If
         ' Slots de headwear que cubre la DEFAULT OUTFIT del NPC. Alimentan la oclusión de pelo/barba/cejas
         ' que se aplica más abajo, por shape; la regla completa está documentada en ese sitio.
@@ -951,7 +951,7 @@ Public Module FaceGenBuilder
             Dim hdptName = kv.Key
             Dim hdpt = kv.Value.Hdpt
             Dim effectiveHeadPartType = kv.Value.EffectivePartType
-            If String.IsNullOrEmpty(hdpt.ModelModelFileName) Then
+            If String.IsNullOrEmpty(hdpt.ModelFileName) Then
                 hdptSourceMissing += 1
                 Dim hnLog = hdptName
                 Logger.LogLazy(Function() $"[FACEBAKE] HDPT '{hnLog}' has empty MeshPath; shape skipped")
@@ -964,7 +964,7 @@ Public Module FaceGenBuilder
             ' del ORIGINAL, no la del _facebones. El _facebones agrega face bones al skin
             ' partition para soporte runtime de FMRS pero CK al bakear los descarta.
             ' (faceBonesKey solo se usa para diagnóstico three-way; no se carga para clonar.)
-            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.ModelModelFileName)
+            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.ModelFileName)
             Dim faceBonesKey = MeshPathHelpers.TryGetFaceBonesVariant(baseKey)
             Dim sourceKey = baseKey
 
@@ -1110,7 +1110,7 @@ Public Module FaceGenBuilder
                         Logger.LogLazy(Function() $"[FACEBAKE] el filtro de huesos desconocidos fallo en la shape '{snB}' y NO pudo evaluarla: {tB}: {mB}")
                     End Try
                 End If
-                ' ⚠️ En SSE este filtro es DETECT-ONLY a propósito, no por olvido. Su razón de ser es un
+                ' En SSE este filtro es DETECT-ONLY a propósito, no por olvido. Su razón de ser es un
                 ' caso de FO4 y no hay ningún caso de SSE que deba arreglar; en cambio el conjunto de
                 ' shapes del bake SSE ya está medido contra el CK y cerrado CON el filtro inactivo
                 ' (ver 40-bake-estado-cerrado.md). Un filtro que sólo QUITA shapes no puede mejorar eso y
@@ -1169,7 +1169,7 @@ Public Module FaceGenBuilder
                                     cloned.Flags_ui = cloned.Flags_ui Or &H1UI
                                 End If
                             Catch ex As Exception
-                                ' ⛔ La regla de oclusión se documenta arriba como "determinista, 0
+                                ' La regla de oclusión se documenta arriba como "determinista, 0
                                 ' excepciones sobre 958 piezas". Si igual tira, la shape se hornea VISIBLE
                                 ' y el pelo atraviesa el casco — con un NIF byte-indistinguible del caso
                                 ' legítimo, o sea imposible de detectar después. Se deja seguir (una pieza
@@ -1243,13 +1243,13 @@ Public Module FaceGenBuilder
                         Try
                             ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
                         Catch exMat As Exception
-                            ' ⛔⛔ El link al BGSM externo YA se corto en :1210, asi que el shader inline es
+                            ' El link al BGSM externo YA se corto en :1210, asi que el shader inline es
                             ' LA LEY y quedo INDETERMINADO (`Save_To_Shader` escribe ~25 flags y 8 slots en
                             ' secuencia; la derivacion de ShaderType es la ULTIMA linea del branch). Y sin
                             ' ShaderType derivado, `redirectSlotsToFaceCustomization` da False: los 3 DDS se
                             ' escriben, el NIF sigue apuntando a las texturas vanilla y el log afirma
                             ' "= comportamiento del CK". Por eso la shape SALE del NIF.
-                            ' ⛔⛔ Y EL ROLLBACK VA COMPLETO. `clonedShapeNames`/`shapesCloned` se
+                            ' Y EL ROLLBACK VA COMPLETO. `clonedShapeNames`/`shapesCloned` se
                             ' incrementaron en :1122-1123, ANTES de esto. Sacar la shape sin revertirlos deja
                             ' el guard F7 de mas abajo (`If shapesCloned = 0 Then Success = False`) sin
                             ' disparar y se escribe un FaceGeom VACIO con Success = True: cabeza INVISIBLE
@@ -1283,7 +1283,7 @@ Public Module FaceGenBuilder
                                 ' ANTES de que el pass normal pueda mutar los slots (evita doble-pliegue). La captura
                                 ' y el forzado son 100% CPU (fold+neutral+normal), NO tocan GL ⇒ gate = DebugMode a
                                 ' secas (NO WriteGPUSandboxOutput: eso apagaba el _2c en el bake loose async).
-                                ' ⭐ Misma compuerta que el consumidor de mas abajo (~1771). Con solo `DebugMode`
+                                ' Misma compuerta que el consumidor de mas abajo (~1771). Con solo `DebugMode`
                                 ' esta captura no ocurria en un barrido (Logger apagado), asi que sseForcedHead
                                 ' quedaba Nothing y el sandbox _2c/_2d —el UNICO que ejercita el camino GPU de
                                 ' SSE— no corria: medido reachability gate=0 sobre 451 NPCs horneados.
@@ -1296,10 +1296,10 @@ Public Module FaceGenBuilder
                                 PhaseAdd(BakePhase.Textures, tTexS)
                                 ' Bake RaceMenu FACE overlays into a per-NPC diffuse (slot 0). Gated + no-op for
                                 ' vanilla NPCs (no face overlays) ⇒ the facetint-only path above is unchanged.
-                                ' ⛔ SIN host: el fold es 100% CPU y no debe poder leer nada del render.
+                                ' SIN host: el fold es 100% CPU y no debe poder leer nada del render.
                                 WriteSseFaceDiffuseWithOverlays(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, appliedPresets, willBePacked, result)
 
-                                ' ⭐⭐⭐ SIEMPRE, pliegue o no. Los slots 0/1/3 son relativos a Data\Textures\ y NO
+                                ' SIEMPRE, pliegue o no. Los slots 0/1/3 son relativos a Data\Textures\ y NO
                                 ' pueden llevar el prefijo 'textures\'; el camino no plegado dejaba el valor crudo
                                 ' de la resolución de material, que a veces YA viene prefijado, y eso daba CARA
                                 ' MARRÓN (medido, npc 0x0001360B). Ver NormalizeSseHeadTexSetSlots. Va DESPUÉS de
@@ -1307,7 +1307,7 @@ Public Module FaceGenBuilder
                                 ' idempotente, así que sobre un path ya correcto no hace nada.
                                 NormalizeSseHeadTexSetSlots(nif, cloned, npcFormID)
 
-                                ' ⭐ DIAGNOSTICO DEL RESULTADO REAL, no de la intencion. Vuelca los slots del head
+                                ' DIAGNOSTICO DEL RESULTADO REAL, no de la intencion. Vuelca los slots del head
                                 ' JUSTO COMO QUEDARON tras las dos rutinas, y si el archivo de cada uno EXISTE en
                                 ' disco. Existe porque el sintoma "la primera grabada no muestra el facetint" tiene
                                 ' un unico mecanismo posible: el albedo del motor es
@@ -1329,7 +1329,7 @@ Public Module FaceGenBuilder
                                         End If
                                         Dim s6 = If(tsDbg IsNot Nothing AndAlso tsDbg.Textures IsNot Nothing AndAlso tsDbg.Textures.Count > 6, tsDbg.Textures(6).Content, "<sin slot 6>")
                                         Dim dp = Config_App.Current.DataPath
-                                        ' ⛔ EL PATH EMBEBIDO NO ES EL NOMBRE EN DISCO. En DebugMode el bake escribe
+                                        ' EL PATH EMBEBIDO NO ES EL NOMBRE EN DISCO. En DebugMode el bake escribe
                                         ' `<id>_2.dds` pero, con willBePacked, EMBEBE el canónico `<id>.dds` (el packer
                                         ' renombra al meterlo al archive). Chequear el embebido contra el disco reporta
                                         ' "FALTA" para archivos que SÍ se escribieron — un falso positivo que casi me
@@ -1357,7 +1357,7 @@ Public Module FaceGenBuilder
                                     End Try
                                 End If
                             ElseIf host IsNot Nothing OrElse Not WriteGPUSandboxOutput Then
-                                ' ⭐⭐ UNA SOLA VEZ POR NPC (F4). BakeFaceTextures escribe SIEMPRE los mismos tres
+                                ' UNA SOLA VEZ POR NPC (F4). BakeFaceTextures escribe SIEMPRE los mismos tres
                                 ' nombres (<formID>_d/_msn/_s.dds) — no dependen de la shape. Con dos shapes bajo
                                 ' HDPTs PartType=Face (o un source con dos shapes), la segunda pisaba los DDS de la
                                 ' primera y las dos quedaban apuntando al mismo archivo: ganaba la última, en
@@ -1516,7 +1516,7 @@ Public Module FaceGenBuilder
                             shapesMorphed += 1
                             If Not isSSEBake Then shapesFo4NoFbnsMorphed += 1
                         ElseIf Not isSSEBake Then
-                            ' ⛔ CAIDA SILENCIOSA que queda: FO4, sin `_faceBones` Y sin bakeState ⇒ la shape se
+                            ' CAIDA SILENCIOSA que queda: FO4, sin `_faceBones` Y sin bakeState ⇒ la shape se
                             ' escribe NEUTRA y nadie se entera. Se cuenta y se loguea, igual que shapesFbnsUnmatched.
                             shapesFo4NoFbnsNoMorph += 1
                             If Logger.Enabled Then
@@ -1526,7 +1526,7 @@ Public Module FaceGenBuilder
                         End If
                     End If
                 Catch ex As Exception
-                    ' ⛔ CATCH VACIO -> ya no. Este Try envuelve el clone + la resolucion de material + el bake de
+                    ' CATCH VACIO -> ya no. Este Try envuelve el clone + la resolucion de material + el bake de
                     ' texturas + BakeShape: se tragaba la caida de una shape ENTERA sin contador ni log, y el batch
                     ' la reportaba como exito. Mismo tratamiento que shapesFbnsUnmatched (que nacio del mismo
                     ' modo de fallo): se cuenta, se loguea con FormID + shape, y sube al Summary.
@@ -1542,7 +1542,7 @@ Public Module FaceGenBuilder
         '   value = 1 - NAM7/100  →  BSFaceGenNiNode::ApplyMorph(type=3 "Custom Morph", index=0, value)
         '   type 3 / index 0 == el canal "SkinnyMorph"; deltas del .tri NAM0=1 del PROPIO head part.
         ' Ya implementado en NpcMorphResolver (canal SkinnyMorph); verificado contra el CK sobre pelo.
-        ' ⚠️ Las BARBAS (NAM0=0/2) conservan un residual ~0,067 que está PROBADO que NO es combinación
+        ' Las BARBAS (NAM0=0/2) conservan un residual ~0,067 que está PROBADO que NO es combinación
         ' lineal de sus morphs ni transformación afín, y es independiente del NPC. Es otro mecanismo del
         ' CK, no un canal que falte: NO intentar cerrarlo con morphs ni con heurísticas.
 
@@ -1563,7 +1563,7 @@ Public Module FaceGenBuilder
                 If lsp Is Nothing OrElse lsp.TextureSetRef Is Nothing OrElse lsp.TextureSetRef.Index < 0 Then Continue For
                 Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
                 If ts Is Nothing OrElse ts.Textures Is Nothing Then Continue For
-                ' ⭐ HairTintColor va en la clave: es la cola específica del shader type Hair Tint y forma parte
+                ' HairTintColor va en la clave: es la cola específica del shader type Hair Tint y forma parte
                 ' del material. MEDIDO sobre los pares que el CK dejó SEPARADOS teniendo los 8 paths Y el resto
                 ' del material idénticos (9 NPCs argonianos, ej. 0001412E 'HairArgonianMale07' vs
                 ' 'HairArgonianMale07Hairline'): el ÚNICO campo que difiere es HairTintColor
@@ -1633,7 +1633,16 @@ Public Module FaceGenBuilder
                 ' 2026-05-25: nodos female = base × 0.98, geo ×1.0, bind ×1.0.
                 Dim raceHeight As Single = 1.0F
                 If bakeState IsNot Nothing AndAlso bakeState.Race IsNot Nothing Then
-                    Dim rh = If(bakeState.IsFemale, bakeState.Race.FemaleHeight, bakeState.Race.MaleHeight)
+                    ' MaleHeight/FemaleHeight: mismo campo, cada juego lo declara con su propio subrecord.
+                    Dim rh As Single
+                    Dim nfHeight = TryCast(bakeState.Race, Canon.RaceFO4)
+                    If nfHeight IsNot Nothing Then
+                        rh = If(bakeState.IsFemale, nfHeight.DataFemaleHeight, nfHeight.DataMaleHeight)
+                    Else
+                        Dim nsseHeight = TryCast(bakeState.Race, Canon.RaceSSE)
+                        rh = If(nsseHeight Is Nothing, 0.0F,
+                                If(bakeState.IsFemale, nsseHeight.FemaleHeight, nsseHeight.MaleHeight))
+                    End If
                     If rh > 0.0F Then raceHeight = rh
                 End If
 
@@ -1703,11 +1712,11 @@ Public Module FaceGenBuilder
                                     '   mallas FUENTE (482 head parts): bit0 apagado en 463/590 (78,5 %)
                                     '   CK  : 22.787/22.787 con bit0  (11.697 en `1` + 11.090 en `257`)
                                     '   app : 162/22.787   — preservábamos el de la fuente
-                                    ' ⭐ Es un OR del bit 0 y NADA MÁS: el bit 8 (PF_START_NET_BONESET) ya coincide
+                                    ' Es un OR del bit 0 y NADA MÁS: el bit 8 (PF_START_NET_BONESET) ya coincide
                                     ' con el CK en el 100 % (11.697 sin él + 11.090 con él, exacto), así que forzar
                                     ' el default 257 del esquema sería un ERROR — le pondría el bit 8 a 11.697
                                     ' particiones donde el CK escribe 1.
-                                    ' ⛔ Por qué no hace falta gate por juego además del TryCast: BSDismemberSkinInstance
+                                    ' Por qué no hace falta gate por juego además del TryCast: BSDismemberSkinInstance
                                     ' es de Skyrim; FO4 usa BSSkin::Instance, que NO tiene particiones (cero bloques de
                                     ' este tipo en los 1508 FaceGeom de FO4). El gate real es el tipo. Se deja igual el
                                     ' isSSEBake para que la intención quede escrita y nadie lo "generalice".
@@ -1819,7 +1828,7 @@ Public Module FaceGenBuilder
         ' que se cayo en el camino: HDPT sin mesh o cuyo source no carga, duplicados, y shapes que reventaron.
         result.ShapesDropped = hdptSourceMissing + hdptSourceLoadFail + shapesSkippedDup + shapesFailed
 
-        ' ⭐⭐ F7: NO ESCRIBIR UN NIF VACIO CON Success=True. Los dos guards previos (raza sin FaceGen, hdptMap
+        ' F7: NO ESCRIBIR UN NIF VACIO CON Success=True. Los dos guards previos (raza sin FaceGen, hdptMap
         ' vacio) corren ANTES del loop; si todas las shapes se caen DENTRO (source ausente, filtro de huesos, una
         ' excepcion), shapesCloned queda en 0 y hasta aca se guardaba igual un FaceGeom sin geometria, se reportaba
         ' Success=True, y el packer lo metia al BSA. In-game eso es una cabeza INVISIBLE. Es un FALLO, no un skip:
@@ -1885,22 +1894,22 @@ Public Module FaceGenBuilder
                 ' de tint del NPC. Es puro GPU (recompone el facetint + pliega en GPU), no copia el _2c CPU.
                 If host IsNot Nothing AndAlso WriteGPUSandboxOutput Then
                     Dim npcRec2d = pluginManager.GetRecord(npcFormID)
-                    Dim raceFid2d As UInteger = If(npcData IsNot Nothing, npcData.RaceFormID, 0UI)
-                    Dim race2d As RACE_Data = Nothing
+                    Dim raceFid2d As UInteger = If(npcData IsNot Nothing, npcData.Record.Race, 0UI)
+                    Dim race2d As Canon.IRace = Nothing
                     If npcRec2d IsNot Nothing AndAlso raceFid2d <> 0UI Then
                         Dim rr2d = pluginManager.GetRecord(raceFid2d)
-                        If rr2d IsNot Nothing AndAlso rr2d.Header.Signature = "RACE" Then race2d = RecordParsers.ParseRACE(rr2d, pluginManager)
+                        If rr2d IsNot Nothing AndAlso rr2d.Header.Signature = "RACE" Then race2d = Canon.CanonRecords.Race(rr2d, pluginManager)
                     End If
                     Dim cplx = If(Not String.IsNullOrEmpty(sseForcedComplexion), sseForcedComplexion, GetSseHeadSlotPaths(nif, sseForcedHead).Slot0)
                     If npcRec2d IsNot Nothing AndAlso race2d IsNot Nothing AndAlso Not String.IsNullOrEmpty(cplx) Then
-                        Dim glayers2d = SseFaceTintComposer.BuildLayerInputs(pluginManager, npcRec2d, race2d, raceFid2d, npcData.IsFemale,
-                                                                            npcData.SseTintRaw, npcData.SseTintTexOverride)
+                        Dim glayers2d = SseFaceTintComposer.BuildLayerInputs(pluginManager, npcRec2d, race2d, raceFid2d, npcData.Record.ConfigurationFlagsFemale,
+                                                                            SseFaceTintComposer.CapasDeTinteSse(npcData.Record), npcData.SseTintTexOverride)
                         If glayers2d IsNot Nothing AndAlso glayers2d.Count > 0 Then
                             ' Los MISMOS Face* overlays que el _2c/_2 componen en CPU, para que el _2d (GPU) sea el replacer
                             ' COMPLETO (fold + overlays) y matchee el facepaint. Preset del NPC (SseBodyOverlays).
                             Dim preset2d As LooksmenuLoader.LooksmenuPreset = Nothing
                             If appliedPresets IsNot Nothing Then appliedPresets.TryGetValue(npcFormID, preset2d)
-                            ' ⛔ SOLO los overlays de CARA. Antes se pasaba `preset2d.SseBodyOverlays` ENTERO (cuerpo
+                            ' SOLO los overlays de CARA. Antes se pasaba `preset2d.SseBodyOverlays` ENTERO (cuerpo
                             ' incluido) y el layer-builder del GPU tampoco filtraba por nodo ⇒ los tatuajes de cuerpo
                             ' terminaban compuestos DENTRO de la cara. Predicado único: FaceOverlaysOnly, que hoy es
                             ' `IsFoldableFaceOverlay` = cara MENOS el pool magic (un Face [SOvl] no se hornea nunca).
@@ -1933,7 +1942,7 @@ Public Module FaceGenBuilder
         If shapesFailed > 0 Then
             result.Summary &= $" | WARNING: {shapesFailed} shape(s) DROPPED by an exception — see [FACEBAKE] log"
         End If
-        ' ⭐⭐ F5: el fallo de texturas VA AL SUMMARY, no solo a TextureSlotsFailed. De los 6 call sites de
+        ' F5: el fallo de texturas VA AL SUMMARY, no solo a TextureSlotsFailed. De los 6 call sites de
         ' BuildCharGen, SOLO Save ESP (MainForm.RunChargenBake) leia esa propiedad; "Build CharGen (loose)", el
         ' batch loose, Bake All y los 3 del CLI reportaban OK con las 3 DDS falladas. Poniendolo aca lo ven TODOS
         ' sin tocar ningun caller — mismo patron que shapesFbnsUnmatched. Save ESP conserva ademas su tratamiento
@@ -2015,7 +2024,7 @@ Public Module FaceGenBuilder
     Private Const BakeSlotBitMouth As UInteger = BipedSlots.SlotBitMouth
 
     ''' <summary>Slots de headwear que cubre la DEFAULT OUTFIT del NPC, de forma DETERMINISTA.
-    ''' <para>⛔ SYNC: RENDER == BAKE — la unión usa el MISMO filtro por raza que el render
+    ''' <para>SYNC: RENDER == BAKE — la unión usa el MISMO filtro por raza que el render
     ''' (<c>EquipResolver.BuildFootprint</c>). Unir todas las ARMA sin filtrar hacía que una de otra
     ''' raza —o una pieza de power armor, que lista la raza humana para su modelo de inventario— aportara
     ''' slots que el motor nunca viste en este actor, y el bake sobre-ocluía pelo y barba que el render sí
@@ -2028,46 +2037,51 @@ Public Module FaceGenBuilder
                                                 pluginManager As PluginManager) As (Slots As UInteger, HasLVLI As Boolean)
         Dim slots As UInteger = 0UI
         Dim hasLVLI As Boolean = False
-        If npcData Is Nothing OrElse npcData.DefaultOutfitFormID = 0UI OrElse pluginManager Is Nothing Then
+        If npcData Is Nothing OrElse npcData.Record.DefaultOutfit = 0UI OrElse pluginManager Is Nothing Then
             Return (slots, hasLVLI)
         End If
 
-        Dim otftRec = pluginManager.GetRecord(npcData.DefaultOutfitFormID)
+        Dim otftRec = pluginManager.GetRecord(npcData.Record.DefaultOutfit)
         If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then Return (slots, hasLVLI)
         Dim otft = Canon.CanonRecords.Otft(otftRec, pluginManager)
 
         ' Resolvers RecordParsers-direct (el bake no tiene NpcRenderContext; el OTFT es chico, sin cache).
         ' La LÓGICA vive en los cores compartidos con el render — acá sólo se cablean los parsers.
-        Dim parseRace = Function(rec As PluginRecord) RecordParsers.ParseRACE(rec, pluginManager)
-        Dim parseArma = Function(fid As UInteger) As ARMA_Data
+        ' RNAM\Armor Race y WNAM\Skin están en la interfaz común: la vista canónica alcanza sin TryCast.
+        Dim parseRace = Function(rec As PluginRecord) Canon.CanonRecords.Race(rec, pluginManager)
+        Dim parseArma = Function(fid As UInteger) As Canon.IArma
                             If fid = 0UI Then Return Nothing
                             Dim r = pluginManager.GetRecord(fid)
                             If r Is Nothing OrElse r.Header.Signature <> "ARMA" Then Return Nothing
-                            Return RecordParsers.ParseARMA(r, pluginManager)
+                            Return Canon.CanonRecords.Arma(r, pluginManager)
                         End Function
-        Dim parseArmo = Function(fid As UInteger) As ARMO_Data
+        Dim parseArmo = Function(fid As UInteger) As Canon.IArmo
                             If fid = 0UI Then Return Nothing
                             Dim r = pluginManager.GetRecord(fid)
                             If r Is Nothing OrElse r.Header.Signature <> "ARMO" Then Return Nothing
-                            Return RecordParsers.ParseARMO(r, pluginManager)
+                            Return Canon.CanonRecords.Armo(r, pluginManager)
                         End Function
         Dim effectiveArmorRaces = NpcRenderContext.WalkArmorRaceChain(
-            npcData.RaceFormID, Function(fid As UInteger) pluginManager.GetRecord(fid), parseRace)
+            npcData.Record.Race, Function(fid As UInteger) pluginManager.GetRecord(fid), parseRace)
         Dim paKywdFid As UInteger = MainForm.FindArmorTypePowerKeywordFid(pluginManager)
         Dim raceIsPa As Boolean = False
-        If paKywdFid <> 0UI AndAlso npcData.RaceFormID <> 0UI Then
-            Dim raceRec = pluginManager.GetRecord(npcData.RaceFormID)
+        If paKywdFid <> 0UI AndAlso npcData.Record.Race <> 0UI Then
+            Dim raceRec = pluginManager.GetRecord(npcData.Record.Race)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
                 raceIsPa = MainForm.IsPowerArmorRaceData(parseRace(raceRec), paKywdFid, parseArmo)
             End If
         End If
 
         ' Contexto de la ley única para el bake: los mismos resolvers de arriba (sin NpcRenderContext) y el
-        ' gate PA ya calculado. ⛔ RENDER == BAKE: de acá sale EXACTAMENTE el mismo footprint que en el render.
+        ' gate PA ya calculado. RENDER == BAKE: de acá sale EXACTAMENTE el mismo footprint que en el render.
+        ' ArmoResolver/ArmaResolver viven en EquipResolver (Records\, no se toca) y siguen pidiendo el
+        ' modelo *_Data legado: se puentea acá con los mismos parseArmo/parseArma de arriba. Nota: este
+        ' inicializador NO admite comentarios intercalados entre sus miembros — el VB de este proyecto
+        ' los desarma en cuanto uno de los miembros es un lambda multilínea (IsPowerArmorArmo más abajo).
         Dim eqCtx As New EquipResolver.EquipContext With {
             .PluginManager = pluginManager,
-            .RaceFormID = npcData.RaceFormID,
-            .IsFemale = npcData.IsFemale,
+            .RaceFormID = npcData.Record.Race,
+            .IsFemale = npcData.Record.ConfigurationFlagsFemale,
             .EffectiveArmorRaces = effectiveArmorRaces,
             .ArmoResolver = parseArmo,
             .ArmaResolver = parseArma,
@@ -2091,16 +2105,16 @@ Public Module FaceGenBuilder
                     If terminalFID = 0UI Then Continue For
                     Dim armo = parseArmo(terminalFID)
                     If armo Is Nothing Then Continue For
-                    If armo.ArmorAddons.Count = 0 Then
+                    If ArmoEditor_Form.ReadAddons(armo).Count = 0 Then
                         ' ARMO sin armatures (el render cae al mesh fallback ARMO.MOD2, p.ej. robots):
                         ' su BOD2 propio cuenta, como antes. El gate PA lo aplica igual la ley única abajo,
                         ' pero acá no hay footprint que pedir.
                         If Not (MainForm.IsPowerArmorArmoData(armo, paKywdFid) AndAlso Not raceIsPa) Then
-                            slots = slots Or armo.SlotMask
+                            slots = slots Or armo.SlotMaskDe()
                         End If
                         Continue For
                     End If
-                    ' ⭐ LEY ÚNICA (EquipResolver, FO4_Base_Library) — el mismo footprint que el render y los
+                    ' LEY ÚNICA (EquipResolver, FO4_Base_Library) — el mismo footprint que el render y los
                     ' editores. El gate de power-armor entra por el contexto, no como un if repetido acá.
                     Dim fp = EquipResolver.BuildFootprint(terminalFID, eqCtx)
                     ' Valid=False ⇒ ningún addon race-valid con mesh ⇒ el engine no viste nada de este
@@ -2228,7 +2242,7 @@ Public Module FaceGenBuilder
 
     ''' <summary>Vuelca el material YA RESUELTO al shader INLINE del shape y corta el link al BGSM externo,
     ''' que es lo que vuelve al NIF autocontenido.
-    ''' <para>⛔ El corte del nombre no es cosmético y no es opcional: verificado en Fallout4.exe, con
+    ''' <para>El corte del nombre no es cosmético y no es opcional: verificado en Fallout4.exe, con
     ''' <c>prop+0x10</c> NO vacío los 3 call-sites de carga propia SÍ cargan el BGSM y
     ''' <c>ApplyMaterialToGeometry 0x142169BB0</c> reemplaza el <b>texture set ENTERO</b>
     ''' (<c>prop+0x1d0 ← mat+0x78</c>, 0x142163B70). Con el nombre vacío bailan en la guarda de largo
@@ -2292,7 +2306,7 @@ Public Module FaceGenBuilder
                 ' not a material field (absent from the BGSM), so it belongs here with the other CK
                 ' bake conventions, not in Save_To_Shader. shad.Type was set by Save_To_Shader above,
                 ' so SetFlagSF2 resolves the FO4-specific bit correctly.
-                ' ⭐ GAME-GATED: esta es una convención del bake CK de FO4 (Transform_Changed = F4SPF2 bit 7).
+                ' GAME-GATED: esta es una convención del bake CK de FO4 (Transform_Changed = F4SPF2 bit 7).
                 ' En un shader SK ese MISMO bit 7 es Assume_Shadowmask → aplicarlo a SSE corrompía el shader
                 ' (medido: head/mouth/hair ganaban 0x80 vs CK). CK SSE NO lo setea (SSPF2 del CK == source).
                 If Not nif.Header.Version.IsSSE Then
@@ -2342,7 +2356,7 @@ Public Module FaceGenBuilder
                 If bes.Name IsNot Nothing Then bes.Name.String = ""
                 ' Transform_Changed: el CK lo setea en TODO shape horneado, también los effect shaders, así
                 ' que esta rama necesita el mismo tratamiento que la de lighting.
-                ' ⛔ GAME-GATED, y no por analogía: el bit 7 significa COSAS DISTINTAS según el juego (en
+                ' GAME-GATED, y no por analogía: el bit 7 significa COSAS DISTINTAS según el juego (en
                 ' Skyrim es Assume_Shadowmask), y BSEffectShaderProperty no tiene enum propio — usa el MISMO
                 ' par de enums que el lighting, elegido por VERSIÓN. Encima el helper despacha por el Type
                 ' del shader y no por la clase del bloque, así que en un NIF de SSE esto escribiría
@@ -2352,13 +2366,13 @@ Public Module FaceGenBuilder
                 End If
             End If
         Catch ex As Exception
-            ' ⛔⛔ ESTE METODO VUELVE A FALLAR FUERTE, Y LA DECISION DE TRAGAR VIVE EN EL LLAMADOR.
+            ' ESTE METODO VUELVE A FALLAR FUERTE, Y LA DECISION DE TRAGAR VIVE EN EL LLAMADOR.
             ' Lo tragué acá razonando sobre UN llamador —el loop de shapes del bake— y tiene TRES:
             ' `FaceTextureRepointer` y `ShapeMaterialTranscriber` (export a NIF). Para esos dos, tragar es
             ' PEOR que fallar: siguen y reportan exito (`Outcome.Written`, `shapesWritten += 1`) sobre una
             ' shape cuyo link al BGSM externo NO se corto —el corte esta DESPUES del Save_To_Shader— asi que
             ' el motor reemplaza el texture set entero y descarta todo lo que el export escribio.
-            ' ⚠️ Y no digo "queda con material default", que es lo que afirmaba el comentario anterior:
+            ' Y no digo "queda con material default", que es lo que afirmaba el comentario anterior:
             ' `Save_To_Shader` escribe ~25 flags y 8 slots en secuencia, asi que un fallo a mitad deja el
             ' shader INDETERMINADO. (Tambien saco la mencion al bit `Skinned`: `Skinned` no aparece ni una
             ' vez en FO4UnifiedMaterial_Class, o sea que esa justificacion no se sostenia.)
@@ -2394,11 +2408,11 @@ Public Module FaceGenBuilder
                 RecordTextureFailure(result, $"facetint SSE: the NPC record 0x{npcFormID:X8} does not resolve")
                 Return
             End If
-            Dim raceFid As UInteger = npcData.RaceFormID
-            Dim race As RACE_Data = Nothing
+            Dim raceFid As UInteger = npcData.Record.Race
+            Dim race As Canon.IRace = Nothing
             If raceFid <> 0UI Then
                 Dim rr = pluginManager.GetRecord(raceFid)
-                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = RecordParsers.ParseRACE(rr, pluginManager)
+                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = Canon.CanonRecords.Race(rr, pluginManager)
             End If
             If race Is Nothing Then
                 RecordTextureFailure(result, $"facetint SSE: the RACE 0x{raceFid:X8} does not resolve (without it there are no tint layers)")
@@ -2406,14 +2420,14 @@ Public Module FaceGenBuilder
             End If
             ' Overlaid tints + RaceMenu overlays (Edit Face edits) so the bake is byte-WYSIWYG with the live
             ' preview (both call BakeFaceTintDds with the same tint override + overlays).
-            Dim tintOverride As IList(Of NPC_RawSubrecord) = npcData.SseTintRaw
+            Dim tintOverride = SseFaceTintComposer.CapasDeTinteSse(npcData.Record)
             ' Tamaño del facetint = propiedad Setting_FaceGenDiffuseResolution (Inherit→512 vanilla = default byte-inerte;
             ' 1024/2048/… si el usuario lo sube). NO hardcodeado. El facetint es el "diffuse" del facegen SSE.
             Dim fSz = FaceTintConvention.ResolveResolutionSize(OutputSettings.Diffuse, 512)
             ' Formato del facetint = el elegido por el usuario (CharGen Options → Diffuse), NO hardcodeado. Antes
             ' BakeFaceTintDds forzaba BC3, así que el facetint real y el neutral del fold podían salir con formatos
             ' distintos según el NPC estuviera plegado o no.
-            ' GATE del encode (ver SkipDdsEncode). ⛔ El Nothing/no-Nothing SI decide el slot 6, y sale del
+            ' GATE del encode (ver SkipDdsEncode). El Nothing/no-Nothing SI decide el slot 6, y sale del
             ' COMPOSE (ComposeFacetintAcc), no del encode: un NPC sin capas de tint no tiene facetint y el bake
             ' no le escribe el slot. Por eso en modo gateado se corre igual el compose (512x512) y se saltea
             ' SOLO el EncodeLinearRgbaToBc3 + el File.Write ⇒ misma condicion, mismo NIF.
@@ -2422,12 +2436,12 @@ Public Module FaceGenBuilder
             ' vuelva a componer. Con "Generate TGA" tildado se componia DOS veces por NPC.
             Dim facetintAcc As Single() = Nothing
             If SkipDdsEncode Then
-                If SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride) Is Nothing Then
+                If SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.Record.ConfigurationFlagsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride) Is Nothing Then
                     RecordTextureFailure(result, "facetint SSE: composing the tint layers produced nothing (ComposeFacetintAcc Nothing)")
                     Return
                 End If
             Else
-                dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride, DiffuseDxgiFromSetting(), facetintAcc)
+                dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.Record.ConfigurationFlagsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride, DiffuseDxgiFromSetting(), facetintAcc)
                 If dds Is Nothing Then
                     RecordTextureFailure(result, $"facetint SSE: compose/encode of the _d failed ({fSz}x{fSz}, dxgi={DiffuseDxgiFromSetting()})")
                     Return
@@ -2451,7 +2465,7 @@ Public Module FaceGenBuilder
                 ' sale del MISMO buffer que se encodeo, asi que es byte-identico al de antes por construccion
                 ' (misma funcion pura, mismas entradas) — solo que ahora se ejecuta una vez en vez de dos.
                 ' Fallback: si venimos por la rama SkipDdsEncode no hay acc, y ahi si hay que componerlo.
-                Dim accT = If(facetintAcc, SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride))
+                Dim accT = If(facetintAcc, SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.Record.ConfigurationFlagsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride))
                 If accT IsNot Nothing Then MaybeWriteTgaBeside(outFile, fSz, fSz, SseFaceGenBaker.LinearRgbaToBgra(accT, fSz, fSz))
             End If
             ' Point the head shape's texture-set slot 6 (facetint) at the engine path (Data-relative).
@@ -2460,7 +2474,7 @@ Public Module FaceGenBuilder
                 Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
                 If lsp IsNot Nothing AndAlso lsp.TextureSetRef IsNot Nothing AndAlso lsp.TextureSetRef.Index >= 0 Then
                     Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
-                    ' ⭐ El slot 6 sigue la MISMA ley que el resto (bake CK 0x141d0ea00): sólo lo escribe el
+                    ' El slot 6 sigue la MISMA ley que el resto (bake CK 0x141d0ea00): sólo lo escribe el
                     ' branch type 4 FaceTint. El gate del call site es por HDPT.PartType=Face, que NO es
                     ' equivalente: un head part de cara puede tener un shape autorado con otro shader type.
                     ' MEDIDO: 'MaleHeadManekin' (HDPT 0x1078799, PartType=Face, TNAM=0, MODL=ManekinHead.nif)
@@ -2484,7 +2498,7 @@ Public Module FaceGenBuilder
                     End If
                 End If
             End If
-            ' ⛔ `dds` es Nothing en la rama SkipDdsEncode ⇒ `dds.Length` reventaba con una NRE (latente: LogLazy
+            ' `dds` es Nothing en la rama SkipDdsEncode ⇒ `dds.Length` reventaba con una NRE (latente: LogLazy
             ' sólo invoca la lambda si Logger.Enabled). La NRE caía en el catch de abajo, que la reportaba como
             ' "facetint bake failed" AUNQUE el slot 6 ya se había escrito bien, y de paso se comía el sandbox _2b.
             Dim ddsLen = If(dds Is Nothing, 0, dds.Length)
@@ -2497,8 +2511,8 @@ Public Module FaceGenBuilder
             ' Espejo exacto del _2b de FO4 y del _2b de overlays. Sólo app (host); la paridad la confirma el usuario.
             If host IsNot Nothing AndAlso DebugMode AndAlso WriteGPUSandboxOutput Then
                 Try
-                    Dim glayers = SseFaceTintComposer.BuildLayerInputs(pluginManager, npcRec, race, raceFid, npcData.IsFemale,
-                                                                       npcData.SseTintRaw, npcData.SseTintTexOverride)
+                    Dim glayers = SseFaceTintComposer.BuildLayerInputs(pluginManager, npcRec, race, raceFid, npcData.Record.ConfigurationFlagsFemale,
+                                                                       SseFaceTintComposer.CapasDeTinteSse(npcData.Record), npcData.SseTintTexOverride)
                     If glayers IsNot Nothing AndAlso glayers.Count > 0 Then WriteSseFacetint2bGpu(glayers, fSz, fSz, fgLocal, originPlugin, host)
                 Catch ex2b As Exception
                     Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _2b GPU failed: {ex2b.GetType().Name}: {ex2b.Message}")
@@ -2542,12 +2556,12 @@ Public Module FaceGenBuilder
     Private Function ComposeSseFacetintBgraOnGpu(layers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Byte()
         If host Is Nothing OrElse layers Is Nothing OrElse layers.Count = 0 OrElse w <= 0 OrElse h <= 0 Then Return Nothing
         Dim npix = w * h
-        ' ⭐ SEED DE LA LEY Y EN FLOAT. Acá había un `Const seedByte As Byte = 128` cuyo propio comentario decía
+        ' SEED DE LA LEY Y EN FLOAT. Acá había un `Const seedByte As Byte = 128` cuyo propio comentario decía
         ' "= ActiveSettings.SeedConstant" — pero era un LITERAL, y encima CUANTIZADO: 128/255 = 0,50196, no 0,5.
         ' El _2b existe para medir la paridad CPU-vs-GPU del facetint CONTRA el _2, que siembra 0,5 EXACTO por
         ' CPU ⇒ ese medio LSB era un sesgo del INSTRUMENTO, no del compositor, y el fgTint lo amplifica ×255/64
         ' (2,00781 vs 2,01563). Se siembra por el MISMO helper float que usa el render (UploadRgba32fFlat), que
-        ' es justo lo que su doc pide ("⛔ No volver a sembrar por bytes").
+        ' es justo lo que su doc pide ("No volver a sembrar por bytes").
         Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
         If seedRgb Is Nothing Then
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2b ABORT: la ley pide seed desde textura base y el facetint es TINT-ONLY (no hay base).")
@@ -2574,7 +2588,7 @@ Public Module FaceGenBuilder
     '''   1. facetint  = ComposeFacetintGpu(capas de tint sobre seed 0.5)      [lineal]
     '''   2. pliegue   = FoldGpu(complexion, facetint, detail)                 [ley del engine: softlight(_,tint) x amplify(detail)]
     '''   3. capas     = ComposeGpu(skee MASKT + overlays Face[Ovl])           [stack de capas]
-    ''' ⛔ NADA de intermedios en 8 bits. La versión anterior transportaba el facetint como DDS y hacía el readback en
+    ''' NADA de intermedios en 8 bits. La versión anterior transportaba el facetint como DDS y hacía el readback en
     ''' bytes LINEALES: MEDIDO contra el _2c daba RMS 2,4/255 y máx 18, con el error concentrado en las sombras (5,7 medio
     ''' en 0..31 vs 0,3 en 128..159) — la firma de cuantizar en lineal (cerca del negro 1 nivel lineal ≈ 13 niveles sRGB),
     ''' agravado porque el amplify del detail escala la cadena hasta ×255/64. En float el transporte deja de limitar la paridad.
@@ -2600,7 +2614,7 @@ Public Module FaceGenBuilder
         Dim foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(dec.ToUnitArray(), layers, det, Nothing, overlays,
                                                                   Nothing, w, h, host,
                                                                   measureParity:=True)
-        ' ⭐ measureParity:=True (antes hardcodeado en False). El _2d existe EXACTAMENTE para comparar el
+        ' measureParity:=True (antes hardcodeado en False). El _2d existe EXACTAMENTE para comparar el
         ' CPU (_2c) contra el GPU, y con el flag en False el unico instrumento de paridad del camino SSE
         ' quedaba apagado justo en el sandbox que lo motiva. Ahora emite `[SSE-FOLD] PARITY rmsCPUvsGPU=`.
         ' Costo: un readback + una replica CPU, y este bloque ya esta gateado por DebugMode + GPU sandbox.
@@ -2608,7 +2622,7 @@ Public Module FaceGenBuilder
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: la cadena GPU (fold + capas + unfold) fallo.")
             Return
         End If
-        ' ⭐⭐ ComposeFoldedGpuResident devuelve LINEAL A PROPOSITO (SseFoldLayerStack:240 corre un cvt sRGB->lineal
+        ' ComposeFoldedGpuResident devuelve LINEAL A PROPOSITO (SseFoldLayerStack:240 corre un cvt sRGB->lineal
         ' porque ESA textura alimenta al RENDER, que muestrea en lineal). El _2d, en cambio, es un artefacto de
         ' DISCO y tiene que quedar en sRGB igual que el _2c/_2. Volcarlo tal cual era el bug: MEDIDO sobre 285.978
         ' muestras, _2d == sRGB_to_linear(_2c) EXACTO (err medio 0,255/255, max 0,942, CERO fuera de +-2, contra un
@@ -2689,7 +2703,7 @@ Public Module FaceGenBuilder
     ''' <summary>Path embebido para el SLOT 6 (facetint) en SSE: <c>data\Textures\…</c>. Es el único slot que
     ''' lleva ese prefijo, porque lo carga otro loader del motor. Un path mal prefijado acá deja el slot en
     ''' NULL y la cara sale MARRÓN. Ley completa y mediciones: <c>40-bake-leyes-sse.md</c>.
-    ''' <para>⛔ Sólo SSE, y el guard va acá y no en los call sites: que la corrección dependa de en qué
+    ''' <para>Sólo SSE, y el guard va acá y no en los call sites: que la corrección dependa de en qué
     ''' función estás es el supuesto implícito que se rompe al mover código.</para></summary>
     Private Function EmbeddedEngineTexPath(relUnderData As String) As String
         If String.IsNullOrEmpty(relUnderData) Then Return relUnderData
@@ -2703,7 +2717,7 @@ Public Module FaceGenBuilder
 
     ''' <summary>Como <see cref="StripTexRoot"/> pero saca SÓLO el prefijo <c>data\</c>: un <c>textures\</c>
     ''' inicial se CONSERVA VERBATIM, porque el motor lo tolera y el CK lo escribe.
-    ''' <para>⛔ NO usar para el slot 6: ése se reconstruye entero con <see cref="EmbeddedEngineTexPath"/>.</para></summary>
+    ''' <para>NO usar para el slot 6: ése se reconstruye entero con <see cref="EmbeddedEngineTexPath"/>.</para></summary>
     Private Function StripDataRootOnly(p As String) As String
         If String.IsNullOrEmpty(p) Then Return ""
         If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return p
@@ -2721,7 +2735,7 @@ Public Module FaceGenBuilder
     End Function
 
     ''' <summary>Path embebido para los slots que NO son el facetint (0 diffuse, 1 <c>_msn</c>, 3 detail):
-    ''' SIN prefijo, relativos a <c>Data\Textures\</c>. ⛔ NO usar el prefijo del slot 6 acá — estos slots los
+    ''' SIN prefijo, relativos a <c>Data\Textures\</c>. NO usar el prefijo del slot 6 acá — estos slots los
     ''' carga otro loader y quedarían en NULL (cara marrón en el camino plegado).
     ''' <para>Sólo SSE; en FO4 la convención es otra y es la fiel al CK. Ver <c>40-bake-leyes-sse.md</c>.</para></summary>
     Private Function EmbeddedTexSetPath(relUnderData As String) As String
@@ -2736,7 +2750,7 @@ Public Module FaceGenBuilder
     ''' <c>FaceNormal\</c>) cuando este bake NO pliega: si no, sobreviven de una corrida anterior y el packer
     ''' los mete al archive, porque toma el source del DISCO. Se borran los dos naming (canónico y <c>_2</c>),
     ''' porque alternar Debug/Release deja stale de ambos.
-    ''' <para>⛔ NO borrar acá <c>FaceTint\</c>: es el único artefacto que existe en LOS DOS caminos, y
+    ''' <para>NO borrar acá <c>FaceTint\</c>: es el único artefacto que existe en LOS DOS caminos, y
     ''' <see cref="WriteSseFacetintDds"/> tiene salidas tempranas, así que borrarlo al entrar y no re-escribirlo
     ''' dejaría al NPC SIN tint (cara marrón) en vez de con uno viejo.</para></summary>
     Private Sub DeleteFoldedOnlyArtifacts(npcFormID As UInteger, originPlugin As String)
@@ -2794,7 +2808,7 @@ Public Module FaceGenBuilder
 
     ''' <summary>Saca el prefijo <c>data\</c> de los slots 0/1/3 del head, SIEMPRE (pliegue o no): ese prefijo
     ''' es el del slot 6 y en estos slots deja el path en NULL ⇒ cara marrón.
-    ''' <para>⛔ NO extender esto a pelar también <c>textures\</c>: el motor lo tolera y el CK lo ESCRIBE, así
+    ''' <para>NO extender esto a pelar también <c>textures\</c>: el motor lo tolera y el CK lo ESCRIBE, así
     ''' que sacarlo es una sobre-corrección. Ley del CK ("cada slot verbatim desde quien lo provee") y su
     ''' medición sobre el corpus completo: <c>40-bake-leyes-sse.md</c>.</para>
     ''' <para>Idempotente y game-aware (no-op en FO4). El slot 6 queda fuera: lleva la convención opuesta.</para></summary>
@@ -2855,19 +2869,19 @@ Public Module FaceGenBuilder
             Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
             If appliedPresets IsNot Nothing Then appliedPresets.TryGetValue(npcFormID, preset)
             Dim overlays = If(preset IsNot Nothing, preset.SseBodyOverlays, Nothing)
-            ' ⛔ El gate mira DIFFUSE **O** NORMAL (HasAnyFoldableFaceOverlay). Un overlay de cara SOLO-NORMAL
+            ' El gate mira DIFFUSE **O** NORMAL (HasAnyFoldableFaceOverlay). Un overlay de cara SOLO-NORMAL
             ' (NormalPath sin DiffusePath) es válido — ComposeFaceOverlayNormalsIntoMsn lo pliega usando el alpha
             ' del propio normal como cobertura. Gatear sólo por diffuse hacía SALIR TEMPRANO y el normal no se
             ' plegaba nunca; y como el script Papyrus salteaba TODO nodo Face* (la cara era territorio del bake,
             ' siempre), ese overlay no lo aplicaba nadie: desaparecía.
-            ' ⭐ HOY EL EMISOR NO SALTEA TODO Face*: saltea los del pool NORMAL y sólo con el toggle de bake
+            ' HOY EL EMISOR NO SALTEA TODO Face*: saltea los del pool NORMAL y sólo con el toggle de bake
             ' prendido; los `Face [SOvl]` (pool MAGIC) van SIEMPRE por el script, porque este gate —vía
             ' HasAnyFoldableFaceOverlay ⇒ IsFoldableFaceOverlay— los EXCLUYE del pliegue por diseño. Sin esa
             ' exclusión se hornearía permanentemente una capa que el motor prende y apaga en runtime.
             Dim hasOverlays = SseOverlayCompositor.HasAnyFoldableFaceOverlay(overlays)
             Dim hasSkee = SseSkeeMaskReader.HasMaskLayers(nif, cloned)
 
-            ' ⭐ DIAGNOSTICO DEL GATE. El render y el bake leen el MISMO `appliedPresets`, así que tienen que
+            ' DIAGNOSTICO DEL GATE. El render y el bake leen el MISMO `appliedPresets`, así que tienen que
             ' decidir igual — y se midió una grabada donde el render plegó (faceOverlays=1) y 16 s después el bake
             ' NO plegó. Esto vuelca las entradas EXACTAS de la decisión para que la próxima corrida diga cuál de
             ' las tres cosas pasó: no se resolvió el preset, el nodo no es Face, o no pasa el filtro de
@@ -2940,30 +2954,30 @@ Public Module FaceGenBuilder
             ' El overlay va DESPUÉS del skin tint. El engine hace albedo = softlight(diffuse, facetint_d) × amplify(detail).
             ' Para que el overlay NO quede teñido por el skin tint, plegamos esa cadena DENTRO del diffuse: la base
             ' sobre la que van los overlays es el albedo YA tintado. base ES el albedo skin-tinted; overlays encima.
-            ' ⛔ (Este comentario decía "y neutralizamos los slots 3 y 6". YA NO: los dos quedan con su contenido
+            ' (Este comentario decía "y neutralizamos los slots 3 y 6". YA NO: los dos quedan con su contenido
             '  REAL y la cadena del motor se cancela con PreCompensateEngineChain, más abajo.)
             ' Facetint y detail HOISTEADOS: los consume el fold y después la pre-compensación (fuera de este scope).
             Dim detailAcc As Single() = Nothing
             Dim facetint As Single() = Nothing
             Dim npcRec = pluginManager.GetRecord(npcFormID)
-            Dim raceFid As UInteger = npcData.RaceFormID
-            Dim race As RACE_Data = Nothing
+            Dim raceFid As UInteger = npcData.Record.Race
+            Dim race As Canon.IRace = Nothing
             If npcRec IsNot Nothing AndAlso raceFid <> 0UI Then
                 Dim rr = pluginManager.GetRecord(raceFid)
-                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = RecordParsers.ParseRACE(rr, pluginManager)
+                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = Canon.CanonRecords.Race(rr, pluginManager)
             End If
             If npcRec IsNot Nothing AndAlso race IsNot Nothing Then
                 ' facetint _d LINEAL al tamaño del complexion (misma resolución que el diffuse que multiplica).
                 ' Es SOLO los tints de RACE (skin tone + warpaint) — los overlays de cara NO van acá (van sobre el
                 ' base DESPUÉS del pliegue, ese es el orden de RaceMenu). Mismo _d que WriteSseFacetintDds compone.
-                facetint = SseFaceTintComposer.ComposeLinearRgba(pluginManager, npcRec, race, raceFid, npcData.IsFemale, w, h,
-                                                                     Nothing, npcData.SseTintRaw, npcData.SseTintTexOverride)
+                facetint = SseFaceTintComposer.ComposeLinearRgba(pluginManager, npcRec, race, raceFid, npcData.Record.ConfigurationFlagsFemale, w, h,
+                                                                     Nothing, SseFaceTintComposer.CapasDeTinteSse(npcData.Record), npcData.SseTintTexOverride)
                 ' Detail (slot 3): es el término AMPLIFICADO que el motor multiplica DESPUÉS del soft-light
                 ' con el facetint. Se pliega acá para que la BASE sobre la que van los overlays sea el albedo
                 ' completo (el orden de RaceMenu), y al final se PRE-COMPENSA — el slot 3 se deja con su
                 ' contenido REAL, no se neutraliza (ver el bloque del slot 3 más abajo). Es detail crudo; si no
                 ' hay, el default del motor es 0.251, que NO es identidad.
-                ' ⛔ En el sandbox forzado hay que usar el detail ORIGINAL capturado antes de mutar: el shape
+                ' En el sandbox forzado hay que usar el detail ORIGINAL capturado antes de mutar: el shape
                 ' clonado se comparte con el pass normal, así que leerlo en vivo puede dar vacío y el fold
                 ' caería al default en vez del detail real.
                 Dim detailPath = If(forced, If(detailPathOverride, ""), If(ts.Textures.Count > 3, ts.Textures(3).Content, ""))
@@ -2976,7 +2990,7 @@ Public Module FaceGenBuilder
             Dim skinRgb = SseSkinRgbForNpc(pluginManager, npcData, npcFormID)
             Dim anySkee = SseSkeeMaskReader.ComposeNifMaskLayersIntoDiffuse(nif, cloned, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba, skinRgb, Nothing, acc)
             Dim anyOvl = SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse(acc, overlays, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba)
-            ' ⭐ EL GATE DIJO QUE SÍ Y EL COMPOSE NO APORTÓ NADA ⇒ ES UN FALLO, NO UN NO-OP.
+            ' EL GATE DIJO QUE SÍ Y EL COMPOSE NO APORTÓ NADA ⇒ ES UN FALLO, NO UN NO-OP.
             ' Los gates (HasAnyFoldableFaceOverlay / HasMaskLayers) ya replican todo lo que se puede saber SIN tocar
             ' el disco: nodo Face, ruta de textura y opacidad > 0. Lo único que queda fuera es que la textura exista
             ' y decodifique — y si eso falla, la cara pierde su face-paint. Antes se salía en silencio (y encima sin
@@ -2990,7 +3004,7 @@ Public Module FaceGenBuilder
             ' preview. Hasta acá `acc` es el albedo que dibuja el preview; el motor va a calcular
             ' softlight(slot0, facetint) x amp(detail) con los dos slots en su contenido REAL, así que se
             ' invierten ambos términos y la cadena se cancela.
-            ' ⛔ NO neutralizar el facetint a gris: da el albedo aritméticamente exacto y AUN ASÍ la cara sale
+            ' NO neutralizar el facetint a gris: da el albedo aritméticamente exacto y AUN ASÍ la cara sale
             ' oscura in-game, porque el motor deriva del slot 6 algo más que el albedo (subsurface) y eso no se
             ' puede plegar en una textura de diffuse.
             SseFaceGenBaker.PreCompensateEngineChain(acc, facetint, detailAcc, npix)
@@ -2998,7 +3012,7 @@ Public Module FaceGenBuilder
             ' Paralelo por rangos + VECTORIZADO: la conversión float→byte es puramente por píxel (sin estado
             ' compartido) ⇒ bit-idéntica al serial. Pesa porque el fold corre a resolución NATIVA: 16,7 M
             ' iteraciones a 4096².
-            ' ⛔ La ley es la de ClampByte255 (redondeo en DOUBLE) y por eso NO usa el byte-pack de FO4, que
+            ' La ley es la de ClampByte255 (redondeo en DOUBLE) y por eso NO usa el byte-pack de FO4, que
             ' redondea en Single: cerca de los .5 dan bytes distintos. Ver el comentario del helper.
             Dim bgra(w * h * 4 - 1) As Byte
             FaceTintCpuCompositor.PackUnitRgbaToBgraRoundDouble(acc, bgra, w * h)
@@ -3048,7 +3062,7 @@ Public Module FaceGenBuilder
             ' Slot 0 = texture-set normal ⇒ SIN prefijo (ver EmbeddedTexSetPath: el `data\` es SÓLO del slot 6).
             ts.Textures(0).Content = EmbeddedTexSetPath(dir & $"{fgLocal:X8}{embeddedSuffix}")
 
-            ' ⛔⛔ EL SLOT 3 (detail) NO SE TOCA — no volver a escribir un "neutro" ahí. Razones medidas:
+            ' EL SLOT 3 (detail) NO SE TOCA — no volver a escribir un "neutro" ahí. Razones medidas:
             '   1) el motor puede REINSTALAR el slot 3 desde el TXST resuelto al attachear la cabeza, y ahí el
             '      neutro se descarta y el amplify se aplica DOS veces (cara ~2 % más oscura);
             '   2) BC3 no puede codificar el valor neutro exacto, así que ni siquiera da amplify 1,0;
@@ -3056,7 +3070,7 @@ Public Module FaceGenBuilder
             ' Con el detail REAL en el slot 3 el motor aplica amplify una sola vez, igual que en el camino no
             ' plegado, y el resultado es correcto tanto si respeta el slot como si lo reinstala.
 
-            ' ⛔ EL SLOT 6 YA NO SE NEUTRALIZA — en NINGÚN camino. MEDIDO in-game: con el gris el albedo daba
+            ' EL SLOT 6 YA NO SE NEUTRALIZA — en NINGÚN camino. MEDIDO in-game: con el gris el albedo daba
             ' aritméticamente exacto (motor vs preview = +0,37%) y AUN ASÍ la cara salía oscura; con el facetint
             ' REAL desaparece el oscurecimiento ⇒ el motor deriva del slot 6 algo MÁS que el albedo (subsurface),
             ' que no se puede plegar en una textura de diffuse. El slot 6 conserva el facetint real y la cadena
@@ -3138,7 +3152,7 @@ Public Module FaceGenBuilder
                 End Try
             End If
 
-            ' ⛔ El sandbox _2b del DIFFUSE (overlays por GPU sobre un base plegado en CPU) SE ELIMINÓ: era un camino
+            ' El sandbox _2b del DIFFUSE (overlays por GPU sobre un base plegado en CPU) SE ELIMINÓ: era un camino
             ' CRUZADO (mitad CPU, mitad GPU) y por eso no medía nada que se ejecute de verdad — ningún camino real
             ' mezcla. Los dos sandboxes que quedan son puros y comparables entre sí: _2c = TODO CPU (= el release) y
             ' _2d = TODO GPU. (El _2b del FACETINT sigue: ese sí es un compose puro GPU del facetint.)
@@ -3173,7 +3187,7 @@ Public Module FaceGenBuilder
     ''' <summary>AUTO-TEST del contexto GL: sube un patron conocido, lo pasa por el MISMO pase del compositor
     ''' que usa el bake (<see cref="FaceTintCompositor.ConvertTextureSpace"/>, uMode=2) y verifica que el
     ''' readback lo devuelva. Devuelve Nothing si el GL sirve, o el motivo del fallo.
-    ''' <para>⛔ POR QUE EXISTE: un contexto GL puede crearse "bien" y despues no dibujar nada —ventana sin
+    ''' <para>POR QUE EXISTE: un contexto GL puede crearse "bien" y despues no dibujar nada —ventana sin
     ''' mostrar, driver que no da un framebuffer usable, contexto current en otro hilo—. El sintoma es un
     ''' readback en CERO, y eso NO se distingue de "el compose dio negro": la corrida reportaria una paridad
     ''' perfecta o una divergencia enorme, las dos inventadas. Mejor fallar acá, antes de medir 200 NPCs.</para>
@@ -3251,11 +3265,11 @@ Public Module FaceGenBuilder
     ''' rest. Nothing when unresolved (BuildSkeeMaskLayer then falls back to the literal colour).</summary>
     Private Function SseSkinRgbForNpc(pluginManager As PluginManager, npcData As NPC_Data, npcFormID As UInteger) As Double()
         Try
-            If pluginManager Is Nothing OrElse npcData Is Nothing OrElse npcData.RaceFormID = 0UI Then Return Nothing
-            Dim rr = pluginManager.GetRecord(npcData.RaceFormID)
+            If pluginManager Is Nothing OrElse npcData Is Nothing OrElse npcData.Record.Race = 0UI Then Return Nothing
+            Dim rr = pluginManager.GetRecord(npcData.Record.Race)
             If rr Is Nothing OrElse rr.Header.Signature <> "RACE" Then Return Nothing
-            Dim race = RecordParsers.ParseRACE(rr, pluginManager)
-            Dim q = SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npcData, race, npcData.RaceFormID, npcData.IsFemale)
+            Dim race = Canon.CanonRecords.Race(rr, pluginManager)
+            Dim q = SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npcData, race, npcData.Record.Race, npcData.Record.ConfigurationFlagsFemale)
             If Not q.HasValue Then Return Nothing
             Return New Double() {q.Value.R / 255.0, q.Value.G / 255.0, q.Value.B / 255.0}
         Catch
@@ -3292,7 +3306,7 @@ Public Module FaceGenBuilder
     ''' canales) y BC1 (sin alpha) NO PUEDEN representarlo, así que se acotan a Uncompressed (= vanilla) o BC7.
     ''' BC3 sí se honra: degrada el RGB pero CONSERVA el alpha, y esa es una compensación que el usuario puede
     ''' querer; perder un canal entero no lo es.
-    ''' <para>⛔ El enum y el setting NO se tocan: la misma combo sirve a FO4, donde BC5 SÍ es correcto porque
+    ''' <para>El enum y el setting NO se tocan: la misma combo sirve a FO4, donde BC5 SÍ es correcto porque
     ''' allá el normal es tangent-space de 2 canales. La UI ya no ofrece BC5 en SSE; este clamp es la red para
     ''' un config viejo que lo tenga persistido, y avisa cuando dispara.</para></summary>
     Private Function ClampMsnDxgiForSse(c As FaceTintConvention.FaceTintNormalSpecularCompression) As Integer
@@ -3387,7 +3401,7 @@ Public Module FaceGenBuilder
             Return
         End If
 
-        ' ⭐ El LUT de la ceja lo resuelve FaceTintInputBuilder desde el RACE (ver
+        ' El LUT de la ceja lo resuelve FaceTintInputBuilder desde el RACE (ver
         ' LmHairColorLutLoader.ResolveBrowPaletteTexture). Antes se resolvía acá recorriendo la malla de pelo
         ' del NPC, y esa variante existía SÓLO para esquivar la del render, que recorría las mallas EN
         ' PANTALLA y en un batch le daba a todo el lote el LUT del NPC seleccionado. Con el origen en el
@@ -3396,8 +3410,8 @@ Public Module FaceGenBuilder
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=npcFormID,
             rootFormID:=npcFormID,
-            raceFormID:=npcData.RaceFormID,
-            isFemale:=npcData.IsFemale,
+            raceFormID:=npcData.Record.Race,
+            isFemale:=npcData.Record.ConfigurationFlagsFemale,
             pluginManager:=pluginManager,
             appliedPresets:=appliedPresets,
             tintBytesCache:=Nothing,
@@ -3406,7 +3420,7 @@ Public Module FaceGenBuilder
             textureLightingColorArgb:=state.TextureLightingColor.ToArgb(),
             dataPath:=lutDataPath)
 
-        ' ⛔ SACADA (2026-07-30) la biseccion de diagnostico `FGBAKE_LAYER_CUTOFF` / `FGBAKE_SWAP_CUTOFF`,
+        ' SACADA (2026-07-30) la biseccion de diagnostico `FGBAKE_LAYER_CUTOFF` / `FGBAKE_SWAP_CUTOFF`,
         ' que truncaba capas y swaps en LOS DOS compositores para aislar la fase que divergia. Cumplio su
         ' proposito: localizo la divergencia CPU-vs-GPU en el region swap (seed solo = 0 px de cola; 1 swap
         ' = 96) y de ahi salio la causa real (el GPU mezclaba MIPMAPS de las texturas FUENTE mientras el CPU
@@ -3441,7 +3455,7 @@ Public Module FaceGenBuilder
 
         Try
             cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey,
-                                                           headDiffuseAlphaTest:=(npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.AcbsFlags And &H1000000UI) <> 0UI)
+                                                           headDiffuseAlphaTest:=(npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.Record.ConfigurationFlags And &H1000000UI) <> 0UI)
         Catch ex As Exception
             ' F1: la EXCEPCION se reporta aca con tipo y mensaje. Antes solo iba al log y el fallo se INFERIA rio
             ' abajo ("no hubo diffuse"), inferencia que ademas solo corria en la rama CPU-only: en DebugMode
@@ -3478,7 +3492,7 @@ Public Module FaceGenBuilder
             Try
                 ' srgb=False para TODAS: la base del bake se carga CRUDA (el seed hace srgbToLin, base raw =
                 ' baseDiffuseIsLinearOnGpu=False); el decode lo hace el compositor por convención, no el SRV.
-                ' ⭐⭐ useCompress SALE DE LA MISMA PROPIEDAD QUE LOS OTROS SITIOS DE CARGA, no de un True fijo.
+                ' useCompress SALE DE LA MISMA PROPIEDAD QUE LOS OTROS SITIOS DE CARGA, no de un True fijo.
                 ' Este es el CUARTO sitio que sube texturas a GL (los otros tres viven en FaceTintCompositor) y
                 ' era el unico que no consultaba la propiedad. Con True fijo el seed del acumulador GPU quedaba
                 ' descomprimido POR HARDWARE mientras el CPU decodifica el MISMO DDS por software (DirectXTex):
@@ -3549,7 +3563,7 @@ Public Module FaceGenBuilder
             If pipelineResult.Diffuse.IsFresh Then freshIds.Add(pipelineResult.Diffuse.TextureId)
             If pipelineResult.Normal.IsFresh Then freshIds.Add(pipelineResult.Normal.TextureId)
             If pipelineResult.Specular.IsFresh Then freshIds.Add(pipelineResult.Specular.TextureId)
-            ' ⛔ El pase final AccumSpace->OutputSpace del GL fallo en algun canal ⇒ ese canal quedo en
+            ' El pase final AccumSpace->OutputSpace del GL fallo en algun canal ⇒ ese canal quedo en
             ' AccumSpace y su gamma esta corrida. Se INVALIDA la medicion de paridad de este NPC en vez de
             ' dejar que la divergencia se lea como defecto del compositor. (Es el consumidor de
             ' FaceTintPipelineResult.SpaceConversionFailed: sin esto el flag existiria y no lo miraria nadie.)
@@ -3615,9 +3629,9 @@ Public Module FaceGenBuilder
             Return
         End If
 
-        ' ⭐ LEY: el redirect de los slots 0/1/7 a FaceCustomization se gatea por el SHADER TYPE del MATERIAL
+        ' LEY: el redirect de los slots 0/1/7 a FaceCustomization se gatea por el SHADER TYPE del MATERIAL
         ' DEL SHAPE (Face = 4), NO por HDPT.PartType del record. Ver 30-fo4-gate-composite-por-shadertype.md.
-        ' ⚠️ El gate va ACÁ (en el redirect de slots) y NO en el call site: el CK COMPONE y EXPORTA las
+        ' El gate va ACÁ (en el redirect de slots) y NO en el call site: el CK COMPONE y EXPORTA las
         ' texturas igual —están shippeadas en el BA2— y sólo se saltea la ASIGNACIÓN al NIF. Apagar el bake
         ' entero desde el call site ya rompió el NIF una vez (shape sin texture set propio ⇒ se deduplicaba
         ' con otra).
@@ -3627,9 +3641,9 @@ Public Module FaceGenBuilder
         Dim redirectSlotsToFaceCustomization As Boolean =
             (shapeShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint)
         If Not redirectSlotsToFaceCustomization Then
-            ' ⭐ F2 — EL PREDICADO NO SE TOCA (replica cmp eax,4 del CK 0x140ed9020 sobre el tipo DERIVADO de los
+            ' F2 — EL PREDICADO NO SE TOCA (replica cmp eax,4 del CK 0x140ed9020 sobre el tipo DERIVADO de los
             ' bools del material; validado sobre 14.136 shapes). Lo que cambia es que deja de ser INVISIBLE.
-            ' ⛔ Y NO ES UN FALLO: que la DDS se componga, se escriba y se empaquete SIN que el NIF la referencie es
+            ' Y NO ES UN FALLO: que la DDS se componga, se escriba y se empaquete SIN que el NIF la referencie es
             ' EXACTAMENTE lo que hace el CK — medido en el bloque de la ley de arriba: el CK shippeo 0001763B_d.DDS
             ' en el BA2 para DLC04Oswald sin una sola referencia en su NIF (export SIN gate 0x140ab8760 vs asignacion
             ' CON gate 0x140ed9020). Por eso NO se llama a RecordTextureFailure: seria un falso positivo que marcaria
@@ -3688,7 +3702,7 @@ Public Module FaceGenBuilder
                 Continue For
             End If
 
-            ' ⛔ El diffuse NO se re-encodea acá: el compositor ya convierte el source sRGB->g22 UNA vez, en
+            ' El diffuse NO se re-encodea acá: el compositor ya convierte el source sRGB->g22 UNA vez, en
             ' float y antes de componer, así que el bgra que se lee YA está en g22 (que es como el motor
             ' almacena la FaceCustomization). N/S son datos lineales y van raw.
 

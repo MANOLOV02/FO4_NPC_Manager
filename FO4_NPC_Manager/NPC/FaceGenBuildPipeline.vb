@@ -1,4 +1,5 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
@@ -103,7 +104,7 @@ Public Module FaceGenBuildPipeline
         ' 3) Esqueleto para el lado DESTINO (el inverso del bake). Lleva SÓLO el body-weight, sin
         ' FMRS: el CK aplica el mismo array de escalas en las dos pasadas (PASS 1 = rig _faceBones,
         ' PASS 2 = rig plano), así que la escala tiene que estar en las DOS paletas.
-        ' ⛔ Medido: meterla en un solo lado es PEOR que no meterla (Wfat max 0,5352 → 0,8153 sólo
+        ' Medido: meterla en un solo lado es PEOR que no meterla (Wfat max 0,5352 → 0,8153 sólo
         ' en source, contra 0,0039 en ambas). BuildBindResolver usa OriginalGetGlobalTransform, que
         ' por diseño excluye la capa morph, de ahí este segundo esqueleto.
         Dim bwBindSkel As SkeletonInstance = Nothing
@@ -161,9 +162,9 @@ Public Module FaceGenBuildPipeline
         If state?.NpcData Is Nothing OrElse state.Race Is Nothing Then Return Nothing
 
         ' Slot centinela ⇒ el CK no aplica body-weight a esta cabeza.
-        Dim wt = state.NpcData.WeightThin
-        Dim wm = state.NpcData.WeightMuscular
-        Dim wf = state.NpcData.WeightFat
+        Dim wt = state.NpcData.Record.PesoDelCuerpo(0)
+        Dim wm = state.NpcData.Record.PesoDelCuerpo(1)
+        Dim wf = state.NpcData.Record.PesoDelCuerpo(2)
         If Not wt.HasValue OrElse Not wm.HasValue OrElse Not wf.HasValue Then Return Nothing
 
         ' Mismo gate que el render (NpcMorphPoseResolver.ResolveBodyWeightData): sin MWGT efectivo
@@ -171,14 +172,15 @@ Public Module FaceGenBuildPipeline
         If (wt.Value + wm.Value + wf.Value) < 0.001F Then Return Nothing
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
-        Dim genderBlock As RACE_BoneDataGender = Nothing
-        For Each bd In state.Race.BoneData
-            If bd.Gender = targetGender Then genderBlock = bd : Exit For
+        Dim genderBlock As Canon.RaceFO4_BoneScaleData = Nothing
+        ' Bone Data es exclusivo de Fallout 4 — Skyrim no lo declara en RACE.
+        For Each bd In TryCast(state.Race, Canon.RaceFO4).BoneScaleData
+            If bd.BoneWeightScaleDataWeightScaleTargetGender = targetGender Then genderBlock = bd : Exit For
         Next
         If genderBlock Is Nothing Then Return Nothing
 
         Return PoseMath.BuildBodyWeightPose(wt.Value, wm.Value, wf.Value,
-                                            genderBlock, state.NpcData.BodyMorphRegionValues,
+                                            genderBlock, state.NpcData.Record.ValoresDeRegionCorporal(),
                                             Nothing, skeleton, True)
     End Function
 
@@ -190,17 +192,17 @@ Public Module FaceGenBuildPipeline
         Public Property IsFemale As Boolean
         ''' <summary>NPC_Data with overlay applied (LooksMenu preset folded in).</summary>
         Public Property NpcData As NPC_Data
-        Public Property Race As RACE_Data
-        Public Property RaceMorphValueDefs As List(Of RACE_MorphValueDef)
+        Public Property Race As Canon.IRace
+        Public Property RaceMorphValueDefs As IReadOnlyList(Of Canon.RaceFO4_MorphValues)
         Public Property RaceMorphPresetDefs As List(Of RACE_MorphPresetDef)
         Public Property FmrsPose As Poses_class
         Public Property PluginManager As PluginManager
         ''' <summary>Cached chargen TRI parses, keyed by normalized mesh path. The same .tri
         ''' is referenced by multiple HDPTs in some cases (rare for face).</summary>
         Public Property TriHeadCache As New Dictionary(Of String, TriHeadFile)(StringComparer.OrdinalIgnoreCase)
-        ''' <summary>⚡ Bytes del esqueleto de CARA, resueltos una vez por NPC (ver <c>LoadFaceSkeleton</c>).</summary>
+        ''' <summary>Bytes del esqueleto de CARA, resueltos una vez por NPC (ver <c>LoadFaceSkeleton</c>).</summary>
         Public Property FaceSkeletonBytes As Byte() = Nothing
-        ''' <summary>⚡ Key normalizada del esqueleto de CUERPO, resuelta una vez por NPC (ver <c>LoadBodySkeleton</c>).
+        ''' <summary>Key normalizada del esqueleto de CUERPO, resuelta una vez por NPC (ver <c>LoadBodySkeleton</c>).
         ''' "" = todavía sin resolver; "-" = la raza no declara ninguno (negativo cacheado).</summary>
         Public Property BodySkeletonKey As String = ""
     End Class
@@ -215,9 +217,11 @@ Public Module FaceGenBuildPipeline
         Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets)
         If npcData Is Nothing Then Return Nothing
 
-        Dim raceRec = pluginManager.GetRecord(npcData.RaceFormID)
+        Dim raceRec = pluginManager.GetRecord(npcData.Record.Race)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
+        Dim race = Canon.CanonRecords.Race(raceRec, pluginManager)
+        ' MorphValues/MorphPresets son exclusivos de Fallout 4 — Skyrim no los declara en RACE.
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
 
         Dim fmrsPose As Poses_class = Nothing
         If facialBoneRegions IsNot Nothing Then
@@ -230,12 +234,12 @@ Public Module FaceGenBuildPipeline
 
         Return New BakeState With {
             .NpcFormID = npcFormID,
-            .RaceFormID = npcData.RaceFormID,
-            .IsFemale = npcData.IsFemale,
+            .RaceFormID = npcData.Record.Race,
+            .IsFemale = npcData.Record.ConfigurationFlagsFemale,
             .NpcData = npcData,
             .Race = race,
-            .RaceMorphValueDefs = race.MorphValues,
-            .RaceMorphPresetDefs = If(npcData.IsFemale, race.FemaleMorphPresets, race.MaleMorphPresets),
+            .RaceMorphValueDefs = raceFo4.MorphValues,
+            .RaceMorphPresetDefs = raceFo4.ReadMorphPresetsFlat(npcData.Record.ConfigurationFlagsFemale),
             .FmrsPose = fmrsPose,
             .PluginManager = pluginManager
         }
@@ -424,7 +428,7 @@ Public Module FaceGenBuildPipeline
 
             Dim vBaked As Vector3d
             Try
-                ' ⛔ ReanchorAffine ANTES de invertir, y FUERA del If/Else (las tres ramas lo necesitan).
+                ' ReanchorAffine ANTES de invertir, y FUERA del If/Else (las tres ramas lo necesitan).
                 ' `Mtot += mat * peso` escala los 16 elementos, asi que M44 queda en Σpesos. El forward
                 ' no lo nota (TransformPosition ignora w) pero Invert SI hace algebra homogenea y mete
                 ' un 1/Σw que cancela justo el ε de la ley del motor. El CK mezcla un 3x4 y su fila 3
@@ -643,7 +647,7 @@ Public Module FaceGenBuildPipeline
     Private Function BlendMtot(precomputed As Matrix4d(), skin As ShapeSkinningData,
                                 i As Integer, wpv As Integer, nBones As Integer,
                                 ckW As Single(), Optional flatPal As Single() = Nothing) As Matrix4d
-        ' ⛔⛔ EL CUERPO SE FUE A SkinningHelper.BlendBoneMatrices. Acá había una TERCERA copia escrita
+        ' EL CUERPO SE FUE A SkinningHelper.BlendBoneMatrices. Acá había una TERCERA copia escrita
         ' a mano de la misma ley (la 4ta estaba en SkinBakeMath), y el precio no era sólo la
         ' duplicación: el gate `skin-blend` de FaceGenBuilder afirma que "el bake usa esa misma ley,
         ' asi que una divergencia ahi saldria a los vertices horneados" — y era FALSO, porque el bake
@@ -700,7 +704,7 @@ Public Module FaceGenBuildPipeline
         Return ""
     End Function
 
-    ''' <summary>⛔ SYNC: RENDER == BAKE — lado BAKE. Aplica los morphs de vértice del `.tri` (chargen, y en
+    ''' <summary>SYNC: RENDER == BAKE — lado BAKE. Aplica los morphs de vértice del `.tri` (chargen, y en
     ''' SSE también el de raza) al array de vértices del shape IN PLACE, usando el MISMO plan que arma el
     ''' render: <c>NpcMorphResolver.BuildFaceMorphPlan</c>. Ése es el único builder y no debe duplicarse acá;
     ''' un segundo camino de morph rompe WYSIWYG en silencio. Ver 00-reglas-dos-juegos-y-render-bake.md §1.
@@ -810,7 +814,7 @@ Public Module FaceGenBuildPipeline
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
         Try
             Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
-            ' ⛔ SYNC: RENDER == BAKE — gemelo en NpcMorphResolver (parse del tri del render). El fix se
+            ' SYNC: RENDER == BAKE — gemelo en NpcMorphResolver (parse del tri del render). El fix se
             ' aplica sobre el parse FRESCO y antes de cachear, para que los dos caminos vean los mismos deltas.
             ChargenMouthFix.MaybeApplyInPlace(normalizedKey, head)
             Return head
@@ -844,7 +848,7 @@ Public Module FaceGenBuildPipeline
         ' render picks up in LoadTriForShape. CRUCIAL for HAIR/hairline/beard parts: they have NO race/chargen tri
         ' at all, only their own mesh tri (hairNN.tri = a single SkinnyMorph), so the base ends up BEING that fresh
         ' mesh TriHead and the weight morph still applies. The comboKey includes meshKey so distinct meshes don't alias.
-        ' ⚠️ Los tres lados se parsean FRESCOS. El motivo escrito era que `MergeChargenIntoRaceTriHead`
+        ' Los tres lados se parsean FRESCOS. El motivo escrito era que `MergeChargenIntoRaceTriHead`
         ' mutaba su primer argumento — ya NO lo hace (pasó a copy-on-write con `ClonarParaMerge`), asi
         ' que este re-parseo por cada miss de `comboKey` es coste sin causa. Se CONSERVA igual: cambiarlo
         ' a un parse cacheado es una optimizacion que toca el camino del bake y hay que MEDIRLA, no
@@ -901,7 +905,7 @@ Public Module FaceGenBuildPipeline
         Return names
     End Function
 
-    ''' <summary>⚡ Los bytes del esqueleto se resuelven UNA vez por <see cref="BakeState"/> (= por NPC) y se
+    ''' <summary>Los bytes del esqueleto se resuelven UNA vez por <see cref="BakeState"/> (= por NPC) y se
     ''' reusan para todas sus shapes. Antes cada shape volvía a pedirlos: con el bake de disco eso era
     ''' 2 lecturas × N shapes por NPC, y con el PREVIEW pasó a ser 2×N por cada tick de slider FMRS
     ''' (el provider re-hornea dentro de PipelineStep_Morphs). Sigue habiendo un <c>SkeletonInstance</c>
@@ -921,12 +925,12 @@ Public Module FaceGenBuildPipeline
 
     Private Function LoadBodySkeleton(state As BakeState) As SkeletonInstance
         ' Body skel path comes from RACE.ANAM (FemaleSkeletonPath / MaleSkeletonPath).
-        ' ⚡ Misma razón que en LoadFaceSkeleton: la key se resuelve una vez por NPC.
+        ' Misma razón que en LoadFaceSkeleton: la key se resuelve una vez por NPC.
         Dim key = state.BodySkeletonKey
         If key = "-" Then Return Nothing
         If key = "" Then
-            Dim path = If(state.IsFemale, state.Race.FemaleSkeletonPath, state.Race.MaleSkeletonPath)
-            If String.IsNullOrEmpty(path) Then path = If(state.IsFemale, state.Race.MaleSkeletonPath, state.Race.FemaleSkeletonPath)
+            Dim path = If(state.IsFemale, state.Race.FemaleSkeletalModel, state.Race.MaleSkeletalModel)
+            If String.IsNullOrEmpty(path) Then path = If(state.IsFemale, state.Race.MaleSkeletalModel, state.Race.FemaleSkeletalModel)
             If String.IsNullOrEmpty(path) Then
                 state.BodySkeletonKey = "-"
                 Return Nothing

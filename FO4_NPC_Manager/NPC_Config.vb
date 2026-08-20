@@ -52,7 +52,7 @@ Public Class NPC_Config
     ''' <para>Default flipped to True: BodyGen is the ONLY delivery route for body morphs — without it the
     ''' sliders exist in our sidecar and nowhere the game can see. Persisted per-app; the dialog seeds the
     ''' checkbox from this and writes it back on toggle (flushed to npc_config.json on app close).</para></summary>
-    ''' <para>⭐ INDEPENDIENTE de <see cref="EmitApplyScript"/>: desde que el apply-script también entrega body
+    ''' <para>INDEPENDIENTE de <see cref="EmitApplyScript"/>: desde que el apply-script también entrega body
     ''' morphs, las cuatro combinaciones son válidas y el script gana por construcción. Con los dos tildados el
     ''' .ini queda como red para los NPC del plugin que no se re-grabaron (conservan su VMAD viejo, así que el
     ''' script les llega inerte).</para></summary>
@@ -93,7 +93,7 @@ Public Class NPC_Config
     ''' de entorno FGBAKE_GL_DECODE_HW (0/1) tiene prioridad sobre esta opcion.</para></summary>
     Public Property UseHardwareBcDecode As Boolean = True
 
-    ''' <summary>⚠️ PROVISORIO (herramienta de diagnóstico, a ELIMINAR) — "SSE: render por el camino PLEGADO".
+    ''' <summary>PROVISORIO (herramienta de diagnóstico, a ELIMINAR) — "SSE: render por el camino PLEGADO".
     ''' False (default) = el render SSE normal: slot 0 = complexion, slot 3 = detail, slot 6 = facetint compuesto, y el
     ''' shader hace <c>softlight(slot0, slot6) × amplify(slot3)</c> (= el engine).
     ''' True = el render replica lo que el BAKE plegado escribe: pliega
@@ -101,7 +101,7 @@ Public Class NPC_Config
     ''' (gris 63/64/63 = amplify 1) y slot 6 (gris 0.5 = softlight identidad), de modo que el shader haga la
     ''' identidad y muestre el diffuse plegado.
     ''' Si el pliegue es correcto, AMBOS caminos deben dar el MISMO tono de piel. Sirve para verlo in-app sin bakear.
-    ''' ⛔ NO se persiste (&lt;JsonIgnore&gt;, arranca siempre en False): un toggle de diagnóstico que sobrevive al
+    ''' NO se persiste (&lt;JsonIgnore&gt;, arranca siempre en False): un toggle de diagnóstico que sobrevive al
     ''' reinicio deja la app en un modo raro sin que nadie sepa por qué.</summary>
     <Serialization.JsonIgnore>
     Public Property SseRenderFoldedPath As Boolean = False
@@ -110,10 +110,10 @@ Public Class NPC_Config
     ''' <summary>SANDBOX de paridad del pliegue SSE: cuando el stack de capas (skee MASKT + overlays de cara) se compone
     ''' por GPU, correr TAMBIÉN el CPU y loguear el RMS entre los dos (<c>[SSE-FOLD] ... rmsCPUvsGPU=</c>). Es la MEDIDA
     ''' de la paridad — sin esto la paridad sería una afirmación, no un dato.
-    ''' ⚠️ OPT-IN (False por defecto, también en Debug): DUPLICA el compose y el camino CPU pasa la cara entera por
+    ''' OPT-IN (False por defecto, también en Debug): DUPLICA el compose y el camino CPU pasa la cara entera por
     ''' Double ⇒ medido +3,6 s por render a 1024². Se enciende a mano para re-medir (p.ej. al tocar el compositor
     ''' o agregar un blend-op nuevo).
-    ''' ⛔ &lt;JsonIgnore&gt;: un flag de diagnóstico caro no puede sobrevivir al reinicio — persistido, dejaba el
+    ''' &lt;JsonIgnore&gt;: un flag de diagnóstico caro no puede sobrevivir al reinicio — persistido, dejaba el
     ''' compose DUPLICADO en cada render para siempre.
     ''' Paridad vigente (1024²): overlay de cara rmsCPUvsGPU = 0,080/255; skee MASKT = 0,001/255. Las dos por
     ''' debajo del redondeo al byte.</summary>
@@ -235,7 +235,7 @@ Public Class NPC_Config
     End Function
 
     ''' <summary>ÚNICO punto que enciende <see cref="FO4_Base_Library.EngineSkinWeightNormalization.Enabled"/>. Aplica el
-    ''' gate por juego: la ley sólo puede activarse para Fallout 4 (ver el ⛔ de
+    ''' gate por juego: la ley sólo puede activarse para Fallout 4 (ver el de
     ''' <see cref="ReplicateEngineSkinWeightNormalization"/>). Llamar tras cargar config, al cambiar de juego y al cambiar
     ''' el checkbox.</summary>
     Public Shared Sub ApplyEngineSkinWeightNormalizationGate(game As FO4_Base_Library.Config_App.Game_Enum)

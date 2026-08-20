@@ -13,6 +13,44 @@ Imports FO4_Base_Library
 ''' parsed. See memory/project_npc_looksmenu_pending.md for the deferral rationale on render wiring.</summary>
 Public Module LooksmenuLoader
 
+    ''' <summary>Una capa de tinte de cara tal como la trae un PRESET de autoria: el .json de LooksMenu,
+    ''' el .jslot de RaceMenu, o lo que el editor de cara tiene en mano mientras se edita.
+    ''' <para>No es un record ni un espejo de uno. Mientras el preset esta abierto todavia no hay donde
+    ''' escribir la capa; recien al aplicarlo el overlay la vuelca al TETI/TEND del record -esa es la
+    ''' operacion- y de ahi en mas el dueno del dato es el record.</para></summary>
+    Public Class CapaDeTintePreset
+        ''' <summary>1 = paleta, 2 = conjunto de texturas.</summary>
+        Public Discriminator As UShort
+        ''' <summary>Indice de la opcion de tinte de la RACE que esta capa realiza.</summary>
+        Public Index As UShort
+        ''' <summary>Intensidad de la capa, 0..100.</summary>
+        Public Value As Integer
+        ''' <summary>Color final aplicado. Solo las capas de paleta lo llevan.</summary>
+        Public Color As System.Drawing.Color = System.Drawing.Color.Empty
+        ''' <summary>Posicion en la paleta de colores de la opcion, o -1 cuando el color es propio y no
+        ''' sale de la paleta.</summary>
+        Public TemplateColorIndex As Integer = -1
+    End Class
+
+    ''' <summary>Una capa de tinte de cara de Skyrim traida por un preset de autoria (.jslot de RaceMenu
+    ''' o la edicion viva del editor de cara). Misma condicion que <see cref="CapaDeTintePreset"/>: no es
+    ''' un record, y el overlay la vuelca al del NPC al aplicar el preset.
+    ''' <para>Los cinco datos van por separado y pueden faltar porque en el archivo son cuatro campos
+    ''' independientes: una capa puede declarar indice y no color, o color y no cobertura. Colapsarlos a
+    ''' valores con default haria que un preset le AGREGUE al record campos que su fuente no traia.</para></summary>
+    Public Class CapaDeTinteSsePreset
+        ''' <summary>Indice de la capa de tinte de la RACE.</summary>
+        Public Indice As UShort?
+        Public Rojo As Byte?
+        Public Verde As Byte?
+        Public Azul As Byte?
+        Public Alfa As Byte?
+        ''' <summary>Cobertura tal como la guarda el archivo: 0..100.</summary>
+        Public Cobertura As UInteger?
+        ''' <summary>Preseleccion de la paleta de la RACE. -1 = color propio, elegido a mano.</summary>
+        Public Preseleccion As Short?
+    End Class
+
     ''' <summary>Output of <see cref="ParseFile"/>. All vanilla-mappable fields are pre-resolved to
     ''' global FormIDs (via <see cref="PluginManager.ResolveReferencedFormID"/>) so the caller can
     ''' just assign them onto an NPC_Data without any string-parsing logic.</summary>
@@ -54,7 +92,7 @@ Public Module LooksmenuLoader
         ''' </list>
         ''' The render consumes it as state.ExplicitHeadTextureFormID (NpcMaterialResolver.ResolveTextureSet).
         ''' SSE-only; Nothing on FO4, where the face override travels through the LooksMenu skin template instead.
-        ''' <para>⚠️ El estado "clear explícito" NO sobrevive un round-trip por `.jslot`: el formato de RaceMenu no
+        ''' <para>El estado "clear explícito" NO sobrevive un round-trip por `.jslot`: el formato de RaceMenu no
         ''' distingue "sin clave" de "clave nula" (RaceMenuJslot colapsa null/"" en ""), y su motor NUNCA limpia el
         ''' FTST — skee64 PresetInterface.cpp:147 sólo asigna dentro de `if (presetData-&gt;headTexture)`. Guardar
         ''' como preset RaceMenu y recargarlo degrada `0` → `Nothing` (= preservar). Es inherente al formato ajeno y
@@ -88,11 +126,10 @@ Public Module LooksmenuLoader
         ''' missing-from-JSON is semantically equivalent to "1.0 explicit", not "preserve previous".
         ''' We replicate that: default 1.0F at parse time, override only when the JSON has the field.</summary>
         Public FacialMorphIntensity As Single = 1.0F
-        ''' <summary>Tint layers reordered by TintOrder[] if the JSON provided one. Each entry
-        ''' is a parsed NPC_FaceTintLayerData with Discriminator/Index/Value/Color/TemplateColorIndex
-        ''' filled. RawTetiBytes/RawTendBytes are NOT populated (the JSON doesn't carry them) —
-        ''' callers that need byte-perfect round-trip must re-emit them from the parsed fields.</summary>
-        Public FaceTintLayers As New List(Of NPC_FaceTintLayerData)
+        ''' <summary>Tint layers reordered by TintOrder[] if the JSON provided one. Each entry is a
+        ''' <see cref="CapaDeTintePreset"/> with Discriminator/Index/Value/Color/TemplateColorIndex filled
+        ''' desde el JSON.</summary>
+        Public FaceTintLayers As New List(Of CapaDeTintePreset)
 
         ''' <summary>Presence flags for the four overlay-replaceable list fields. True = "this
         ''' preset declares that field is being overridden, the list (even empty) is authoritative".
@@ -129,15 +166,15 @@ Public Module LooksmenuLoader
         Public HasSseMorphs As Boolean = False
         ''' <summary>El slot 18 del NAM9 (VampireMorph), que NO entra en <see cref="SseNam9"/>: el NAM9 son 19
         ''' floats (76 bytes) y el modelo editable dimensiona 18 sliders. Nothing = no se conoce.
-        ''' <para>⛔ Existe porque <c>ToJslot</c> lo escribía con una CONSTANTE (FLT_MAX = "no es vampiro"), así
+        ''' <para>Existe porque <c>ToJslot</c> lo escribía con una CONSTANTE (FLT_MAX = "no es vampiro"), así
         ''' que un load→save le pisaba el valor real. Medido: 1 de los 48 presets del usuario trae 0 ahí, y el
         ''' render propio SÍ lee ese slot (NpcMorphResolver.vb:427-431). Sin conocerlo se sigue emitiendo el
         ''' centinela, que es el default correcto.</para></summary>
         Public SseVampireMorph As Single? = Nothing
-        ' SSE (Skyrim) face tints: the edited flat TINI/TINC/TINV/TIAS subrecord list. When HasSseTints, the
-        ' overlay swaps it into shadow.SseTintRaw so the composer (render + bake) uses the edit, and Save ESP
-        ' emits it. FO4 leaves these unset (no-op; FO4 tints live in FaceTintLayers).
-        Public SseTintRawOverride As List(Of NPC_RawSubrecord) = Nothing
+        ' SSE (Skyrim) face tints: las capas editadas. Con HasSseTints el overlay las vuelca al record de
+        ' la sombra, asi el compositor (render + horneado) usa la edicion y el Save ESP la emite. En Fallout 4
+        ' queda sin usar (sus tints viven en FaceTintLayers).
+        Public SseTintLayers As List(Of CapaDeTinteSsePreset) = Nothing
         Public HasSseTints As Boolean = False
         ' RaceMenu-only per-layer CUSTOM tint mask texture (index → texture path). PresetInterface.cpp:203 does
         ' tintMask->texture->str = tint.name — i.e. a .jslot tint can OVERRIDE the RACE layer's mask texture by
@@ -470,7 +507,7 @@ Public Module LooksmenuLoader
                     If Not tintsEl.TryGetProperty(keyName, entryEl) Then Continue For
                     If entryEl.ValueKind <> JsonValueKind.Object Then Continue For
 
-                    Dim layer As New NPC_FaceTintLayerData()
+                    Dim layer As New CapaDeTintePreset()
                     Dim idxParsed As UInteger
                     If UInteger.TryParse(keyName, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, idxParsed) Then
                         layer.Index = CUShort(idxParsed And &HFFFFUI)
@@ -485,7 +522,7 @@ Public Module LooksmenuLoader
                     If entryEl.TryGetProperty("Percent", pctEl) AndAlso pctEl.ValueKind = JsonValueKind.Number Then
                         ' "Percent" is 0..100 per LooksMenu schema (the field name says it explicitly,
                         ' and CharGenInterface.cpp:180-181 only emits entries with Value>0 — it never
-                        ' generates >100). NPC_FaceTintLayerData.Value is Integer (RecordParsers.vb:27).
+                        ' generates >100). La intensidad de la capa del preset es un Integer.
                         ' The previous clamp to 255 + cast to Byte was wrong on both axes: it allowed
                         ' an out-of-spec range (101..255) to slip through, and the Byte round-trip
                         ' silently corrupted any future expansion of the field. Clamp to the documented
@@ -621,7 +658,7 @@ Public Module LooksmenuLoader
                     preset.SkinFormIDOverride = 0UI
                 Else
                     Dim resolved = ResolveFormIdentifier(sfStr, pluginManager)
-                    ' ⛔ "NO PUDE RESOLVERLO" ≠ "EL USUARIO LO BORRÓ". Este campo tiene TRES estados y dos de
+                    ' "NO PUDE RESOLVERLO" ≠ "EL USUARIO LO BORRÓ". Este campo tiene TRES estados y dos de
                     ' ellos colapsaban: Nothing = preservar, Some(0) = CLEAR explícito (el "" de arriba), y
                     ' un valor = override. Asignar el 0 que devuelve ResolveFormIdentifier cuando el plugin
                     ' no está cargado lo metía en el estado CLEAR, y ese valor NO se queda en el render:
@@ -852,19 +889,8 @@ Public Module LooksmenuLoader
         c.SseVampireMorph = p.SseVampireMorph
         c.HasSseMorphs = p.HasSseMorphs
 
-        ' SSE face tints (flat TINI/TINC/TINV/TIAS list) — deep-copy each subrecord (cloning its byte array).
-        If p.SseTintRawOverride IsNot Nothing Then
-            Dim tints As New List(Of NPC_RawSubrecord)(p.SseTintRawOverride.Count)
-            For Each sr In p.SseTintRawOverride
-                If sr Is Nothing Then Continue For
-                tints.Add(New NPC_RawSubrecord With {
-                    .Sig = sr.Sig,
-                    .Data = If(sr.Data Is Nothing, Nothing, CType(sr.Data.Clone(), Byte())),
-                    .IsFormId = sr.IsFormId
-                })
-            Next
-            c.SseTintRawOverride = tints
-        End If
+        ' SSE face tints — copia independiente de cada capa.
+        c.SseTintLayers = PresetCategoryFilter.CloneSseTintLayers(p.SseTintLayers)
         c.HasSseTints = p.HasSseTints
         ' Per-layer custom tint mask texture override (index → path) — copy the map.
         If p.SseTintTexOverride IsNot Nothing Then
@@ -953,18 +979,72 @@ Public Module LooksmenuLoader
 
     ''' <summary>Deep-clone a single tint layer. Used by ClonePreset and by call sites that
     ''' need to copy individual layers without cloning the full preset.</summary>
-    Public Function CloneFaceTintLayer(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
+    Public Function CloneFaceTintLayer(tl As CapaDeTintePreset) As CapaDeTintePreset
         If tl Is Nothing Then Return Nothing
-        Return New NPC_FaceTintLayerData With {
+        Return New CapaDeTintePreset With {
             .Discriminator = tl.Discriminator,
             .Index = tl.Index,
             .Value = tl.Value,
             .Color = tl.Color,
-            .TemplateColorIndex = tl.TemplateColorIndex,
-            .RawTetiBytes = If(tl.RawTetiBytes Is Nothing, Nothing, CType(tl.RawTetiBytes.Clone(), Byte())),
-            .RawTendBytes = If(tl.RawTendBytes Is Nothing, Nothing, CType(tl.RawTendBytes.Clone(), Byte()))
+            .TemplateColorIndex = tl.TemplateColorIndex
         }
     End Function
+
+    ''' <summary>Las capas de tinte que el NPC AUTORA en su record, pasadas a capas de preset. Es la
+    ''' operacion de "arranca el preset con lo que el NPC ya tiene", no un espejo permanente: la copia
+    ''' se desprende del record en el momento en que se hace.</summary>
+    Public Function CapasDeTinteDelRecord(npc As Canon.INpc) As List(Of CapaDeTintePreset)
+        Dim salida As New List(Of CapaDeTintePreset)
+        For Each m In FaceTintInputBuilder.CapasAutoradasDelRecord(npc)
+            salida.Add(New CapaDeTintePreset With {
+                .Discriminator = m.Discriminator, .Index = m.Index, .Value = m.Value,
+                .Color = m.Color, .TemplateColorIndex = m.TemplateColorIndex})
+        Next
+        Return salida
+    End Function
+
+    ''' <summary>Las capas de tinte de Skyrim que el NPC trae en su record, pasadas a capas de preset.
+    ''' Cada campo viaja con su presencia: lo que el record no declara, el preset tampoco.</summary>
+    Public Function CapasDeTinteSseDelRecord(npc As Canon.INpc) As List(Of CapaDeTinteSsePreset)
+        Dim salida As New List(Of CapaDeTinteSsePreset)
+        Dim ns = TryCast(npc, Canon.NpcSSE)
+        If ns Is Nothing Then Return salida
+        For Each tl In ns.TintLayers
+            Dim c As New CapaDeTinteSsePreset
+            If tl.LayerTintIndexPresente Then c.Indice = tl.LayerTintIndex
+            If tl.TintColorRedPresente Then c.Rojo = tl.TintColorRed
+            If tl.TintColorGreenPresente Then c.Verde = tl.TintColorGreen
+            If tl.TintColorBluePresente Then c.Azul = tl.TintColorBlue
+            If tl.TintColorAlphaPresente Then c.Alfa = tl.TintColorAlpha
+            If tl.LayerInterpolationValuePresente Then c.Cobertura = tl.LayerInterpolationValue
+            If tl.LayerPresetPresente Then c.Preseleccion = tl.LayerPreset
+            salida.Add(c)
+        Next
+        Return salida
+    End Function
+
+    ''' <summary>Vuelca las capas de tinte del preset al record, reemplazando las que tenia. Lo que la
+    ''' capa no declara no se escribe: el record queda sin ese campo, igual que la fuente.</summary>
+    Public Sub EscribirCapasDeTinteSse(npc As Canon.INpc, capas As IEnumerable(Of CapaDeTinteSsePreset))
+        Dim ns = TryCast(npc, Canon.NpcSSE)
+        If ns Is Nothing Then Return
+        While ns.TintLayers.Count > 0
+            If Not ns.QuitarTintLayers(0) Then Exit While
+        End While
+        If capas Is Nothing Then Return
+        For Each c In capas
+            If c Is Nothing Then Continue For
+            Dim tl = ns.AgregarTintLayers()
+            If tl Is Nothing Then Return
+            If c.Indice.HasValue Then tl.LayerTintIndex = c.Indice.Value
+            If c.Rojo.HasValue Then tl.TintColorRed = c.Rojo.Value
+            If c.Verde.HasValue Then tl.TintColorGreen = c.Verde.Value
+            If c.Azul.HasValue Then tl.TintColorBlue = c.Azul.Value
+            If c.Alfa.HasValue Then tl.TintColorAlpha = c.Alfa.Value
+            If c.Cobertura.HasValue Then tl.LayerInterpolationValue = c.Cobertura.Value
+            If c.Preseleccion.HasValue Then tl.LayerPreset = c.Preseleccion.Value
+        Next
+    End Sub
 
     ''' <summary>Serializa el preset al JSON de LooksMenu. Overload de conveniencia que descarta la lista de
     ''' campos omitidos; usar el de tres argumentos cuando haya que avisarle al usuario.</summary>
@@ -997,7 +1077,7 @@ Public Module LooksmenuLoader
     ''' </summary>
     ''' <param name="omittedFields">Campos <c>_npcm_*</c> que NO se pudieron nombrar y por lo tanto quedaron
     ''' FUERA del preset (uno por línea, ya redactado para mostrarle al usuario). Vacío = salió completo.
-    ''' ⛔ Existe porque omitir la key es la respuesta correcta pero MUDA: el usuario guardaría un preset
+    ''' Existe porque omitir la key es la respuesta correcta pero MUDA: el usuario guardaría un preset
     ''' creyendo que lleva su outfit/piel y no lo lleva. El caso típico es un draft sin guardar todavía.</param>
     Public Function SerializePreset(preset As LooksmenuPreset, pluginManager As PluginManager,
                                     ByRef omittedFields As List(Of String)) As String
@@ -1055,10 +1135,10 @@ Public Module LooksmenuLoader
                     Dim hc = FormatFormIdentifier(preset.HairColorFormID, pluginManager)
                     If Not String.IsNullOrEmpty(hc) Then w.WriteString("HairColor", hc)
                 ElseIf Not String.IsNullOrWhiteSpace(preset.UnresolvedHairColor) Then
-                    ' ⛔ PRESERVACIÓN, no invención: se re-emite el identificador CRUDO, tal cual vino, para
+                    ' PRESERVACIÓN, no invención: se re-emite el identificador CRUDO, tal cual vino, para
                     ' que un preset cuyo mod de color no está instalado no PIERDA el color al guardarse.
                     ' Mismo criterio que SseUnresolvedHeadParts (:698-699).
-                    ' ⚠️ HOY ESTA RAMA NO SE ALCANZA: el único caller de SerializePreset es "Save Looksmenu"
+                    ' HOY ESTA RAMA NO SE ALCANZA: el único caller de SerializePreset es "Save Looksmenu"
                     ' (MainForm), que arma el preset con BuildPresetFromState — o sea desde el ESTADO del NPC,
                     ' nunca desde un preset leído de disco, así que UnresolvedHairColor viene vacío. Es una
                     ' red para el día que alguien serialice un preset cargado o clonado (ClonePreset SÍ
@@ -1262,7 +1342,7 @@ Public Module LooksmenuLoader
                 ' Independientes entre sí; la precedencia en aplicación la resuelve
                 ' NpcRecordOverlay (orden: NPC.WNAM primero, luego LM SkinTemplate pisa si está
                 ' set), mismo orden que el overlay aplica a render.
-                ' ⛔⛔ LOS TRES ESTADOS, DEL LADO DEL ESCRITOR. El campo vale `Nothing`=preservar (key AUSENTE),
+                ' LOS TRES ESTADOS, DEL LADO DEL ESCRITOR. El campo vale `Nothing`=preservar (key AUSENTE),
                 ' `Some(0)`=CLEAR explícito (string VACÍO) o un valor=override (el identificador).
                 ' `FormatFormIdentifier` devuelve "" en DOS casos que no son lo mismo: el valor 0, y "no pude
                 ' nombrar el plugin dueño". Emitir "" en el segundo caso le dice al lector CLEAR — y el lector
@@ -1368,7 +1448,7 @@ Public Module LooksmenuLoader
         '                : 0xFE000000 | (lightIndex << 12) | (formLower & 0xFFF)
         ' so ToFaceGenLocalFormID is exactly its inverse.
         '
-        ' ⛔ This used to write `globalFormID And 0xFFFFFF`, which for a LIGHT owner keeps the light slot
+        ' This used to write `globalFormID And 0xFFFFFF`, which for a LIGHT owner keeps the light slot
         ' in bits 12..23 — the slot of whichever session wrote the file. Verified against BOTH engines:
         '   * SSE/skee64 reads via modInfo->GetFormID (FileUtils.cpp:219), which MASKS to 0xFFF, so a
         '     stale slot is discarded — tolerant.

@@ -4,7 +4,7 @@ Partial Class SaveEsp_Form
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 
@@ -270,7 +270,7 @@ Partial Class SaveEsp_Form
         CheckBoxEmitApplyScript.Name = "CheckBoxEmitApplyScript"
         CheckBoxEmitApplyScript.Size = New Size(356, 19)
         CheckBoxEmitApplyScript.TabIndex = 3
-        ' ⛔ DECÍA "node scales" y desde el TRS completo eso es falso: se escribe escala + posición + rotación.
+        ' DECÍA "node scales" y desde el TRS completo eso es falso: se escribe escala + posición + rotación.
         CheckBoxEmitApplyScript.Text = "Attach the helper script (tattoos, body paint, bone edits, body sliders)"
         CheckBoxEmitApplyScript.UseVisualStyleBackColor = True
         ' 

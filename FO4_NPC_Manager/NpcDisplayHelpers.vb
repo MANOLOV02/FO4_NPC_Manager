@@ -24,7 +24,7 @@ Friend NotInheritable Class NpcDisplayHelpers
         Dim sb As New System.Text.StringBuilder()
         sb.Append(If(npc.ToString(), "")).Append("|"c)
         sb.Append(If(npc.EditorID, "")).Append("|"c)
-        sb.Append(If(npc.FullName, "")).Append("|"c)
+        sb.Append(If(npc.Record.Name, "")).Append("|"c)
         sb.Append(If(npc.PluginName, "")).Append("|"c)
         sb.Append(npc.FormID.ToString("X8"))
         Return sb.ToString().ToLowerInvariant()
@@ -35,9 +35,9 @@ Friend NotInheritable Class NpcDisplayHelpers
     ''' Compartido por Section 1 placed NPCs y Section 2 LVLN children.</summary>
     Public Shared Function BuildNpcDisplayLabel(npc As NPC_Data) As String
         Dim formIdText = npc.FormID.ToString("X8")
-        If npc.FullName <> "" Then
+        If npc.Record.Name <> "" Then
             Dim parenContent = If(npc.EditorID <> "", $"{npc.EditorID}, {formIdText}", formIdText)
-            Return $"{npc.FullName} ({parenContent})"
+            Return $"{npc.Record.Name} ({parenContent})"
         ElseIf npc.EditorID <> "" Then
             Return $"{npc.EditorID} ({formIdText})"
         End If

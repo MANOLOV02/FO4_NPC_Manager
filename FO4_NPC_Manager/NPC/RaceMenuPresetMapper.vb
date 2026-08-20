@@ -9,7 +9,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' The transforms below are copied faithfully from those editors (cited per block) — no scaling is invented:
 '''   FACE  (EditFace_Form.OnSaveJslot :602-621 / OnLoadJslot :566-584 / ApplySseTintOverlay :824-833 /
 '''          ParseSseTintLayers :704-714): sliders↔SseNam9 (+VampireMorph sentinel), sculpt↔SseSculptHead (×/÷ divisor),
-'''          custom↔SseCustomMorphs, tintInfo↔SseTintRawOverride.
+'''          custom↔SseCustomMorphs, tintInfo↔SseTintLayers.
 '''   BODY  (EditBody_Form.OnSaveJslot :1085-1090 / OnLoadJslot :1046-1053 / BuildJslotBodyMorphs :1125-1144 /
 '''          JslotBodyMorphsToKeyed :1102-1120): actor.weight↔SseWeight, bodyMorphs↔BodyMorphsKeyed (flat fallback),
 '''          overrides↔SseBodyOverlays.
@@ -30,7 +30,7 @@ Public Module RaceMenuPresetMapper
     ''' <see cref="PluginManager.PartialIndexOfFormID"/> y
     ''' <see cref="PluginManager.GlobalFormIDFromIdentifierLocal"/>.</para>
     '''
-    ''' <para>⚠️ Sólo para el formato viejo. Un <c>.jslot</c> moderno trae <c>formIdentifier</c> y ése gana
+    ''' <para>Sólo para el formato viejo. Un <c>.jslot</c> moderno trae <c>formIdentifier</c> y ése gana
     ''' siempre, porque es portable por construcción y no depende de ninguna tabla.</para></summary>
     Friend Function ResolveLegacyHeadPartFormId(rawFormId As UInteger,
                                                 modIndexToName As Dictionary(Of UInteger, String),
@@ -73,13 +73,13 @@ Public Module RaceMenuPresetMapper
         ' Re-emit the head parts that ApplyJslotToPreset couldn't resolve (owning mod absent from THIS load
         ' order) exactly as they came in, so a preset whose mod is missing does not LOSE that hair/eyes entry.
         ' Skee behaves the same: it skips the head part it can't apply but leaves the stored entry intact.
-        ' ⚠️ HOY ESTA RAMA NO SE ALCANZA — misma situación que la de UnresolvedHairColor
+        ' HOY ESTA RAMA NO SE ALCANZA — misma situación que la de UnresolvedHairColor
         ' (LooksmenuLoader.vb:997). El único caller de ToJslot es MainForm ("Save RaceMenu Preset"), que arma
         ' el preset con BuildPresetFromState — desde el ESTADO del NPC, nunca desde un .jslot leído de disco —
         ' y ese constructor NO copia SseUnresolvedHeadParts. O sea que la app NO hace load→save de un archivo
         ' de preset, en ningún juego. Se deja como red LATENTE: el día que exista ese camino, sin ella el dato
         ' se pierde en silencio.
-        ' ⛔⛔ MATIZ QUE FALTABA, Y QUE HACE ALCANZABLES DEFECTOS REALES: es cierto que la app no hace
+        ' MATIZ QUE FALTABA, Y QUE HACE ALCANZABLES DEFECTOS REALES: es cierto que la app no hace
         ' load→save del ARCHIVO, pero los DATOS sí hacen el viaje completo. ApplyJslotToPreset deja en
         ' `_appliedPresets` los SseBodyOverlays (con su RawValues), SseNodeTransforms (con su Raw),
         ' SseSkinOverrides, SseSculptParts, SseCustomMorphs y demás, y BuildPresetFromState los copia tal
@@ -97,13 +97,13 @@ Public Module RaceMenuPresetMapper
         ' `Nothing` (sin override) es la ausencia de la key, y el CLEAR EXPLÍCITO (Some(0)) es INEXPRESABLE —
         ' skee64 sólo aplica headTexture dentro de `if (presetData->headTexture)` (PresetInterface.cpp:147), así
         ' que nada que escribamos acá haría que RaceMenu limpie el FTST. El clear degrada a "preservar" en el
-        ' round-trip por .jslot; está documentado en el campo. ⛔ NO inventar `"headTexture": ""` para significar
+        ' round-trip por .jslot; está documentado en el campo. NO inventar `"headTexture": ""` para significar
         ' clear: sería inerte in-game y además key churn contra el archivo del usuario (ver j.Save).
         If preset.SseHeadTextureFormIDOverride.HasValue AndAlso preset.SseHeadTextureFormIDOverride.Value <> 0UI _
            AndAlso pluginManager IsNot Nothing Then
             j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormIDOverride.Value, pluginManager)
         End If
-        ' Hair colour (actor.hairColor). ⛔ j.Save emits the key SÓLO con HadHairColor (antes lo emitía SIEMPRE, y
+        ' Hair colour (actor.hairColor). j.Save emits the key SÓLO con HadHairColor (antes lo emitía SIEMPRE, y
         ' dejarlo sin setear escribía hairColor:0
         ' — which RaceMenu applies as literal BLACK hair, PresetInterface.cpp:112-116 runs unconditionally over
         ' every HairTint material; y al RECARGAR el preset nuestro propio decode veía la key y forzaba el negro).
@@ -137,7 +137,7 @@ Public Module RaceMenuPresetMapper
             If nam9 IsNot Nothing AndAlso i < nam9.Length Then v = nam9(i)
             j.SliderMorphs.Add(v)
         Next
-        ' Slot 18 = VampireMorph. ⛔ Se emitía SIEMPRE la constante centinela, así que un load→save pisaba el
+        ' Slot 18 = VampireMorph. Se emitía SIEMPRE la constante centinela, así que un load→save pisaba el
         ' valor real del NPC (1 de los 48 presets medidos trae 0 acá, y el render propio lee ese slot —
         ' NpcMorphResolver.vb:427-431). Ahora sale el que traiga el preset; el centinela queda como default
         ' para cuando no se conoce, que es lo que significa "no es vampiro" (EditFace_Form.vb:603).
@@ -179,27 +179,34 @@ Public Module RaceMenuPresetMapper
             Next
         End If
 
-        ' ---- FACE: tints. Source of truth is preset.SseTintRawOverride (authored TINI/TINC/TINV/TIAS), parsed the
-        ' same way ParseSseTintLayers reads raw.SseTintRaw. Packed to ARGB exactly like RaceMenu serializes
-        ' (PresetInterface.cpp:388): alpha = coverage(TINV)*255, then (A<<24)|(R<<16)|(G<<8)|B. The per-layer custom
-        ' mask texture (preset.SseTintTexOverride, RaceMenu-only) rides in tint.texture (empty = RACE default mask).
-        For Each t In ParseSseTintRawToLayers(preset.SseTintRawOverride)
-            Dim aCov As UInteger = CUInt(Math.Max(0, Math.Min(255, Math.Round(t.V * 255.0))))
-            Dim col As UInteger = (aCov << 24) Or (CUInt(t.R) << 16) Or (CUInt(t.G) << 8) Or CUInt(t.B)
-            Dim texPath As String = ""
-            If preset.SseTintTexOverride IsNot Nothing Then preset.SseTintTexOverride.TryGetValue(t.Index, texPath)
-            ' t.Index is the record TINI value → the .jslot needs the POSITIONAL index (inverse of the load-side
-            ' translation), so a save→load round-trips to the same layer on every race.
-            Dim jslotIndex As Integer = TiniToJslotIndex(pluginManager, raceFid, isFemale, t.Index)
-            j.TintInfo.Add(New RaceMenuJslot.JslotTint With {.Color = col, .Index = jslotIndex, .Texture = If(texPath, "")})
-        Next
+        ' ---- FACE: tints. La fuente es preset.SseTintLayers (las capas autoradas). Empaquetadas a ARGB
+        ' igual que las serializa RaceMenu (PresetInterface.cpp:388): alpha = cobertura(TINV)*255, y despues
+        ' (A<<24)|(R<<16)|(G<<8)|B. La mascara custom por capa (preset.SseTintTexOverride, solo de RaceMenu)
+        ' viaja en tint.texture (vacio = la mascara propia de la capa de la RACE).
+        If preset.SseTintLayers IsNot Nothing Then
+            For Each t In preset.SseTintLayers
+                If t Is Nothing OrElse Not t.Indice.HasValue Then Continue For
+                Dim cobertura As Double = If(t.Cobertura.HasValue, t.Cobertura.Value / 100.0, 1.0)
+                Dim aCov As UInteger = CUInt(Math.Max(0, Math.Min(255, Math.Round(cobertura * 255.0))))
+                Dim col As UInteger = (aCov << 24) Or (CUInt(If(t.Rojo, CByte(0))) << 16) Or
+                                      (CUInt(If(t.Verde, CByte(0))) << 8) Or CUInt(If(t.Azul, CByte(0)))
+                Dim tini As Integer = CInt(t.Indice.Value)
+                Dim texPath As String = ""
+                If preset.SseTintTexOverride IsNot Nothing Then preset.SseTintTexOverride.TryGetValue(tini, texPath)
+                ' El indice de la capa es el TINI del record; el .jslot quiere el POSICIONAL (la inversa de la
+                ' traduccion del lado de la carga), asi que un guardar-cargar vuelve a la misma capa en
+                ' cualquier raza.
+                Dim jslotIndex As Integer = TiniToJslotIndex(pluginManager, raceFid, isFemale, tini)
+                j.TintInfo.Add(New RaceMenuJslot.JslotTint With {.Color = col, .Index = jslotIndex, .Texture = If(texPath, "")})
+            Next
+        End If
 
         ' ---- BODY: actor.weight ← SseWeight (EditBody_Form.vb:1085).
-        ' ⛔ El fallback es 100.0F, NO 0.0F. `Save` emite `actor.weight` SIEMPRE (el motor la lee sin gate:
+        ' El fallback es 100.0F, NO 0.0F. `Save` emite `actor.weight` SIEMPRE (el motor la lee sin gate:
         ' PresetInterface.cpp:1019 + :174), así que un carrier sin peso ya no significa "no escribas la key" —
         ' significa "escribí un 0", y eso deja al actor en peso 0 in-game. 100 es el mismo default que usa
         ' BuildPresetFromState cuando el record no trae NAM7.
-        ' ⛔ `HadWeight` NO se borra: sigue vivo en el sentido jslot→preset (`If j.HadWeight Then preset.SseWeight
+        ' `HadWeight` NO se borra: sigue vivo en el sentido jslot→preset (`If j.HadWeight Then preset.SseWeight
         ' = …`, más abajo en ApplyJslotToPreset, y lo setea el parser en RaceMenuJslot.Load). Lo que dejó de
         ' tener sentido es ESCRIBIRLO acá: la emisión de `actor.weight` es incondicional, así que el flag ya no
         ' gatea nada en el camino de salida. Borrar la propiedad haría que todo preset cargado traiga SseWeight=0.
@@ -290,7 +297,7 @@ Public Module RaceMenuPresetMapper
                         Continue For
                     End If
                 Else
-                    ' No portable id (.jslot viejo). ⛔ NO se usa h.FormId crudo: su byte alto es un slot del
+                    ' No portable id (.jslot viejo). NO se usa h.FormId crudo: su byte alto es un slot del
                     ' load order del AUTOR y en el nuestro —que además está COMPACTADO por el Preflight—
                     ' nombra otro plugin. Eso es exactamente lo que el comentario de arriba describe como
                     ' MEDIDO ("makes HeadPartResolver discard the WHOLE preset"), así que hacerlo acá era
@@ -335,7 +342,7 @@ Public Module RaceMenuPresetMapper
         ' the preset had no hairColor so the render falls back to the CLFM.
         preset.SseHairColorRgb = If(j.HadHairColor, CType(j.HairColor, Integer?), Nothing)
         ' ---- FACE IDENTITY: headTexture (face FTST FormID) — see SseHeadTextureFormIDOverride below (render override).
-        ' ⛔ Se asigna SÓLO si el identificador RESOLVIÓ. `ResolveFormIdentifier` devuelve 0 cuando el plugin dueño
+        ' Se asigna SÓLO si el identificador RESOLVIÓ. `ResolveFormIdentifier` devuelve 0 cuando el plugin dueño
         ' del TXST no está en el load order, y con el carrier tri-estado ese 0 significaría CLEAR EXPLÍCITO: un
         ' preset que referencia un TXST de un mod ausente le BORRARÍA el FTST al NPC en vez de preservarlo. Además
         ' contradiría al motor, que ante un headTexture irresoluble simplemente no aplica nada
@@ -401,7 +408,7 @@ Public Module RaceMenuPresetMapper
             preset.SseCustomMorphs = cms
         End If
 
-        ' ---- FACE: tintInfo → SseTintRawOverride (+ HasSseTints) and the per-layer custom mask texture map.
+        ' ---- FACE: tintInfo → SseTintLayers (+ HasSseTints) and the per-layer custom mask texture map.
         ' Inverse of the pack above and of RaceMenu's apply (PresetInterface.cpp:194-205): the jslot colour's ALPHA
         ' byte IS the coverage (tintMask.alpha) → TINV; RGB → TINC (its own alpha byte is unused by the SSE face
         ' composite → 255). TIAS (preset index) is not stored in a .jslot: RaceMenu writes a FREE RGB colour (its own
@@ -410,7 +417,7 @@ Public Module RaceMenuPresetMapper
         ' carry TIAS = -1. tint.texture, when non-empty, is a RaceMenu custom mask path (tintMask->texture->str =
         ' tint.name) → SseTintTexOverride[index], composited by SseFaceTintComposer instead of the RACE layer's mask.
         If j.TintInfo.Count > 0 Then
-            Dim outList As New List(Of NPC_RawSubrecord)
+            Dim outList As New List(Of LooksmenuLoader.CapaDeTinteSsePreset)
             Dim texMap As Dictionary(Of Integer, String) = Nothing
             For Each ti In j.TintInfo
                 Dim a As Byte = CByte((ti.Color >> 24) And &HFFUI)   ' coverage (0..255)
@@ -423,22 +430,22 @@ Public Module RaceMenuPresetMapper
                 ' difference between binding to the right layer (incl. the position-0 skin tone that drives QNAM)
                 ' and dropping the tint onto a TINI the race doesn't have.
                 Dim tini As Integer = JslotIndexToTini(pluginManager, raceFid, isFemale, ti.Index)
-                outList.Add(New NPC_RawSubrecord With {.Sig = "TINI", .Data = BitConverter.GetBytes(CUShort(tini))})
-                outList.Add(New NPC_RawSubrecord With {.Sig = "TINC", .Data = New Byte() {r, g, b, 255}})
-                outList.Add(New NPC_RawSubrecord With {.Sig = "TINV", .Data = BitConverter.GetBytes(tinv)})
-                outList.Add(New NPC_RawSubrecord With {.Sig = "TIAS", .Data = BitConverter.GetBytes(CShort(-1))})   ' -1 = custom RGB (RaceMenu free colour)
+                ' Preseleccion -1 = color propio, elegido a mano (el selector de RaceMenu).
+                outList.Add(New LooksmenuLoader.CapaDeTinteSsePreset With {
+                    .Indice = CUShort(tini), .Rojo = r, .Verde = g, .Azul = b, .Alfa = CByte(255),
+                    .Cobertura = tinv, .Preseleccion = CShort(-1)})
                 If Not String.IsNullOrEmpty(ti.Texture) Then
                     If texMap Is Nothing Then texMap = New Dictionary(Of Integer, String)
                     texMap(tini) = ti.Texture
                 End If
             Next
-            preset.SseTintRawOverride = outList
+            preset.SseTintLayers = outList
             preset.HasSseTints = True
             preset.SseTintTexOverride = texMap
         End If
 
         ' ---- BODY: actor.weight → SseWeight (clamp 0..100) (EditBody_Form.vb:1046-1047).
-        ' ⛔ ERA INCONDICIONAL: un preset sin `weight` dejaba SseWeight = 0 y le borraba el peso al NPC.
+        ' ERA INCONDICIONAL: un preset sin `weight` dejaba SseWeight = 0 y le borraba el peso al NPC.
         If j.HadWeight Then preset.SseWeight = CSng(Math.Max(0.0, Math.Min(100.0, j.Weight)))
 
         ' ---- BODY: bodyMorphs → flat render dict + keyed sidecar (EditBody_Form.vb:1049-1050).
@@ -462,18 +469,6 @@ Public Module RaceMenuPresetMapper
     ' originals stay Private to EditFace/EditBody and are unchanged).
     ' =====================================================================
 
-    ''' <summary>One parsed authored SSE tint layer. RaceMenu packs the jslot tint colour as ARGB where the
-    ''' ALPHA byte is the layer's COVERAGE (PresetInterface.cpp:195 alpha=(color&gt;&gt;24)/255 → tintMask.alpha),
-    ''' i.e. the vanilla TINV — NOT the TINC alpha byte. So we carry V (TINV coverage 0..1) and pack it into the
-    ''' jslot alpha; RGB come from TINC.</summary>
-    Private Structure SseTintParsed
-        Public Index As Integer
-        Public R As Byte
-        Public G As Byte
-        Public B As Byte
-        Public V As Double   ' TINV coverage 0..1 → packed into the jslot colour's alpha byte
-    End Structure
-
     ''' <summary>Resolve an HDPT record's PNAM type enum (0=Misc,1=Face,2=Eyes,3=Hair,4=FacialHair,5=Scar,6=Eyebrows)
     ''' for the .jslot headPart "type" field. Returns 0 (Misc) when the record/subrecord is missing.</summary>
     Private Function ResolveHdptType(fid As UInteger, pm As PluginManager) As Integer
@@ -486,29 +481,6 @@ Public Module RaceMenuPresetMapper
             End If
         Next
         Return 0
-    End Function
-
-    ''' <summary>Parse a flat TINI/TINC/TINV/TIAS raw subrecord list into per-layer index+RGB+coverage. Replicates
-    ''' the authored-layer walk in EditFace_Form.ParseSseTintLayers: TINI opens an entry, TINC sets RGB, TINV sets
-    ''' coverage, TIAS closes it. (SseTintRawOverride only ever contains authored layers, so no RACE-default merge.)</summary>
-    Private Function ParseSseTintRawToLayers(raw As List(Of NPC_RawSubrecord)) As List(Of SseTintParsed)
-        Dim outList As New List(Of SseTintParsed)
-        If raw Is Nothing Then Return outList
-        Dim cur As New SseTintParsed With {.Index = -1, .V = 1.0}
-        Dim have As Boolean = False
-        For Each sr In raw
-            Select Case sr.Sig
-                Case "TINI"
-                    cur = New SseTintParsed With {.Index = BitConverter.ToUInt16(sr.Data, 0), .V = 1.0} : have = True
-                Case "TINC"
-                    If sr.Data.Length >= 3 Then cur.R = sr.Data(0) : cur.G = sr.Data(1) : cur.B = sr.Data(2)
-                Case "TINV"
-                    If sr.Data.Length >= 4 Then cur.V = BitConverter.ToUInt32(sr.Data, 0) / 100.0
-                Case "TIAS"
-                    If have Then outList.Add(cur) : have = False
-            End Select
-        Next
-        Return outList
     End Function
 
     ''' <summary>Decode a .jslot's bodyMorphs into the keyed sidecar shape (name → {key → value}). Nothing when the
@@ -539,7 +511,7 @@ Public Module RaceMenuPresetMapper
         If p.BodyMorphsKeyed IsNot Nothing AndAlso p.BodyMorphsKeyed.Count > 0 Then
             ' Las contribuciones ajenas pasan al MODELO tal cual (sirven para saber quién aportó qué) y el archivo
             ' las emite tal cual: el ESCRITOR (RaceMenuJslot.Save) conserva el desglose por contribuyente.
-            ' ⛔⛔ ACÁ HABÍA SEIS LÍNEAS DESCRIBIENDO UN COLAPSO EN NUESTRA KEY QUE **YA NO EXISTE** — lo probé, lo
+            ' ACÁ HABÍA SEIS LÍNEAS DESCRIBIENDO UN COLAPSO EN NUESTRA KEY QUE **YA NO EXISTE** — lo probé, lo
             ' revertí en Save, y me olvidé de este comentario. No es ruido: un revisor lo leyó y reportó como defecto
             ' de producto que la app borra la autoría de los body morphs de otros mods, que es exactamente lo
             ' contrario de lo que el código hace. Un comentario que miente cuesta lo mismo que un bug.
@@ -560,9 +532,9 @@ Public Module RaceMenuPresetMapper
             For Each kv In p.BodyMorphSliders
                 If Math.Abs(kv.Value) < 0.0001F Then Continue For
                 Dim entry As New RaceMenuJslot.JslotBodyMorph With {.Name = kv.Key}
-                ' ⛔ ERA EL LITERAL "NPCManager", una CUARTA grafía de la misma cosa. Ahora la key sale de la
+                ' ERA EL LITERAL "NPCManager", una CUARTA grafía de la misma cosa. Ahora la key sale de la
                 ' constante — y el colapso de las contribuciones lo hace el escritor, no acá (ver Save).
-                ' ⛔ LA JUSTIFICACIÓN QUE HABÍA ESCRITO ERA FALSA: decía "con dos nombres SUMABA, el morph quedaba al
+                ' LA JUSTIFICACIÓN QUE HABÍA ESCRITO ERA FALSA: decía "con dos nombres SUMABA, el morph quedaba al
                 ' doble", y no puede pasar en ese orden porque el cargador de skee hace ClearMorphs (poda total del
                 ' actor, PresetInterface.cpp:281) ANTES de replayear, igual que nuestro script. La razón verdadera es
                 ' la PROPIEDAD: bajo nuestra key el morph es nuestro — lo barre RemovePrevious y lo reemplaza un

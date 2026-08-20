@@ -86,7 +86,7 @@ Public Module SkinBakeMath
         Next
 
         ' Per-vertex blend: ES SkinningHelper.BlendBoneMatrices, no "la misma semantica".
-        ' ⛔ Acá había una copia escrita a mano de esa ley. El comentario decía "same semantics as
+        ' Acá había una copia escrita a mano de esa ley. El comentario decía "same semantics as
         ' SkinningHelper.BlendBoneMatrices" — y ese "same semantics" es justo el estado que la regla
         ' del proyecto prohíbe: dos cuerpos que hay que mantener sincronizados a mano. Peor todavía,
         ' el gate `skin-blend` de FaceGenBuilder afirma que el bake corre esta misma ley, y probaba

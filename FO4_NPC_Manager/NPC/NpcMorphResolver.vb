@@ -1,6 +1,7 @@
 ﻿Imports System.IO
 Imports OpenTK.Mathematics
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ' ==========================================================================
 ' Face morph resolver for FO4 NPCs.
@@ -23,7 +24,7 @@ Public Class NpcMorphResolver
     Private ReadOnly _shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeMeshMorphTriPaths As Dictionary(Of IRenderableShape, String)  ' HDPT NAM0=1 (SkinnyMorph source)
     Private ReadOnly _raceKeywordEditorIds As List(Of String)   ' race KWDA EditorIDs → "<kw>Morph"@1.0 (race-agnostic)
-    Private ReadOnly _morphValueDefs As List(Of RACE_MorphValueDef)      ' MSID -> MSM0/MSM1 from RACE
+    Private ReadOnly _morphValueDefs As IReadOnlyList(Of Canon.RaceFO4_MorphValues)   ' MSID -> MSM0/MSM1 del RACE
     Private ReadOnly _morphPresetDefs As List(Of RACE_MorphPresetDef)   ' MPPI -> MPPM from RACE Morph Groups
     ''' <summary>SSE-only gates (los canales que en Skyrim viven DENTRO del plan de cara y en FO4 son
     ''' pipelines aparte): sculpt per-vértice de RaceMenu = checkbox "Sculpt", y el SkinnyMorph de la
@@ -56,7 +57,7 @@ Public Class NpcMorphResolver
     ' corresponding HPH head part, and its race/chargen/mesh morph tris live under HphDir (loose) or the equivalent
     ' internal path in High Poly Head.bsa — NEVER at the vanilla `Actors\Character\Character Assets\` path.
     '   FemaleHead 'FemaleHead_KLH' = 3832 ; MaleHead 'MaleHeadIMF_KLH' = 3598 ; FemaleBrows = 371 ; MaleBrows = 318.
-    ' The per-part triplet (races / chargen / mesh) is the MEASURED HPH filename set (⚠️ irregular: female brows race
+    ' The per-part triplet (races / chargen / mesh) is the MEASURED HPH filename set (irregular: female brows race
     ' = "femaleheadbrowsrace.tri" SINGULAR but male = "maleheadbrowsraces.tri" PLURAL; HPH ships NO male head chargen
     ' — malehead uses maleheadcustomizations, so Male/Chargen is empty and degrades without harm).
     Private Const HphFemaleHeadVerts As Integer = 3832
@@ -85,9 +86,8 @@ Public Class NpcMorphResolver
         _triHeadCache.Clear()
     End Sub
 
-    ' MRSV — Body Morph Region Values. Per TES5Edit/Core/wbDefinitionsFO4.pas:10793-10799,
-    ' the subrecord is a fixed struct of 5 floats with these region labels in this order.
-    ' Same layout in FO76 (wbDefinitionsFO76.pas:13350) and SF1 (wbDefinitionsSF1.pas:13376).
+    ' MRSV — Body Morph Region Values. El subrecord es un struct fijo de 5 floats con estas
+    ' etiquetas de región en este orden. Mismo layout en FO76 y en Starfield.
     Public Shared ReadOnly BodyRegionLabels As String() = {
         "Head",
         "Upper Torso",
@@ -102,7 +102,7 @@ Public Class NpcMorphResolver
     ''' <param name="npcData">NPC morph data (face morph values, FMIN, etc.)</param>
     ''' <param name="meshDictKeys">Optional mapping of shape reference -> mesh dictionary key path (for TRI fallback lookup).</param>
     Public Sub New(npcData As NPC_Data,
-                   Optional morphValueDefs As List(Of RACE_MorphValueDef) = Nothing,
+                   Optional morphValueDefs As IReadOnlyList(Of Canon.RaceFO4_MorphValues) = Nothing,
                    Optional morphPresetDefs As List(Of RACE_MorphPresetDef) = Nothing,
                    Optional meshDictKeys As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional shapeChargenTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
@@ -213,7 +213,7 @@ Public Class NpcMorphResolver
     ''' puede depender del estado de la UI, quede intacto.</para></summary>
     Public Shared Function BuildFaceMorphPlan(npcData As NPC_Data, triHead As TriHeadFile,
                                               raceEditorId As String,
-                                              morphValueDefs As List(Of RACE_MorphValueDef),
+                                              morphValueDefs As IReadOnlyList(Of Canon.RaceFO4_MorphValues),
                                               morphPresetDefs As List(Of RACE_MorphPresetDef),
                                               Optional raceKeywordEditorIds As List(Of String) = Nothing,
                                               Optional shapeChargenTriPath As String = "",
@@ -225,7 +225,7 @@ Public Class NpcMorphResolver
         If npcData.Game = Config_App.Game_Enum.Skyrim Then
             plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId, raceKeywordEditorIds, shapeChargenTriPath,
                                                               applySculpt, applyBodyWeight, applyChargenMorphs).Channels)
-        ElseIf npcData.MorphValues IsNot Nothing AndAlso npcData.MorphValues.Count > 0 Then
+        ElseIf npcData.Record.MorfosDeCara().Count > 0 Then
             plan.Channels.AddRange(BuildFaceMorphPlanFromTriHead(npcData, morphValueDefs, morphPresetDefs, triHead).Channels)
         End If
         Return plan
@@ -236,7 +236,7 @@ Public Class NpcMorphResolver
     ''' single merge used by both the render (<see cref="LoadTriForShape"/>) and the bake (FaceGenBuildPipeline)
     ''' so the head TriHead they feed <see cref="BuildFaceMorphPlan"/> is assembled identically. When
     ''' <paramref name="triHead"/> is Nothing it becomes the chargen head; when chargen is Nothing it is a no-op.</summary>
-    ''' <remarks>⛔⛔ NUNCA MUTA LA INSTANCIA QUE RECIBE. `triHead` y `chargenHead` vienen de
+    ''' <remarks>NUNCA MUTA LA INSTANCIA QUE RECIBE. `triHead` y `chargenHead` vienen de
     ''' <c>TryLoadTriHead</c>, o sea de <c>_triHeadCache</c>, que es `Shared` y devuelve SIEMPRE LA MISMA
     ''' instancia para la misma ruta. Esta función hacía `triHead.Morphs.Add(...)` sobre ella y eso rompía
     ''' de dos maneras:
@@ -256,7 +256,7 @@ Public Class NpcMorphResolver
         For Each morph In chargenHead.Morphs
             If copia.GetMorph(morph.Name) Is Nothing Then copia.Morphs.Add(morph)
         Next
-        ' ⛔ `NumMorphs` SE SINCRONIZA. Es el conteo del header del .tri y el merge lo dejaba desfasado de
+        ' `NumMorphs` SE SINCRONIZA. Es el conteo del header del .tri y el merge lo dejaba desfasado de
         ' `Morphs.Count`. Hoy nadie lo lee (grep: declaracion, clon y escritura del parser), asi que es
         ' inerte — pero es un campo que MIENTE, y el dia que alguien escriba un .tri desde un TriHeadFile
         ' eso es corrupcion de bytes con la causa a mil lineas de distancia.
@@ -265,23 +265,25 @@ Public Class NpcMorphResolver
     End Sub
 
     Public Shared Function BuildFaceMorphPlanFromTriHead(npcData As NPC_Data,
-                                                        morphValueDefs As List(Of RACE_MorphValueDef),
+                                                        morphValueDefs As IReadOnlyList(Of Canon.RaceFO4_MorphValues),
                                                         morphPresetDefs As List(Of RACE_MorphPresetDef),
                                                         triHead As TriHeadFile,
                                                         Optional logShapeName As String = "") As MorphPlan
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
-        If npcData.MorphValues Is Nothing OrElse npcData.MorphValues.Count = 0 Then Return plan
+        ' Se arman una sola vez: cada llamada recorre las dos listas paralelas del record.
+        Dim morfos = npcData.Record.MorfosDeCara()
+        If morfos.Count = 0 Then Return plan
 
         ' 1) Morph Values (MSID → MSM0/MSM1 slider morphs)
         If morphValueDefs IsNot Nothing Then
             For Each mvDef In morphValueDefs
                 Dim weight As Single = 0
-                If Not npcData.MorphValues.TryGetValue(mvDef.Index, weight) Then Continue For
+                If Not morfos.TryGetValue(mvDef.ValueIndex, weight) Then Continue For
                 If Math.Abs(weight) < 0.001F Then Continue For
 
                 Dim usedMax As Boolean = (weight >= 0)
-                Dim morphName = If(usedMax, mvDef.MaxName, mvDef.MinName)
+                Dim morphName = If(usedMax, mvDef.ValueMaxName, mvDef.ValueMinName)
                 Dim nameSrc As String = If(usedMax, "MSM1/MaxName", "MSM0/MinName")
                 Dim morphWeight = Math.Abs(weight)
                 If String.IsNullOrEmpty(morphName) Then Continue For
@@ -302,7 +304,7 @@ Public Class NpcMorphResolver
         If morphPresetDefs IsNot Nothing Then
             For Each mpDef In morphPresetDefs
                 Dim weight As Single = 0
-                If Not npcData.MorphValues.TryGetValue(mpDef.Index, weight) Then Continue For
+                If Not morfos.TryGetValue(mpDef.Index, weight) Then Continue For
                 If Math.Abs(weight) < 0.001F Then Continue For
 
                 Dim morphName = mpDef.MorphName
@@ -360,7 +362,7 @@ Public Class NpcMorphResolver
         ("JawWide", "JawNarrow"),        ' 3  Jaw Narrow/Wide
         ("JawForward", "JawBack"),       ' 4  Jaw Forward/Back
         ("CheeksUp", "CheeksDown"),      ' 5  Cheeks Up/Down
-        ("CheeksOut", "CheeksIn"),       ' 6  Cheeks In/Out        (xEdit label "Fwd/Back" is wrong)
+        ("CheeksOut", "CheeksIn"),       ' 6  Cheeks In/Out (el rótulo "Fwd/Back" es incorrecto)
         ("EyesMoveUp", "EyesMoveDown"),  ' 7  Eyes Up/Down
         ("EyesMoveOut", "EyesMoveIn"),   ' 8  Eyes In/Out
         ("BrowUp", "BrowDown"),          ' 9  Brows Up/Down
@@ -406,12 +408,12 @@ Public Class NpcMorphResolver
         End If
 
         ' 1) NAM9 directional sliders (19 floats: 18 usable + [18] VampireMorph).
-        Dim nam9 = npcData.Nam9Raw
+        Dim nam9 = npcData.Record.DeslizadoresDeCara()
         ' True cuando el slider [18] manejó el morph ⇒ el fallback por keyword de raza NO debe correr.
         Dim keywordMorphsApplied As Boolean = False
-        If applyChargenMorphs AndAlso nam9 IsNot Nothing AndAlso nam9.Length >= 76 Then
+        If applyChargenMorphs AndAlso nam9 IsNot Nothing AndAlso nam9.Length >= SseNam9MorphMap.Nam9SliderCount Then
             For i = 0 To _sseNam9Morphs.Length - 1
-                Dim v = BitConverter.ToSingle(nam9, i * 4)
+                Dim v = nam9(i)
                 If Single.IsNaN(v) OrElse Single.IsInfinity(v) OrElse Math.Abs(v) < 0.001F Then Continue For
                 Dim morphName = If(v >= 0, _sseNam9Morphs(i).Pos, _sseNam9Morphs(i).Neg)
                 AddNam9Channel(plan, triHead, morphName, Math.Abs(v))
@@ -424,7 +426,7 @@ Public Class NpcMorphResolver
             ' whose keywords name no morph gets nothing (AddNam9Channel no-ops on GetMorph miss — every vanilla
             ' non-vampire race). No vampire special-casing here: the rule is keyword→morph, driven purely by data.
             ' Measured: reproduces the CK FaceGeom for pre-placed *Vampire NPCs across races; zero effect elsewhere.
-            Dim vamp = BitConverter.ToSingle(nam9, 18 * 4)
+            Dim vamp = nam9(18)
             If Not Single.IsNaN(vamp) AndAlso Not Single.IsInfinity(vamp) AndAlso Math.Abs(vamp) >= 0.001F AndAlso Math.Abs(vamp) < 3.0E+38F Then
                 AddNam9Channel(plan, triHead, "VampireMorph", Math.Abs(vamp))
                 keywordMorphsApplied = True
@@ -446,16 +448,16 @@ Public Class NpcMorphResolver
 
         ' 2) NAMA type presets. NAMA = {Nose, "Unknown", Eyes, Mouth} (u32×4). Byte-verified against
         ' SkyrimSE.exe: the 4 fields map 1:1 to the engine's face-part family table @0x1ff9470
-        ' {NoseType, BrowType, EyesType, LipType} — i.e. the xEdit "Unknown" field IS the BROW type.
+        ' {NoseType, BrowType, EyesType, LipType} — i.e. the "Unknown" field IS the BROW type.
         ' The engine builds the morph name via sprintf("%s%d", family, N) (builder 0x1403B83F0) and
         ' looks it up by NAME (the ordinal/valid-bitmask path 0x3e1420 is chargen-UI navigation, not the
         ' bake): N==0 → "Default", N>0 → family&N, 0xFFFFFFFF → no preset. Applied at full weight.
-        Dim nama = npcData.NamaRaw
-        If applyChargenMorphs AndAlso nama IsNot Nothing AndAlso nama.Length >= 16 Then
-            AddNamaTypePreset(plan, triHead, "NoseType", BitConverter.ToUInt32(nama, 0))
-            AddNamaTypePreset(plan, triHead, "BrowType", BitConverter.ToUInt32(nama, 4))
-            AddNamaTypePreset(plan, triHead, "EyesType", BitConverter.ToUInt32(nama, 8))
-            AddNamaTypePreset(plan, triHead, "LipType", BitConverter.ToUInt32(nama, 12))
+        Dim nama = npcData.Record.PartesDeCara()
+        If applyChargenMorphs AndAlso nama IsNot Nothing AndAlso nama.Length >= SseNam9MorphMap.NamaFamilyCount Then
+            AddNamaTypePreset(plan, triHead, "NoseType", nama(0))
+            AddNamaTypePreset(plan, triHead, "BrowType", nama(1))
+            AddNamaTypePreset(plan, triHead, "EyesType", nama(2))
+            AddNamaTypePreset(plan, triHead, "LipType", nama(3))
         End If
 
         ' 2b) RaceMenu EXTENDED custom morphs (NiOverride ValueSet) — layered on top of the vanilla NAM9/NAMA.
@@ -470,7 +472,7 @@ Public Class NpcMorphResolver
         If applyChargenMorphs AndAlso npcData.SseCustomMorphs IsNot Nothing Then
             For Each cm In npcData.SseCustomMorphs
                 If cm Is Nothing OrElse String.IsNullOrEmpty(cm.Name) OrElse Math.Abs(cm.Value) < 0.0001F Then Continue For
-                AddCustomMorphChannel(plan, triHead, raceEditorId, npcData.IsFemale, cm.Name, cm.Value)
+                AddCustomMorphChannel(plan, triHead, raceEditorId, npcData.Record.ConfigurationFlagsFemale, cm.Name, cm.Value)
             Next
         End If
 
@@ -519,8 +521,8 @@ Public Class NpcMorphResolver
         ' SkinnyMorph), que es lo correcto porque el CK lo reparte a TODOS los hijos del BSFaceGenNiNode sin
         ' filtrar por tipo de head part. Verificado contra el CK sobre el pelo con residual max 0,00247.
         ' Con el checkbox "Body weight" apagado no se emite el SkinnyMorph: cabeza y cuerpo apagan juntos.
-        Dim nam7 = npcData.Nam7Raw
-        Dim weightVal As Single = If(nam7 IsNot Nothing AndAlso nam7.Length >= 4, BitConverter.ToSingle(nam7, 0), 100.0F)
+        ' Sin NAM7 el peso es 100: es el valor con el que el motor dibuja un actor que no lo declara.
+        Dim weightVal As Single = If(npcData.Record.TienePesoDeSkyrim(), npcData.Record.PesoDeSkyrim(), 100.0F)
         Dim skinnyFrac As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightVal / 100.0F))
         If applyBodyWeight AndAlso skinnyFrac > 0.0000001F Then AddNam9Channel(plan, triHead, "SkinnyMorph", skinnyFrac)
 
@@ -545,7 +547,7 @@ Public Class NpcMorphResolver
 
     ''' <summary>Apply one RaceMenu extended custom morph (slider name → value) faithfully to the plan via the
     ''' catalog. See caller comment / skee64 ApplyMorphs:1229-1247.</summary>
-    ''' <remarks>⛔ TODOS los canales que emite este método salen con <c>engineApplied:=False</c>: son de
+    ''' <remarks>TODOS los canales que emite este método salen con <c>engineApplied:=False</c>: son de
     ''' RaceMenu (skee64), que los aplica con su propio TRIFile::Apply, NO con el applier del motor, y sin
     ''' validar el rango del peso. Por eso NO los toca <see cref="DropChannelsRejectedByEngine"/> — más aún,
     ''' skee64 descompone deliberadamente |v|&gt;1 para preservar la magnitud (FaceMorphInterface.cpp:1156-1163).</remarks>
@@ -772,8 +774,7 @@ Public Class NpcMorphResolver
                 Dim vertsD = If(triHeadD Is Nothing, 0UI, triHeadD.NumVertices)
                 Dim morphsD = If(triHeadD Is Nothing, 0, triHeadD.Morphs.Count)
                 Dim hasSkinnyD = triHeadD IsNot Nothing AndAlso triHeadD.GetMorph("SkinnyMorph") IsNot Nothing
-                Dim nam7D = _npcData.Nam7Raw
-                Dim weightD As Single = If(nam7D IsNot Nothing AndAlso nam7D.Length >= 4, BitConverter.ToSingle(nam7D, 0), 100.0F)
+                Dim weightD As Single = If(_npcData.Record.TienePesoDeSkyrim(), _npcData.Record.PesoDeSkyrim(), 100.0F)
                 Dim fracD As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightD / 100.0F))
                 Logger.LogLazy(Function() $"[SSE-TRI] shape='{shName}' mesh='{meshKeyD}' raceTri='{raceD}' chargenTri='{chargenD}' meshTri(NAM0=1)='{meshTriD}' triHead={(triHeadD IsNot Nothing)} triVerts={vertsD} morphs={morphsD} hasSkinnyMorph={hasSkinnyD} nam7Weight={weightD} skinnyFrac={fracD}")
             End If
@@ -812,7 +813,7 @@ Public Class NpcMorphResolver
                 Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
                 If head Is Nothing Then Return Nothing
 
-                ' ⛔ SYNC: RENDER == BAKE — gemelo en FaceGenBuildPipeline (parse del tri del bake). El fix
+                ' SYNC: RENDER == BAKE — gemelo en FaceGenBuildPipeline (parse del tri del bake). El fix
                 ' se aplica sobre el parse FRESCO y antes de cachear, para que los dos vean los mismos deltas.
                 ChargenMouthFix.MaybeApplyInPlace(normalizedPath, head)
                 Return head

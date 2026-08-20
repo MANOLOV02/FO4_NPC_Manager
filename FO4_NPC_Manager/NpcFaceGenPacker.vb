@@ -165,9 +165,9 @@ Public Module NpcFaceGenPacker
         ''' Surfacing the count in the summary helps the user see how many bundles were dropped
         ''' before flush.</summary>
         Public ReadOnly MissingSources As New List(Of String)
-        ''' <summary>⭐ Bundles descartados ENTEROS por faltarles un archivo REQUERIDO, ya formateados
+        ''' <summary>Bundles descartados ENTEROS por faltarles un archivo REQUERIDO, ya formateados
         ''' "&lt;plugin&gt; 0x&lt;formId&gt;: faltan N archivo(s), p.ej. '&lt;nombre&gt;'". Existe porque el mensaje al usuario
-        ''' era "⚠ N NPCs failed to pack (M files unaccounted for)" — sin decir QUÉ NPC ni QUÉ archivo — y el
+        ''' era "N NPCs failed to pack (M files unaccounted for)" — sin decir QUÉ NPC ni QUÉ archivo — y el
         ''' desglose por path sólo vivía en el log, que en Release no se escribe (Logger.Enabled=False). Con esto
         ''' el MessageBox del save puede nombrarlos, como ya hace el batch loose.</summary>
         Public ReadOnly FailedBundles As New List(Of String)
@@ -293,8 +293,8 @@ Public Module NpcFaceGenPacker
         Dim bundleExpected(bundles.Count - 1) As Integer    ' how many the game's layout calls for
         Dim missingSources As New List(Of String)
 
-        ' ⭐⭐⭐ B1 — EL BUNDLE ES ATÓMICO: o entran TODOS sus archivos requeridos, o NO ENTRA NINGUNO.
-        ' ⛔ EL BUG: el `Continue For` de un spec requerido faltante era POR SPEC, así que los demás archivos del
+        ' B1 — EL BUNDLE ES ATÓMICO: o entran TODOS sus archivos requeridos, o NO ENTRA NINGUNO.
+        ' EL BUG: el `Continue For` de un spec requerido faltante era POR SPEC, así que los demás archivos del
         ' MISMO NPC se empaquetaban igual. El bundle no contaba como committed, pero (a) PackResult.Success seguía
         ' True, (b) sus refs SÍ llegaban a `committedRefs` y por lo tanto (c) sus sueltos se BORRABAN en el paso 5.
         ' Caso concreto y medido en SSE: si WriteSseFacetintDds bailó, falta `FaceTint\<id>.dds` (spec REQUERIDO) y
@@ -362,7 +362,7 @@ Public Module NpcFaceGenPacker
         End If
 
         ' --- Step 2: unregister current archives once ----------------------------------------
-        ' ⛔ NO "frees pooled FileStreams" en el sentido que hacía falta: un reader ALQUILADO ya salió del
+        ' NO "frees pooled FileStreams" en el sentido que hacía falta: un reader ALQUILADO ya salió del
         ' pool y su FileStream vive todo el ExtractToMemory, así que esto vuelve con ese handle abierto.
         ' Lo que permite que el packager renombre/borre el .ba2 con lectores en vuelo es el FileShare.Delete
         ' de FilesDictionary_class.AbrirArchiveParaLectura. Este loop sigue siendo necesario por la otra

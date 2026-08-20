@@ -21,10 +21,13 @@ Public Module FaceSkeletonResolver
         If raceFormID = 0UI Then Return Nothing
         Dim raceRec = pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
+        Dim race = Canon.CanonRecords.Race(raceRec, pluginManager)
+        If race Is Nothing Then Return Nothing
 
-        Dim bodySkel = If(isFemale, race.FemaleSkeletonPath, race.MaleSkeletonPath)
-        If String.IsNullOrEmpty(bodySkel) Then bodySkel = If(isFemale, race.MaleSkeletonPath, race.FemaleSkeletonPath)
+        Dim bodySkel = If(isFemale, race.FemaleSkeletalModel, race.MaleSkeletalModel)
+        If String.IsNullOrEmpty(bodySkel) Then
+            bodySkel = If(isFemale, race.MaleSkeletalModel, race.FemaleSkeletalModel)
+        End If
         If String.IsNullOrEmpty(bodySkel) Then Return Nothing
 
         ' Strip .nif, build candidate face skel paths

@@ -5,7 +5,7 @@ Imports System.Diagnostics
 
 ''' <summary>Shared builder for the granular FO4 biped-slot (BOD2) checkbox grid used by BOTH the ARMA
 ''' editor (<see cref="ArmaEditor_Form"/>) and the ARMO editor (<see cref="ArmoEditor_Form"/>). Holds the
-''' SINGLE xEdit-named slot-name table (slots 30..61, FO4 BOD2 bit = slot − 30) so neither editor
+''' SINGLE named slot-name table (slots 30..61, FO4 BOD2 bit = slot − 30) so neither editor
 ''' duplicates it.
 '''
 ''' Each editor declares an empty <see cref="FlowLayoutPanel"/> in its Designer and calls
@@ -13,19 +13,19 @@ Imports System.Diagnostics
 ''' children" rule), passing a CheckedChanged handler. The returned dictionary maps slot number → CheckBox
 ''' so the editor can <see cref="ReadMask"/> / <see cref="SetMask"/> the BOD2 value.
 '''
-''' Source spec (format, NOT game data): wbDefinitionsFO4.pas:3745-3778 wbBipedObjectFlags; same (N-30)
+''' Source spec (format, NOT game data): the biped-slot bit table; same (N-30)
 ''' bit convention as <see cref="BipedSlots"/>.</summary>
 Public Module BipedSlotCheckboxes
 
-    ''' <summary>The full xEdit-named biped slot range 30..61 (FO4 BOD2 bit = slot − 30).</summary>
+    ''' <summary>The full biped slot range 30..61 (FO4 BOD2 bit = slot − 30).</summary>
     Public ReadOnly AllSlots As Integer() = {
         30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
         46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61}
 
     ''' <summary>Slot categories per game, in display order: {title, member slot numbers}. Their union is
     ''' exactly <see cref="AllSlots"/> (30..61, each slot once) — verified at runtime in <see cref="Build"/>.
-    ''' FO4 has the [U]/[A] underarmor/over-armor groups; SSE does NOT (different slot meanings). Source:
-    ''' wbDefinitionsFO4.pas:3745-3778 / wbDefinitionsTES5.pas:2590-2622.</summary>
+    ''' FO4 has the [U]/[A] underarmor/over-armor groups; SSE does NOT (different slot
+    ''' meanings).</summary>
     Private ReadOnly _fo4Categories As (Title As String, Slots As Integer())() = {
         ("Hair && Head", New Integer() {30, 31, 32, 46, 47, 48, 49, 50, 52}),
         ("Body (skin)", New Integer() {33, 34, 35}),
@@ -119,7 +119,8 @@ Public Module BipedSlotCheckboxes
         Return mask
     End Function
 
-    ''' <summary>xEdit biped slot name (slots 30..61) for the CURRENT game. SINGLE source — do not duplicate.</summary>
+    ''' <summary>Biped slot name (slots 30..61) for the CURRENT game.
+    ''' SINGLE source — do not duplicate.</summary>
     Public Function SlotName(slot As Integer) As String
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
             Return SseSlotName(slot)
@@ -127,7 +128,7 @@ Public Module BipedSlotCheckboxes
         Return Fo4SlotName(slot)
     End Function
 
-    ''' <summary>xEdit FO4 biped slot name. Source: wbDefinitionsFO4.pas:3745-3778.</summary>
+    ''' <summary>FO4 biped slot name.</summary>
     Private Function Fo4SlotName(slot As Integer) As String
         Select Case slot
             Case 30 : Return "30 Hair Top"
@@ -166,7 +167,7 @@ Public Module BipedSlotCheckboxes
         End Select
     End Function
 
-    ''' <summary>xEdit Skyrim (SSE) biped slot name. Source: wbDefinitionsTES5.pas:2590-2622 (wbBipedObjectFlags).</summary>
+    ''' <summary>Skyrim (SSE) biped slot name.</summary>
     Private Function SseSlotName(slot As Integer) As String
         Select Case slot
             Case 30 : Return "30 Head"

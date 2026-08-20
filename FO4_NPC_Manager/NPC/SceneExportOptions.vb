@@ -8,7 +8,7 @@ Public Class SceneExportOptions
 
     ''' <summary>Incluir las "helper shapes" (sin BSShaderProperty o con el bit 0 de NiAVObject.flags:
     ''' colisiones, marcadores de editor, volumenes de emisor). Ver <see cref="IRenderableShape.IsHelperShape"/>.
-    ''' <para>⛔ Bandera PROPIA, deliberadamente separada de la casilla de RENDER: los BYTES del NIF
+    ''' <para>Bandera PROPIA, deliberadamente separada de la casilla de RENDER: los BYTES del NIF
     ''' exportado no pueden depender de una preferencia de inspeccion del preview. Default ON = el export
     ''' no pierde geometria salvo que el usuario lo pida.</para>
     ''' <para>La consumen los DOS filtros del exporter —el que mide el bbox y el que escribe—, para que

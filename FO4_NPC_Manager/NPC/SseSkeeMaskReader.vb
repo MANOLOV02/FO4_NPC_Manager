@@ -23,7 +23,7 @@ Public Module SseSkeeMaskReader
     ''' <summary>Cheap gate: True iff this shape has skee mask layers que el compose VA A APLICAR — sin decodificar
     ''' ninguna textura.
     '''
-    ''' <para>⭐⭐ ES <see cref="ReadNifMaskLayersRaw"/>, NO una condición paralela. Antes miraba SÓLO la presencia
+    ''' <para>ES <see cref="ReadNifMaskLayersRaw"/>, NO una condición paralela. Antes miraba SÓLO la presencia
     ''' de MASKT, mientras el lector descarta las capas con <c>opacity &lt;= 0</c> y el default de un MASKA AUSENTE
     ''' es <c>0.0</c> ⇒ un shape con MASKT y sin MASKA pasaba el gate y perdía TODAS sus capas. Eso producía dos
     ''' fallos silenciosos a la vez:
@@ -34,7 +34,7 @@ Public Module SseSkeeMaskReader
     ''' Con el gate derivado del lector, los dos caminos comparten literalmente la misma condición y no se pueden
     ''' desincronizar. El costo sigue siendo el de leer tres bloques de extra data: cero decodes.</para>
     '''
-    ''' <para>⚠️ RESIDUO CONOCIDO Y ACOTADO: el compose además saltea las capas cuya TEXTURA no se puede leer
+    ''' <para>RESIDUO CONOCIDO Y ACOTADO: el compose además saltea las capas cuya TEXTURA no se puede leer
     ''' (<see cref="ResolveLayersForCpu"/>, en paridad con el GPU). Eso NO se puede saber sin tocar el disco, así que
     ''' el gate puede dar True y el compose devolver False en ese caso. Es un ERROR real (la máscara existe y no se
     ''' pudo cargar), y por eso el bake lo REPORTA en vez de tragárselo — ver FaceGenBuilder.RecordTextureFailure.</para></summary>
@@ -43,14 +43,14 @@ Public Module SseSkeeMaskReader
     End Function
 
     ''' <summary>Una capa skee CRUDA (sin texturas decodificadas): lo que se lee del NIF y se propaga al render.
-    ''' ⭐ Existe porque CPU y GPU necesitan la máscara en formatos DISTINTOS: el CPU quiere los pixels decodificados
+    ''' Existe porque CPU y GPU necesitan la máscara en formatos DISTINTOS: el CPU quiere los pixels decodificados
     ''' (<see cref="SseOverlayCompositor.SseOverlay"/>.Texture) y el GPU quiere los BYTES del DDS para subirlos como
     ''' textura (FaceTintLayerInput.LayerDdsBytes). Propagando la capa cruda, cada camino la adapta y NINGUNO queda
     ''' forzado — que es lo que exige la regla "el flag de la cámara es el único que decide CPU vs GPU".</summary>
     Public Structure SkeeMaskLayerRaw
         Public TexturePath As String
         Public ColorArgb As UInteger       ' MASKC crudo (puede ser un sentinel skin/hair; lo resuelve BuildSkeeMaskLayer)
-        ''' <summary>⭐ True sólo si la capa DECLARA un MASKC. False = "esta capa no trae color".
+        ''' <summary>True sólo si la capa DECLARA un MASKC. False = "esta capa no trae color".
         ''' Existe porque el valor de <see cref="ColorArgb"/> NO puede distinguir las dos cosas: el default que se
         ''' usaba para un MASKC ausente era <c>0xFFFFFFFF</c>, que ES el sentinel <c>SkeePresetHair</c> de skee
         ''' (SseOverlayCompositor.SkeePresetHair) ⇒ una capa sin color se interpretaba como "preset de pelo", y como
@@ -64,7 +64,7 @@ Public Module SseSkeeMaskReader
 
     ''' <summary>Lee las capas skee del shape SIN decodificar ninguna textura (barato). Orden = índice ascendente
     ''' (= el orden de composición de skee). Las capas con alpha<=0 se saltean (skee hace lo mismo). Vacío si el
-    ''' shape no tiene MASKT. ⭐ FUENTE ÚNICA: la usan <see cref="ComposeNifMaskLayersIntoDiffuse"/> (CPU) y el
+    ''' shape no tiene MASKT. FUENTE ÚNICA: la usan <see cref="ComposeNifMaskLayersIntoDiffuse"/> (CPU) y el
     ''' collector (que las propaga al render para el path GPU) ⇒ no hay dos parseos que se puedan desincronizar.</summary>
     Public Function ReadNifMaskLayersRaw(nif As Nifcontent_Class_Manolo, shape As NiflySharp.INiShape) As List(Of SkeeMaskLayerRaw)
         Dim outLayers As New List(Of SkeeMaskLayerRaw)
@@ -89,7 +89,7 @@ Public Module SseSkeeMaskReader
         For i = 0 To maskt.Data.Count - 1
             Dim opacity As Double = If(maska IsNot Nothing AndAlso maska.Data IsNot Nothing AndAlso i < maska.Data.Count, maska.Data(i), 0.0)
             If opacity <= 0.0 Then Continue For                                   ' skee skips alpha==0 layers
-            ' ⭐ MASKC AUSENTE ≠ 0xFFFFFFFF. El raw int SÍ se trata como sentinel primero (skee hace eso: -1 =
+            ' MASKC AUSENTE ≠ 0xFFFFFFFF. El raw int SÍ se trata como sentinel primero (skee hace eso: -1 =
             ' preset de pelo colisiona con blanco opaco) — pero ESO SÓLO VALE CUANDO LA CAPA DECLARA UN COLOR.
             ' Si no hay MASKC no hay color, y eso se propaga como HasColor=False en vez de inventar un valor que
             ' además es exactamente el sentinel. BuildSkeeMaskLayer resuelve "sin color" → blanco (mismo valor
@@ -110,9 +110,9 @@ Public Module SseSkeeMaskReader
     ''' sustituye los sentinels skin/hair). Es el adaptador del path CPU; el GPU usa su propio adaptador (sube los
     ''' bytes como textura) a partir de las MISMAS capas crudas.
     '''
-    ''' <para>⭐⭐ UNA CAPA CUYA TEXTURA NO SE PUEDE LEER SE DESCARTA — igual que el GPU
+    ''' <para>UNA CAPA CUYA TEXTURA NO SE PUEDE LEER SE DESCARTA — igual que el GPU
     ''' (<c>SseFoldLayerStack.BuildSkeeGpuLayers</c>: <c>If texBytes Is Nothing Then Continue For</c>).
-    ''' ⛔ Antes se agregaba igual con <c>Texture = Nothing</c>, y eso NO era inerte: en
+    ''' Antes se agregaba igual con <c>Texture = Nothing</c>, y eso NO era inerte: en
     ''' <see cref="SseOverlayCompositor.ApplyOverlays"/> el sample de una capa sin textura vale <c>1.0</c> en los
     ''' cuatro canales, así que un type-1 (Mask) daba <c>la = 1.0 × color.a</c> ⇒ COBERTURA TOTAL: el color plano
     ''' de la capa pintaba LA CARA ENTERA. Y como el GPU sí la descartaba, el mismo NPC salía distinto según el

@@ -16,7 +16,7 @@ Imports FO4_Base_Library
 ''' &lt;/tintmasks&gt;
 ''' </code>
 ''' Reglas EXACTAS (del source): color "skin"→−2 / "hair"→−1 / hex(%x) / default 0xFFFFFF ; alpha double ;
-''' blend default **"overlay"** (⚠ distinto del MASKT crudo del NIF, que es "normal") ; type default "mask"
+''' blend default **"overlay"** (distinto del MASKT crudo del NIF, que es "normal") ; type default "mask"
 ''' ("mask"→1 "normal"→0 "solid"/"color"→2 / numérico) ; index explícito o auto-incremental por mask.
 ''' El motor de compose es el compartido (<see cref="SseOverlayCompositor.BuildSkeeMaskLayer"/> + ApplyOverlays).
 ''' </summary>

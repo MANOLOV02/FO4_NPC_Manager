@@ -67,7 +67,7 @@ Friend Class SseBodyWeightMorphResolver
 
         ' (2) ARMA weight-slider flag (DNAM bit 0x02): the addon must declare _0/_1 weight models for
         '     this gender. Flag clear (or ARMA unresolvable) → single mesh, no twin. Consumes the
-        '     already-parsed ARMA_Data — no parser edit. xEdit coerces 0→2, so most armors are enabled.
+        '     already-parsed canon view — no parser edit. Coerces 0→2, so most armors are enabled.
         If Not IsWeightSliderEnabled(shape) Then Return plan
 
         ' (3) Derive twin by flipping path[len-5] ('0'<->'1'). Non-twin path → single mesh no-op.
@@ -112,7 +112,7 @@ Friend Class SseBodyWeightMorphResolver
         If cand.ArmorAddonFormID = 0UI Then Return False
         Dim arma = _ctx.GetParsedArma(cand.ArmorAddonFormID)
         If arma Is Nothing Then Return False
-        Dim flags As Byte = If(_isFemale, arma.FemaleWeightSliderFlags, arma.MaleWeightSliderFlags)
+        Dim flags As Byte = If(_isFemale, arma.DataWeightSliderFemale, arma.DataWeightSliderMale)
         Return (flags And &H2) <> 0
     End Function
 

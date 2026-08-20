@@ -53,7 +53,7 @@ Public Class CharGenOptionsForm
         ' aunque el config lo tenga prendido. Antes esto no se notaba porque el checkbox vivia dentro de
         ' GroupConvNormal/GroupConvSwap, que ApplyGameAwareUi OCULTA en Skyrim; al moverlo a la solapa de
         ' formatos quedaria editable y sin efecto — que es exactamente lo que el resto del form evita.
-        ' ⛔ NO se gatea por nombre de juego: se pregunta por la CAPACIDAD declarada, asi que si algun dia
+        ' NO se gatea por nombre de juego: se pregunta por la CAPACIDAD declarada, asi que si algun dia
         ' SseFaceTintComposer implementa los cuatro espacios, el checkbox se habilita solo.
         CheckBoxAccumInComposite.Enabled = isFo4 OrElse
             (SseFaceTintComposer.AccumSpaceCapability = FaceTintConvention.FaceTintCpuMirrorCapability.FourSpaceAccumulator)
@@ -70,12 +70,12 @@ Public Class CharGenOptionsForm
         ' NpcMorphResolver.LoadTriForShape (render/preview) vía Config_App.Setting_SseResolveHighPolyHeadTri.
         CheckBoxResolveHphHeadTri.Checked = c.Setting_SseResolveHighPolyHeadTri
         ' FO4-only, DEFAULT ON: replicar la normalizacion de pesos de skin del MOTOR (w3 = 1−Σ, se descarta si ≤0).
-        ' ⚠️ Replica un DEFECTO del CK, no una ley del motor: sirve para igualar al CK byte a byte, no para
+        ' Replica un DEFECTO del CK, no una ley del motor: sirve para igualar al CK byte a byte, no para
         ' que la malla salga "mejor". Default False ⇒ camino normalizado de siempre, bit-idéntico.
         ' Fuente/VAs del RE en FO4_Base_Library.EngineSkinWeightNormalization. Enabled solo en FO4 porque el mecanismo NO
         ' está verificado en los binarios de Skyrim (el valor persistido se round-trip-ea intacto en SSE).
         CheckBoxReplicateEngineSkinNorm.Checked = NPC_Config.Current.ReplicateEngineSkinWeightNormalization
-        ' ⭐ UNA SOLA PROPIEDAD, DOS PUERTAS. Esta casilla y la de la pestana Rendering del dialogo
+        ' UNA SOLA PROPIEDAD, DOS PUERTAS. Esta casilla y la de la pestana Rendering del dialogo
         ' compartido (FO4_Base_Library.LightRigForm) editan el MISMO Config_App.Setting_RecalculateNormals,
         ' igual que en Wardrobe Manager, donde el mismo valor se toca desde la barra principal y desde
         ' Settings. Antes esta vivia en NPC_Config.RecalculateTangentSpace y gobernaba SOLO el recalculo de
@@ -119,10 +119,10 @@ Public Class CharGenOptionsForm
         GroupConvSwap.Visible = Not isSse
         GroupConvDWsByOp.Visible = True
 
-        ' ⭐ FASE 9 — los tres grupos nuevos ocupan EXACTAMENTE el hueco que dejan los dos de arriba cuando se
+        ' FASE 9 — los tres grupos nuevos ocupan EXACTAMENTE el hueco que dejan los dos de arriba cuando se
         ' ocultan: Fold en (216,8) y Overlays en (424,8) —las posiciones de Normal y Swap— y Seed en la banda
         ' de abajo (216,262), 408x59. Sin pestañas anidadas y SIN tocar el tamaño del formulario.
-        ' ⛔ Son SSE-only por la misma razón que Normal/Swap son FO4-only: el pliegue del facetint en el
+        ' Son SSE-only por la misma razón que Normal/Swap son FO4-only: el pliegue del facetint en el
         ' diffuse y los overlays de RaceMenu no existen en Fallout, y el seed constante es la ley de SSE
         ' (en FO4 el seed es la textura base y no hay nada que elegir). Un control visible que no mueve nada
         ' es un defecto — misma regla por la que Normal y Swap se ocultan acá.
@@ -138,7 +138,7 @@ Public Class CharGenOptionsForm
         ' El enable/disable + derivación All-vs-per-layer de N/S lo maneja UpdateEnabledState (corre DESPUÉS). Acá labels + tag.
         LabelNormal.Enabled = True
         LabelSpecular.Enabled = Not isSse
-        ' ⭐⭐ BC5 NO ES VALIDO PARA EL _msn DE SSE, pero **NO se saca de la lista**: el indice de este combo ES
+        ' BC5 NO ES VALIDO PARA EL _msn DE SSE, pero **NO se saca de la lista**: el indice de este combo ES
         ' el valor del enum (Bc5=0/Unc=1/Bc7=2/Bc3=3) y de esa identidad dependen Load, la derivacion del modo
         ' All, el Reset y el Guardado. Sacar un item obliga a un mapa indice→enum y a migrar esos cuatro sitios;
         ' si uno queda sin migrar, elegir "BC3" persiste OTRO formato EN SILENCIO. Se deja la lista intacta, se
@@ -307,7 +307,7 @@ Public Class CharGenOptionsForm
         Dim npcDef As New NPC_Config()      ' defaults de NPC_Config tal como están declarados
         Dim isFo4 = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
 
-        ' ⭐ FUERA DEL If: este toggle es de LOS DOS JUEGOS (nunca se deshabilita en el Load y el OK lo guarda
+        ' FUERA DEL If: este toggle es de LOS DOS JUEGOS (nunca se deshabilita en el Load y el OK lo guarda
         ' incondicionalmente), así que reseteándolo sólo en la rama FO4 el botón MENTÍA en Skyrim — dejaba el
         ' valor como estaba y decía "Revert to default". La regla del botón es: revierte SÓLO —y TODO— lo que
         ' su tab muestra EDITABLE en el juego activo; un control editable en ambos se revierte en ambos.
@@ -355,7 +355,7 @@ Public Class CharGenOptionsForm
         ' Los DOS buckets que la fase 7b saco de "provisional": Fold y Overlay. Null-safe (config v1).
         If s.Fold IsNot Nothing Then LoadBucket(s.Fold, ComboFoldWork, ComboFoldComp, ComboFoldSrc, ComboFoldOut, ComboFoldMask, ComboFoldFw, ComboFoldSoft)
         If s.Overlay IsNot Nothing Then LoadBucket(s.Overlay, ComboOvlWork, ComboOvlComp, ComboOvlSrc, ComboOvlOut, ComboOvlMask, ComboOvlFw, ComboOvlSoft)
-        ' ⭐ EL SEED. Antes NO se cargaba ni se guardaba: existia en el config y en la ley, pero la UI no lo
+        ' EL SEED. Antes NO se cargaba ni se guardaba: existia en el config y en la ley, pero la UI no lo
         ' tocaba, asi que "Revert to default" lo dejaba como estaba — o sea que el boton mentia. Ahora entra
         ' y sale por aca, como cualquier otro campo del set.
         ComboSeedMode.SelectedIndex = CInt(s.SeedMode)
@@ -430,15 +430,15 @@ Public Class CharGenOptionsForm
     End Sub
 
     ''' <summary>Revert to default: carga en los combos los defaults DEL JUEGO ACTIVO (DefaultsFor(game) — FO4
-    ''' = ley derivada de fábrica; SSE = ley facegen-tint). ⛔ CRÍTICO: antes usaba New FaceTintConventionSettings()
+    ''' = ley derivada de fábrica; SSE = ley facegen-tint). CRÍTICO: antes usaba New FaceTintConventionSettings()
     ''' (= SIEMPRE FO4), que en SSE cargaba la ley FO4 y al OK la persistía en el set SSE → render SSE ROTO. Ahora
     ''' es game-aware. Recién al dar OK se persisten; Cancel los descarta.</summary>
     Private Sub ButtonResetConv_Click(sender As Object, e As EventArgs) Handles ButtonResetConv.Click
         Dim game = If(Config_App.Current IsNot Nothing, Config_App.Current.Game, Config_App.Game_Enum.Fallout4)
         Dim def = FaceTintConvention.FaceTintConventionSettings.DefaultsFor(game)
         LoadConvention(def)
-        ' ⭐ AccumInCompositeSpace TAMBIÉN vuelve al default acá, aunque su checkbox se dibuje en el tab Size.
-        ' ⛔ POR QUÉ ROMPE LA REGLA "cada revert toca sólo su tab": el VALOR es storage de la CONVENCIÓN (vive
+        ' AccumInCompositeSpace TAMBIÉN vuelve al default acá, aunque su checkbox se dibuje en el tab Size.
+        ' POR QUÉ ROMPE LA REGLA "cada revert toca sólo su tab": el VALOR es storage de la CONVENCIÓN (vive
         ' en FaceTintBucketConvention y lo lee ResolveConvention); lo que está en el otro tab es el CONTROL,
         ' puesto ahí porque es una opción de COSTO. Con el revert atado a la ubicación del control, apretar
         ' "Revert to default" en Conventions dejaba este campo intacto — y eso es exactamente lo que se midió:
@@ -565,13 +565,13 @@ Public Class CharGenOptionsForm
     End Sub
 
     Private Sub ButtonOK_Click(sender As Object, e As EventArgs) Handles ButtonOK.Click
-        ' ⭐ RECHAZO de BC5 para el _msn de SSE. Va ACA y no deshabilitando OK: es una sola condicion, en un solo
+        ' RECHAZO de BC5 para el _msn de SSE. Va ACA y no deshabilitando OK: es una sola condicion, en un solo
         ' sitio, sin estado que mantener sincronizado con cada cambio de combo/radio. ButtonOK NO tiene
         ' DialogResult en el Designer (lo setea el final de este handler), asi que un Return temprano NO cierra
         ' el dialogo — el usuario se queda adentro y puede corregir.
         ' Solo muerde en PER-LAYER: es el unico modo que persiste el formato del normal (en All se deriva a
         ' Uncompressed dentro de OutputSettings, y el combo esta deshabilitado).
-        ' ⛔ La barrera del RUNTIME (FaceGenBuilder.ClampMsnDxgiForSse) SIGUE existiendo: cubre un config
+        ' La barrera del RUNTIME (FaceGenBuilder.ClampMsnDxgiForSse) SIGUE existiendo: cubre un config
         ' persistido de antes de esta validacion, que esta UI no puede alcanzar. Las dos hacen falta.
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim _
            AndAlso RadioPerLayer.Checked AndAlso ComboFormatN.SelectedIndex = 0 Then   ' 0 = Bc5 (indice == enum)

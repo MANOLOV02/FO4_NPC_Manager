@@ -263,7 +263,7 @@ Friend NotInheritable Class NpcMountingResolver
                         If treeNode_mod Is Nothing OrElse treeNode_mod.Name Is Nothing Then Continue For
                         Dim treeNm_mod = If(treeNode_mod.Name.String, "")
                         If String.IsNullOrEmpty(treeNm_mod) Then Continue For
-                        ' ⛔ Nodos con sufijo de instancia '|<dígitos>' EXCLUIDOS del tree-walk: los chunks
+                        ' Nodos con sufijo de instancia '|<dígitos>' EXCLUIDOS del tree-walk: los chunks
                         ' multi-instancia (ModTorsoHandyEye/ArmsTypeA1 ×3) comparten UN NIF cuyos nodos
                         ' se llaman '...|0' FIJO — escribirlos por nombre apila las 3 instancias en el
                         ' socket |0 (regresión: ojos mezclados, brazos corridos). Esos huesos los maneja
@@ -980,9 +980,9 @@ Friend NotInheritable Class NpcMountingResolver
     ''' renderiza al origin igual que sin fix (no es regresión, sólo no-op).</summary>
     Friend Sub ApplyPipboySyntheticSkin(result As MainForm.PreviewResolutionResult, inst As SkeletonInstance)
         If result Is Nothing OrElse inst Is Nothing Then Return
-        ' Pipboy (slot 60) es EXCLUSIVO de FO4. En Skyrim slot 60 es un slot modular genérico (xEdit
-        ' wbBipedObjectFlags: '60 - Unnamed'), así que un ítem SSE con slot 60 NO debe recibir el
-        ' fake-skin mount del Pipboy. Gate explícito FO4-only.
+        ' Pipboy (slot 60) es EXCLUSIVO de FO4. En Skyrim slot 60 es un slot modular genérico
+        ' (sin nombre asignado en el esquema de biped-object flags), así que un ítem SSE con
+        ' slot 60 NO debe recibir el fake-skin mount del Pipboy. Gate explícito FO4-only.
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then Return
 
         Dim hasPipboyCandidate As Boolean = result.CandidateNif.Keys.Any(Function(c) c.SlotMask = BipedSlots.SlotBitPipboy)

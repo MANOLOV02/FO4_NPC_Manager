@@ -5,6 +5,7 @@ Imports System.Linq
 Imports System.Threading
 Imports System.Threading.Tasks
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
@@ -24,19 +25,22 @@ Imports OpenTK.Mathematics
 Friend NotInheritable Class NpcRenderContext
     Public ReadOnly PluginManager As PluginManager
 
-    Private ReadOnly _armoCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMO_Data)()
-    Private ReadOnly _armaCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMA_Data)()
-    Private ReadOnly _raceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, RACE_Data)()
+    Private ReadOnly _armoCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IArmo)()
+    Private ReadOnly _armaCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IArma)()
+    ''' <summary>Cache de la vista canónica de RACE, keyed por FormID. La caché plana aparte que
+    ''' existía antes ya no hace falta: LmCustomTintLoader arma la lista de tinte fusionada aparte
+    ''' (sin mutar el record) y RaceUtil ya trabaja sobre esta misma vista canónica.</summary>
+    Private ReadOnly _raceCanonCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IRace)()
     Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IHdpt)()
     Private ReadOnly _armorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HashSet(Of UInteger))()
 
-    ''' <summary>Optional draft-resolver hook (set by MainForm). Given a FormID, returns a synthesized
-    ''' <see cref="ARMO_Data"/> when the FormID is an in-memory ARMO draft (provisional 0xFF sentinel or
+    ''' <summary>Optional draft-resolver hook (set by MainForm). Given a FormID, returns the draft's
+    ''' <see cref="Canon.IArmo"/> when the FormID is an in-memory ARMO draft (provisional 0xFF sentinel or
     ''' an override draft), or Nothing when it is not a draft (the real-record cache path then runs).
     ''' Same injection contract as <c>OutfitResolver.LeveledListResolver</c>: Nothing ⇒ library/real
     ''' behavior, a non-Nothing return ⇒ the app's live draft view. The returned object is NEVER cached
     ''' (drafts mutate live), so a draft edit is reflected on the next render.</summary>
-    Public ArmoDraftResolver As Func(Of UInteger, ARMO_Data) = Nothing
+    Public ArmoDraftResolver As Func(Of UInteger, Canon.IArmo) = Nothing
 
     ''' <summary>Gate de power-armor de la app (necesita el catálogo de keywords). Lo setea MainForm junto
     ''' con los draft-resolvers; lo consume <see cref="EquipCtx"/> para que la ley única lo aplique una sola
@@ -45,7 +49,7 @@ Friend NotInheritable Class NpcRenderContext
     ''' <summary>Idem, del lado de la raza. Ver <see cref="ArmoIsPowerArmor"/>.</summary>
     Public RaceIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
-    Public ArmaDraftResolver As Func(Of UInteger, ARMA_Data) = Nothing
+    Public ArmaDraftResolver As Func(Of UInteger, Canon.IArma) = Nothing
     ''' <summary>Optional draft-resolver hook for MSWP drafts. Given a FormID, returns a synthesized
     ''' <see cref="Canon.IMswp"/> when the FormID is an in-memory MSWP draft, or Nothing when it is not.
     ''' Consumed by the material-override pipeline (NpcMaterialResolver) so an UNSAVED draft material-swap
@@ -54,12 +58,12 @@ Friend NotInheritable Class NpcRenderContext
 
     ''' <summary>El <c>Data\</c> EFECTIVO de este contexto. Existe para que los registros que se cargan de
     ''' disco (tints custom de LooksMenu, LUTs de pelo) se lean del MISMO Data que el resto del contexto.
-    ''' <para>⛔ Sin esto, el CLI headless —que honra <c>--data</c> y NO puebla el <see cref="Config_App"/>
+    ''' <para>Sin esto, el CLI headless —que honra <c>--data</c> y NO puebla el <see cref="Config_App"/>
     ''' global— mezclaba dos orígenes en el mismo proceso: los caminos que recibían <c>--data</c> leían de
     ''' uno y los que caían al global, de otro. Y en <c>LmCustomTintLoader</c> eso no se puede arreglar
-    ''' recargando: el merge es append-only y <c>RACE_Data.CustomLmTintsMerged</c> es un latch por raza que
-    ''' no se deshace, así que releer con otro Data dejaría razas mezcladas de dos orígenes. La divergencia
-    ''' hay que matarla en el ORIGEN, que es esto.</para>
+    ''' recargando: la lista fusionada queda cacheada por raza+género hasta el próximo
+    ''' <see cref="LmCustomTintLoader.Invalidate"/>, así que releer con otro Data dejaría razas mezcladas
+    ''' de dos orígenes. La divergencia hay que matarla en el ORIGEN, que es esto.</para>
     ''' <para>Vacío ⇒ el global, que es lo correcto para la app (donde son el mismo valor).</para></summary>
     Public ReadOnly DataPath As String
 
@@ -132,7 +136,7 @@ Friend NotInheritable Class NpcRenderContext
     ''' <summary>Parse (and cache) an ARMO by FormID. Nothing if the FormID does not resolve to an
     ''' ARMO. Does NOT swallow parse exceptions — callers that must tolerate a malformed record keep
     ''' their own Try/Catch.</summary>
-    Public Function GetParsedArmo(formID As UInteger) As ARMO_Data
+    Public Function GetParsedArmo(formID As UInteger) As Canon.IArmo
         If formID = 0UI Then Return Nothing
         ' Draft-aware resolution: an ARMO draft (MainForm._armoDrafts, provisional 0xFF FormID or an override
         ' draft keeping its real FormID) is NOT a real record and is NOT in this cache. Consult the app's draft
@@ -147,12 +151,12 @@ Friend NotInheritable Class NpcRenderContext
             Function(fid)
                 Dim rec = PluginManager.GetRecord(fid)
                 If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return Nothing
-                Return RecordParsers.ParseARMO(rec, PluginManager)
+                Return Canon.CanonRecords.Armo(rec, PluginManager)
             End Function)
     End Function
 
     ''' <summary>Parse (and cache) an ARMA by FormID. Nothing if the FormID does not resolve to an ARMA.</summary>
-    Public Function GetParsedArma(formID As UInteger) As ARMA_Data
+    Public Function GetParsedArma(formID As UInteger) As Canon.IArma
         If formID = 0UI Then Return Nothing
         ' Draft-aware resolution — same rule as GetParsedArmo for ARMA drafts (MainForm._armaDrafts): consult the
         ' app's ArmaDraftResolver FIRST; a non-Nothing return is the live draft view and is RETURNED DIRECTLY,
@@ -165,27 +169,34 @@ Friend NotInheritable Class NpcRenderContext
             Function(fid)
                 Dim rec = PluginManager.GetRecord(fid)
                 If rec Is Nothing OrElse rec.Header.Signature <> "ARMA" Then Return Nothing
-                Return RecordParsers.ParseARMA(rec, PluginManager)
+                Return Canon.CanonRecords.Arma(rec, PluginManager)
             End Function)
     End Function
 
-    ''' <summary>Parse (and cache) a RACE from an already-fetched record, keyed by its FormID. The
-    ''' NPC's race record is re-parsed ~20x/render (skeleton, body-weight, skin resolution) — this
-    ''' collapses it to one parse.</summary>
-    Public Function ParseRaceCached(rRec As PluginRecord) As RACE_Data
+
+    ''' <summary>Espejo de <see cref="ArmoDataLegacy"/> para ARMA.</summary>
+
+
+    ''' <summary>Adapta <see cref="GetParsedArmo"/> al modelo legado, para el ÚNICO consumidor que
+    ''' todavía lo pide: <see cref="EquipCtx"/> (vía <see cref="EquipResolver.EquipContext.ArmoResolver"/>).</summary>
+
+
+    ''' <summary>Espejo de <see cref="GetParsedArmoLegacy"/> para ARMA.</summary>
+
+
+    ''' <summary>Parse (y cachea) un RACE por la vista canónica, keyed por FormID. La NPC's race record se
+    ''' re-parsea ~20x/render (skeleton, body-weight, skin resolution, oclusión) — esto lo colapsa a un solo
+    ''' parse. No funde acá los tints custom de LooksMenu: el record publicado es SÓLO lo que trae el
+    ''' record. Quien necesita la lista de tinte fusionada la pide aparte con
+    ''' <see cref="LmCustomTintLoader.Fusionar"/> (que tiene su propia caché por raza+género) — así el
+    ''' record que vive en ESTA caché nunca se muta.</summary>
+    Public Function ParseRaceCanonCached(rRec As PluginRecord) As Canon.IRace
         If rRec Is Nothing Then Return Nothing
-        ' Merge LooksMenu custom tint templates INSIDE the factory so the RACE_Data is fully assembled
-        ' before it is published to the cache and read concurrently (the parallel preflight enumerates a
-        ' race's tint groups on other threads). No-op when no F4EE\Tints\ files match the race.
-        Return _raceCache.GetOrAdd(rRec.Header.FormID,
-            Function(fid)
-                Dim race = RecordParsers.ParseRACE(rRec, PluginManager)
-                LmCustomTintLoader.EnsureMerged(race, PluginManager, DataPath)
-                Return race
-            End Function)
+        Return _raceCanonCache.GetOrAdd(rRec.Header.FormID,
+            Function(fid) Canon.CanonRecords.Race(rRec, PluginManager))
     End Function
 
-    ''' <summary>⭐ El contexto con el que TODA la app llama a la ley única de equip
+    ''' <summary>El contexto con el que TODA la app llama a la ley única de equip
     ''' (<see cref="EquipResolver"/>, FO4_Base_Library). Un solo constructor: los resolvedores draft-aware,
     ''' la cadena de razas del redirect RNAM y el gate de power-armor viven acá, que es el objeto que ya es
     ''' dueño de ese conocimiento. Ni el render, ni el bake, ni los editores arman el suyo.</summary>
@@ -210,17 +221,19 @@ Friend NotInheritable Class NpcRenderContext
     Public Function GetEffectiveArmorRaces(raceFID As UInteger) As HashSet(Of UInteger)
         If raceFID = 0UI Then Return New HashSet(Of UInteger)()
         Return _armorRaceCache.GetOrAdd(raceFID,
-            Function(fid) WalkArmorRaceChain(fid, AddressOf GetRecord, AddressOf ParseRaceCached))
+            Function(fid) WalkArmorRaceChain(fid, AddressOf GetRecord, AddressOf ParseRaceCanonCached))
     End Function
 
     ''' <summary>Shared core of <see cref="GetEffectiveArmorRaces"/>: the race itself plus every race
     ''' reached via the RACE.RNAM "Armor Race" redirect chain, cycle-guarded (HashSet.Add returns False
     ''' on a revisit). Delegate-parameterized so the uncached bake path
     ''' (FaceGenBuilder.ResolveOutfitHeadwearSlots, RecordParsers-direct — no ctx there) walks the EXACT
-    ''' same chain the render walks (RENDER == BAKE). Any change to the chain rule goes HERE.</summary>
+    ''' same chain the render walks (RENDER == BAKE). Any change to the chain rule goes HERE.
+    ''' RNAM\Armor Race está en la interfaz común a los dos juegos, así que esto vive en la vista canónica
+    ''' sin TryCast.</summary>
     Friend Shared Function WalkArmorRaceChain(raceFID As UInteger,
                                               getRecord As Func(Of UInteger, PluginRecord),
-                                              parseRace As Func(Of PluginRecord, RACE_Data)) As HashSet(Of UInteger)
+                                              parseRace As Func(Of PluginRecord, Canon.IRace)) As HashSet(Of UInteger)
         Dim races As New HashSet(Of UInteger)()
         Dim cur = raceFID
         While cur <> 0UI AndAlso races.Add(cur)
@@ -228,7 +241,7 @@ Friend NotInheritable Class NpcRenderContext
             If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Exit While
             Dim race = parseRace(rec)
             If race Is Nothing Then Exit While
-            cur = race.ArmorRaceFormID
+            cur = race.ArmorRace
         End While
         Return races
     End Function
@@ -246,7 +259,7 @@ Friend NotInheritable Class NpcRenderContext
         NpcCache.Clear()
         _armoCache.Clear()
         _armaCache.Clear()
-        _raceCache.Clear()
+        _raceCanonCache.Clear()
         _hdptCache.Clear()
         _armorRaceCache.Clear()
     End Sub
@@ -260,7 +273,7 @@ Friend NotInheritable Class NpcRenderContext
     ''' types a revert touches (OTFT/LVLI aren't cached here — parsed on demand, so a revert already resolves fresh).</summary>
     Public Sub InvalidateRecord(fid As UInteger)
         If fid = 0UI Then Return
-        Dim armo As ARMO_Data = Nothing : _armoCache.TryRemove(fid, armo)
-        Dim arma As ARMA_Data = Nothing : _armaCache.TryRemove(fid, arma)
+        Dim armo As Canon.IArmo = Nothing : _armoCache.TryRemove(fid, armo)
+        Dim arma As Canon.IArma = Nothing : _armaCache.TryRemove(fid, arma)
     End Sub
 End Class

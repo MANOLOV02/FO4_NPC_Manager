@@ -153,7 +153,7 @@ Public Module FomodExporter
         ' sale del sidecar igual que en el guardado. Si el paquete llevara la plantilla SIN parchear, su .pex
         ' declararia otros nombres de property que los que el VMAD del ESP emite, y el script leeria None.
         Dim pexGeneration = NpcApplyScriptEmitter.BaselineGeneration
-        ' ⛔ La SAL sale del sidecar igual que la generacion. Si se sorteara una nueva aca, el .pex del paquete
+        ' La SAL sale del sidecar igual que la generacion. Si se sorteara una nueva aca, el .pex del paquete
         ' declararia nombres de property distintos a los que emite el VMAD del ESP que va en el MISMO paquete,
         ' y el script leeria None en todo, sin un solo error.
         Dim pexSalt = NpcApplyScriptEmitter.BaselineSalt
@@ -175,7 +175,7 @@ Public Module FomodExporter
         ' la version publicada anterior quedan con instancias de un tipo que no resuelve, y ese actor pierde la
         ' tabla de metodos PARA TODOS LOS SCRIPTS (medido: RaceMenu fallando 17 veces sobre un NPC nuestro).
         ' Es inerte: el .psc corta con el guard de instancia huerfana.
-        ' ⭐ LOS DOS JUEGOS. Estaba gateado a Skyrim y era una ASIMETRIA sin razon: el argumento de arriba
+        ' LOS DOS JUEGOS. Estaba gateado a Skyrim y era una ASIMETRIA sin razon: el argumento de arriba
         ' (un save con instancias de un tipo que no resuelve deja al actor sin tabla de metodos PARA TODOS los
         ' scripts) no tiene nada de especifico de SSE, y de hecho se vieron instancias legadas de FO4 corriendo
         ' in-game. Ademas el Save ESP local ya lo instalaba para los dos (InstallLegacyPex no gatea por juego),

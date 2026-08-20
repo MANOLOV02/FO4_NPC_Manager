@@ -2,7 +2,7 @@
 Imports FO4_Base_Library
 
 ''' <summary>Editor for an NPC's body weight (MWGT — 3 sliders), MRSV body morph regions
-''' (5 vanilla regions per wbDefinitionsFO4.pas:10793) and BodySlide vertex sliders (PIRT
+''' (5 vanilla regions) and BodySlide vertex sliders (PIRT
 ''' .tri morphs from the loaded body NIF, F4SE-only field).
 '''
 ''' Live edit: every slider drag mutates the LooksMenu preset overlay (_appliedPresets) on
@@ -187,7 +187,7 @@ Public Class EditBody_Form
     Private Const HeightTrackMax As Double = 2.0
 
     ' Spare last row of BodyTabLayout, deliberately left empty so BuildSseWeightSection has a deterministic
-    ' place to park the unused FO4 weight group when it takes over cell (0,0). ⛔ Named rather than derived
+    ' place to park the unused FO4 weight group when it takes over cell (0,0). Named rather than derived
     ' from RowCount: "the last row happens to be free" is exactly the implicit invariant that broke when the
     ' Height row was inserted. Adding a row means updating this AND the Designer's RowCount/RowStyles.
     Private Const BodyTabSpareRow As Integer = 4
@@ -250,7 +250,7 @@ Public Class EditBody_Form
         ' Seed missing slots in the overlay from the NPC's current effective values, so the
         ' sliders open at the NPC's real state instead of all zeros. Only fills slots the
         ' overlay didn't already define (preserves any prior preset/edit).
-        ' ⛔ seedMrsv also gates on hasMrsv. SeedOverlayFromInitial sets p.HasBodyMorphValues=True and fills 5
+        ' seedMrsv also gates on hasMrsv. SeedOverlayFromInitial sets p.HasBodyMorphValues=True and fills 5
         ' floats unconditionally, and that flag is authoritative at save (EmitMrsv writes whenever the list is
         ' non-empty) — so seeding it for a race with NO MRSV channel MINTS an all-zero MRSV subrecord on a
         ' record that never had one. Latent until now because the Edit Body button was unreachable for those
@@ -346,7 +346,7 @@ Public Class EditBody_Form
 
     ''' <summary>Populate ComboBoxWnam from MainForm.GetSkinArmoCandidates (race+gender filter)
     ''' and ComboBoxLmSkinTemplate from MainForm.GetLmSkinTemplateCandidates. Pinned entries:
-    '''   • WNAM index 0 = "(use RACE default)" → FormID 0 (xEdit allows NULL — wbDefinitionsFO4.pas:11434).
+    '''   • WNAM index 0 = "(use RACE default)" → FormID 0 (el juego acepta NULL en NPC.WNAM).
     '''   • WNAM index 1 (only when applicable) = the NPC's current effective WNAM, even if it
     '''     falls outside the filter (so opening EditBody on an oddly-flagged NPC doesn't lose
     '''     the live skin).
@@ -363,7 +363,7 @@ Public Class EditBody_Form
             Dim filtered = _mainForm.GetSkinArmoCandidates(_npcRaceFID, _npcIsFemale)
             ' Pin fuera-de-filtro: la UNIÓN DE-DUPLICADA del WNAM actual del NPC y del valor EFECTIVO
             ' seleccionado (el override del preset, si hay).
-            ' ⛔ NO uno "o" el otro. Este Sub se volvió REENTRANTE (el botón "…" lo re-llama), y pinear
+            ' NO uno "o" el otro. Este Sub se volvió REENTRANTE (el botón "…" lo re-llama), y pinear
             ' sólo el efectivo BORRARÍA del combo el WNAM real del NPC cuando ése está fuera del filtro —
             ' que es exactamente el caso para el que el pin existe — dejando al usuario sin forma de volver
             ' a la piel original. Y si después eligiera "(use RACE default)", el override pasa a 0, el
@@ -424,7 +424,7 @@ Public Class EditBody_Form
         Dim idx = ComboBoxWnam.SelectedIndex
         If idx < 0 OrElse idx >= _wnamComboFormIDs.Count Then Return
         Dim p = Preset
-        ' Index 0 = "(use RACE default)" → FormID 0 (xEdit allows NULL on NPC.WNAM). Encoded as
+        ' Index 0 = "(use RACE default)" → FormID 0 (el juego acepta NULL en NPC.WNAM). Encoded as
         ' SkinFormIDOverride = Some(0) so the writer can later emit "no WNAM subrecord" for the
         ' Save ESP path; the runtime overlay merge already maps 0 to RACE.WNAM fallback
         ' (MainForm.vb:6185-6187). Any other index encodes the chosen ARMO FormID.
@@ -449,9 +449,10 @@ Public Class EditBody_Form
         ' Drafts propios sin guardar, con el mismo shape que usan los demás pickers del proyecto.
         Dim draftEntries = _mainForm.ArmoDrafts().Where(Function(d) d.IsDirty).
             Select(Function(d) New FormIdPickerEntry With {
-                .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMO"}).ToList()
+                .FormID = d.FormID, .EditorID = d.Record.EditorID,
+                .DisplayName = d.Record.EditorID, .Signature = "ARMO"}).ToList()
 
-        ' ⛔⛔ EL VALOR ACTUAL PASA SIEMPRE EL FILTRO, aunque no ocupe el slot body.
+        ' EL VALOR ACTUAL PASA SIEMPRE EL FILTRO, aunque no ocupe el slot body.
         ' Sin esto, cuando el skin actual NO pasa el predicado, el picker no tiene esa fila y
         ' `PreselectCurrent` cae a la fila "(none / NULL)" ⇒ la lista arranca mostrando "none" como si
         ' FUERA el estado del NPC, y un OK a secas devuelve 0 = `SkinFormIDOverride = Some(0)`, que es la
@@ -470,7 +471,7 @@ Public Class EditBody_Form
             picked = dlg.SelectedFormID
         End Using
 
-        ' ⛔ UN OK SIN CAMBIAR NADA NO DEBE FABRICAR UN OVERRIDE. `currentFid` sale de
+        ' UN OK SIN CAMBIAR NADA NO DEBE FABRICAR UN OVERRIDE. `currentFid` sale de
         ' `_currentWnamFormID` = `LastRenderedState.SkinFormID`, o sea la piel YA RESUELTA (con el fallback
         ' de la RACE), no el WNAM propio del record. Escribirla de vuelta convertiría un WNAM HEREDADO en
         ' uno EXPLÍCITO: el Save ESP emitiría un WNAM que el record nunca tuvo y que deja de seguir a la
@@ -536,10 +537,11 @@ Public Class EditBody_Form
     ''' as authoritative even when empty".
     '''
     ''' <paramref name="seedMrsv"/> = False under SKYRIM: MRSV does not exist in the TES5 NPC_ schema
-    ''' (it is FO4-only, wbDefinitionsFO4.pas:10793 'Body Morph Region Values'), and the MRSV section is
-    ''' not even built there. Seeding it anyway wrote 5 zero floats + ownership into the overlay, which the
-    ''' NPC_ writer then emitted as a real MRSV subrecord into the SSE plugin — xEdit flags the record as
-    ''' erroneous. Under Skyrim the channel is left untouched: no values, no ownership claim.</summary>
+    ''' (it is FO4-only, 'Body Morph Region Values'), and the MRSV section is not even built there.
+    ''' Seeding it anyway wrote 5 zero floats + ownership into the overlay, which the NPC_ writer
+    ''' then emitted as a real MRSV subrecord into the SSE plugin — an invalid subrecord for that
+    ''' record type. Under Skyrim the channel is left untouched: no values,
+    ''' no ownership claim.</summary>
     Private Shared Sub SeedOverlayFromInitial(p As LooksmenuLoader.LooksmenuPreset, initial As InitialValues,
                                               seedMrsv As Boolean)
         If initial Is Nothing Then Return
@@ -1351,7 +1353,7 @@ Public Class EditBody_Form
             ' MRSV — back to initial 5-region values. ApplyPresetOverlayToNpcData reads
             ' BodyMorphValues positionally, so we keep exactly 5 entries. Skipped under Skyrim, where the
             ' channel doesn't exist and must stay untouched (see SeedOverlayFromInitial's seedMrsv).
-            ' ⛔ Also gated on _hasMrsv, exactly like the ctor seed: HasBodyMorphValues=True is an ownership
+            ' Also gated on _hasMrsv, exactly like the ctor seed: HasBodyMorphValues=True is an ownership
             ' claim the writer honours, so re-claiming it for a race with NO MRSV channel mints an all-zero
             ' 20-byte subrecord on a record that never had one. The ctor path was fixed first and this one is
             ' the same bug one button later — reachable for creatures/robots now that Height always opens the
@@ -1423,7 +1425,7 @@ Public Class EditBody_Form
     ''' §1): swap it into cell (0,0) of BodyTabLayout in place of the hidden FO4 GroupBoxWeight, and seed the slider
     ''' from the overlay's SseWeight. A single 0..100 <see cref="FO4_Base_Library.TinySliderTextBox"/> (the same
     ''' slider style the BodySlide / MRSV rows use) mirrors BuildSseMorphTab.
-    ''' ⛔ Vacate cell (0,0) FIRST. This used to add into the cell the (hidden) FO4 GroupBoxWeight still occupied,
+    ''' Vacate cell (0,0) FIRST. This used to add into the cell the (hidden) FO4 GroupBoxWeight still occupied,
     ''' and TableLayoutPanel's behaviour for two controls in one explicit cell is not something to rely on — it may
     ''' overlap them or bump the newcomer to the next free cell, and which row is "next free" moved when the Height
     ''' row was added. Parking the unused FO4 group in the spare last row makes the placement deterministic: the SSE
@@ -1736,7 +1738,7 @@ Public Class EditBody_Form
         ' this axis-angle (untouched rotations stay byte-exact from Raw).
         Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(-SliderSseNodeRotX.Value, -SliderSseNodeRotY.Value, -SliderSseNodeRotZ.Value)
         Dim aa = FO4_Base_Library.Transform_Class.Matrix33ToBSRotation(m)
-        ' ⛔ UNA sola llamada, y a propósito: acá se seteaba RotX/Y/Z + HasRotation + RotationDirty a mano y se
+        ' UNA sola llamada, y a propósito: acá se seteaba RotX/Y/Z + HasRotation + RotationDirty a mano y se
         ' OLVIDABA invalidar la matriz cruda, que el sidecar persiste. Ver SetRotationFromUi.
         nt.SetRotationFromUi(aa.X, aa.Y, aa.Z)
         ApplySseNodeEdit()
@@ -1746,7 +1748,7 @@ Public Class EditBody_Form
         If String.IsNullOrEmpty(_sseNodeSelected) Then Return
         Dim p = Preset
         If p Is Nothing OrElse p.SseNodeTransforms Is Nothing Then Return
-        ' ⛔ ANTES ERA UN RemoveAll, y eso se llevaba el elemento COMPLETO del .jslot: con él la key 40 —el
+        ' ANTES ERA UN RemoveAll, y eso se llevaba el elemento COMPLETO del .jslot: con él la key 40 —el
         ' re-parenteo con el que XPMSE te cuelga la espada de la espalda— y cualquier value ajeno que no modelamos.
         ' La ley del subsistema es por COMPONENTE: "reset" saca lo que se compone (30/31/32) y deja lo demás. El nodo
         ' sólo desaparece de la lista si no quedaba nada más que conservar.
@@ -2068,7 +2070,7 @@ Public Class EditBody_Form
         ' SSE overlay editor uses the SAME two-list paradigm as the FO4 overlay editor: LEFT = the paint catalog for
         ' the selected zone (choose from), RIGHT = the applied overlays. "Add →" creates an overlay node from the
         ' selected paint; "← Remove" deletes it. Keep the FO4 three-column layout (available | buttons | applied).
-        ' ⛔ Lo que este método hacía ANTES para reproducir el layout de 3 columnas ya declaradas del Designer
+        ' Lo que este método hacía ANTES para reproducir el layout de 3 columnas ya declaradas del Designer
         ' (GroupBoxOverlayAvailable.Visible=True, 3× SetCellPosition, 3× ColumnStyles) eran no-ops: el Designer ya
         ' declara exactamente esa disposición (OverlayListsLayout 50%/AutoSize/50%, celdas (0,0)/(1,0)/(2,0)) —
         ' medido, no supuesto. Y el SetRow(ButtonOverlayAdd,1)/SetRow(ButtonOverlayRemove,2) desaparece porque las
@@ -2079,7 +2081,7 @@ Public Class EditBody_Form
         ' Mark rows whose texture isn't in the load order in red (same convention as the tint tab). A mod can
         ' register a paint whose .dds it doesn't ship — RaceMenu (and this app) then render nothing; showing it
         ' missing is clearer than a silent no-op. Owner-draw is set here (SSE only); FO4 keeps the default draw.
-        ' ⛔ DrawMode + AddHandler DrawItem de estos DOS ListBox se quedan por código (no en el Designer): son
+        ' DrawMode + AddHandler DrawItem de estos DOS ListBox se quedan por código (no en el Designer): son
         ' controles COMPARTIDOS con FO4 y ponerlos en el Designer le cambiaría el dibujado a Fallout 4.
         ListBoxOverlayAvailable.DrawMode = DrawMode.OwnerDrawFixed
         AddHandler ListBoxOverlayAvailable.DrawItem, AddressOf DrawSsePaintCatalogItem
@@ -2103,10 +2105,10 @@ Public Class EditBody_Form
         ' now Designer-built, row 0 of OverlayCenterLayout). It drives BOTH which paint category the LEFT catalog
         ' shows AND which zone "Add →" creates the overlay on.
         FlowSseOverlayZone.Visible = True
-        ' ⛔ SelectedIndex se fija ACÁ, no en el Designer (00-reglas-ui-y-vb §2.4bis): el combo YA tiene sus 3
+        ' SelectedIndex se fija ACÁ, no en el Designer (00-reglas-ui-y-vb §2.4bis): el combo YA tiene sus 3
         ' ítems literales del Designer, pero fijar el índice ahí dispararía SelectedIndexChanged dentro de
         ' InitializeComponent(), antes de que el .ctor asigne _appliedPresets, y el handler llega a Preset.
-        ' ⛔ Y NO se envuelve en _suspendEvents: OnSseOverlayZoneChanged NO consulta ese flag —igual que la lambda
+        ' Y NO se envuelve en _suspendEvents: OnSseOverlayZoneChanged NO consulta ese flag —igual que la lambda
         ' que tenía antes—, así que el wrap sería un gate que no puede fallar y un comentario que miente. Ponerle
         ' el guard al handler SÍ cambiaría comportamiento: UpdateSseOverlayDetail apunta este combo a la zona del
         ' overlay seleccionado DENTRO de _suspendEvents, y hoy eso re-filtra el catálogo a esa zona a propósito.
@@ -2139,7 +2141,7 @@ Public Class EditBody_Form
     End Sub
 
     ''' <summary>Conmuta el overlay seleccionado entre el pool normal y el MAGIC renombrando su nodo.
-    ''' <para>⛔ RENOMBRAR ES EL MECANISMO, no un efecto secundario: el nombre del nodo ES la identidad del override
+    ''' <para>RENOMBRAR ES EL MECANISMO, no un efecto secundario: el nombre del nodo ES la identidad del override
     ''' en skee, en el co-save y en el <c>.jslot</c> (por eso <see cref="RaceMenuJslot.JslotOverlayNode.IsSpell"/> se
     ''' deriva del nombre y no es un campo aparte). El índice se recalcula con
     ''' <see cref="SseCatalogs.NextFreeOverlayIndex"/> porque los dos pools numeran INDEPENDIENTE: el
@@ -2156,7 +2158,7 @@ Public Class EditBody_Form
         Dim toSpell = CheckBoxSseOverlayMagic.Checked
         If toSpell = ov.IsSpell Then Return   ' ya está en ese pool (re-seed de la UI) → nada que hacer
         Dim n = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, z.Value, toSpell)
-        ' ⛔⛔ ACÁ EL POOL MAGIC SE NEGABA, Y ERA INCOHERENTE CON LA DECISIÓN QUE YA ESTABA TOMADA PARA TODOS LOS
+        ' ACÁ EL POOL MAGIC SE NEGABA, Y ERA INCOHERENTE CON LA DECISIÓN QUE YA ESTABA TOMADA PARA TODOS LOS
         ' OVERLAYS: avisar y dejar autorar. La negativa se apoyaba en "en la partida de algunos jugadores NO SE PUEDE
         ' SACAR", y eso dejó de ser cierto cuando el barrido pasó a recorrer los 127 slots que skee puede crear —
         ' el techo del que dependía ese argumento ya no existe. Consecuencias medidas de la negativa:
@@ -2268,7 +2270,7 @@ Public Class EditBody_Form
         RefreshSseAppliedList(ListBoxOverlayApplied.SelectedIndex)
     End Sub
 
-    ''' <summary>⛔ <paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
+    ''' <summary><paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
     ''' Un número de fila NO identifica un overlay acá: la lista se muestra ordenada por zona y por índice de nodo
     ''' DESCENDENTE, no en el orden del carrier. Después de un Add la fila del recién agregado depende de su zona y
     ''' del hueco que tomó, así que pasar una constante (era <c>0</c>) seleccionaba OTRO overlay — típicamente uno
@@ -2284,7 +2286,7 @@ Public Class EditBody_Form
                 If p IsNot Nothing AndAlso p.SseBodyOverlays IsNot Nothing Then
                     ' Show in DRAW ORDER so Up/Down are intuitive: group by zone (Body, Hands, Feet), and within a
                     ' zone list the topmost-drawn first. Face overlays are edited on the Face Paint tab, excluded here.
-                    ' ⭐ EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE COMPOSICIÓN, no el índice pelado: el pool magic va
+                    ' EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE COMPOSICIÓN, no el índice pelado: el pool magic va
                     ' ENCIMA de TODO el pool normal (skee instala el pool primario y después el secundario), así que
                     ' un [SOvl0] se dibuja sobre un [Ovl5]. Ordenar por índice mostraba la lista al revés de lo que
                     ' se ve, y Up/Down "arreglaban" un orden que no era el que estaba mal.
@@ -2355,11 +2357,11 @@ Public Class EditBody_Form
             ' Se siembra del NOMBRE del nodo (IsSpell es derivado) — no hay estado paralelo que sincronizar.
             CheckBoxSseOverlayMagic.Checked = has AndAlso ov.IsSpell
             CheckBoxSseOverlayMagic.Enabled = has
-            ' ⭐ LA OPACIDAD DE UN MAGIC OVERLAY LA MANEJA EL MOTOR. Medido en la plantilla del pool: un controller
+            ' LA OPACIDAD DE UN MAGIC OVERLAY LA MANEJA EL MOTOR. Medido en la plantilla del pool: un controller
             ' ACTIVE + CYCLE_REVERSE anima la Alpha 0↔1 (ver SseOverlayCompositor.IsSpellOverlayNodeName), así que el
             ' valor autorado se guarda y viaja, pero in-game lo pisa la animación mientras corre. Dejar el slider
             ' igual que en un overlay normal era prometer un control que el motor no respeta.
-            ' ⛔ ERA "Opacity ⚠:" con el motivo SÓLO en el tooltip del slider. Un ⚠ pelado es una alarma sobre la que el
+            ' ERA "Opacity:" con el motivo SÓLO en el tooltip del slider. Un pelado es una alarma sobre la que el
         ' usuario no puede actuar: no dice qué pasa ni qué hacer. El motivo va escrito, una vez, abajo.
         LabelOverlayTintAlpha.Text = "Opacity:"
             _sseOverlayToolTip.SetToolTip(SliderOverlayTintAlpha,
@@ -2390,7 +2392,7 @@ Public Class EditBody_Form
 
     ''' <summary>Habilita Up/Down sólo cuando el movimiento es POSIBLE: el vecino de la fila tiene que estar en la
     ''' misma zona Y en el mismo pool.
-    ''' <para>⛔ Sin esto los botones quedaban vivos y el click era un <c>Return</c> mudo — y en el caso MÁS COMÚN
+    ''' <para>Sin esto los botones quedaban vivos y el click era un <c>Return</c> mudo — y en el caso MÁS COMÚN
     ''' (una zona con un solo overlay magic, que es el default <c>iSpellOverlays=1</c>) el magic y el normal más alto
     ''' son vecinos de fila, así que Up/Down no hacían absolutamente nada sin explicar por qué.</para></summary>
     Private Sub UpdateSseOverlayMoveEnabled()
@@ -2493,7 +2495,7 @@ Public Class EditBody_Form
         Dim zA = SseCatalogs.ZoneOfNode(ov.NodeName)
         Dim zB = SseCatalogs.ZoneOfNode(neighbour.NodeName)
         If Not zA.HasValue OrElse Not zB.HasValue OrElse zA.Value <> zB.Value Then Return   ' different zone → no cross-stack move
-        ' ⛔ Y TAMPOCO ENTRE POOLS. Los stacks normal y magic son independientes (numeración propia, y el magic va
+        ' Y TAMPOCO ENTRE POOLS. Los stacks normal y magic son independientes (numeración propia, y el magic va
         ' entero encima), así que "intercambiar los índices" entre un [Ovl] y un [SOvl] no reordena nada: MUEVE de
         ' pool a los dos overlays, que es una conversión silenciosa — justo lo que el checkbox Magic hace explícito.
         If SseCatalogs.IsSpellNode(ov.NodeName) <> SseCatalogs.IsSpellNode(neighbour.NodeName) Then Return
@@ -3108,8 +3110,9 @@ Public Class EditBody_Form
 
         If _isSSE Then
             ' Captions stay short on purpose: a GroupBox caption neither wraps nor ellipsizes, and the tab is
-            ' only ~508 px. "100% = 1.0" is the unit bridge — the CK, xEdit and this app's record tree all show
-            ' height as a bare multiplier, so without it a user retypes "1" here and silently gets 0.01.
+            ' only ~508 px. "100% = 1.0" is the unit bridge — the CK and this app's record tree
+            ' both show height as a bare multiplier, so without it a user retypes "1" here and
+            ' silently gets 0.01.
             GroupBoxHeight.Text = "Height (NPC.NAM6 · 100% = 1.0)"
             LabelHeightMin.Text = "Height:"
             LabelHeightMax.Visible = False
@@ -3176,7 +3179,7 @@ Public Class EditBody_Form
     ''' out-of-track number in at any moment, so a one-shot check at seed time only covers half the problem.
     ''' Both sliders move together so the Min/Max pair always shares one scale — otherwise the same number
     ''' would sit at two different thumb positions and the cross-clamp would read as broken.
-    ''' ⛔ Safe to call from inside a handler and needs no _heightSyncing guard: with AllowExtremeValues the
+    ''' Safe to call from inside a handler and needs no _heightSyncing guard: with AllowExtremeValues the
     ''' Minimum/Maximum setters skip their re-clamp (TinySliderTextBox.vb), so they never assign Value and
     ''' never raise ValueChanged.
     ''' MONOTONE, not self-fitting: it widens once and never narrows back. Re-narrowing mid-session would
@@ -3185,13 +3188,13 @@ Public Class EditBody_Form
     Private Sub EnsureHeightTrackCovers(vMin As Double, vMax As Double)
         If vMin >= HeightTrackMin AndAlso vMin <= HeightTrackMax AndAlso
            vMax >= HeightTrackMin AndAlso vMax <= HeightTrackMax Then Return
-        ' ⛔ Never re-scale while a mouse button is held. A drag keeps focus AND capture, so a wheel notch or
+        ' Never re-scale while a mouse button is held. A drag keeps focus AND capture, so a wheel notch or
         ' arrow key mid-drag can push the value out of track; widening right then moves the thumb out from
         ' under the pointer, and the next mouse-move — which is what a drag IS — re-reads the pointer and
         ' leaps the value (201% to 1000% in the reported trace). Deferring keeps the drag authoritative; the
         ' DragEnded handler re-fits the moment the button comes up (it fires on every MouseUp that had a
         ' MouseDown, so a plain click re-fits too).
-        ' ⛔ Test the sliders' own Capture, NOT Control.MouseButtons. TinySliderTextBox takes capture in
+        ' Test the sliders' own Capture, NOT Control.MouseButtons. TinySliderTextBox takes capture in
         ' OnMouseDown BEFORE it assigns the clicked value, so this is exactly "a height slider is mid-drag".
         ' A global "any button is down" looks equivalent and is not: the textbox commits through Validating,
         ' and WinForms raises Validating synchronously from the WM_LBUTTONDOWN of the click on the NEXT
@@ -3222,7 +3225,7 @@ Public Class EditBody_Form
 
     ''' <summary>Cross-clamp so Min never exceeds Max. Not cosmetic: no vanilla record has Min &gt; Max
     ''' (0 inverted across 8990 FO4 NPC_), so an inverted pair would be data this app invented.
-    ''' ⛔ The sibling is only pushed when it is ALREADY AUTHORED (present in the record, or moved by the user
+    ''' The sibling is only pushed when it is ALREADY AUTHORED (present in the record, or moved by the user
     ''' in this session). Pushing an absent sibling would either mint a subrecord nobody asked for, or — since
     ''' the write gate refuses to author it — move the slider on screen while the file keeps the old value.
     ''' No-op under SSE, where there is no NAM4 at all and the Max slider is hidden.</summary>
@@ -3266,10 +3269,11 @@ Public Class EditBody_Form
     ''' <summary>Persist a Height edit as an <see cref="NpcRecordOverride"/> on the ROOT NPC, MERGING into any
     ''' override a previous session (or the NPC Editor) already authored. Only the sliders that actually moved
     ''' are written, so an untouched NAM6/NAM4 round-trips verbatim — bytes stay the user's call.
-    ''' ⛔ TraitsChanged is latched because Height lives in the TRAITS template category
+    ''' TraitsChanged is latched because Height lives in the TRAITS template category
     ''' (NpcTemplateMaterializer.MaterializeTraits copies NAM6/NAM4 unconditionally): without it, a
-    ''' Traits-INHERITING NPC keeps its Use-Traits flag and the engine's CopyFromTemplate overwrites the
-    ''' edited height at runtime, so the save would look fine in xEdit and do nothing in game.</summary>
+    ''' Traits-INHERITING NPC keeps its Use-Traits flag and the engine's CopyFromTemplate overwrites
+    ''' the edited height at runtime, so the save would look fine in the record tree and do
+    ''' nothing in game.</summary>
     Private Sub RegisterHeightOverride()
         If _mainForm Is Nothing Then Return
         ' Quantise to what the box actually shows: the slider reports an unquantised drag position, so without
@@ -3288,14 +3292,14 @@ Public Class EditBody_Form
         ' is what stops it from replacing a value the record held outside [0.1, 10] — ClampHeight had to move
         ' that one to seed the slider, so the screen never showed it, and rewriting a number the user was
         ' never shown is not ours to do.
-        ' ⛔ There is deliberately NO "complete the half-written pair" rule here. An earlier revision authored
+        ' There is deliberately NO "complete the half-written pair" rule here. An earlier revision authored
         ' both NAM6 and NAM4 whenever either moved on a half pair, justified by a claim that the engine lerps
         ' against an uninitialised zero. That claim was NOT measured — TESNPC::GetHeight does read both fields
         ' (+0x304 / +0x308) and lerp, but what the struct holds when the subrecord is ABSENT was never checked,
         ' and the "zero" in that reasoning is this app's own parser default (NPC_Data.HeightMax has no
         ' initialiser), not the engine's. It also minted bytes the user never asked for, and the case does not
         ' occur: all 8990 NPC_ across the 69 plugins of the load order carry both subrecords.
-        ' ⚠️ The SeedClamped clauses are defensive: today InitHeightSection disables BOTH sliders when either
+        ' The SeedClamped clauses are defensive: today InitHeightSection disables BOTH sliders when either
         ' seed was clamped, so in any state where a slider can move both flags are already False. Keep them —
         ' they are what stops BUG "inverted pair on disk" from reopening if that read-only gate is ever
         ' narrowed. With them, `mayWrite*` reduces to the same condition the cross-clamp uses for the sibling,
@@ -3344,7 +3348,7 @@ Public Class EditBody_Form
 
     ''' <summary>Cancel = sólo marcar el resultado y cerrar. El rollback vive en
     ''' <see cref="EditBodyForm_FormClosing"/> para que la X haga exactamente lo mismo que este botón —
-    ''' mismo diseño que ArmoEditor_Form/ArmaEditor_Form. ⛔ No puede ir aquí también: este handler
+    ''' mismo diseño que ArmoEditor_Form/ArmaEditor_Form. No puede ir aquí también: este handler
     ''' llama a Close(), así que invocarlo desde FormClosing re-entraría en el cierre.</summary>
     Private Sub OnCancel(sender As Object, e As EventArgs)
         DialogResult = DialogResult.Cancel
@@ -3430,7 +3434,7 @@ Public Class EditBody_Form
         ' replaces it as the visibility input.
         ' principal no lo dibuja nunca. El checkbox "Preview magic" es la fuente de verdad (se LEE de él en vez de
         ' asumir True, así que si algún día se persiste su estado, esto lo sigue solo).
-        ' ⛔ Y sin checkbox ⇒ FALSE, no True: el checkbox sólo se construye en SSE, así que bajo FO4 el `Is Nothing
+        ' Y sin checkbox ⇒ FALSE, no True: el checkbox sólo se construye en SSE, así que bajo FO4 el `Is Nothing
         ' OrElse` que había acá arrancaba el host de los editores en True — el default INVERTIDO del que
         ' NpcRenderHost documenta lo contrario. Hoy sería inerte (el camino magic está gateado por juego), y por eso
         ' mismo es la clase de default que nadie descubre hasta que otro lector consulta el flag.
@@ -3467,7 +3471,7 @@ Public Class EditBody_Form
     ''' preview host). Pure repopulation now that the tab lives in the Designer (00-reglas-ui-y-vb §1): no
     ''' <c>TabPages.Remove</c>, no nulling ListBoxSseNodes/TextBoxSseNodeFilter, no <c>SelectedTab</c> restore —
     ''' those existed only to tear down and rebuild a code-instantiated TabPage that is no longer built by hand.
-    ''' ⚠ Behaviour change: the filter TEXT now SURVIVES this rebuild (before, the TextBox itself was recreated
+    ''' Behaviour change: the filter TEXT now SURVIVES this rebuild (before, the TextBox itself was recreated
     ''' empty on every call — losing whatever the user had typed). Surviving is the correct behaviour; it just
     ''' wasn't what shipped.</summary>
     Private Sub RebuildSseBodyScaleTab()
@@ -3475,7 +3479,7 @@ Public Class EditBody_Form
     End Sub
 
     Private Sub EditBodyForm_FormClosing(sender As Object, e As System.Windows.Forms.FormClosingEventArgs) Handles Me.FormClosing
-        ' ⭐ Rollback ANTES del teardown y para CUALQUIER cierre que no sea OK: botón Cancel, X, Esc y
+        ' Rollback ANTES del teardown y para CUALQUIER cierre que no sea OK: botón Cancel, X, Esc y
         ' Alt+F4 (WinForms pone DialogResult=Cancel al cerrar un modal con la X, así que este único test
         ' cubre las cuatro vías). Mismo diseño que ArmoEditor_Form.vb:1677 y EditFace_Form.
         If DialogResult <> DialogResult.OK Then RevertOverlay()

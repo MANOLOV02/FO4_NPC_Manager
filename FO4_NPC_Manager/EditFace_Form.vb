@@ -13,7 +13,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' las ediciones ya estan aplicadas en vivo.</para></summary>
 Public Class EditFace_Form
 
-    ' HDPT type constants — match wbDefinitionsFO4.pas:7373 PNAM enum (also mirrored at MainForm.vb:88-91).
+    ' HDPT type constants — match the record's PNAM enum (also mirrored at MainForm.vb:88-91).
     Private Const HdptTypeMisc As Integer = 0
     Private Const HdptTypeFace As Integer = 1
     Private Const HdptTypeEyes As Integer = 2
@@ -27,8 +27,8 @@ Public Class EditFace_Form
 
     Private Const FlagBitIsExtra As Byte = &H8
 
-    ' ACBS bit for "Is CharGen Face Preset" (xEdit declares it as 0x04 literal at
-    ' wbDefinitionsFO4.pas:10633; the codebase reads NPC.AcbsFlags raw at RecordParsers.vb:892).
+    ' ACBS bit for "Is CharGen Face Preset" (0x04 literal; the codebase reads NPC.AcbsFlags
+    ' raw at RecordParsers.vb:892).
     Private Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
 
     ' SSE (Skyrim) face editing is RaceMenu-based (NAM9/NAMA sliders + sculpt + overlays), not LooksMenu.
@@ -45,7 +45,7 @@ Public Class EditFace_Form
     ''' <see cref="ResetSseMorphsSection"/> vuelve a llamar — si no, cada Reset re-leería los .tri.</summary>
     Private _sseTypeCatalog As SseChargenTypeCatalog = Nothing
 
-    ''' <summary>Item de un combo NAMA. ⛔ El valor viaja EN el item: el combo NO se mapea por posición.
+    ''' <summary>Item de un combo NAMA. El valor viaja EN el item: el combo NO se mapea por posición.
     ''' Ese era exactamente el defecto — <c>SelectedIndex</c> como valor recortaba a 15 y destruía el dato
     ''' del record. Y se guarda tipado (no el UInteger boxeado suelto) porque comparar Objects en VB es
     ''' resolución tardía y <c>0UI</c>/<c>0</c>/<c>Nothing</c> no se comportan como uno espera.</summary>
@@ -70,7 +70,7 @@ Public Class EditFace_Form
     Private _sseRaceMenuControls As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
     ' Filter over the RaceMenu slider rows. Same idiom as the BodySlide tab (EditBody_Form.CreateBodySlideRows +
     ' OnBodySlideFilterChanged): ONE row Control per slider inside a TopDown FlowLayoutPanel, so hiding a row
-    ' COLLAPSES it. ⛔ The rows can NOT stay in a TableLayoutPanel with Absolute RowStyles — there Visible=False
+    ' COLLAPSES it. The rows can NOT stay in a TableLayoutPanel with Absolute RowStyles — there Visible=False
     ' leaves the row's height behind and the filter would only blank out gaps. Category headers are rows too, and
     ' hide when the whole group is filtered out. _sseRaceMenuRows/-Groups map name → row for the filter pass.
     Private ReadOnly _sseRaceMenuRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
@@ -138,9 +138,24 @@ Public Class EditFace_Form
     Private ReadOnly _rootNpcFormID As UInteger
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
     Private ReadOnly _pluginManager As PluginManager
-    Private ReadOnly _race As RACE_Data
+    Private ReadOnly _race As Canon.IRace
     Private ReadOnly _raceFormID As UInteger
     Private ReadOnly _isFemale As Boolean
+    ''' <summary>Head parts / colores de pelo por defecto de _race, por género — resueltos una sola vez
+    ''' al construir el form (mismo criterio que _tintGroups): _race no cambia en la vida del form.</summary>
+    Private ReadOnly _raceMaleHeadPartFormIDs As List(Of UInteger)
+    Private ReadOnly _raceFemaleHeadPartFormIDs As List(Of UInteger)
+    Private ReadOnly _raceMaleHairColorFormIDs As List(Of UInteger)
+    Private ReadOnly _raceFemaleHairColorFormIDs As List(Of UInteger)
+    ''' <summary>Morph Values / Morph Groups de _race — exclusivos de Fallout 4 (Skyrim no los declara),
+    ''' resueltos una sola vez al construir el form.</summary>
+    Private ReadOnly _raceMorphValues As IReadOnlyList(Of Canon.RaceFO4_MorphValues)
+    Private ReadOnly _raceMaleMorphGroups As List(Of RACE_MorphGroup)
+    Private ReadOnly _raceFemaleMorphGroups As List(Of RACE_MorphGroup)
+    ''' <summary>Grupos de tinte de _race+_isFemale YA FUSIONADOS con los tints custom de LooksMenu
+    ''' (LmCustomTintLoader.Fusionar, cacheado por raza — no se rearma en cada consulta). Calculado una
+    ''' sola vez al construir el form porque _race/_isFemale no cambian en la vida del form.</summary>
+    Private ReadOnly _tintGroups As List(Of GrupoDeTinteEfectivo)
     Private ReadOnly _refresh As Action(Of FaceRefreshScope)
     Private ReadOnly _formatNpcRef As Func(Of UInteger, String)
 
@@ -192,7 +207,7 @@ Public Class EditFace_Form
     ' read it (palette swatch, percent display) but every mutate path bails on IsRaceDefault.
     Private _currentTintIndex As Integer = -1
     Private _currentTintIsRaceDefault As Boolean = False
-    Private _currentTintVirtualLayer As NPC_FaceTintLayerData = Nothing
+    Private _currentTintVirtualLayer As LooksmenuLoader.CapaDeTintePreset = Nothing
 
     ' Cached resolution dictionaries (built once at construction).
     Private ReadOnly _allHeadPartsByFid As New Dictionary(Of UInteger, Canon.IHdpt)
@@ -251,7 +266,7 @@ Public Class EditFace_Form
     Public Sub New(rootNpcFormID As UInteger,
                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                    pluginManager As PluginManager,
-                   race As RACE_Data,
+                   race As Canon.IRace,
                    raceFormID As UInteger,
                    isFemale As Boolean,
                    formatNpcRef As Func(Of UInteger, String),
@@ -263,11 +278,20 @@ Public Class EditFace_Form
         _appliedPresets = appliedPresets
         _pluginManager = pluginManager
         _race = race
-        ' Fold LooksMenu custom tint templates into the race so the tint list shows (and can edit) any
-        ' mod-added tints the NPC applies, same as the render/bake path. Idempotent no-op without them.
-        LmCustomTintLoader.EnsureMerged(_race, _pluginManager)
         _raceFormID = raceFormID
         _isFemale = isFemale
+        _raceMaleHeadPartFormIDs = _race.HeadPartsDe(isFemale:=False)
+        _raceFemaleHeadPartFormIDs = _race.HeadPartsDe(isFemale:=True)
+        _raceMaleHairColorFormIDs = _race.HairColorsDe(isFemale:=False)
+        _raceFemaleHairColorFormIDs = _race.HairColorsDe(isFemale:=True)
+        Dim raceFo4ForMorphs = TryCast(_race, Canon.RaceFO4)
+        _raceMorphValues = raceFo4ForMorphs.MorphValues
+        _raceMaleMorphGroups = raceFo4ForMorphs.ReadMorphGroups(isFemale:=False)
+        _raceFemaleMorphGroups = raceFo4ForMorphs.ReadMorphGroups(isFemale:=True)
+        ' Fold LooksMenu custom tint templates into the tint list so it shows (and can edit) any
+        ' mod-added tints the NPC applies, same as the render/bake path. No-op without them. La lista
+        ' fusionada vive en _tintGroups, aparte de _race (no se muta el record).
+        _tintGroups = LmCustomTintLoader.Fusionar(_race, _isFemale, _pluginManager)
         _refresh = AddressOf OnLocalFaceRefresh
         _formatNpcRef = formatNpcRef
         _priorAcbsFlagsRaw = priorAcbsFlagsRaw
@@ -373,14 +397,14 @@ Public Class EditFace_Form
     ''' <summary>Hair-color combo lists ONLY the CLFMs declared in RACE.AHCM/AHCF for this NPC's
     ''' gender — that's the same per-race+gender list the chargen UI offers. Anything else (skin
     ''' tones, eye colors, body-paint CLFMs) is not a valid hair tint and feeding it through QNAM
-    ''' produces visual garbage. wbDefinitionsFO4.pas:11646 (AHCM Male) / 11664 (AHCF Female).
+    ''' produces visual garbage. RACE fields: AHCM (Male) / AHCF (Female).
     ''' Sort by FullName then EditorID for stable presentation.</summary>
     Private Sub BuildHairColorCache()
         Dim allowedSet As New HashSet(Of UInteger)()
-        Dim allowed = If(_isFemale, _race?.FemaleHairColorFormIDs, _race?.MaleHairColorFormIDs)
+        Dim allowed = If(_isFemale, _raceFemaleHairColorFormIDs, _raceMaleHairColorFormIDs)
         If allowed IsNot Nothing Then allowedSet.UnionWith(allowed)
 
-        ' ⭐ Colores de pelo INYECTADOS por LooksMenu. f4ee no los mete en el record RACE: los empuja en
+        ' Colores de pelo INYECTADOS por LooksMenu. f4ee no los mete en el record RACE: los empuja en
         ' runtime a race->chargenData[gender]->colors al leer LUTs\<plugin>\haircolors.json
         ' (CharGenInterface.cpp:1308). El ESP que los trae normalmente NO toca la RACE — el de "512
         ' Standalone Hair Colors" son 512 CLFM y nada más —, así que sin esto los colores existen, se
@@ -433,20 +457,20 @@ Public Class EditFace_Form
            AndAlso _mainForm._renderHost.LastFaceTriMorphNames.Count > 0 Then
             availableMorphs = _mainForm._renderHost.LastFaceTriMorphNames
         End If
-        Dim sliderIsAvailable = Function(mvDef As RACE_MorphValueDef) As Boolean
+        Dim sliderIsAvailable = Function(mvDef As Canon.RaceFO4_MorphValues) As Boolean
                                     If availableMorphs Is Nothing Then Return True
-                                    If Not String.IsNullOrEmpty(mvDef.MinName) AndAlso availableMorphs.Contains(mvDef.MinName) Then Return True
-                                    If Not String.IsNullOrEmpty(mvDef.MaxName) AndAlso availableMorphs.Contains(mvDef.MaxName) Then Return True
+                                    If Not String.IsNullOrEmpty(mvDef.ValueMinName) AndAlso availableMorphs.Contains(mvDef.ValueMinName) Then Return True
+                                    If Not String.IsNullOrEmpty(mvDef.ValueMaxName) AndAlso availableMorphs.Contains(mvDef.ValueMaxName) Then Return True
                                     Return False
                                 End Function
-        Dim mvDefByIndex As New Dictionary(Of UInteger, RACE_MorphValueDef)
-        If _race.MorphValues IsNot Nothing Then
-            For Each mv In _race.MorphValues
-                mvDefByIndex(mv.Index) = mv
+        Dim mvDefByIndex As New Dictionary(Of UInteger, Canon.RaceFO4_MorphValues)
+        If _raceMorphValues IsNot Nothing Then
+            For Each mv In _raceMorphValues
+                mvDefByIndex(mv.ValueIndex) = mv
             Next
         End If
 
-        Dim groups = If(_isFemale, _race.FemaleMorphGroups, _race.MaleMorphGroups)
+        Dim groups = If(_isFemale, _raceFemaleMorphGroups, _raceMaleMorphGroups)
         Dim consumedBidi As New HashSet(Of UInteger)
 
         ' Group rule: a group is shown ONLY when it has at least one usable preset (declared in
@@ -471,7 +495,7 @@ Public Class EditFace_Form
                 Dim filteredSliders As New List(Of UInteger)
                 If g.SliderIndices IsNot Nothing Then
                     For Each k In g.SliderIndices
-                        Dim mvDef As RACE_MorphValueDef = Nothing
+                        Dim mvDef As Canon.RaceFO4_MorphValues = Nothing
                         If mvDefByIndex.TryGetValue(k, mvDef) AndAlso sliderIsAvailable(mvDef) Then
                             filteredSliders.Add(k)
                         End If
@@ -497,10 +521,10 @@ Public Class EditFace_Form
         ' overall. If no preset-bearing group survived the filter above, the race effectively
         ' has no face-morph editor for this gender (vanilla HumanChildRace) — surfacing orphans
         ' in that case would be inconsistent with the "no presets → no sliders" rule.
-        If _race.MorphValues IsNot Nothing AndAlso _groupSections.Count > 0 Then
+        If _raceMorphValues IsNot Nothing AndAlso _groupSections.Count > 0 Then
             Dim consumedAnyGender As New HashSet(Of UInteger)
             For Each k In consumedBidi : consumedAnyGender.Add(k) : Next
-            Dim oppositeGroups = If(_isFemale, _race.MaleMorphGroups, _race.FemaleMorphGroups)
+            Dim oppositeGroups = If(_isFemale, _raceMaleMorphGroups, _raceFemaleMorphGroups)
             If oppositeGroups IsNot Nothing Then
                 For Each g In oppositeGroups
                     If g.SliderIndices Is Nothing Then Continue For
@@ -508,10 +532,10 @@ Public Class EditFace_Form
                 Next
             End If
             Dim orphans As New List(Of UInteger)
-            For Each mv In _race.MorphValues
-                If consumedAnyGender.Contains(mv.Index) Then Continue For
+            For Each mv In _raceMorphValues
+                If consumedAnyGender.Contains(mv.ValueIndex) Then Continue For
                 If Not sliderIsAvailable(mv) Then Continue For
-                orphans.Add(mv.Index)
+                orphans.Add(mv.ValueIndex)
                 Dim mvLocal = mv
             Next
             If orphans.Count > 0 Then
@@ -536,7 +560,7 @@ Public Class EditFace_Form
     ''' Both are stable for the lifetime of the form (RACE / gender don't change).</summary>
     Private Sub BuildTintGroupRanks()
         If _race Is Nothing Then Return
-        Dim groups = If(_isFemale, _race.FemaleTintTemplateGroups, _race.MaleTintTemplateGroups)
+        Dim groups = _tintGroups
         If groups Is Nothing Then Return
         Dim rank As Integer = 0
         For Each grp In groups
@@ -573,7 +597,7 @@ Public Class EditFace_Form
     End Function
 
     ''' <summary>Per-layer clone — delegates to the canonical helper.</summary>
-    Private Shared Function CloneFaceTint(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
+    Private Shared Function CloneFaceTint(tl As LooksmenuLoader.CapaDeTintePreset) As LooksmenuLoader.CapaDeTintePreset
         Return LooksmenuLoader.CloneFaceTintLayer(tl)
     End Function
 
@@ -791,7 +815,7 @@ Public Class EditFace_Form
         ' modal, y antes PopulateSseMorphTab hacía CERO lecturas. Con el caché caliente (el render ya pasó)
         ' debería ser ~0; el caso a mirar es el FRÍO — "Vertex morphs" OFF o post-ClearCaches. Si el número
         ' molesta, el plan B ya está pensado: poblar al desplegar el combo en vez de acá.
-        ' ⛔ El Stopwatch va DENTRO del gate: la instrumentación no corre en una build sin log. `LogLazy` ya
+        ' El Stopwatch va DENTRO del gate: la instrumentación no corre en una build sin log. `LogLazy` ya
         ' se auto-gatea (Logger.vb:123), pero eso sólo evita CONSTRUIR el string — no evita medir.
         ' UNA sola llamada a Build: duplicarla en las dos ramas del gate es el lugar clásico donde una se
         ' actualiza y la otra no — y la que corre en producción es justamente la que nadie mira.
@@ -829,7 +853,7 @@ Public Class EditFace_Form
     End Function
 
     ''' <summary>Selecciona un valor NAMA en su combo POR VALOR, insertando el ítem si falta.
-    ''' <para>⛔ ÚNICO camino: antes había TRES sitios asignando <c>SelectedIndex</c> por su cuenta, dos de
+    ''' <para>ÚNICO camino: antes había TRES sitios asignando <c>SelectedIndex</c> por su cuenta, dos de
     ''' ellos con un clamp a 15, y un cuarto (post-"Regenerate morphs") que ni repoblaba. Un valor que el
     ''' catálogo no tiene NO se descarta — se agrega como "N (del record)" y queda seleccionado, o abrir el
     ''' editor destruiría el dato.</para>
@@ -936,7 +960,7 @@ Public Class EditFace_Form
     ''' record had no FTST the floor was already 0, so "clearing" appeared to stick.</summary>
     Private Function RawSseHeadTextureFormID() As UInteger
         Dim raw = TryGetRawNpc()
-        Return If(raw IsNot Nothing, raw.HeadTextureFormID, 0UI)
+        Return If(raw IsNot Nothing, raw.Record.HeadTexture, 0UI)
     End Function
 
     ''' <summary>Seed for the TXST picker: the override's value when there is one, else the record's FTST.
@@ -958,7 +982,7 @@ Public Class EditFace_Form
     ''' could not tell whether the clear had taken. Each state also says what it is DISCARDING, which is the whole
     ''' point of the clear when the record does carry an FTST.</summary>
     Private Sub UpdateSseHeadTextureLabel()
-        ' ⛔ CERRADO (no "hay que comprobar"): ResetFacePartsSection llama a esta función en los DOS juegos,
+        ' CERRADO (no "hay que comprobar"): ResetFacePartsSection llama a esta función en los DOS juegos,
         ' así que el guard tiene que ser el JUEGO, no un nulo — GroupBoxSseHeadTexture/LabelSseHeadTex viven
         ' siempre en el Designer y nunca son Nothing (00-reglas-identidad-no-es-guard-de-nulo).
         If Not _isSSE Then Return
@@ -1172,7 +1196,7 @@ Public Class EditFace_Form
 
     ''' <summary>FlowLayoutPanel ignores Anchor on its children, so every row (and header) is resized by hand when
     ''' the panel changes width. Mirrors EditBody_Form.BodySlidePanel_Resize.
-    ''' <para>⚠ El guard que queda es el que SÍ puede fallar (§6.1 del diseño de la migración): el flow existe en
+    ''' <para>El guard que queda es el que SÍ puede fallar (§6.1 del diseño de la migración): el flow existe en
     ''' los dos juegos y recibe Resize del layout aunque la pestaña esté fuera del TabControl bajo FO4, y con
     ''' 0 filas no hay nada que redimensionar.</para></summary>
     Private Sub OnSseRaceMenuFlowResize(sender As Object, e As EventArgs) Handles FlowSseRaceMenu.Resize
@@ -1327,7 +1351,7 @@ Public Class EditFace_Form
 
     ''' <summary>Face overlays (nodos <c>Face [Ovl{n}]</c> y <c>Face [SOvl{n}]</c>) en ORDEN DE DIBUJO — el de arriba
     ''' de la lista es el que se ve encima.
-    ''' <para>⭐ La clave es <see cref="SseOverlayCompositor.CompositeOrderKey"/>, no el índice pelado: el pool magic
+    ''' <para>La clave es <see cref="SseOverlayCompositor.CompositeOrderKey"/>, no el índice pelado: el pool magic
     ''' se dibuja ENCIMA de todo el pool normal (skee instala el primario y después el secundario), así que un
     ''' <c>[SOvl0]</c> va sobre un <c>[Ovl5]</c>. Con el índice pelado la lista mostraba un orden que no era el que se
     ''' ve, y Up/Down parecían no funcionar.</para></summary>
@@ -1341,7 +1365,7 @@ Public Class EditFace_Form
     End Function
 
     ''' <summary>Reorder face paint by swapping two overlays' <c>Ovl{n}</c> node indices (RaceMenu's draw order).
-    ''' <para>⛔ SÓLO DENTRO DEL MISMO POOL: normal y magic son stacks independientes (numeración propia, y el magic
+    ''' <para>SÓLO DENTRO DEL MISMO POOL: normal y magic son stacks independientes (numeración propia, y el magic
     ''' va entero encima), así que intercambiar índices entre pools no reordena — CONVIERTE los dos overlays de pool,
     ''' que es justo lo que el checkbox "Magic" hace explícito.</para></summary>
     Private Sub OnFaceOvUpClick(sender As Object, e As EventArgs) Handles ButtonSseFaceOvUp.Click
@@ -1392,7 +1416,7 @@ Public Class EditFace_Form
         Return $"{ov.NodeName} — {diff}{If(ov.IsSpell, "  [magic]", "")}{If(ov.HasTint, "  ●", "")}"
     End Function
 
-    ''' <summary>⛔ <paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
+    ''' <summary><paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
     ''' La fila NO identifica un overlay: <see cref="FaceOverlaysList"/> ordena por índice de nodo DESCENDENTE, así
     ''' que el recién agregado (que toma el primer hueco libre) cae donde caiga. Pasar el conteo previo — lo que se
     ''' hacía — clampeaba a la ÚLTIMA fila, o sea el overlay más viejo, y el panel de detalle editaba ese.</summary>
@@ -1492,7 +1516,7 @@ Public Class EditFace_Form
         Dim k = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, SseCatalogs.OverlayZone.Face, False)
         ' El bake silencia el aviso: con el bake quedándose la cara, este overlay no viaja a skee, así que
         ' hablarle del contador sería ruido.
-        ' ⛔ ESTO ES SEGURO SÓLO PORQUE EL BARRIDO LLEGA AL TOPE DEL MOTOR. Setting_BakeSseRaceMenuOverlays es un
+        ' ESTO ES SEGURO SÓLO PORQUE EL BARRIDO LLEGA AL TOPE DEL MOTOR. Setting_BakeSseRaceMenuOverlays es un
         ' toggle GLOBAL de guardado: el día que se apague, el emisor manda este mismo nodo y entra al co-save con
         ' persist=true. Con un techo de barrido más bajo eso quedaba clavado en la partida del jugador y callarse
         ' acá era un defecto; con el techo en el máximo de skee, borrarlo en la app lo borra de la partida.
@@ -1528,7 +1552,7 @@ Public Class EditFace_Form
 
     ''' <summary>Conmuta el face overlay seleccionado entre el pool normal y el MAGIC renombrando su nodo (el nombre
     ''' ES la identidad del override; ver <see cref="RaceMenuJslot.JslotOverlayNode.IsSpell"/>).
-    ''' <para>⭐ ACÁ EL FLAG CAMBIA EL CAMINO DE ENTREGA, no sólo el nodo: un <c>Face [Ovl]</c> lo hornea el bake en el
+    ''' <para>ACÁ EL FLAG CAMBIA EL CAMINO DE ENTREGA, no sólo el nodo: un <c>Face [Ovl]</c> lo hornea el bake en el
     ''' diffuse de la cabeza; un <c>Face [SOvl]</c> NO se hornea nunca y viaja por el apply-script
     ''' (<see cref="SseOverlayCompositor.IsFoldableFaceOverlay"/>). De ahí que el aviso del contador NO se pueda
     ''' silenciar para el magic — la excusa "el bake se la queda, el contador de skee es irrelevante" que vale en
@@ -1541,7 +1565,7 @@ Public Class EditFace_Form
         Dim toSpell = CheckBoxSseFaceOvMagic.Checked
         If toSpell = ov.IsSpell Then Return   ' re-seed de la UI, no una edición
         Dim k = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, SseCatalogs.OverlayZone.Face, toSpell)
-        ' ⛔⛔ ACÁ SE NEGABA. Ver el bloque gemelo de EditBody_Form (OnSseOverlayMagicChanged): el
+        ' ACÁ SE NEGABA. Ver el bloque gemelo de EditBody_Form (OnSseOverlayMagicChanged): el
         ' argumento era un techo que ya no existe, con bEnableFaceOverlays=0 impedía autorar CUALQUIER magic de
         ' cara, y dejaba inalcanzable el aviso de abajo. El pool normal avisa y sigue; ahora los dos igual.
         Dim limit = SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face, toSpell)
@@ -1613,12 +1637,13 @@ Public Class EditFace_Form
             Dim p = Preset
             Dim raw = TryGetRawNpc()
             Dim useOverlayNam9 = p IsNot Nothing AndAlso p.HasSseMorphs AndAlso p.SseNam9 IsNot Nothing
+            Dim rawNam9 = If(raw Is Nothing, Nothing, raw.Record.DeslizadoresDeCara())
             For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
                 Dim v As Single = 0
                 If useOverlayNam9 AndAlso i < p.SseNam9.Length Then
                     v = p.SseNam9(i)
-                ElseIf raw IsNot Nothing AndAlso raw.Nam9Raw IsNot Nothing AndAlso raw.Nam9Raw.Length >= (i + 1) * 4 Then
-                    v = BitConverter.ToSingle(raw.Nam9Raw, i * 4)
+                ElseIf rawNam9 IsNot Nothing AndAlso i < rawNam9.Length Then
+                    v = rawNam9(i)
                 End If
                 If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0
                 _sseNam9(i) = v
@@ -1628,12 +1653,13 @@ Public Class EditFace_Form
             ' to 0 only for the combo DISPLAY), so a family the user never touches round-trips byte-exact instead
             ' of being materialized to an explicit type 0 on save.
             Dim useOverlayNama = p IsNot Nothing AndAlso p.HasSseMorphs AndAlso p.SseNama IsNot Nothing
+            Dim rawNama = If(raw Is Nothing, Nothing, raw.Record.PartesDeCara())
             For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
                 Dim tv As UInteger = SseNam9MorphMap.NamaUnset
                 If useOverlayNama AndAlso f < p.SseNama.Length Then
                     tv = p.SseNama(f)
-                ElseIf raw IsNot Nothing AndAlso raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4 Then
-                    tv = BitConverter.ToUInt32(raw.NamaRaw, f * 4)
+                ElseIf rawNama IsNot Nothing AndAlso f < rawNama.Length Then
+                    tv = rawNama(f)
                 End If
                 _sseNama(f) = tv
                 SelectNamaValue(f, tv)
@@ -1691,23 +1717,30 @@ Public Class EditFace_Form
         ' ownership (loaded .jslot / Paste / a prior committed Edit Face), else the raw record — same overlay-first
         ' rule as the morph tab, so re-opening the editor shows the EFFECTIVE tints and a subsequent edit doesn't
         ' drop overlay-authored layers absent from the raw record.
-        Dim tintSource As List(Of NPC_RawSubrecord) = If(p IsNot Nothing AndAlso p.HasSseTints AndAlso p.SseTintRawOverride IsNot Nothing,
-                                                         p.SseTintRawOverride, If(raw IsNot Nothing, raw.SseTintRaw, Nothing))
+        ' If/Else y no un ternario: las dos ramas traen listas de tipos distintos y el ternario compila
+        ' igual, pero revienta al evaluarlo.
+        Dim tintSource As List(Of LooksmenuLoader.CapaDeTinteSsePreset) = Nothing
+        If p IsNot Nothing AndAlso p.HasSseTints AndAlso p.SseTintLayers IsNot Nothing Then
+            tintSource = p.SseTintLayers
+        ElseIf raw IsNot Nothing Then
+            tintSource = LooksmenuLoader.CapasDeTinteSseDelRecord(raw.Record)
+        End If
         Dim authored As New Dictionary(Of Integer, SseTintEdit)
         If tintSource IsNot Nothing Then
             Dim cur As New SseTintEdit With {.Index = -1, .A = 255}
             Dim have As Boolean = False
-            For Each sr In tintSource
-                Select Case sr.Sig
-                    Case "TINI" : cur = New SseTintEdit With {.Index = BitConverter.ToUInt16(sr.Data, 0), .A = 255} : have = True
-                    Case "TINC"
-                        If sr.Data.Length >= 3 Then cur.R = sr.Data(0) : cur.G = sr.Data(1) : cur.B = sr.Data(2)
-                        If sr.Data.Length >= 4 Then cur.A = sr.Data(3)
-                    Case "TINV" : If sr.Data.Length >= 4 Then cur.V = BitConverter.ToUInt32(sr.Data, 0) / 100.0
-                    Case "TIAS"
-                        If sr.Data.Length >= 2 Then cur.Tias = BitConverter.ToInt16(sr.Data, 0)
-                        If have Then cur.Authored = True : authored(cur.Index) = cur : have = False
-                End Select
+            For Each capa In tintSource
+                If capa Is Nothing Then Continue For
+                If capa.Indice.HasValue Then cur = New SseTintEdit With {.Index = CInt(capa.Indice.Value), .A = 255} : have = True
+                If capa.Rojo.HasValue AndAlso capa.Verde.HasValue AndAlso capa.Azul.HasValue Then
+                    cur.R = capa.Rojo.Value : cur.G = capa.Verde.Value : cur.B = capa.Azul.Value
+                    If capa.Alfa.HasValue Then cur.A = capa.Alfa.Value
+                End If
+                If capa.Cobertura.HasValue Then cur.V = capa.Cobertura.Value / 100.0
+                If capa.Preseleccion.HasValue Then
+                    cur.Tias = capa.Preseleccion.Value
+                    If have Then cur.Authored = True : authored(cur.Index) = cur : have = False
+                End If
             Next
         End If
         ' 2) All RACE tint layers (defaults) in RACE order; authored overrides per index.
@@ -2041,7 +2074,7 @@ Public Class EditFace_Form
     ''' <para>Sólo toca las AUTHORED: las que ya están en el default no se re-escriben, así el conteo del diálogo es
     ''' el trabajo REAL y no el total de capas de la raza. Si no hay ninguna, avisa y no hace nada — un botón
     ''' destructivo que "funciona" sin cambiar nada es peor que uno que dice que no había nada que hacer.</para>
-    ''' <para>⛔ `ApplySseTintOverlay` + `ScheduleRefresh` corren UNA vez al final, no por capa: la recomposición de
+    ''' <para>`ApplySseTintOverlay` + `ScheduleRefresh` corren UNA vez al final, no por capa: la recomposición de
     ''' la textura de cara es cara y hacerla N veces congelaría la UI en razas con muchas capas.</para></summary>
     Private Sub OnSseTintResetAllLayers(sender As Object, e As EventArgs) Handles ButtonSseTintResetAll.Click
         If _sseTintLayers.Count = 0 Then Return
@@ -2144,7 +2177,7 @@ Public Class EditFace_Form
         If p Is Nothing Then Return
         ' Emit ONLY authored layers (the engine composes RACE default for the rest) — matches how the NPC record
         ' stores tints and keeps the write minimal/faithful. RACE order preserved (list is in RACE order).
-        Dim outList As New List(Of NPC_RawSubrecord)
+        Dim outList As New List(Of LooksmenuLoader.CapaDeTinteSsePreset)
         ' RaceMenu-only per-layer custom mask texture map (index → path). A custom mask can ride on a layer even
         ' when its colour is the RACE default, so it is emitted independently of the Authored gate below.
         Dim texMap As Dictionary(Of Integer, String) = Nothing
@@ -2154,12 +2187,11 @@ Public Class EditFace_Form
                 texMap(t.Index) = t.MaskPathOverride
             End If
             If Not t.Authored Then Continue For
-            outList.Add(New NPC_RawSubrecord With {.Sig = "TINI", .Data = BitConverter.GetBytes(CUShort(t.Index))})
-            outList.Add(New NPC_RawSubrecord With {.Sig = "TINC", .Data = New Byte() {t.R, t.G, t.B, t.A}})
-            outList.Add(New NPC_RawSubrecord With {.Sig = "TINV", .Data = BitConverter.GetBytes(CUInt(Math.Max(0, Math.Round(t.V * 100))))})
-            outList.Add(New NPC_RawSubrecord With {.Sig = "TIAS", .Data = BitConverter.GetBytes(t.Tias)})
+            outList.Add(New LooksmenuLoader.CapaDeTinteSsePreset With {
+                .Indice = CUShort(t.Index), .Rojo = t.R, .Verde = t.G, .Azul = t.B, .Alfa = t.A,
+                .Cobertura = CUInt(Math.Max(0, Math.Round(t.V * 100))), .Preseleccion = t.Tias})
         Next
-        p.SseTintRawOverride = outList
+        p.SseTintLayers = outList
         p.HasSseTints = True
         p.SseTintTexOverride = texMap
     End Sub
@@ -2172,7 +2204,7 @@ Public Class EditFace_Form
             Dim rawNpc = TryGetRawNpc()
 
             ' --- HeadParts ---
-            ' ⛔ EL GATE ES "¿la lista YA es un superset del PNAM crudo?" (HeadPartFormIDsIncludeRawExtras),
+            ' EL GATE ES "¿la lista YA es un superset del PNAM crudo?" (HeadPartFormIDsIncludeRawExtras),
             ' NO "¿está vacía?". Con el gate viejo (Count = 0) la bandera quedaba en False cada vez que Edit
             ' Face abría sobre un overlay que YA traía head parts — Load LooksMenu/RaceMenu, Paste Look, o el
             ' bundle del LM SkinTemplate que puebla la lista desde Edit Body (EditBody_Form.vb:366). Con la
@@ -2188,7 +2220,7 @@ Public Class EditFace_Form
             ' cada NPC: PNAM guardado con hairline stale en FO4 1687 de 1781 NPCs y SSE 18 de 2973 con el gate
             ' viejo, 0 y 0 con éste. El camino "Edit Face fresco" (overlay vacío) sale idéntico byte a byte:
             ' ownedParts queda vacío, el set de huérfanos queda vacío y la unión es la de siempre.
-            If Not p.HeadPartFormIDsIncludeRawExtras AndAlso rawNpc IsNot Nothing AndAlso rawNpc.HeadPartFormIDs.Count > 0 Then
+            If Not p.HeadPartFormIDsIncludeRawExtras AndAlso rawNpc IsNot Nothing AndAlso rawNpc.Record.PartesDeCabeza().Count > 0 Then
                 ' Seed mirroring the render's MergeHeadPartsWithRaceDefaults rule
                 ' (MainForm.vb:6549-6580): per non-Misc PartType keep exactly one (NPC wins
                 ' over RACE-default), Misc accumulates without dedup-by-type. Without this we
@@ -2203,7 +2235,7 @@ Public Class EditFace_Form
                 Dim freestandingMisc As New List(Of UInteger)
                 Dim seenMisc As New HashSet(Of UInteger)
 
-                Dim raceDefaults = If(_isFemale, _race?.FemaleHeadPartFormIDs, _race?.MaleHeadPartFormIDs)
+                Dim raceDefaults = If(_isFemale, _raceFemaleHeadPartFormIDs, _raceMaleHeadPartFormIDs)
                 Dim seedFromList = Sub(list As IEnumerable(Of UInteger))
                                        If list Is Nothing Then Return
                                        For Each fid In list
@@ -2256,10 +2288,10 @@ Public Class EditFace_Form
                 Dim ownedForOrphanCheck As New List(Of UInteger)(ownedParts)
                 ownedForOrphanCheck.AddRange(lmParts)
                 Dim orphanedRawMisc = HeadPartResolver.ComputeReplacedParentOrphanMisc(
-                    rawNpc.HeadPartFormIDs, ownedForOrphanCheck, AddressOf ResolveHdptForCascade)
+                    rawNpc.Record.PartesDeCabeza(), ownedForOrphanCheck, AddressOf ResolveHdptForCascade)
 
                 seedFromList(raceDefaults)
-                seedFromList(rawNpc.HeadPartFormIDs.Where(Function(f) Not orphanedRawMisc.Contains(f)))
+                seedFromList(rawNpc.Record.PartesDeCabeza().Where(Function(f) Not orphanedRawMisc.Contains(f)))
                 seedFromList(ownedParts)
                 seedFromList(lmParts)
 
@@ -2291,9 +2323,9 @@ Public Class EditFace_Form
             ' --- HairColor ---
             ' Do NOT copy rawNpc.HairColorFormID into the overlay. preset.HairColorFormID = 0
             ' is the "preserve" semantic per LM contract (CharGenInterface.cpp:344-359 — missing
-            ' key = preserve runtime value) AND per ESP contract (HCLF subrecord is optional per
-            ' wbDefinitionsFO4.pas:10749, missing = inherit from template chain or RACE.HCLF
-            ' default per wbDefinitionsFO4.pas:11575). The combo arranges in "(none / preserve)"
+            ' key = preserve runtime value) AND per ESP contract (HCLF subrecord is optional,
+            ' missing = inherit from template chain or RACE.HCLF default). The combo arranges
+            ' in "(none / preserve)"
             ' when the overlay carries no override; the swatch resolves the effective color
             ' (race default chain) so the user sees what's currently visible on the NPC.
             PopulateHairColorCombo()
@@ -2311,10 +2343,8 @@ Public Class EditFace_Form
                 ' Mark as "present in this preset" the moment the editor takes ownership: from now
                 ' on the user's edits (including deletions) authoritatively define the field. If the
                 ' overlay was empty, seed it from the raw NPC so the user sees the current state to edit.
-                If p.FaceTintLayers.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.FaceTintLayers.Count > 0 Then
-                    For Each tl In rawNpc.FaceTintLayers
-                        p.FaceTintLayers.Add(CloneFaceTint(tl))
-                    Next
+                If p.FaceTintLayers.Count = 0 AndAlso rawNpc IsNot Nothing Then
+                    p.FaceTintLayers.AddRange(LooksmenuLoader.CapasDeTinteDelRecord(rawNpc.Record))
                 End If
                 p.HasFaceTintLayers = True
                 RefreshTintsList()
@@ -2323,8 +2353,8 @@ Public Class EditFace_Form
             ' --- Vertex morphs (MSDK/MSDV) + Face bone regions (FMRI/FMRS): FO4-only. SSE usa el tab
             ' "Morphs (SSE)" (NAM9/NAMA), sembrado por LoadSseMorphValues; sus controles FO4 no existen. ---
             If Not _isSSE Then
-                If p.ChargenFaceMorphs.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.MorphValues.Count > 0 Then
-                    For Each kv In rawNpc.MorphValues
+                If p.ChargenFaceMorphs.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.Record.MorfosDeCara().Count > 0 Then
+                    For Each kv In rawNpc.Record.MorfosDeCara()
                         p.ChargenFaceMorphs(kv.Key) = kv.Value
                     Next
                 End If
@@ -2332,9 +2362,12 @@ Public Class EditFace_Form
                 BuildMorphGroupRows()
                 LoadMorphGroupValues()
 
-                If p.FaceBoneRegions.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.FaceMorphs.Count > 0 Then
-                    For Each fm In rawNpc.FaceMorphs
-                        p.FaceBoneRegions(fm.Index) = fm.Values.ToArray()
+                Dim rawFo4 = TryCast(If(rawNpc Is Nothing, Nothing, rawNpc.Record), Canon.NpcFO4)
+                If p.FaceBoneRegions.Count = 0 AndAlso rawFo4 IsNot Nothing Then
+                    For Each fm In rawFo4.FaceMorphs
+                        p.FaceBoneRegions(fm.FaceMorphIndex) = New Single() {
+                            fm.ValuesPositionX, fm.ValuesPositionY, fm.ValuesPositionZ,
+                            fm.ValuesRotationX, fm.ValuesRotationY, fm.ValuesRotationZ, fm.ValuesScale}
                     Next
                 End If
                 p.HasFaceBoneRegions = True
@@ -2350,7 +2383,7 @@ Public Class EditFace_Form
             ' control huerfano ni escribir el canal FO4-only en un preset de SSE.
             If Not _isSSE Then
                 If Not _hadPriorOverlay AndAlso rawNpc IsNot Nothing Then
-                    p.FacialMorphIntensity = If(rawNpc.FacialMorphIntensity > 0.0F, rawNpc.FacialMorphIntensity, 1.0F)
+                    p.FacialMorphIntensity = If(rawNpc.Record.IntensidadDeMorfoFacial() > 0.0F, rawNpc.Record.IntensidadDeMorfoFacial(), 1.0F)
                 End If
                 TrackBarFmin.Value = p.FacialMorphIntensity
             End If
@@ -2364,7 +2397,7 @@ Public Class EditFace_Form
         Dim rec = _pluginManager.GetRecord(_rootNpcFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Return Nothing
         Dim pluginName = If(rec.SourcePluginName <> "", rec.SourcePluginName, "Unknown")
-        Return RecordParsers.ParseNPC(rec, pluginName, _pluginManager)
+        Return RecordParsers.ParseNPC(rec, _pluginManager)
     End Function
 
     ' =====================================================================
@@ -2456,7 +2489,7 @@ Public Class EditFace_Form
             ' RACE defaults visibles la declara en su HNAM? Si sí, sale como sub-row del parent y
             ' NO como top-level entry. Esto elimina la duplicación visual que vanilla NPC.PNAM
             ' frecuentemente trae (hairline listada tanto en HNAM como standalone Misc en PNAM).
-            Dim raceDefaults = If(_isFemale, _race?.FemaleHeadPartFormIDs, _race?.MaleHeadPartFormIDs)
+            Dim raceDefaults = If(_isFemale, _raceFemaleHeadPartFormIDs, _raceMaleHeadPartFormIDs)
             Dim visibleParents As New List(Of UInteger)
             Dim visibleParentIsRaceDefault As New Dictionary(Of UInteger, Boolean)
 
@@ -2605,7 +2638,7 @@ Public Class EditFace_Form
         Dim raceEditorID = If(_race?.EditorID, "?")
         ' Pass the race's gender-defaults so the picker accepts them even when the HDPT's own
         ' RNAM is inconsistent (vanilla mostly clean, mods sometimes diverge).
-        Dim raceDefaults = If(_isFemale, _race?.FemaleHeadPartFormIDs, _race?.MaleHeadPartFormIDs)
+        Dim raceDefaults = If(_isFemale, _raceFemaleHeadPartFormIDs, _raceMaleHeadPartFormIDs)
         Using dlg As New HeadPartPicker_Form(_pluginManager, _raceFormID, raceEditorID, _isFemale, partType, partTypeLabel, raceDefaults)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             Dim newFid = dlg.SelectedFormID
@@ -2857,7 +2890,7 @@ Public Class EditFace_Form
         If Not _isSSE Then Return
         Dim rgb = Preset.SseHairColorRgb
         ButtonSseCustomHairClear.Enabled = rgb.HasValue
-        ' ⭐ Con un color custom activo la LISTA no hace nada: el RGB gana en la resolución del material
+        ' Con un color custom activo la LISTA no hace nada: el RGB gana en la resolución del material
         ' (ApplyMaterialPaletteHairColor lo resuelve antes que el CLFM), así que tocar el combo sería un
         ' no-op silencioso. Se deshabilita —junto con su Clear, que sólo actúa sobre el combo— para que el
         ' control refleje quién manda. "Use list colour" es la salida: borra el RGB y los reactiva.
@@ -2999,18 +3032,18 @@ Public Class EditFace_Form
     ''' CharGenInterface.cpp: the in-game shader binds the LUT from material TXST slot 3, not from
     ''' the RACE record). Vanilla HumanChildRace ships without HNAM/HLTX precisely because the
     ''' BGSM carries it; without BGSM-first, the swatch shows no preview for child NPCs.</para>
-    ''' <para>⛔ Y por eso el swatch DIVERGE a propósito del tinte de CEJAS, que sí sale del RACE
+    ''' <para>Y por eso el swatch DIVERGE a propósito del tinte de CEJAS, que sí sale del RACE
     ''' (LmHairColorLutLoader.ResolveBrowPaletteTexture, verificado en el binario). Son dos leyes distintas
     ''' del motor: la malla usa la paleta de su material (ProcessHairColor) y la cara la del RACE
     ''' (ProcessEyebrowPath). Este swatch previsualiza la MALLA, así que sigue la de la malla.</para></summary>
     Private Sub EnsureHairPaletteLoaded(Optional swatchColorFormID As UInteger = 0UI)
-        ' ⛔ EARLY-OUT BARATO, PRIMERO. Resolver la key cuesta: ResolveHairPaletteTexture recorre las mallas
+        ' EARLY-OUT BARATO, PRIMERO. Resolver la key cuesta: ResolveHairPaletteTexture recorre las mallas
         ' del preview y, si ninguna trae paleta (NPC pelado, o cualquier Paint antes de que cargue el modelo),
-        ' cae a ResolveRaceHairLookupTexture -> RecordParsers.ParseRACE, que NO tiene cache y arma un
-        ' RACE_Data entero. Esto corre en un handler de Paint: sin este corte, un resize del panel disparaba
-        ' un ParseRACE por frame. La LUT efectiva solo depende de (color pedido, modelo cargado), asi que
+        ' cae a ResolveRaceHairLookupTexture -> Canon.CanonRecords.Race, que NO tiene cache y arma la vista
+        ' entera. Esto corre en un handler de Paint: sin este corte, un resize del panel disparaba un parse
+        ' por frame. La LUT efectiva solo depende de (color pedido, modelo cargado), asi que
         ' mientras el color no cambie y ya haya bitmap, no hay nada que recalcular.
-        ' ⛔ NO exige que haya bitmap: si ya se intentó para ESTE color, el resultado —haya salido bitmap o
+        ' NO exige que haya bitmap: si ya se intentó para ESTE color, el resultado —haya salido bitmap o
         ' no— ya está decidido. Exigirlo dejaba el corte inservible justo tras un fallo TERMINAL (DDS ausente
         ' o indecodificable, p. ej. el 'vhaircolor_lgrad_d.dds' que KSHairdos nunca empaquetó): sin bitmap,
         ' cada Paint volvía a hacer el resolve caro para volver a fallar. El caso transitorio no se cuela acá
@@ -3029,7 +3062,7 @@ Public Class EditFace_Form
         If _mainForm IsNot Nothing AndAlso host IsNot Nothing AndAlso host.LastRenderedState IsNot Nothing Then
             raw = NpcMaterialResolver.ResolveHairPaletteTexture(host, host.LastRenderedState, _pluginManager)
             ' El swatch previsualiza el PELO, así que pasa por el mismo gate que la malla (ProcessHairColor).
-            ' ⛔ Y se evalúa con el color que el usuario ACABA DE ELEGIR (swatchColorFormID), NO con
+            ' Y se evalúa con el color que el usuario ACABA DE ELEGIR (swatchColorFormID), NO con
             ' host.LastRenderedState.HairColorFormID, que es el todavía APLICADO. La fila ya salía del item
             ' seleccionado (OnPaintHairColorSwatch usa it.RemappingIndex): con el gate mirando el color viejo,
             ' elegir un color de LooksMenu dibujaba su fila sobre la paleta VANILLA — o sea, el swatch seguía
@@ -3039,20 +3072,20 @@ Public Class EditFace_Form
             raw = LmHairColorLutLoader.ApplyCustomLutMesh(raw, gateFid)
         End If
 
-        ' ⛔ La LUT efectiva AHORA DEPENDE del color de pelo. Antes no: había una sola paleta posible por NPC,
+        ' La LUT efectiva AHORA DEPENDE del color de pelo. Antes no: había una sola paleta posible por NPC,
         ' así que decodificar una vez y latchear para siempre era correcto. Con el registro de LooksMenu,
         ' elegir otro color puede cambiar la TEXTURA y el bitmap cacheado pasa a ser de otra.
         Dim resolvedKey = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
-        ' ⛔ EL gateFid SE ACTUALIZA ACÁ, ANTES de cualquier Return. Si se dejaba para más abajo, el camino
+        ' EL gateFid SE ACTUALIZA ACÁ, ANTES de cualquier Return. Si se dejaba para más abajo, el camino
         ' "cambió el color pero la textura es la misma" —que es EL caso normal: los 32 colores vanilla
         ' comparten haircolor_lgrad_d.dds— salía por el early-out de abajo sin escribirlo, y el gateFid
         ' quedaba clavado en el primer color PARA SIEMPRE. Efecto: el corte O(1) de arriba no volvía a
-        ' dispararse nunca y volvíamos a pagar un ParseRACE por Paint — la regresión que ese corte existe
+        ' dispararse nunca y volvíamos a pagar un parse por Paint — la regresión que ese corte existe
         ' para matar. Se captura antes el "cambió el color", que la rama del transitorio necesita.
         Dim colourChanged = (swatchColorFormID <> _hairPaletteGateFid)
         _hairPaletteGateFid = swatchColorFormID
 
-        ' ⛔ Un resolvedKey VACÍO es transitorio (host/estado a medio armar), no un cambio de paleta: si se
+        ' Un resolvedKey VACÍO es transitorio (host/estado a medio armar), no un cambio de paleta: si se
         ' tratara como cambio, cada Paint durante un rebuild tiraría el bitmap y el swatch parpadearía en
         ' blanco. Sólo se invalida el cache cuando hay una key nueva y REAL.
         ' PERO si además cambió el COLOR pedido, el bitmap cacheado es de otro color y el Paint ya calculó la
@@ -3148,7 +3181,7 @@ Public Class EditFace_Form
     Private Class TintRowTag
         Public OriginalIdx As Integer = -1
         Public IsRaceDefault As Boolean = False
-        Public VirtualLayer As NPC_FaceTintLayerData
+        Public VirtualLayer As LooksmenuLoader.CapaDeTintePreset
     End Class
 
     Private Sub RefreshTintsList()
@@ -3165,33 +3198,43 @@ Public Class EditFace_Form
             ' .MergeTintLayersWithRaceDefaults). For each TintTemplateGroup the NPC doesn't touch,
             ' every Option whose TTED is present is injected as a virtual default. This mirrors
             ' the engine's CK behaviour and keeps the editor's view 1:1 with what the render draws.
-            Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(p.FaceTintLayers, _race, _isFemale, _pluginManager)
+            ' Las capas del preset pasan a capas efectivas ANTES del merge -y no adentro-, para que cada
+            ' capa autorada conserve su identidad: el mapa de abajo la usa para volver a la posicion que
+            ' ocupa en la lista del preset, que es lo que las rutas de edicion mutan.
+            Dim autoradas As New List(Of FaceTintInputBuilder.MergedTintLayer)(p.FaceTintLayers.Count)
+            Dim npcOriginalIdxByRef As New Dictionary(Of FaceTintInputBuilder.MergedTintLayer, Integer)
+            For i = 0 To p.FaceTintLayers.Count - 1
+                Dim origen = p.FaceTintLayers(i)
+                Dim efectiva As New FaceTintInputBuilder.MergedTintLayer With {
+                    .Discriminator = origen.Discriminator, .Index = origen.Index, .Value = origen.Value,
+                    .Color = origen.Color, .TemplateColorIndex = origen.TemplateColorIndex,
+                    .IsRaceDefault = False}
+                autoradas.Add(efectiva)
+                npcOriginalIdxByRef(efectiva) = i
+            Next
+            Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(autoradas, _tintGroups, _pluginManager)
             ' Display in RACE-Group order (the same order the compositor uses), tied-broken by the
             ' layer's original position in the merged list so two layers with the same Index keep
             ' a stable relative order. NPC-authored layers carry their p.FaceTintLayers index in
             ' OriginalIdx so OnTintSelectionChanged / OnRemoveTint can still mutate the underlying
             ' list; race-default rows carry OriginalIdx=-1 so the same paths can refuse to mutate.
-            Dim npcOriginalIdxByRef As New Dictionary(Of NPC_FaceTintLayerData, Integer)
-            For i = 0 To p.FaceTintLayers.Count - 1
-                npcOriginalIdxByRef(p.FaceTintLayers(i)) = i
-            Next
             Dim ordered = merged.
                 Select(Function(m, mergedIdx)
                            Dim r As Integer = Integer.MaxValue
-                           _tintRankByIndex.TryGetValue(m.Layer.Index, r)
+                           _tintRankByIndex.TryGetValue(m.Index, r)
                            Dim originalIdx As Integer = -1
-                           If Not m.IsRaceDefault Then npcOriginalIdxByRef.TryGetValue(m.Layer, originalIdx)
+                           If Not m.IsRaceDefault Then npcOriginalIdxByRef.TryGetValue(m, originalIdx)
                            Return New With {.Merged = m, mergedIdx, .Rank = r, originalIdx}
                        End Function).
                 OrderBy(Function(x) x.Rank).
                 ThenBy(Function(x) x.mergedIdx).
                 ToList()
             For Each entry In ordered
-                Dim tl = entry.Merged.Layer
-                Dim grp = DescribeTintGroup(tl)
-                Dim slot = DescribeTintSlot(tl)
-                Dim layerName = DescribeTintLayer(tl)
-                Dim optForTag = _race?.FindTintOption(tl.Index, _isFemale)
+                Dim tl = entry.Merged
+                Dim grp = DescribeTintGroup(tl.Index)
+                Dim slot = DescribeTintSlot(tl.Index)
+                Dim layerName = DescribeTintLayer(tl.Index)
+                Dim optForTag = _tintGroups.BuscarOpcion(tl.Index)
                 ' Missing tint (2026-07-09): an NPC-authored layer whose Index doesn't resolve against
                 ' this race (e.g. a LooksMenu custom tint whose mod isn't installed) is SHOWN but tagged
                 ' "Missing". It stays inert: preserved verbatim in p.FaceTintLayers (round-trips on Save),
@@ -3204,7 +3247,7 @@ Public Class EditFace_Form
                     Logger.LogLazy(Function() $"[LMLoad] Face editor shows tint layer Index {idxLocal} as MISSING (no option in race for this gender) — preserved verbatim, not applied.")
                     grp = "Missing"
                 End If
-                Dim isCustomLm As Boolean = optForTag IsNot Nothing AndAlso optForTag.IsCustomLm
+                Dim isCustomLm As Boolean = optForTag IsNot Nothing AndAlso optForTag.EsDeLooksMenu
                 If isCustomLm Then layerName &= "  [LM]"
                 If isMissing Then layerName &= " (MISSING — not applied)"
                 If entry.Merged.IsRaceDefault Then layerName &= " (RACE)"
@@ -3217,12 +3260,18 @@ Public Class EditFace_Form
                 Dim row As New ListViewItem(grp)
                 row.SubItems.Add(slot)
                 row.SubItems.Add(layerName)
-                row.SubItems.Add(DescribeTintColor(tl))
+                row.SubItems.Add(DescribeTintColor(tl.Index, tl.Color))
                 row.SubItems.Add(tl.Value.ToString(CultureInfo.InvariantCulture))
+                Dim virtual_ As LooksmenuLoader.CapaDeTintePreset = Nothing
+                If entry.Merged.IsRaceDefault Then
+                    virtual_ = New LooksmenuLoader.CapaDeTintePreset With {
+                        .Discriminator = tl.Discriminator, .Index = tl.Index, .Value = tl.Value,
+                        .Color = tl.Color, .TemplateColorIndex = tl.TemplateColorIndex}
+                End If
                 row.Tag = New TintRowTag With {
                     .OriginalIdx = entry.originalIdx,
                     .IsRaceDefault = entry.Merged.IsRaceDefault,
-                    .VirtualLayer = If(entry.Merged.IsRaceDefault, tl, Nothing)
+                    .VirtualLayer = virtual_
                 }
                 If isMissing Then
                     row.ForeColor = Color.FromArgb(180, 60, 40)   ' missing/orphan tint accent (muted red)
@@ -3239,31 +3288,35 @@ Public Class EditFace_Form
         UpdateTintDetail()
     End Sub
 
-    Private Function DescribeTintGroup(tl As NPC_FaceTintLayerData) As String
+    ' Los describidores toman el INDICE de la capa (y el color, el que lo necesita) y no la capa: la
+    ' fila puede venir de una capa del preset o de una capa efectiva heredada de la RACE, que son dos
+    ' tipos distintos, y lo unico que estas funciones miran es el dato.
+
+    Private Function DescribeTintGroup(index As UShort) As String
         Dim grpName As String = Nothing
-        If _tintGroupByIndex.TryGetValue(tl.Index, grpName) Then Return grpName
+        If _tintGroupByIndex.TryGetValue(index, grpName) Then Return grpName
         Return ""
     End Function
 
-    Private Function DescribeTintSlot(tl As NPC_FaceTintLayerData) As String
-        Dim opt = _race?.FindTintOption(tl.Index, _isFemale)
-        If opt Is Nothing Then Return $"#{tl.Index}"
-        Return $"#{tl.Index} (slot {opt.Slot})"
+    Private Function DescribeTintSlot(index As UShort) As String
+        Dim opt = _tintGroups.BuscarOpcion(index)
+        If opt Is Nothing Then Return $"#{index}"
+        Return $"#{index} (slot {opt.Slot})"
     End Function
 
-    Private Function DescribeTintLayer(tl As NPC_FaceTintLayerData) As String
-        Dim opt = _race?.FindTintOption(tl.Index, _isFemale)
-        If opt Is Nothing Then Return $"(missing tint #{tl.Index})"
+    Private Function DescribeTintLayer(index As UShort) As String
+        Dim opt = _tintGroups.BuscarOpcion(index)
+        If opt Is Nothing Then Return $"(missing tint #{index})"
         Return If(String.IsNullOrEmpty(opt.Name), $"option {opt.Index}", opt.Name)
     End Function
 
-    Private Function DescribeTintColor(tl As NPC_FaceTintLayerData) As String
-        Dim opt = _race?.FindTintOption(tl.Index, _isFemale)
+    Private Function DescribeTintColor(index As UShort, color As Color) As String
+        Dim opt = _tintGroups.BuscarOpcion(index)
         If opt Is Nothing Then Return ""
         Select Case opt.EntryType
-            Case RACE_TintEntryType.Palette
-                Return $"#{tl.Color.R:X2}{tl.Color.G:X2}{tl.Color.B:X2}"
-            Case RACE_TintEntryType.TextureSet
+            Case ClaseDeTinte.Palette
+                Return $"#{color.R:X2}{color.G:X2}{color.B:X2}"
+            Case ClaseDeTinte.TextureSet
                 Return "(texture)"
             Case Else
                 Return "(mask)"
@@ -3292,7 +3345,7 @@ Public Class EditFace_Form
         _suspendEvents = True
         Try
             Dim p = Preset
-            Dim tl As NPC_FaceTintLayerData = Nothing
+            Dim tl As LooksmenuLoader.CapaDeTintePreset = Nothing
             If _currentTintIsRaceDefault Then
                 tl = _currentTintVirtualLayer
             ElseIf _currentTintIndex >= 0 AndAlso _currentTintIndex < p.FaceTintLayers.Count Then
@@ -3307,10 +3360,10 @@ Public Class EditFace_Form
                 PanelTintColorSwatch.BackColor = SystemColors.Control
                 Return
             End If
-            LabelTintLayerName.Text = DescribeTintLayer(tl) & If(_currentTintIsRaceDefault, " (RACE default — edit to override)", "")
+            LabelTintLayerName.Text = DescribeTintLayer(tl.Index) & If(_currentTintIsRaceDefault, " (RACE default — edit to override)", "")
 
-            Dim opt = _race?.FindTintOption(tl.Index, _isFemale)
-            Dim isPalette = (opt IsNot Nothing AndAlso opt.EntryType = RACE_TintEntryType.Palette)
+            Dim opt = _tintGroups.BuscarOpcion(tl.Index)
+            Dim isPalette = (opt IsNot Nothing AndAlso opt.EntryType = ClaseDeTinte.Palette)
             ' Race-default rows ARE editable: the first edit (palette pick / custom RGB / percent
             ' slider) materializes the virtual layer into p.FaceTintLayers as a real NPC override.
             ' From that point on the row goes from gray to black and behaves like any other layer.
@@ -3462,7 +3515,7 @@ Public Class EditFace_Form
         ' Picking a swatch sets the colour; the resolver then picks the matching preset, so two
         ' presets sharing a colour collapse to the same index the Save path would compute.
         tl.Color = it.SwatchColor
-        Dim optPick = _race?.FindTintOption(tl.Index, _isFemale)
+        Dim optPick = _tintGroups.BuscarOpcion(tl.Index)
         If optPick IsNot Nothing Then
             tl.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optPick, _pluginManager)
         Else
@@ -3482,7 +3535,7 @@ Public Class EditFace_Form
         ' Source the dialog's seed color from the active layer (real or virtual) WITHOUT
         ' promoting yet — promotion only happens if the user actually picks a colour. Cancel
         ' must leave p.FaceTintLayers untouched.
-        Dim seedTl As NPC_FaceTintLayerData = Nothing
+        Dim seedTl As LooksmenuLoader.CapaDeTintePreset = Nothing
         If _currentTintIsRaceDefault Then
             seedTl = _currentTintVirtualLayer
         ElseIf _currentTintIndex >= 0 AndAlso _currentTintIndex < Preset.FaceTintLayers.Count Then
@@ -3503,7 +3556,7 @@ Public Class EditFace_Form
             ' Re-derive the index from the new colour through the single resolver, identical to Save:
             ' a palette preset whose CLFM RGB matches → that preset (alpha-closest to opacity among
             ' equal-colour presets); no match → -1 (custom). Keeps live preview and Save consistent.
-            Dim optCustom = _race?.FindTintOption(tl.Index, _isFemale)
+            Dim optCustom = _tintGroups.BuscarOpcion(tl.Index)
             If optCustom IsNot Nothing Then
                 tl.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optCustom, _pluginManager)
             End If
@@ -3570,7 +3623,7 @@ Public Class EditFace_Form
         ' Columns (in order): Group | Slot | Layer | Color | %
         ' SubItems(0) is the Group cell (the row's Text); we touch the dynamic cells only:
         ' Color is index 3 and Percent is index 4.
-        row.SubItems(3).Text = DescribeTintColor(tl)
+        row.SubItems(3).Text = DescribeTintColor(tl.Index, tl.Color)
         row.SubItems(4).Text = tl.Value.ToString(CultureInfo.InvariantCulture)
     End Sub
 
@@ -3582,7 +3635,7 @@ Public Class EditFace_Form
         ' duplicates would over-saturate the compositor with no way to disambiguate in the
         ' detail panel. Pre-filtering at the picker is cleaner than a post-Add MessageBox.
         If _race Is Nothing Then Return
-        Dim groups = If(_isFemale, _race.FemaleTintTemplateGroups, _race.MaleTintTemplateGroups)
+        Dim groups = _tintGroups
         If groups Is Nothing OrElse groups.Count = 0 Then Return
 
         Dim p = Preset
@@ -3593,8 +3646,8 @@ Public Class EditFace_Form
             Dim opt = dlg.SelectedOption
             If opt Is Nothing Then Return
 
-            Dim newLayer As New NPC_FaceTintLayerData With {
-                .Discriminator = If(opt.EntryType = RACE_TintEntryType.Palette, CUShort(1), CUShort(2)),
+            Dim newLayer As New LooksmenuLoader.CapaDeTintePreset With {
+                .Discriminator = If(opt.EntryType = ClaseDeTinte.Palette, CUShort(1), CUShort(2)),
                 .Index = opt.Index,
                 .Value = 50,
                 .Color = Color.FromArgb(255, 200, 200, 200),
@@ -3602,7 +3655,7 @@ Public Class EditFace_Form
             }
             ' Seed RGB from the palette's first TemplateColor when available, matching LM-in-game
             ' behaviour (clicking Add on an unset layer lands on the first color).
-            If opt.EntryType = RACE_TintEntryType.Palette AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
+            If opt.EntryType = ClaseDeTinte.Palette AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
                 Dim firstTplCol = opt.TemplateColors(0)
                 If firstTplCol.ColorFormID <> 0UI Then
                     Dim rec = _pluginManager.GetRecord(firstTplCol.ColorFormID)
@@ -3865,8 +3918,8 @@ Public Class EditFace_Form
     ''' Slider width matches the preset intensity slider.</summary>
     Private Function BuildBidiSliderRow(key As UInteger) As Control
         Dim mvDef = ResolveMorphValueDef(key)
-        Dim minName = If(mvDef IsNot Nothing AndAlso Not String.IsNullOrEmpty(mvDef.MinName), mvDef.MinName, $"key 0x{key:X8}")
-        Dim maxName = If(mvDef IsNot Nothing AndAlso Not String.IsNullOrEmpty(mvDef.MaxName), mvDef.MaxName, $"key 0x{key:X8}")
+        Dim minName = If(mvDef IsNot Nothing AndAlso Not String.IsNullOrEmpty(mvDef.ValueMinName), mvDef.ValueMinName, $"key 0x{key:X8}")
+        Dim maxName = If(mvDef IsNot Nothing AndAlso Not String.IsNullOrEmpty(mvDef.ValueMaxName), mvDef.ValueMaxName, $"key 0x{key:X8}")
 
         Dim row As New TableLayoutPanel() With {
             .Dock = DockStyle.Top, .AutoSize = True,
@@ -3908,8 +3961,8 @@ Public Class EditFace_Form
         Return row
     End Function
 
-    Private Function ResolveMorphValueDef(key As UInteger) As RACE_MorphValueDef
-        Return _race?.MorphValues?.FirstOrDefault(Function(mv) mv.Index = key)
+    Private Function ResolveMorphValueDef(key As UInteger) As Canon.RaceFO4_MorphValues
+        Return _raceMorphValues?.FirstOrDefault(Function(mv) mv.ValueIndex = key)
     End Function
 
     Private Class PresetItem
@@ -4313,7 +4366,7 @@ Public Class EditFace_Form
     ''' <summary>SSE: revert the RaceMenu EXTENDED sliders (Preset.SseCustomMorphs, the NiOverride ValueSet keyed by
     ''' slider name) to the construction snapshot. These tabs are code-built, so they are matched by NAME — they are
     ''' not Designer fields like the ones above.
-    ''' <para>⛔ Sin esto el Reset de esta pestaña no hacía NADA: el dispatch no tenía rama y el botón quedaba mudo.
+    ''' <para>Sin esto el Reset de esta pestaña no hacía NADA: el dispatch no tenía rama y el botón quedaba mudo.
     ''' El canal es SUYO — ResetSseMorphsSection (vanilla NAM9/NAMA) ya no lo toca.</para></summary>
     Private Sub ResetSseRaceMenuSection()
         Dim p = Preset
@@ -4332,7 +4385,7 @@ Public Class EditFace_Form
     End Sub
 
     ''' <summary>SSE: revert the RaceMenu FACE PAINT overlays to the construction snapshot.
-    ''' <para>⛔ Sólo los nodos de zona Face: Body/Hands/Feet viven en el MISMO carrier
+    ''' <para>Sólo los nodos de zona Face: Body/Hands/Feet viven en el MISMO carrier
     ''' (<c>Preset.SseBodyOverlays</c>) pero se editan en Edit Body, así que pisar el array entero acá resetearía
     ''' una sección que este formulario no posee.</para></summary>
     Private Sub ResetSseFaceOverlaysSection()
@@ -4382,7 +4435,7 @@ Public Class EditFace_Form
 
     ''' <summary>SSE: revert the VANILLA NAM9/NAMA sliders to the construction snapshot (_seedPreset), else to the
     ''' NPC's authored NAM9/NAMA. Mirrors ResetVertexMorphsSection but for the SSE morph channel.
-    ''' <para>⛔ NO toca <c>SseCustomMorphs</c>: ese canal es de la pestaña "RaceMenu · Sliders"
+    ''' <para>NO toca <c>SseCustomMorphs</c>: ese canal es de la pestaña "RaceMenu · Sliders"
     ''' (<see cref="ResetSseRaceMenuSection"/>). Antes lo borraba, así que un Reset de ESTA sección se llevaba
     ''' puestos los sliders extendidos de la OTRA —y encima dejaba sus controles mostrando el valor viejo, porque
     ''' PopulateSseMorphTab sólo reconstruye las filas vanilla.</para></summary>
@@ -4423,7 +4476,7 @@ Public Class EditFace_Form
     Private Sub ResetSseTintsSection()
         Dim p = Preset
         Dim src = _seedPreset
-        p.SseTintRawOverride = CloneRawSubrecordList(If(src Is Nothing, Nothing, src.SseTintRawOverride))
+        p.SseTintLayers = PresetCategoryFilter.CloneSseTintLayers(If(src Is Nothing, Nothing, src.SseTintLayers))
         p.HasSseTints = If(src IsNot Nothing, src.HasSseTints, False)
         p.SseTintTexOverride = If(src IsNot Nothing AndAlso src.SseTintTexOverride IsNot Nothing,
                                   New Dictionary(Of Integer, String)(src.SseTintTexOverride), Nothing)
@@ -4439,16 +4492,6 @@ Public Class EditFace_Form
         Return c
     End Function
 
-    ''' <summary>Deep-copy a raw-subrecord list (Nothing → Nothing).</summary>
-    Private Shared Function CloneRawSubrecordList(src As List(Of NPC_RawSubrecord)) As List(Of NPC_RawSubrecord)
-        If src Is Nothing Then Return Nothing
-        Dim c As New List(Of NPC_RawSubrecord)(src.Count)
-        For Each r In src
-            c.Add(New NPC_RawSubrecord With {.Sig = r.Sig, .Data = If(r.Data Is Nothing, Nothing, DirectCast(r.Data.Clone(), Byte()))})
-        Next
-        Return c
-    End Function
-
     ''' <summary>Revert HeadParts + HairColor + head TXST (SSE) + IsCharGenFacePreset to the construction snapshot.</summary>
     Private Sub ResetFacePartsSection()
         Dim p = Preset
@@ -4459,7 +4502,7 @@ Public Class EditFace_Form
             If src IsNot Nothing Then p.HeadPartFormIDs.AddRange(src.HeadPartFormIDs)
             p.HairColorFormID = If(src IsNot Nothing, src.HairColorFormID, 0UI)
             ' El "Head texture (FTST)" de SSE vive en ESTA sección (BuildSseHeadTextureSection le agrega su fila
-            ' a FacePartsLayout), así que el Reset lo tiene que revertir con ella. ⛔ Esta línea NO es opcional
+            ' a FacePartsLayout), así que el Reset lo tiene que revertir con ella. Esta línea NO es opcional
             ' desde que la sección tiene "Clear (no FTST)": es una acción DESTRUCTIVA, y sin revert por sección el
             ' único escape sería Cancel (que tira todo el tab). Mismo agujero que ya se tapó dos veces en este
             ' archivo con ResetSseRaceMenuSection y ResetSseSculptSection — las secciones construidas POR CÓDIGO
@@ -4552,7 +4595,7 @@ Public Class EditFace_Form
     ''' <see cref="EditFaceForm_FormClosing"/>, que corre para CUALQUIER vía de cierre. Centralizarlo
     ''' allí es lo que hace que la X de la ventana haga lo mismo que este botón — mismo diseño que
     ''' ArmoEditor_Form/ArmaEditor_Form, que ya lo tenían bien.
-    ''' ⛔ Tampoco puede ir aquí por re-entrada: este handler llama a Close(), así que invocarlo desde
+    ''' Tampoco puede ir aquí por re-entrada: este handler llama a Close(), así que invocarlo desde
     ''' FormClosing re-entraría en el cierre.</summary>
     Private Sub OnCancel(sender As Object, e As EventArgs)
         DialogResult = DialogResult.Cancel
@@ -4715,7 +4758,7 @@ Public Class EditFace_Form
             End Try
         End If
 
-        ' ⛔ El swatch de hair color se pinta durante el layout del form, o sea ANTES de que exista
+        ' El swatch de hair color se pinta durante el layout del form, o sea ANTES de que exista
         ' `_editorHost` (se crea acá arriba) y antes del primer render que puebla `LastRenderedState`. Para la
         ' entrada "(none / preserve)" el Paint lee justamente `_editorHost.LastRenderedState.HairColorFormID`
         ' para mostrar el color EFECTIVO, así que en ese primer pintado se iba por el fall-through y quedaba
@@ -4726,7 +4769,7 @@ Public Class EditFace_Form
     End Sub
 
     Private Sub EditFaceForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
-        ' ⭐ Rollback ANTES de cualquier teardown, y para CUALQUIER cierre que no sea OK: botón Cancel,
+        ' Rollback ANTES de cualquier teardown, y para CUALQUIER cierre que no sea OK: botón Cancel,
         ' X de la ventana, Esc y Alt+F4. WinForms asigna DialogResult=Cancel solo al cerrar un modal con
         ' la X, así que este único test cubre las cuatro vías. Sin esto, la X dejaba el overlay ya
         ' mutado mientras el caller lo daba por cancelado (MainForm.vb:9664 exige DialogResult=OK).

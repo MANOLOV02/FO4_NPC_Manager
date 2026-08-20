@@ -5,7 +5,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Resolves advanced filter facets (<see cref="NpcFilterFacet"/>) for an NPC.
 '''
-''' <para>⭐ COST MODEL — the whole point of this class. There is NO bulk pass and no warm-up: every
+''' <para>COST MODEL — the whole point of this class. There is NO bulk pass and no warm-up: every
 ''' cache below fills on first touch and only for what a query actually asked about.
 ''' <list type="bullet">
 ''' <item>A query with no facet terms never constructs this at all (PopulateNPCTree short-circuits).</item>
@@ -27,7 +27,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' <para>THREADING: UI thread only (PopulateNPCTree marshals itself with Invoke). Plain
 ''' Dictionary on purpose — do not call from the render/bake threads.</para>
 '''
-''' <para>⚠ Template inheritance is resolved with the SAME bucket rule the render path uses
+''' <para>Template inheritance is resolved with the SAME bucket rule the render path uses
 ''' (NpcStateResolver: Traits carries race/skin/headparts/headtex/haircolor/OBTS, Inventory carries
 ''' DOFT/SOFT) but WITHOUT the race fallbacks, LooksMenu overlays or LVLN picks that the render
 ''' applies afterwards. So a bald NPC whose hair comes from RACE defaults is NOT matched by `hair:`.
@@ -160,11 +160,11 @@ Friend NotInheritable Class NpcFilterIndex
     Private Function MatchesFlags(npc As NPC_Data, term As NpcFilterTerm) As Boolean
         For Each v In term.TextValues
             Select Case v
-                Case "female" : If npc.IsFemale Then Return True
-                Case "male" : If Not npc.IsFemale Then Return True
-                Case "chargenpreset", "preset" : If (npc.AcbsFlags And &H4UI) <> 0UI Then Return True
-                Case "robot" : If npc.HasObjectTemplate OrElse npc.ObjectTemplateOMODFormIDs.Count > 0 Then Return True
-                Case "template", "templated" : If npc.TemplateFlags <> 0US Then Return True
+                Case "female" : If npc.Record.ConfigurationFlagsFemale Then Return True
+                Case "male" : If Not npc.Record.ConfigurationFlagsFemale Then Return True
+                Case "chargenpreset", "preset" : If (npc.Record.ConfigurationFlags And &H4UI) <> 0UI Then Return True
+                Case "robot" : If npc.Record.TieneCombinaciones() OrElse npc.Record.OmodsDeLaPrimeraCombinacion().Count > 0 Then Return True
+                Case "template", "templated" : If npc.Record.ConfigurationTemplateFlags <> 0US Then Return True
                 Case "inherited" : If NpcTemplateHelpers.NpcInheritsVisualAppearance(npc) Then Return True
                 Case "own" : If Not NpcTemplateHelpers.NpcInheritsVisualAppearance(npc) Then Return True
             End Select
@@ -202,39 +202,40 @@ Friend NotInheritable Class NpcFilterIndex
             Case NpcFilterFacet.Hair, NpcFilterFacet.Eyes, NpcFilterFacet.Face
                 Dim src = TraitsNpc(npc)
                 Dim outIds As New List(Of UInteger)
-                For Each fid In src.HeadPartFormIDs
+                For Each fid In src.Record.PartesDeCabeza()
                     If fid = 0UI Then Continue For
                     If HeadPartFacet(fid) = facet Then outIds.Add(fid)
                 Next
                 Return outIds.ToArray()
 
             Case NpcFilterFacet.Race
-                Return NonZero(TraitsNpc(npc).RaceFormID)
+                Return NonZero(TraitsNpc(npc).Record.Race)
 
             Case NpcFilterFacet.Skin
-                Return NonZero(TraitsNpc(npc).SkinFormID)
+                Return NonZero(TraitsNpc(npc).Record.Skin)
 
             Case NpcFilterFacet.HeadTex
-                Return NonZero(TraitsNpc(npc).HeadTextureFormID)
+                Return NonZero(TraitsNpc(npc).Record.HeadTexture)
 
             Case NpcFilterFacet.HairColor
                 Dim src = TraitsNpc(npc)
-                Return NonZero(src.HairColorFormID, src.FacialHairColorFormID)
+                Return NonZero(src.Record.HairColor, src.Record.ColorDeBarba())
 
             Case NpcFilterFacet.Omod
                 Dim src = TraitsNpc(npc)
-                Return src.ObjectTemplateOMODFormIDs.Where(Function(f) f <> 0UI).Distinct().ToArray()
+                Return src.Record.OmodsDeLaPrimeraCombinacion().Where(Function(f) f <> 0UI).Distinct().ToArray()
 
             Case NpcFilterFacet.Outfit
                 Dim src = InventoryNpc(npc)
-                Return NonZero(src.DefaultOutfitFormID, src.SleepOutfitFormID)
+                Return NonZero(src.Record.DefaultOutfit, src.Record.SleepingOutfit)
 
             Case NpcFilterFacet.Tplt
                 ' The template link itself is never resolved THROUGH the chain — it IS the chain.
                 Dim outIds As New List(Of UInteger)
-                If npc.TemplateFormID <> 0UI Then outIds.Add(npc.TemplateFormID)
-                For Each kv In npc.TemplateActorFormIDs
-                    If kv.Value <> 0UI AndAlso Not outIds.Contains(kv.Value) Then outIds.Add(kv.Value)
+                If npc.Record.Plantilla() <> 0UI Then outIds.Add(npc.Record.Plantilla())
+                For Each cat As NPC_TemplateCategory In [Enum].GetValues(GetType(NPC_TemplateCategory))
+                    Dim actor = npc.Record.ActorDePlantilla(cat)
+                    If actor <> 0UI AndAlso Not outIds.Contains(actor) Then outIds.Add(actor)
                 Next
                 Return outIds.ToArray()
         End Select
@@ -269,8 +270,8 @@ Friend NotInheritable Class NpcFilterIndex
     End Function
 
     ''' <summary>Which of the three head-part facets an HDPT belongs to. Types per
-    ''' FaceGenBuilder.PartType* (xEdit wbDefinitionsFO4.pas:7373-7384): everything that is not Hair
-    ''' or Eyes lands in `face` — including Misc, which is where addon-style parts live.</summary>
+    ''' FaceGenBuilder.PartType*: everything that is not Hair or Eyes lands in `face` —
+    ''' including Misc, which is where addon-style parts live.</summary>
     Private Function HeadPartFacet(hdptFormID As UInteger) As NpcFilterFacet
         Dim hd = HeadPart(hdptFormID)
         If hd Is Nothing Then Return NpcFilterFacet.Face
@@ -316,7 +317,7 @@ Friend NotInheritable Class NpcFilterIndex
             End If
             If rec.Header.Signature = "HDPT" Then
                 Dim hd = HeadPart(formID)
-                If hd IsNot Nothing AndAlso hd.ModelModelFileName <> "" Then sb.Append(" "c).Append(hd.ModelModelFileName)
+                If hd IsNot Nothing AndAlso hd.ModelFileName <> "" Then sb.Append(" "c).Append(hd.ModelFileName)
             End If
             label = sb.ToString()
         End If
@@ -360,7 +361,7 @@ Friend NotInheritable Class NpcFilterIndex
         Dim result = npc.FormID
         While cur IsNot Nothing AndAlso visited.Add(cur.FormID)
             result = cur.FormID
-            If Not NpcTemplateHelpers.HasTemplateFlag(cur.TemplateFlags, category) Then Exit While
+            If Not NpcTemplateHelpers.HasTemplateFlag(cur.Record.ConfigurationTemplateFlags, category) Then Exit While
             Dim nextFid = NpcTemplateHelpers.ResolveTemplateSourceFormID(cur, category)
             If nextFid = 0UI Then Exit While
             Dim nxt = _npcLookup(nextFid)

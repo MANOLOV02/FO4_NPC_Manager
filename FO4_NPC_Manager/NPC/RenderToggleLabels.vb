@@ -16,7 +16,7 @@ Imports FO4_Base_Library
 '''   RenderGore       meatcaps (HDPT 7 + SubIndex)     NO EXISTE → checkbox deshabilitado
 '''
 ''' Skyrim no tiene meatcaps: sus HDPT son Misc/Face/Eyes/Hair/Facial Hair/Scar/Eyebrows
-''' (wbDefinitionsTES5.pas:5616-5624) y BSSubIndexTriShape es un bloque FO4. El gore de Skyrim son
+''' y BSSubIndexTriShape es un bloque FO4. El gore de Skyrim son
 ''' mallas de decapitación aparte (slots 50/51 + BPTD) que nunca entran al preview.
 '''
 ''' Un solo ToolTip Shared sirve a los 3 forms (MainForm / EditBody / EditFace).</summary>

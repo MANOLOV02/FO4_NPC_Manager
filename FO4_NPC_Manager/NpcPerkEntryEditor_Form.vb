@@ -1,28 +1,36 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
-''' <summary>Modal editor for a SINGLE <see cref="NPC_PerkEntry"/> (PRKR Perk FormID + u8 Rank) of an NPC's
-''' perk list, opened from the NPC Editor's "Perks" tab. Mirror of <see cref="NpcFactionEntryEditor_Form"/>:
-''' working copy in, fresh copy out on OK, Cancel never mutates the caller. Picker is over PERK records.</summary>
+''' <summary>Modal editor for los dos campos de UNA entrada PRKR (Perk FormID + u8 Rank) de la lista de
+''' ventajas de un NPC, abierto desde la pestaña "Perks" del editor de NPC. Espejo de
+''' <see cref="NpcFactionEntryEditor_Form"/>: entran y salen los dos VALORES, la entrada del record la
+''' escribe el que llama recién con OK. El picker es sobre PERK.</summary>
 Public Class NpcPerkEntryEditor_Form
 
     Private ReadOnly _mainForm As MainForm
     Private _perkFormID As UInteger
 
-    ''' <summary>The edited perk entry, valid only after <c>DialogResult.OK</c>. A fresh copy — caller owns it.</summary>
-    Public ReadOnly Property ResultEntry As NPC_PerkEntry
+    ''' <summary>La ventaja elegida, válida sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultFormID As UInteger
         Get
-            Return _result
+            Return _resultFormID
         End Get
     End Property
-    Private _result As NPC_PerkEntry
+    Private _resultFormID As UInteger
 
-    Public Sub New(mainForm As MainForm, entry As NPC_PerkEntry)
+    ''' <summary>El rango elegido, válido sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultRank As Byte
+        Get
+            Return _resultRank
+        End Get
+    End Property
+    Private _resultRank As Byte
+
+    Public Sub New(mainForm As MainForm, perkFormID As UInteger, rank As Byte)
         InitializeComponent()
         _mainForm = mainForm
 
-        Dim src = If(entry, New NPC_PerkEntry())
-        _perkFormID = src.PerkFormID
-        NumRank.Value = ClampDec(CDec(src.Rank), NumRank)
+        _perkFormID = perkFormID
+        NumRank.Value = ClampDec(CDec(rank), NumRank)
         RenderPerk()
 
         AddHandler ButtonPickPerk.Click, AddressOf OnPickPerk
@@ -50,7 +58,8 @@ Public Class NpcPerkEntryEditor_Form
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        _result = New NPC_PerkEntry With {.PerkFormID = _perkFormID, .Rank = CByte(NumRank.Value)}
+        _resultFormID = _perkFormID
+        _resultRank = CByte(NumRank.Value)
         DialogResult = DialogResult.OK
         Close()
     End Sub

@@ -124,7 +124,7 @@ Public Class SkinTintPanel
     ''' <summary>Reenvio del SelectedIndexChanged de TabsBody: el control ya no puede escuchar el TabControl
     ''' del formulario. <paramref name="mine"/> es True cuando el tab que quedo activo es el de este control.</summary>
     Friend Sub OnHostTabChanged(mine As Boolean)
-        ' ⛔ Este reenvio llega DENTRO del InitializeComponent del host: agregarle las TabPage al TabControl ya
+        ' Este reenvio llega DENTRO del InitializeComponent del host: agregarle las TabPage al TabControl ya
         ' dispara su SelectedIndexChanged, y ahi el panel todavia no esta atado (Attach corre despues, en el
         ' .ctor). Mismo caso que el ComboBoxSseOverlayZone de EditBody_Form.vb:2105. Sin host no hay nada que
         ' refrescar ni picker que desarmar, asi que se sale.
@@ -201,7 +201,7 @@ Public Class SkinTintPanel
     ''' Grande a proposito: con 1-2 unidades la respuesta se pierde en la cuantizacion del framebuffer.</summary>
     Private Const SkinTintProbeUi As Double = 24.0R
     ''' <summary>Reaccion minima para considerar que el punto sirve: niveles de pantalla por unidad de offset.
-    ''' 0,05 = 24 unidades de offset mueven el pixel al menos ~1,2 niveles. ⛔ El umbral ANTERIOR era 0,01, que
+    ''' 0,05 = 24 unidades de offset mueven el pixel al menos ~1,2 niveles. El umbral ANTERIOR era 0,01, que
     ''' es RUIDO de cuantizacion, y con el la busqueda daba por bueno un punto que no responde.</summary>
     Private Const SkinTintMinSensitivity As Double = 0.05R
     ''' <summary>Iteraciones de biseccion por canal, para Quality 1. Cada punto de Quality suma una: 7 sobre
@@ -636,13 +636,13 @@ Public Class SkinTintPanel
     ''' reacciona se avisa y se corta, en vez de devolver un resultado silenciosamente malo.</para>
     ''' <para><b>Fase 1 - biseccion por canal.</b> El valor del pixel es MONOTONO en el offset de su canal
     ''' (clamp lineal -> soft-light -> tonemap, las tres monotonas), asi que se bisecta el rango legal
-    ''' [-255, 255] buscando el offset cuyo canal cae sobre el del origen. ⛔ NO se divide por la sensibilidad:
+    ''' [-255, 255] buscando el offset cuyo canal cae sobre el del origen. NO se divide por la sensibilidad:
     ''' un paso de Newton (<c>necesito / sensibilidad</c>) con sensibilidad chica daba saltos de miles de
     ''' unidades, clavaba los offsets en los topes y dejaba el QNAM efectivo saturado (medido en la app:
     ''' R+177 / B-255 => efectivo (255,255,0), cuerpo amarillo). La biseccion esta ACOTADA por construccion.
     ''' Cada canal se acepta solo si baja el error TOTAL.</para>
     ''' <para><b>Fase 2 - pulido.</b> Descenso por coordenadas con pasos chicos.</para>
-    ''' <para><b>⛔ LA INTENSIDAD NO ES UN EJE LIBRE DE LA BUSQUEDA, Y ESO ES EL NUCLEO DEL DISENIO.</b> El
+    ''' <para><b>LA INTENSIDAD NO ES UN EJE LIBRE DE LA BUSQUEDA, Y ESO ES EL NUCLEO DEL DISENIO.</b> El
     ''' shader hace <c>resultado = mix(a, softlight(a, t), α)</c>, y el soft-light es IDENTIDAD en t = 0,5
     ''' (<c>2a(1−t) + √a(2t−1)</c> con t=0,5 da a). O sea <c>resultado − a ≈ α · c(a) · (t − 0,5)</c>: el tono y
     ''' la intensidad entran MULTIPLICANDOSE. En SSE es exacto y no aproximado, porque el pliegue es literalmente
@@ -678,7 +678,7 @@ Public Class SkinTintPanel
         ' abajo): sólo se usa para restaurarlo si la corrida se cae con excepción.
         Dim priorOffset = SkinToneQnamOffset.CloneOrNothing(EnsureSkinTintOffset())
         Try
-            ' ⭐ SIEMPRE se arranca de (0, 0, 0, 0) = el QNAM tal como lo DERIVA el record, no de los offsets
+            ' SIEMPRE se arranca de (0, 0, 0, 0) = el QNAM tal como lo DERIVA el record, no de los offsets
             ' que hubiera puestos. Dos razones:
             '   1. DETERMINISMO: el mismo NPC con los mismos dos píxeles da siempre el mismo resultado, sin
             '      depender de cuántas veces se apretó el botón antes.
@@ -741,7 +741,7 @@ Public Class SkinTintPanel
             ' --- Fase 1: BISECCIÓN por canal ---
             ' El valor del píxel es MONÓTONO en el offset de su canal (clamp lineal → soft-light → tonemap, las
             ' tres monótonas), así que se busca por bisección el offset cuyo canal cae sobre el del origen.
-            ' ⛔ Esto REEMPLAZA un paso de Newton (necesito/sensibilidad) que era el bug de fondo: con una
+            ' Esto REEMPLAZA un paso de Newton (necesito/sensibilidad) que era el bug de fondo: con una
             ' sensibilidad chica la división daba saltos de miles de unidades, los offsets se clavaban en ±255
             ' y el QNAM efectivo quedaba saturado (ej. medido: R+177, B−255 ⇒ efectivo (255,255,0), cuerpo
             ' amarillo). La bisección está ACOTADA al rango legal por construcción: no puede explotar, y cuando
@@ -781,7 +781,7 @@ Public Class SkinTintPanel
                         pick = (lo + hi) * 0.5R
                     End If
 
-                    ' ⭐ NO se salta directo a `pick`. La bisección iguala UN canal sin mirar el resto, y cuando
+                    ' NO se salta directo a `pick`. La bisección iguala UN canal sin mirar el resto, y cuando
                     ' ese canal no puede alcanzar el objetivo devuelve el TOPE — que es de donde salían los
                     ' ajustes clavados en ±255 que compraban dos niveles de mejora. Se recorre el camino hacia
                     ' `pick` en fracciones y se elige por el OBJETIVO (color + costo del ajuste), así el
@@ -872,7 +872,7 @@ Public Class SkinTintPanel
                 End While
             Next
 
-            ' ⛔ RED DE SEGURIDAD: nunca dejar el ajuste PEOR que como estaba. Sin esto, una corrida que sale
+            ' RED DE SEGURIDAD: nunca dejar el ajuste PEOR que como estaba. Sin esto, una corrida que sale
             ' mal (o que corta por presupuesto en un mal momento) deja aplicado un offset que el usuario no
             ' pidió — que es exactamente cómo se llegó al estado de QNAM saturado que motivó esta revisión.
             If bestErr > startErr Then
@@ -952,7 +952,7 @@ Public Class SkinTintPanel
 
     ''' <summary>Error de COLOR contra el origen, separado en luminancia y croma y pesado distinto (ver
     ''' <see cref="SkinTintLumaWeight"/> / <see cref="SkinTintChromaWeight"/>).
-    ''' <para>⛔ NO es la distancia euclidiana pelada que habia antes. Esa trataba igual dos residuos muy
+    ''' <para>NO es la distancia euclidiana pelada que habia antes. Esa trataba igual dos residuos muy
     ''' distintos: (-20,-20,-20), que es la MISMA piel con otra luz, y (0,0,-60), que es OTRA piel. Minimizando
     ''' la euclidiana el resolver gastaba rango extremo en un solo canal para bajar el residuo de brillo, y
     ''' terminaba con los offsets clavados en el tope y un desbalance de color peor que el que arreglaba.</para></summary>

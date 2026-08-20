@@ -4,7 +4,7 @@ Partial Class MainForm
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 
@@ -188,7 +188,7 @@ Partial Class MainForm
         ' + Margin por defecto (3 izq + 3 der) × 6 controles          =  36
         '   ------------------------------------------------------------ 516, redondeado a 530 de colchón.
         ' Antes era 220: el splitter se podía arrastrar hasta dejar la mitad de los checkboxes fuera.
-        ' ⚠️ Si se añade/renombra un filtro, recalcular esto (los anchos están en el bloque PanelFilterRow).
+        ' Si se añade/renombra un filtro, recalcular esto (los anchos están en el bloque PanelFilterRow).
         ' Revisado al agregar la fila de búsqueda: PanelFilterRow SIGUE siendo la fila que manda, así
         ' que el mínimo no se movió:
         '   PanelSearchRow = padding 8 + label 45 + box(min) 120 + "Advanced..." 85
@@ -1309,7 +1309,7 @@ Partial Class MainForm
         '   área cliente, + ~16 de bordes de ventana = ~950. Los 1024×720 dejan colchón sobre eso y
         '   además evitan la excepción "SplitterDistance must be between Panel1MinSize and
         '   Width - Panel2MinSize" que salta si la ventana se encoge por debajo de la suma de mínimos.
-        ' ⚠️ Si sube Panel1MinSize o Panel2MinSize, revisar que 1024 siga por encima de la suma.
+        ' Si sube Panel1MinSize o Panel2MinSize, revisar que 1024 siga por encima de la suma.
         MinimumSize = New Size(1024, 720)
         Name = "MainForm"
         StartPosition = FormStartPosition.CenterScreen

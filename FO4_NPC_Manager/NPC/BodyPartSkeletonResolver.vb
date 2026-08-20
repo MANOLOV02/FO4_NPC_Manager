@@ -4,7 +4,7 @@
 ''' Resolves the per-race extra-skeleton path declared in the BPTD record (Body Part Data)
 ''' that the RACE points to via GNAM.
 '''
-''' Engine schema (xEdit wbDefinitionsFO4.pas:8043-8144 + 11594):
+''' Engine schema:
 '''   RACE.GNAM → BPTD FormID
 '''   BPTD.MODL → string path to a NIF that holds the FULL bone hierarchy for this race
 '''
@@ -29,22 +29,22 @@ Public Module BodyPartSkeletonResolver
 
         Dim raceRec = pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
-        If race.BodyPartDataFormID = 0UI Then
+        Dim race = Canon.CanonRecords.Race(raceRec, pluginManager)
+        If race Is Nothing OrElse race.BodyPartData = 0UI Then
             Return Nothing
         End If
 
-        Dim bptdRec = pluginManager.GetRecord(race.BodyPartDataFormID)
+        Dim bptdRec = pluginManager.GetRecord(race.BodyPartData)
         If bptdRec Is Nothing OrElse bptdRec.Header.Signature <> "BPTD" Then
             Return Nothing
         End If
 
         Dim bptd = Canon.CanonRecords.Bptd(bptdRec, pluginManager)
-        If String.IsNullOrEmpty(bptd.ModelModelFileName) Then
+        If String.IsNullOrEmpty(bptd.ModelFileName) Then
             Return Nothing
         End If
 
-        Return MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(bptd.ModelModelFileName))
+        Return MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(bptd.ModelFileName))
     End Function
 
 End Module

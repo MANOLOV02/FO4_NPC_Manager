@@ -40,7 +40,7 @@ Public Class ExportModelOptions_Form
     ''' <para><paramref name="npcFoldsOverlays"/> tiene que venir del RENDER
     ''' (<c>NpcFaceTintResolver.LastSseFoldWasMandatory</c>): dice si este NPC trae overlays de cara
     ''' o máscaras skee foldables.</para>
-    ''' <para>⛔ El default combina ese dato CON el toggle "Bake RaceMenu overlays", porque la
+    ''' <para>El default combina ese dato CON el toggle "Bake RaceMenu overlays", porque la
     ''' condición del BAKE es la conjunción de los dos (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays:
     ''' sale temprano si el toggle está apagado) y es el bake el que decide qué archivo va a existir.
     ''' El RENDER, en cambio, pliega mirando sólo los overlays — así que con el toggle apagado el

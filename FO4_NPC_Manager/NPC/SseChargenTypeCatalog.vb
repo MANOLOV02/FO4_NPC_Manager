@@ -1,4 +1,5 @@
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ' ==========================================================================
 ' SSE — qué tipos NAMA (Nose/Brow/Eyes/Lip) puede ofrecer el editor para un NPC.
@@ -9,7 +10,7 @@ Imports FO4_Base_Library
 '     parts del NPC. ESTA es la lista: el aplicador resuelve POR NOMBRE (AddNamaTypePreset) y es CIEGO
 '     a cualquier bitmask (skee64 ApplyChargenMorph_Hooked, SKEEHooks.cpp:730-749).
 '   • lo que el CREATION KIT OFRECE = el bitmask RACE.MPAV por raza+género. Es MÁS CHICO, y sirve SÓLO
-'     para ANOTAR. ⛔ Usarlo de filtro es un BUG: de 90 valores NAMA que su raza no declara, 75 EXISTEN
+' para ANOTAR. Usarlo de filtro es un BUG: de 90 valores NAMA que su raza no declara, 75 EXISTEN
 '     en las head parts de ese NPC y el juego se los aplica (p.ej. HighElfFemalePreset01 con NoseType7).
 '
 ' Por qué la unión sobre TODAS las head parts y no "la cabeza": NAMA se resuelve por shape
@@ -20,7 +21,7 @@ Imports FO4_Base_Library
 ''' <summary>Los tipos NAMA alcanzables por un NPC, más la anotación de cuáles ofrece el CK.</summary>
 Public NotInheritable Class SseChargenTypeCatalog
 
-    ''' <summary>False = no se pudo leer ningún .tri todavía. ⛔ NO es lo mismo que "no hay tipos": sin esta
+    ''' <summary>False = no se pudo leer ningún .tri todavía. NO es lo mismo que "no hay tipos": sin esta
     ''' distinción la UI tendría que elegir entre mentir (mostrar una lista inventada) y bloquear.</summary>
     Public ReadOnly Property IsKnown As Boolean
 
@@ -52,7 +53,7 @@ Public NotInheritable Class SseChargenTypeCatalog
     End Function
 
     ''' <summary>¿Se leyó el MPAV de ESTA FAMILIA para la raza+género del NPC?
-    ''' <para>⛔ Es POR FAMILIA, no por raza: los bloques MPAI/MPAV son independientes y un RACE puede traer
+    ''' <para>Es POR FAMILIA, no por raza: los bloques MPAI/MPAV son independientes y un RACE puede traer
     ''' Nose/Brow/Eyes y no Lip. Con un flag por raza, esa familia se rotularía entera "el CK no lo ofrece"
     ''' — afirmando sobre un dato que nunca se leyó, que es justo lo que <c>RACE_AvailableMorphs.Present</c>
     ''' existe para evitar.</para></summary>
@@ -75,7 +76,7 @@ Public NotInheritable Class SseChargenTypeCatalog
     ''' <param name="effectiveRace">RACE ya parseado de la raza EFECTIVA del NPC (no la cruda del record —
     ''' ver 20-app-raza-efectiva). Nothing ⇒ sin anotación.</param>
     Public Shared Function Build(chargenTriPaths As IEnumerable(Of (Path As String, ShapeVerts As Integer)),
-                                 effectiveRace As RACE_Data,
+                                 effectiveRace As Canon.IRace,
                                  isFemale As Boolean) As SseChargenTypeCatalog
         If chargenTriPaths Is Nothing Then Return Unknown()
 
@@ -102,7 +103,8 @@ Public NotInheritable Class SseChargenTypeCatalog
 
         Dim offered As RACE_AvailableMorphs = Nothing
         If effectiveRace IsNot Nothing Then
-            offered = If(isFemale, effectiveRace.FemaleAvailableMorphs, effectiveRace.MaleAvailableMorphs)
+            ' MPAI/MPAV son SKYRIM-only — Fallout 4 no los declara en RACE.
+            offered = TryCast(effectiveRace, Canon.RaceSSE).ReadAvailableMorphs(isFemale)
         End If
 
         ' TRES estados, no dos. "Ninguna head part declara chargen .tri" es CONOCIMIENTO —ahí el motor
@@ -121,7 +123,7 @@ Public NotInheritable Class SseChargenTypeCatalog
         If String.IsNullOrEmpty(rawPath) Then Return False
         Dim head = NpcMorphResolver.TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(rawPath))
         If head Is Nothing OrElse head.Morphs Is Nothing Then Return False
-        ' ⛔ COPIA de los nombres, no se retiene la lista: la instancia viene del caché COMPARTIDO
+        ' COPIA de los nombres, no se retiene la lista: la instancia viene del caché COMPARTIDO
         ' (PathLoadCache, Shared) y otros hilos pueden estar adentro de GetMorph → List.Find, que enumera.
         For Each m In head.Morphs
             If Not String.IsNullOrEmpty(m.Name) Then sink.Add(m.Name)

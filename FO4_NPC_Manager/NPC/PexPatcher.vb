@@ -11,11 +11,11 @@
 ''' en los dos casos son SÓLO nombres de property, nombres de variable (<c>::X_G000001_var</c>) y literales de
 ''' <c>Debug.Trace</c> que nombran una property. Ni un path ni un dato. Cambiar el CONTENIDO de esas entradas
 ''' cambia coherentemente todo lo que las referencia.</para>
-''' <para>⚠️ Corolario para quien edite los <c>.psc</c>: un literal de string que contenga <c>_G000001</c> o el
+''' <para>Corolario para quien edite los <c>.psc</c>: un literal de string que contenga <c>_G000001</c> o el
 ''' nombre del script TAMBIÉN se reescribe. Es lo deseado para las trazas que nombran una property; no meter
 ''' ese texto en un literal que tenga que quedar fijo.</para>
 '''
-''' <para><b>⛔ NO SE DECODIFICAN LOS STRINGS.</b> El compilador de Papyrus no escribe UTF-8: los docstrings
+''' <para><b>NO SE DECODIFICAN LOS STRINGS.</b> El compilador de Papyrus no escribe UTF-8: los docstrings
 ''' con acentos salen en la codificación ANSI de la máquina. Decodificar y re-codificar los corrompería (se
 ''' comprobó con el dumper: los docstrings en español fallan al decodificar como UTF-8). Por eso todo el
 ''' reemplazo es a nivel de BYTES, y los dos tokens que se tocan son ASCII puro, así que la búsqueda es
@@ -46,7 +46,7 @@ Public Module PexPatcher
     ''' <summary>Sal que trae la PLANTILLA compilada (el <c>_G0000010000</c> de los <c>.psc</c>).</summary>
     Public Const BaselineSalt As String = "0000"
 
-    ''' <summary>⛔⛔ POR QUÉ EXISTE LA SAL, ADEMÁS DEL CONTADOR.
+    ''' <summary>POR QUÉ EXISTE LA SAL, ADEMÁS DEL CONTADOR.
     '''
     ''' <para>El contador da ORDEN (útil para leer un log o comparar un ESP contra un <c>.pex</c>), pero depende
     ''' de estado guardado: vive en el <c>.bssliders</c>. Si ese estado se pierde o RETROCEDE, el guardado
@@ -91,7 +91,7 @@ Public Module PexPatcher
         For Each s In strings
             ' ASCII puro: comparar byte a byte evita cualquier decodificación.
             Dim txt = AsciiOf(s)
-            ' ⭐ Regex A PROPOSITO TOLERANTE: matchea "_G000016" tanto si le sigue una sal ("_G000016A3F2",
+            ' Regex A PROPOSITO TOLERANTE: matchea "_G000016" tanto si le sigue una sal ("_G000016A3F2",
             ' formato nuevo) como si no ("_G000016", .pex instalado por una version anterior de la app). Eso es
             ' lo que permite que el piso anti-retroceso funcione tambien al ACTUALIZAR desde una instalacion vieja.
             For Each m As Match In Regex.Matches(txt, "_G(\d{" & GenerationDigits & "})")
@@ -181,7 +181,7 @@ Public Module PexPatcher
     ''' <summary>Identidad neutra que se estampa en el header del <c>.pex</c> publicado.</summary>
     Public Const HeaderIdentity As String = "MANOLOV02"
 
-    ''' <summary>⛔ Neutraliza los TRES strings del header que estampa el compilador de Papyrus:
+    ''' <summary>Neutraliza los TRES strings del header que estampa el compilador de Papyrus:
     ''' <c>sourceFileName</c> (que sale como la RUTA ABSOLUTA del <c>.psc</c> en la máquina que compiló),
     ''' <c>username</c> y <c>machineName</c>. Deja el nombre de archivo pelado y
     ''' <see cref="HeaderIdentity"/> en los otros dos.
@@ -235,7 +235,7 @@ Public Module PexPatcher
             If b Is Nothing Then Return False
             header.Add(b)
         Next
-        ' ⛔ ReadU16 YA avanza el cursor (es ByRef). Sumarle 2 aca leia la tabla corrida 2 bytes y hacia
+        ' ReadU16 YA avanza el cursor (es ByRef). Sumarle 2 aca leia la tabla corrida 2 bytes y hacia
         ' fallar el parseo entero con 'encabezado no valido'.
         Dim count = ReadU16(pex, o, big)
         For i = 1 To count

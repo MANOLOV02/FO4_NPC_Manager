@@ -6,7 +6,7 @@ Partial Class LooksmenuLoad_Form
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 
@@ -193,7 +193,7 @@ Partial Class LooksmenuLoad_Form
         ButtonShowIncompatible.Name = "ButtonShowIncompatible"
         ButtonShowIncompatible.Size = New Size(157, 23)
         ButtonShowIncompatible.TabIndex = 1
-        ' ⛔ DECÍA "Show incompatible" y es la ÚNICA puerta al reporte. Nadie hace clic ahí para leer sobre un preset
+        ' DECÍA "Show incompatible" y es la ÚNICA puerta al reporte. Nadie hace clic ahí para leer sobre un preset
         ' que le acaba de decir que está bien — y justo ahí vive la explicación de qué número muestran los huesos.
         ButtonShowIncompatible.Text = "What this preset does..."
         ButtonShowIncompatible.UseVisualStyleBackColor = True

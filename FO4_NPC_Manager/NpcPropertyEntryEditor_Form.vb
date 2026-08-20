@@ -1,28 +1,35 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
-''' <summary>Modal editor for a SINGLE <see cref="NPC_PropertyEntry"/> (PRPS Actor Value FormID + f32 Value)
-''' of an NPC's properties list, opened from the NPC Editor's "Properties" tab. Mirror of
-''' <see cref="NpcFactionEntryEditor_Form"/>. The Actor Value picker is over AVIF records.</summary>
+''' <summary>Modal editor for los dos campos de UNA entrada PRPS (Actor Value FormID + f32 Value) de la
+''' lista de propiedades de un NPC, abierto desde la pestaña "Properties" del editor de NPC. Espejo de
+''' <see cref="NpcFactionEntryEditor_Form"/>. El picker de valor de actor es sobre AVIF.</summary>
 Public Class NpcPropertyEntryEditor_Form
 
     Private ReadOnly _mainForm As MainForm
     Private _avFormID As UInteger
 
-    ''' <summary>The edited property entry, valid only after <c>DialogResult.OK</c>. A fresh copy — caller owns it.</summary>
-    Public ReadOnly Property ResultEntry As NPC_PropertyEntry
+    ''' <summary>El valor de actor elegido, válido sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultFormID As UInteger
         Get
-            Return _result
+            Return _resultFormID
         End Get
     End Property
-    Private _result As NPC_PropertyEntry
+    Private _resultFormID As UInteger
 
-    Public Sub New(mainForm As MainForm, entry As NPC_PropertyEntry)
+    ''' <summary>El valor numérico elegido, válido sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultValue As Single
+        Get
+            Return _resultValue
+        End Get
+    End Property
+    Private _resultValue As Single
+
+    Public Sub New(mainForm As MainForm, avFormID As UInteger, value As Single)
         InitializeComponent()
         _mainForm = mainForm
 
-        Dim src = If(entry, New NPC_PropertyEntry())
-        _avFormID = src.ActorValueFormID
-        NumValue.Value = ClampDec(CDec(src.Value), NumValue)
+        _avFormID = avFormID
+        NumValue.Value = ClampDec(CDec(value), NumValue)
         RenderActorValue()
 
         AddHandler ButtonPickAv.Click, AddressOf OnPickActorValue
@@ -50,7 +57,8 @@ Public Class NpcPropertyEntryEditor_Form
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        _result = New NPC_PropertyEntry With {.ActorValueFormID = _avFormID, .Value = CSng(NumValue.Value)}
+        _resultFormID = _avFormID
+        _resultValue = CSng(NumValue.Value)
         DialogResult = DialogResult.OK
         Close()
     End Sub

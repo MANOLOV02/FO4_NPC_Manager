@@ -56,7 +56,7 @@ Friend NotInheritable Class NpcSkinLivePreview
     Private Function RecomputeEffectiveSkinFormID(rootNpcFormID As UInteger, raceFormID As UInteger,
                                                    rawNpcFormID As UInteger) As UInteger
         Dim raw = _ctx.GetParsedNpc(rawNpcFormID)
-        Dim effective As UInteger = If(raw IsNot Nothing, raw.SkinFormID, 0UI)
+        Dim effective As UInteger = If(raw IsNot Nothing, raw.Record.Skin, 0UI)
         Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
         If _appliedPresets.TryGetValue(rootNpcFormID, overlayPreset) AndAlso overlayPreset IsNot Nothing Then
             If overlayPreset.SkinFormIDOverride.HasValue Then
@@ -74,7 +74,7 @@ Friend NotInheritable Class NpcSkinLivePreview
         If effective = 0UI AndAlso raceFormID <> 0UI Then
             Dim raceRec = _ctx.PluginManager.GetRecord(raceFormID)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-                effective = _ctx.ParseRaceCached(raceRec).SkinFormID
+                effective = _ctx.ParseRaceCanonCached(raceRec).Skin
             End If
         End If
         Return effective
@@ -195,7 +195,7 @@ Friend NotInheritable Class NpcSkinLivePreview
 
         ' Path sets match. Apply each new candidate's TXST/MSWP to its corresponding shape group.
         '
-        ' ⭐ RESTAURAR ANTES DE RE-APLICAR. `EnsureShapeMaterialResolved` MEMOIZA (MaterialResolver:117:
+        ' RESTAURAR ANTES DE RE-APLICAR. `EnsureShapeMaterialResolved` MEMOIZA (MaterialResolver:117:
         ' si el shape ya tiene material, Return), así que estas shapes traen el material YA MUTADO por el
         ' render anterior y esto era "override sobre override": todo slot que el TXST NUEVO deje vacío
         ' conservaba el del skin VIEJO (`TxstSlotDecision` → `skip:empty-path (kept=...)`), y el `path`
@@ -207,7 +207,7 @@ Friend NotInheritable Class NpcSkinLivePreview
             Dim shapesForPath = oldGroups(cand.DictKey)
             For Each sh In shapesForPath
                 If Not NpcMaterialResolver.TryRestoreAuthoredMaterial(sh) Then Return False
-                ' ⛔ El mapa shape→candidate apuntaba al candidate del skin ANTERIOR: los candidates de
+                ' El mapa shape→candidate apuntaba al candidate del skin ANTERIOR: los candidates de
                 ' cuerpo del fast path son objetos NUEVOS (ResolveBodySkinCandidates → CollectArmoCandidates)
                 ' y nadie lo reescribía. Con este fix ese mapa pasa a ser la fuente de la ley única del fast
                 ' path (ver los dos bloques de abajo), y además lo lee después NpcFaceTintResolver
@@ -267,7 +267,7 @@ Friend NotInheritable Class NpcSkinLivePreview
         host.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Textures)
         host.PreviewCtl.InvalidateRender()
 
-        ' ⭐ MARCADOR DEL GATE A/A. Sin esta línea no hay forma de saber, leyendo el log, si un cambio de
+        ' MARCADOR DEL GATE A/A. Sin esta línea no hay forma de saber, leyendo el log, si un cambio de
         ' piel salió por el fast path o por la recarga completa — y distinguir eso es EXACTAMENTE lo que el
         ' gate necesita: compara el `[SHAPEMAT-FINAL*]`/`[SHADER-CMP]` de un cambio fast-path contra el de
         ' un render completo del MISMO estado, y deben ser idénticos. Si la línea no aparece, el cambio se
@@ -286,16 +286,16 @@ Friend NotInheritable Class NpcSkinLivePreview
     ''' (MSWP + ColorRemap + OMOD + TXST + tints + sustitución de piel). Hace falta porque un outfit
     ''' renderizado contra la piel VIEJA sigue mostrando su diffuse en los parches de piel expuesta.
     '''
-    ''' ⭐ UNA LEY, UN LUGAR. Acá vivía una RÉPLICA A MANO de la sustitución de piel del render (resolver
+    ''' UNA LEY, UN LUGAR. Acá vivía una RÉPLICA A MANO de la sustitución de piel del render (resolver
     ''' body/hand TXST, elegir región por shape, cargar el MNAM, `ApplyTextureSetToMaterial`). Se borró: era
     ''' una segunda copia de la misma ley sobre la misma entrada, y este camino es SÓLO-RENDER e inalcanzable
     ''' desde el CLI ⇒ el arnés de NIFs es CIEGO a él por definición y el drift no se detectaba.
     '''
-    ''' ⛔ Se procesa el CANDIDATE COMPLETO, no sólo sus shapes SkinTint: `ApplyShapeMaterialOverrides`
+    ''' Se procesa el CANDIDATE COMPLETO, no sólo sus shapes SkinTint: `ApplyShapeMaterialOverrides`
     ''' razona a nivel candidate (MSWP/ColorRemap/OMOD), así que darle un subconjunto lo haría divergir del
     ''' render por otro lado. Amplía la superficie respecto de la versión anterior, a propósito.
     '''
-    ''' ⚠️ Restaurar SIN volver a aplicar deja el shape en crudo, por eso las dos cosas van juntas y
+    ''' Restaurar SIN volver a aplicar deja el shape en crudo, por eso las dos cosas van juntas y
     ''' cualquier fallo intermedio devuelve False ⇒ el caller cae a la recarga completa, que reconstruye las
     ''' shapes desde cero (`NpcMeshCollector.LoadNifShapes`) y descarta las medio-restauradas.
     '''
@@ -306,13 +306,13 @@ Friend NotInheritable Class NpcSkinLivePreview
         Dim state = host.LastRenderedState
         If renderData Is Nothing OrElse state Is Nothing Then Return False
 
-        ' ⭐ UNA LEY, UN LUGAR. Acá había una RÉPLICA A MANO del bloque de sustitución de piel del render
+        ' UNA LEY, UN LUGAR. Acá había una RÉPLICA A MANO del bloque de sustitución de piel del render
         ' (resolver body/hand TXST, elegir región por shape, cargar el MNAM, ApplyTextureSetToMaterial).
         ' Eso es una segunda copia de la misma ley, mantenida a mano, sobre la misma entrada — y ya había
         ' driftado antes. Ahora se restaura el material autorado y se corre `ApplyShapeMaterialOverrides`,
         ' que ES la ley: MSWP + ColorRemap + OMOD + TXST + tints + sustitución de piel, en el orden del motor.
         '
-        ' ⛔ POR CANDIDATE COMPLETO, no por el subconjunto SkinTint. `ApplyShapeMaterialOverrides` aplica
+        ' POR CANDIDATE COMPLETO, no por el subconjunto SkinTint. `ApplyShapeMaterialOverrides` aplica
         ' MSWP/ColorRemap/OMOD a nivel CANDIDATE: si se le pasara sólo las shapes SkinTint vería un conjunto
         ' distinto al del render y el fast path divergiría por otro lado. Sí, esto amplía la superficie
         ' respecto de la versión anterior — a propósito, y hacia lo que hace el render completo.
@@ -363,7 +363,7 @@ Friend NotInheritable Class NpcSkinLivePreview
         Dim state = host.LastRenderedState
         If renderData Is Nothing OrElse state Is Nothing Then Return False
 
-        ' ⛔⛔ ACÁ HABÍA UN `If bodyTxst Is Nothing Then Return 0` QUE VOLVÍA ESTE REFRESH INALCANZABLE
+        ' ACÁ HABÍA UN `If bodyTxst Is Nothing Then Return 0` QUE VOLVÍA ESTE REFRESH INALCANZABLE
         ' JUSTO EN EL CASO QUE MOTIVÓ TODO ESTO. Con una raza cuyo armature de piel no declara skin TXST
         ' (UBE: NAM0=NAM1=0), `ResolveActorSkinTextureSet` devuelve Nothing ⇒ early return ⇒ un HDPT con
         ' UsesBodyTexture=True se quedaba con la diffuse/normal/spec del skin ANTERIOR, y de paso se
@@ -375,12 +375,12 @@ Friend NotInheritable Class NpcSkinLivePreview
         ' de shapes de antes. De esos candidates se toman TODAS sus shapes, por la misma razón que en los
         ' outfits: `ApplyShapeMaterialOverrides` razona a nivel candidate.
         '
-        ' ⭐ POR QUÉ AGRUPAR POR CANDIDATE NO ARRASTRA LA CARA — la razón es ESTRUCTURAL, no un dato:
+        ' POR QUÉ AGRUPAR POR CANDIDATE NO ARRASTRA LA CARA — la razón es ESTRUCTURAL, no un dato:
         ' `ShapeUsesBodyTexture` es por CANDIDATE, no por shape (MainForm :730-736: "True iff the shape's
         ' owning CANDIDATE had UsesBodyTexture=True"), así que es uniforme dentro de un candidate y no puede
         ' colar un hermano sin el flag. Y si algún día un HDPT de CARA declara el flag DATA 0x40, esa shape
         ' entra — y ESTÁ BIEN que entre, porque el render completo también la trataría así (render == render).
-        ' ⛔ NO escribir "la cara no entra porque no lleva UsesBodyTexture": eso describe los datos de hoy y
+        ' NO escribir "la cara no entra porque no lleva UsesBodyTexture": eso describe los datos de hoy y
         ' se lee como un invariante que no existe.
         ' Tampoco pisa FaceGen: la textura compuesta no vive en el material (SSE va por `SseFoldedDiffuseKey`
         ' en MaterialData, FO4 compone en la textura GL keyed por path), y el caller vuelve a correr

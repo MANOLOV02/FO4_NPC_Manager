@@ -76,7 +76,7 @@ Public Module PresetCategories
         Public Outfit As Boolean             ' DefaultOutfitFormIDOverride + SleepOutfitFormIDOverride (DOFT/SOFT)
         Public FaceParts As Boolean          ' HeadPartFormIDs (+ SSE head FTST override)
         Public HairColor As Boolean          ' HairColorFormID (+ SSE RaceMenu custom RGB)
-        Public FaceTints As Boolean          ' FO4 FaceTintLayers — SSE SseTintRawOverride + mask textures
+        Public FaceTints As Boolean          ' FO4 FaceTintLayers — SSE SseTintLayers + mask textures
         Public FaceVertexMorphs As Boolean   ' FO4 ChargenFaceMorphs (MSDV) — SSE NAM9/NAMA (record-backed)
         Public CustomMorphs As Boolean       ' SseCustomMorphs (RaceMenu NiOverride, no record source) — SSE-only
         Public FaceBoneRegions As Boolean    ' FaceBoneRegions (FMRS) + FacialMorphIntensity — FO4-only
@@ -190,7 +190,7 @@ Public Module PresetCategories
 
         ' --- Body scale (RaceMenu node transforms, SSE-only) ---
         If isSse AndAlso p.SseNodeTransforms IsNot Nothing AndAlso p.SseNodeTransforms.Count > 0 Then
-            ' ⛔ DECÍA "NiOverride node transforms": el tooltip re-metía la jerga que se le sacó al rótulo de la tilde.
+            ' DECÍA "NiOverride node transforms": el tooltip re-metía la jerga que se le sacó al rótulo de la tilde.
             Set0(d, PresetCategory.BodyScale, p.SseNodeTransforms.Count.ToString(),
                  $"{p.SseNodeTransforms.Count} bone(s) moved, rotated or resized")
         End If
@@ -223,7 +223,7 @@ Public Module PresetCategories
         End If
 
         ' --- Face parts (head parts + el head TXST de SSE; los irresolubles van al tooltip) ---
-        ' ⛔ El gate incluye el head TXST y NO sólo los head parts: el override viaja en la MISMA categoría
+        ' El gate incluye el head TXST y NO sólo los head parts: el override viaja en la MISMA categoría
         ' (PresetCategoryFilter, Case FaceParts), así que un preset que trae headTexture pero ningún head part
         ' —.jslot sin array `headParts`, o con todos irresolubles— no emitía fila, la categoría no aparecía en
         ' el diálogo, el usuario no podía tildarla y el Revert descartaba el headTexture sin decir nada.
@@ -233,7 +233,7 @@ Public Module PresetCategories
             If p.UnresolvedHeadParts.Count > 0 Then det = $"{p.UnresolvedHeadParts.Count} unresolved (owning plugin not loaded)"
             ' El marcador del FTST va al TEXTO CORTO, no sólo al tooltip: el clear es destructivo sobre el target
             ' y el conteo de head parts NO cambia al agregarlo ⇒ sin hover era invisible.
-            ' ⛔ Tiene que ser CORTO: la celda del contador es una columna ABSOLUTA de 74px con un Label de ~68px
+            ' Tiene que ser CORTO: la celda del contador es una columna ABSOLUTA de 74px con un Label de ~68px
             ' sin AutoSize ni AutoEllipsis (PresetCategoryPanel.Designer :350), o sea ~9 caracteres. Un texto tipo
             ' "12 + FTST cleared" se recorta y el fix no sirve de nada. El detalle largo va al tooltip.
             Dim txt As String = p.HeadPartFormIDs.Count.ToString()
@@ -258,10 +258,10 @@ Public Module PresetCategories
 
         ' --- Face tints ---
         If isSse Then
-            If p.HasSseTints AndAlso p.SseTintRawOverride IsNot Nothing Then
+            If p.HasSseTints AndAlso p.SseTintLayers IsNot Nothing Then
                 Dim layers As Integer = 0
-                For Each sr In p.SseTintRawOverride
-                    If sr IsNot Nothing AndAlso String.Equals(sr.Sig, "TINI", StringComparison.Ordinal) Then layers += 1
+                For Each sr In p.SseTintLayers
+                    If sr IsNot Nothing AndAlso sr.Indice.HasValue Then layers += 1
                 Next
                 Dim tex = If(p.SseTintTexOverride Is Nothing, 0, p.SseTintTexOverride.Count)
                 Set0(d, PresetCategory.FaceTints, layers.ToString(),

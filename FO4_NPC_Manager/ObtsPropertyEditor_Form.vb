@@ -95,9 +95,8 @@ Public Class ObtsPropertyEditor_Form
         RenderValue2()   ' re-display the same Value2 bits under the NEW type's interpretation
     End Sub
 
-    ''' <summary>Per-ValueType FunctionType enum name lists — sourced VERBATIM from
-    ''' wbDefinitionsFO4.pas wbObjectModProperties (lines 5838-5843) routed through
-    ''' wbOMODDataFunctionTypeDecider (lines 2765-2772). The union has four cases; the decider maps ValueType:
+    ''' <summary>Per-ValueType FunctionType enum name lists — sourced VERBATIM from the OMOD
+    ''' Properties format. The union has four cases; el ValueType decide a cuál mapea:
     '''   Int(0)/Float(1)/FormIDFloat(6) -> union case 0 (Float): 'SET','MUL+ADD','ADD'
     '''   Bool(2)                        -> union case 1 (Bool):  'SET','AND','OR'
     '''   Enum(5)                        -> union case 2 (Enum):  'SET'
@@ -215,8 +214,8 @@ Public Class ObtsPropertyEditor_Form
         Close()
     End Sub
 
-    ''' <summary>Value2's storage type per xEdit <c>wbOMODDataPropertyValue2Decider</c> (wbDefinitionsFO4.pas
-    ''' 2801-2820): FLOAT for Float(1)/FormIDFloat(6); INT for Int(0)/FormIDInt(4); BOOL(=int) for Bool(2);
+    ''' <summary>Value2's storage type según su ValueType: FLOAT for Float(1)/FormIDFloat(6); INT for
+    ''' Int(0)/FormIDInt(4); BOOL(=int) for Bool(2);
     ''' UNUSED (4 padding bytes) for String(3)/Enum(5). So Value2 is NOT always a float — displaying it as one
     ''' reinterprets an int's bits and shows a garbage denormal.</summary>
     Private Shared Function Value2IsFloat(vt As OMOD_ValueType) As Boolean

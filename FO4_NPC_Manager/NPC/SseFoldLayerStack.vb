@@ -8,7 +8,7 @@ Imports OpenTK.Graphics.OpenGL4
 ''' acumulador RGBA en sRGB, <c>Double()</c> de w×h×4 — así que el caller elige por el flag de cámara
 ''' (<c>Setting_GPUSkinning</c>) y NADA más cambia, y la paridad se mide restando los dos arrays.
 '''
-''' ⭐ QUÉ ENTRA ACÁ Y QUÉ NO. El PLIEGUE en sí (<c>albedo = softlight(complexion, facetint) × amplify(detail)</c>,
+''' QUÉ ENTRA ACÁ Y QUÉ NO. El PLIEGUE en sí (<c>albedo = softlight(complexion, facetint) × amplify(detail)</c>,
 ''' <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/>) NO es un stack de capas: es una ley FIJA del engine, sin
 ''' blend-ops ni cobertura, y se computa igual en los dos caminos (en Double, sin cuantizar). Pasarla por el GPU
 ''' obligaría a mandar el facetint como TEXTURA de 8 bits, y la cadena la escala hasta ×255/64 por el amplify del
@@ -27,7 +27,7 @@ Imports OpenTK.Graphics.OpenGL4
 ''' </summary>
 Friend Module SseFoldLayerStack
 
-    ''' <summary>⭐⭐ RENDER PURO GPU (pedido explícito del usuario): la cadena ENTERA del pliegue —
+    ''' <summary>RENDER PURO GPU (pedido explícito del usuario): la cadena ENTERA del pliegue —
     ''' facetint → fold → capas (skee MASKT + Face [Ovl]) → sRGB→lin final — corre en GL encadenando
     ''' TEXTURAS (Rgba32f, float de punta a punta), con CERO readbacks en el camino caliente. Devuelve el
     ''' texture-id FINAL (diffuse plegado en LINEAL, listo para el dict con IsSRGB=False) o 0 si CUALQUIER
@@ -46,7 +46,7 @@ Friend Module SseFoldLayerStack
     ''' Qué queda en CPU (y por qué es legítimo, no impureza): el DECODE de los DDS fuente — es la ENTRADA
     ''' común a los dos caminos (leer el archivo no es compose) y garantiza inputs bit-idénticos: decodificar
     ''' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" EN EL ORIGEN.
-    ''' ⛔ El alpha del complexion VIAJA INTACTO (antes se forzaba opaco acá y en el CPU): con una cabeza
+    ''' El alpha del complexion VIAJA INTACTO (antes se forzaba opaco acá y en el CPU): con una cabeza
     ''' ALPHA-TEST, pisarlo con 1 apaga su recorte y aparece geometría que el alpha cortaba, con borde negro.
     ''' Son DOS puntos: el upload (forceOpaque:=False) y el último pase del compositor
     ''' (headDiffuseAlphaTest:=True ⇒ uForceOpaqueAlpha=0). El bake nunca tuvo el problema porque su pack
@@ -77,7 +77,7 @@ Friend Module SseFoldLayerStack
             ' --- 1. FACETINT: seed de LA LEY → capas de tint del RACE/NPC (si hay). Sin capas, el facetint
             ' ES el seed (raza sin tints = seed plano; con el default 0.5 eso es soft-light IDENTIDAD, NO es
             ' un fallo — 0.5 es además el default de engine del slot 6, DefaultGreyMap). ---
-            ' ⭐ EL SEED SALE DE CharGen Options, NO DE UN LITERAL: acá estaba cableado 0.5F mientras el
+            ' EL SEED SALE DE CharGen Options, NO DE UN LITERAL: acá estaba cableado 0.5F mientras el
             ' compose CPU leía la ley ⇒ mover el seed no movía el render (el GPU es el default) y CPU y GPU
             ' componían desde números distintos. Fuente única = SseFaceTintComposer.TryGetFlatSeedRgb.
             Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
@@ -92,7 +92,7 @@ Friend Module SseFoldLayerStack
             If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then
                 tintTex = seedTex : seedTex = 0                          ' ownership pasa a tintTex
             Else
-                ' ⭐ CAPACIDAD DEL ESPEJO CPU de TODO este stack (los 7 ApplyFaceTintPipeline de este archivo).
+                ' CAPACIDAD DEL ESPEJO CPU de TODO este stack (los 7 ApplyFaceTintPipeline de este archivo).
                 ' Este camino comparte el compositor GL con FO4, pero su contraparte CPU es SseFaceTintComposer,
                 ' que acumula SIEMPRE en OutputSpace (lerp uniforme del motor, sin ley de cuatro espacios). Al
                 ' declararlo, AccumInCompositeSpace queda inerte acá aunque el config lo prenda ⇒ el GPU no se
@@ -125,7 +125,7 @@ Friend Module SseFoldLayerStack
 
             ' --- 2. FOLD: base = complexion (sRGB, CON SU ALPHA), capa = rama uFgTintFold del shader
             ' (softlight con el facetint × amplify del detail: la MISMA ley fija del engine que FoldFacetintIntoDiffuse en CPU). ---
-            ' ⛔⛔ forceOpaque:=False — espejo del camino CPU: el alpha del complexion NO se pisa. El pipeline
+            ' forceOpaque:=False — espejo del camino CPU: el alpha del complexion NO se pisa. El pipeline
             ' propaga el alpha del prev tal cual, así que entrando con el alpha real sale con el alpha real.
             ' Con alpha 1 forzado, una cabeza ALPHA-TEST deja de descartar y aparece el recorte que el alpha
             ' hacía (borde negro). Ver la nota larga en NpcFaceTintResolver (upload del diffuse plegado).
@@ -136,7 +136,7 @@ Friend Module SseFoldLayerStack
                 If detTex = 0 Then Return 0
             End If
             Dim foldLayer = MakeFoldLayer(tintTex, detTex, unfold:=False)
-            ' ⭐ stage:=Fold — el pase del pliegue resuelve el bucket FOLD, no el del canal. Es lo que hace que
+            ' stage:=Fold — el pase del pliegue resuelve el bucket FOLD, no el del canal. Es lo que hace que
             ' `uSoftLight` llegue al shader con el modelo del MOTOR (pegtop, el default del bucket) en vez del
             ' del bucket Diffuse (que en SSE es GIMP). Su espejo CPU, SseFaceGenBaker.FoldSoftLightModel,
             ' resuelve EXACTAMENTE la misma etapa ⇒ los dos caminos pliegan con la misma fórmula.
@@ -149,7 +149,7 @@ Friend Module SseFoldLayerStack
                                                                stage:=FaceTintConvention.FaceTintStage.Fold)
             If prF Is Nothing OrElse prF.Diffuse Is Nothing OrElse Not prF.Diffuse.IsFresh Then Return 0
             foldedTex = prF.Diffuse.TextureId
-            ' Sólo el complexion queda consumido acá. ⛔ tintTex/detTex SIGUEN VIVOS: los vuelve a necesitar el
+            ' Sólo el complexion queda consumido acá. tintTex/detTex SIGUEN VIVOS: los vuelve a necesitar el
             ' pase de UNFOLD del final (la inversa usa el MISMO facetint y el MISMO detail que el fold, o no
             ' cancela). Se liberan después de ese pase.
             If complexTex <> 0 Then Try : GL.DeleteTexture(complexTex) : Catch : End Try
@@ -168,7 +168,7 @@ Friend Module SseFoldLayerStack
             If HasWork(skeeRaw, faceOvl) Then
                 stackLayers.AddRange(BuildSkeeGpuLayers(skeeRaw, skinRgb))
                 stackLayers.AddRange(BuildFaceOverlayGpuLayers(faceOvl))
-                ' ⛔ ACÁ HABÍA UN `Return 0` ("había trabajo pero ninguna capa se pudo armar ⇒ FALLO, no se degrada
+                ' ACÁ HABÍA UN `Return 0` ("había trabajo pero ninguna capa se pudo armar ⇒ FALLO, no se degrada
                 ' en silencio"). Se elimina por DOS razones:
                 '   1. TIRABA EL FOLD ENTERO ya pagado (decode del complexion a resolución nativa + detail +
                 '      facetint + pase de fold) y, como nada cachea el fallo, el render lo reintentaba en cada
@@ -186,14 +186,14 @@ Friend Module SseFoldLayerStack
 
             ' SANDBOX (opt-in): el UNICO readback del camino — aca se MIDE que las dos replicas dan lo mismo,
             ' en vez de suponerlo.
-            ' ⭐⭐ FUERA DEL `If stackLayers.Count > 0`. Estaba ADENTRO, y un NPC vanilla de SSE no trae ni
+            ' FUERA DEL `If stackLayers.Count > 0`. Estaba ADENTRO, y un NPC vanilla de SSE no trae ni
             ' overlays de RaceMenu ni skee ⇒ cero capas ⇒ la paridad no se medía JAMAS en el caso que es el
             ' 100% del corpus vanilla (medido: 368 invocaciones del sandbox, 0 muestras comparadas). Lo que
             ' hay que comparar ahi es el FOLD DE LA BASE, que es exactamente lo que el bake escribe.
             ' `ComposeCpu` con cero capas es un no-op declarado (ver la nota de arriba), asi que sacarlo de la
             ' compuerta no cambia el resultado del caso con capas.
-            ' ⭐⭐ LA RÉPLICA CPU SE CONSTRUYE DE LAS MISMAS ENTRADAS, NO DEL RESULTADO DEL GPU.
-            ' ⛔ Antes arrancaba con `accCpu = ReadbackRgba32f(foldedTex)` —el fold QUE ACABABA DE HACER EL
+            ' LA RÉPLICA CPU SE CONSTRUYE DE LAS MISMAS ENTRADAS, NO DEL RESULTADO DEL GPU.
+            ' Antes arrancaba con `accCpu = ReadbackRgba32f(foldedTex)` —el fold QUE ACABABA DE HACER EL
             ' GPU— y más abajo invertía con el FACETINT DEL GPU. O sea que el instrumento comparaba sólo
             ' (capas + unfold) y las otras dos etapas daban verde POR CONSTRUCCIÓN: el compose del facetint
             ' (donde vive el SEED) y el pliegue nunca se medían. Por eso un seed cableado en el GPU podía
@@ -217,7 +217,7 @@ Friend Module SseFoldLayerStack
                 End If
             End If
             If stackLayers.Count > 0 Then
-                ' ⭐ stage:=Overlay — el stack de capas (skee MASKT + Face [Ovl]) resuelve el bucket OVERLAY.
+                ' stage:=Overlay — el stack de capas (skee MASKT + Face [Ovl]) resuelve el bucket OVERLAY.
                 ' Su espejo CPU (SseOverlayCompositor.ApplyOverlays) resuelve EXACTAMENTE la misma etapa, así
                 ' que el bucket mueve los dos caminos o no mueve ninguno.
                 Dim prL = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
@@ -240,7 +240,7 @@ Friend Module SseFoldLayerStack
             ' vuelve a ser exactamente el buffer compuesto. MISMO facetint y MISMO detail que el fold.
             ' Espejo GPU de SseFaceGenBaker.PreCompensateEngineChain — si tocás una, tocá la otra. ---
             Dim unfoldLayer = MakeFoldLayer(tintTex, detTex, unfold:=True)
-            ' ⭐ CENSO PRE-UNFOLD: separa la inversa del resto. La inversa es mal condicionada cerca de
+            ' CENSO PRE-UNFOLD: separa la inversa del resto. La inversa es mal condicionada cerca de
             ' k = 1-2b = 0 (el limite es la identidad, la formula daria 0/0), asi que ahi float32 (GPU) y
             ' float64 (CPU) pueden separarse MUCHO sin que las leyes difieran. Midiendo antes y despues se
             ' sabe cuanto aporta cada tramo en vez de suponerlo.
@@ -263,7 +263,7 @@ Friend Module SseFoldLayerStack
             ' Paridad CPU-vs-GPU de la cadena COMPLETA (fold + capas + unfold). La replica CPU aplica la misma
             ' inversa con el MISMO facetint (readback) y el MISMO detail, y recien ahi se compara.
             If accCpu IsNot Nothing Then
-                ' ⛔ La inversa del CPU usa SU PROPIO facetint (el que compuso en el paso 1), NO un readback
+                ' La inversa del CPU usa SU PROPIO facetint (el que compuso en el paso 1), NO un readback
                 ' del que armó el GPU. Con el del GPU, directa e inversa cancelaban el MISMO número y el
                 ' compose del facetint quedaba fuera de la medición — que es exactamente el agujero por el
                 ' que se coló el seed cableado.
@@ -272,7 +272,7 @@ Friend Module SseFoldLayerStack
                 If accGpu IsNot Nothing Then
                     Dim rms = RmsDiff255(accCpu, accGpu, npix)
                     Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (fold + capas + unfold)")
-                    ' ⛔ El RMS solo NO alcanza para afirmar "paridad +-1": un maximo de 8 en 200 pixeles se
+                    ' El RMS solo NO alcanza para afirmar "paridad +-1": un maximo de 8 en 200 pixeles se
                     ' esconde detras de un RMS de 0,2. Ademas esto salia SOLO por Logger, que en el barrido esta
                     ' APAGADO => el unico instrumento de paridad del camino SSE no reportaba nada (se veia como
                     ' "0 comparable slots"). Se acumula un censo con el MISMO criterio que usa FO4 (maximo y cola
@@ -304,7 +304,7 @@ Friend Module SseFoldLayerStack
             ' allocan con MinFilter/MagFilter=Linear + ClampToEdge (AllocateResultTextureAndFbo), que es
             ' EXACTAMENTE el filtro que replican FaceTintCpuCompositor.ResampleBgra (bake) y ResampleRgbaFloat
             ' (réplica CPU de esto). No hace falta un pase aparte.
-            ' ⭐ EL ORDEN IMPORTA Y ES PARTE DEL CONTRATO: se resamplea SOBRE LOS VALORES sRGB y RECIÉN DESPUÉS
+            ' EL ORDEN IMPORTA Y ES PARTE DEL CONTRATO: se resamplea SOBRE LOS VALORES sRGB y RECIÉN DESPUÉS
             ' se convierte a lineal — bilinear en sRGB ≠ bilinear en lineal. Es el mismo orden que el bake
             ' (que resamplea el BGRA sRGB antes de encodear) y el que hace la réplica CPU. Si alguna vez se
             ' mueve el resample después del cvt, CPU, GPU y bake dejan de coincidir.
@@ -335,15 +335,15 @@ Friend Module SseFoldLayerStack
     ''' complexion en sRGB y el resultado en sRGB (<c>Double()</c> RGBA), así que el caller elige camino por el flag y
     ''' nada más cambia. Nothing = FALLO del GPU (el caller aborta; NO se compone por CPU).
     '''
-    ''' ⭐ TODO EN FLOAT (Rgba32f): complexion, facetint y detail se suben como textura float y el readback vuelve float.
+    ''' TODO EN FLOAT (Rgba32f): complexion, facetint y detail se suben como textura float y el readback vuelve float.
     ''' MEDIDO por qué importa: el fold GPU viejo (<c>_2d</c>) transportaba los intermedios en 8 bits LINEALES y daba
     ''' RMS 2,4/255 y máx 18 contra el CPU — con el error concentrado en las sombras (5,7 medio en 0..31 vs 0,3 en los
     ''' claros), que es la firma de cuantizar en lineal: cerca del negro, 1 nivel lineal vale ~13 niveles sRGB. Y el
     ''' facetint, además, lo amplifica el fgTint ×255/64. En float no hay dónde perder nada.
     '''
-    ''' ⭐ La ARITMÉTICA del pliegue (softlight × amplify) es FIJA —engine, DXBC verificado— y vive en el shader
+    ''' La ARITMÉTICA del pliegue (softlight × amplify) es FIJA —engine, DXBC verificado— y vive en el shader
     ''' (rama <c>uFgTintFold</c>).
-    ''' ⛔ Pero decir "el fold NO pasa por <see cref="FaceTintConvention"/>" es FALSO y este mismo comentario lo
+    ''' Pero decir "el fold NO pasa por <see cref="FaceTintConvention"/>" es FALSO y este mismo comentario lo
     ''' desmentía dos líneas más abajo: el fold corre DENTRO de <c>ApplyFaceTintPipeline</c>, así que el seed y el
     ''' pase final SÍ aplican la convención del bucket Diffuse. Lo que pasa es que la ley SSE es ALL-LINEAR y esas
     ''' dos conversiones quedan en no-op, o sea que la independencia es una COINCIDENCIA de los defaults, no una
@@ -385,7 +385,7 @@ Friend Module SseFoldLayerStack
     Friend Function ComposeFacetintGpu(tintLayers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Single()
         If host Is Nothing Then Return Nothing
         Dim npix = w * h
-        ' ⭐ Seed de LA LEY (CharGen Options), no el literal 0.5F que estaba cableado acá. Ver
+        ' Seed de LA LEY (CharGen Options), no el literal 0.5F que estaba cableado acá. Ver
         ' SseFaceTintComposer.TryGetFlatSeedRgb: Nothing ⇒ la ley pide textura base y el facetint es
         ' TINT-ONLY ⇒ FALLO (igual que el CPU), no un 0.5 de relleno.
         Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
@@ -423,8 +423,8 @@ Friend Module SseFoldLayerStack
 
     ''' <summary>True si hay algo que componer (evita subir texturas al pedo).
     '''
-    ''' <para>⭐⭐ EL PREDICADO TIENE QUE SER EL MISMO QUE CONSUMEN LOS BUILDERS, o esto se vuelve un
-    ''' "gate dice sí / compose no hace nada" con consecuencias caras. ⛔ Decía <c>faceOvl.Count &gt; 0</c>, que
+    ''' <para>EL PREDICADO TIENE QUE SER EL MISMO QUE CONSUMEN LOS BUILDERS, o esto se vuelve un
+    ''' "gate dice sí / compose no hace nada" con consecuencias caras. Decía <c>faceOvl.Count &gt; 0</c>, que
     ''' era correcto SÓLO mientras el caller le pasaba una lista ya filtrada por <c>DiffusePath</c>. Al pasar a
     ''' mandar TODOS los nodos <c>Face [Ovl]</c> (para que un overlay solo-normal deje de desaparecer), un nodo
     ''' sin diffuse hacía <c>HasWork</c>=True, <see cref="BuildFaceOverlayGpuLayers"/> devolvía 0 capas, y el
@@ -459,7 +459,7 @@ Friend Module SseFoldLayerStack
     ''' Rgba32f — FLOAT, no 8 bits — así que el único redondeo del camino GPU es el mismo del CPU (el byte final), y no
     ''' uno extra del transporte. Devuelve un acumulador NUEVO (sRGB, w×h×4) o Nothing si el GPU no puede (el caller
     ''' decide; NUNCA se cae a CPU en silencio). No muta <paramref name="acc"/>. GL-bound: contexto activo.
-    ''' ⚠️ El RENDER ya NO pasa por acá (usa <see cref="ComposeFoldedGpuResident"/>, sin readbacks): este trío
+    ''' El RENDER ya NO pasa por acá (usa <see cref="ComposeFoldedGpuResident"/>, sin readbacks): este trío
     ''' con readback por etapa queda para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
     ''' intermedios en CPU para escribir los .dds de comparación.</summary>
     Friend Function ComposeGpu(acc As Single(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
@@ -503,7 +503,7 @@ Friend Module SseFoldLayerStack
         If raw Is Nothing Then Return outL
         For Each l In raw
             ' Resuelve el color/sentinel con la MISMA función del CPU (no se re-implementa el ×2 del preset hair).
-            ' ⭐ `l.HasColor` VA SÍ O SÍ: sin él este adaptador usaría el default True y volvería a tratar un MASKC
+            ' `l.HasColor` VA SÍ O SÍ: sin él este adaptador usaría el default True y volvería a tratar un MASKC
             ' AUSENTE como el sentinel de pelo (0xFFFFFFFF), justo lo que el flag vino a arreglar — y el CPU, que sí
             ' lo pasa, daría OTRO color para la misma capa. Es una divergencia CPU-vs-GPU en el VALOR, invisible.
             Dim cpuLayer = SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Opacity, Nothing, l.LayerType, l.Blend, skinRgb, Nothing, l.HasColor)
@@ -552,11 +552,11 @@ Friend Module SseFoldLayerStack
     Private Function BuildFaceOverlayGpuLayers(overlays As IList(Of RaceMenuJslot.JslotOverlayNode)) As List(Of FaceTintLayerInput)
         Dim outL As New List(Of FaceTintLayerInput)
         If overlays Is Nothing Then Return outL
-        ' ⛔ FILTRAR POR NODO Face, no sólo por "tiene diffuse". Esto FALTABA: el filtro era únicamente
+        ' FILTRAR POR NODO Face, no sólo por "tiene diffuse". Esto FALTABA: el filtro era únicamente
         ' `Not IsNullOrEmpty(o.DiffusePath)`, así que este camino (GPU) componía los overlays de CUERPO dentro
         ' del diffuse de la CARA — mientras el camino CPU (ComposeFaceOverlaysIntoDiffuse) sí filtraba por Face.
         ' Los dos caminos tienen que dar el MISMO resultado: mismo predicado, una sola ley.
-        ' ⛔ Y el predicado es IsFoldableFaceOverlay, o sea Face MENOS el pool magic: un `Face [SOvl{n}]` no se
+        ' Y el predicado es IsFoldableFaceOverlay, o sea Face MENOS el pool magic: un `Face [SOvl{n}]` no se
         ' pliega NUNCA (es capa de runtime de un magic effect; ver SseOverlayCompositor.IsFoldableFaceOverlay).
         ' Va acá y no sólo en el caller por la misma razón que el filtro de Face: el CPU lo aplica adentro.
         Dim ordered = SseOverlayCompositor.SortFaceOverlays(
@@ -608,12 +608,12 @@ Friend Module SseFoldLayerStack
         Return _white1x1
     End Function
 
-    ''' <summary>Sube un acumulador Double RGBA como textura Rgba32f (float). ⭐ NO se cuantiza a 8 bits: si el base
+    ''' <summary>Sube un acumulador Double RGBA como textura Rgba32f (float). NO se cuantiza a 8 bits: si el base
     ''' del GPU entrara en bytes, el camino GPU arrastraría un redondeo que el CPU no tiene y la paridad quedaría
     ''' limitada por el TRANSPORTE en vez de por el compose (que es lo que se quiere medir).
-    ''' ⭐ Friend (no Private): el camino CPU del fold (<c>ApplySseFacetintFolded</c>) sube su resultado por acá
+    ''' Friend (no Private): el camino CPU del fold (<c>ApplySseFacetintFolded</c>) sube su resultado por acá
     ''' TAMBIÉN, para que los dos caminos instalen la MISMA representación (Rgba32f) y el transporte deje de ser
-    ''' una diferencia entre ellos. ⛔ No volver a Private ni bajar el CPU a RGBA8.</summary>
+    ''' una diferencia entre ellos. No volver a Private ni bajar el CPU a RGBA8.</summary>
     Friend Function UploadRgba32f(acc As Single(), npix As Integer, w As Integer, h As Integer,
                                    Optional forceOpaque As Boolean = False) As Integer
         Dim f(npix * 4 - 1) As Single
@@ -626,7 +626,7 @@ Friend Module SseFoldLayerStack
                     f(i) = acc(i)
                 Next
             End Sub)
-        ' forceOpaque: pisa el canal alpha con 1. ⛔ NINGÚN camino del pliegue del DIFFUSE lo usa ya: el alpha
+        ' forceOpaque: pisa el canal alpha con 1. NINGÚN camino del pliegue del DIFFUSE lo usa ya: el alpha
         ' del complexion es dato vivo para una cabeza alpha-test y pisarlo apaga su recorte. Queda para quien
         ' suba un buffer que genuinamente no tenga alpha propio.
         If forceOpaque Then
@@ -642,9 +642,9 @@ Friend Module SseFoldLayerStack
     End Function
 
     ''' <summary>Textura Rgba32f plana de un color constante (el seed 0.5 del facetint). Sin pasar por Double.
-    ''' ⭐ Friend (no Private): <c>ApplySseFacetint</c> siembra por acá TAMBIÉN, para que su seed sea el 0.5 EXACTO
+    ''' Friend (no Private): <c>ApplySseFacetint</c> siembra por acá TAMBIÉN, para que su seed sea el 0.5 EXACTO
     ''' y no el byte 128 (=0.50196) que usaba antes — el CPU siembra 0.5 exacto y la diferencia se propaga a
-    ''' fgTint (2.00781 vs 2.01563). ⛔ No volver a sembrar por bytes.</summary>
+    ''' fgTint (2.00781 vs 2.01563). No volver a sembrar por bytes.</summary>
     Friend Function UploadRgba32fFlat(r As Single, g As Single, b As Single, a As Single, w As Integer, h As Integer) As Integer
         Dim npix = w * h
         Dim f(npix * 4 - 1) As Single
@@ -672,7 +672,7 @@ Friend Module SseFoldLayerStack
         Return id
     End Function
 
-    ''' <summary>La capa del pliegue (o de su inversa). ⛔ Los TRES sitios que la armaban tenían el mismo
+    ''' <summary>La capa del pliegue (o de su inversa). Los TRES sitios que la armaban tenían el mismo
     ''' cuerpo copiado, con las constantes de la ley RE-LITERALIZADAS: agregarle un campo obligaba a
     ''' escribirlo tres veces y una omisión no la veía ningún gate de bytes del bake (el fold GPU sólo lo
     ''' ejercita el sandbox _2c-vs-_2d).
@@ -683,7 +683,7 @@ Friend Module SseFoldLayerStack
         Return New List(Of FaceTintLayerInput) From {
             New FaceTintLayerInput With {
                 .Kind = FaceTintLayerKind.TextureSetDiffuse,
-                .LayerTextureId = tintTexId,                      ' ⭐ textura float, NO un DDS de 8 bits
+                .LayerTextureId = tintTexId,                      ' textura float, NO un DDS de 8 bits
                 .FoldDetailTextureId = detailTexId,               ' 0 ⇒ el shader usa el default del engine
                 .FgTintFold = True, .FgTintUnfold = unfold,
                 .FgTintOffR = SseFaceGenBaker.FgTintOffR,
@@ -786,7 +786,7 @@ Friend Module SseFoldLayerStack
         End SyncLock
     End Function
 
-    ''' <summary>⛔ Limpia TAMBIÉN los tres campos del censo PRE-UNFOLD. Antes sólo limpiaba los `_ssp*`, así
+    ''' <summary>Limpia TAMBIÉN los tres campos del censo PRE-UNFOLD. Antes sólo limpiaba los `_ssp*`, así
     ''' que la línea PRE-UNFOLD acumulaba entre corridas: una segunda medición en el mismo proceso heredaba el
     ''' peor delta de la primera y no había forma de notarlo desde el reporte.</summary>
     Public Sub ResetSseParity()

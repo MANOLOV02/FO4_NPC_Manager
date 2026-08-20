@@ -304,7 +304,7 @@ Public Class Preflight_Form
             _checkedPlugins.Clear()
             For Each pluginName In savedSelection : _checkedPlugins.Add(pluginName) : Next
 
-            ' ⛔ La seleccion guardada NO es un set: es el Plugins.txt virtual del usuario, CON su orden, que
+            ' La seleccion guardada NO es un set: es el Plugins.txt virtual del usuario, CON su orden, que
             ' pudo haber acomodado a mano con ▲/▼. Restaurar solo los tildes y dejar las filas donde las puso
             ' el barrido (activos por load order + inactivos ALFABETICOS) perdia ese orden en silencio y con el
             ' la precedencia de overrides y de BA2. Las filas guardadas van primero, en su orden; el resto
@@ -327,7 +327,7 @@ Public Class Preflight_Form
         End If
         CheckBoxPersistSelection.Checked = (savedSelection.Count > 0)
 
-        ' ⛔ El plan se resuelve ANTES del primer render: el orden efectivo no depende del barrido de
+        ' El plan se resuelve ANTES del primer render: el orden efectivo no depende del barrido de
         ' masters, así que la columna "Load #" tiene que salir poblada de entrada.
         RebuildPlan()
         ApplyFilter()
@@ -349,7 +349,7 @@ Public Class Preflight_Form
             _mastersReady = True
             RebuildPlan()
             RecomputeValidation()
-            ' ⛔ Sin este ApplyFilter la grilla nunca reflejaba el resultado del barrido: los colores
+            ' Sin este ApplyFilter la grilla nunca reflejaba el resultado del barrido: los colores
             ' de conflicto y la columna "Load #" quedaban como estaban al abrir.
             ApplyFilter()
             Return
@@ -370,18 +370,18 @@ Public Class Preflight_Form
             _mastersReady = True
             RebuildPlan()
             RecomputeValidation()
-            ' ⛔ Sin este ApplyFilter la grilla nunca reflejaba el resultado del barrido: los colores
+            ' Sin este ApplyFilter la grilla nunca reflejaba el resultado del barrido: los colores
             ' de conflicto y la columna "Load #" quedaban como estaban al abrir.
             ApplyFilter()
         Catch ex As Exception
             If token <> _mastersSweepToken OrElse IsDisposed Then Return
             Logger.LogLazy(Function() $"[PREFLIGHT] Masters sweep failed: {ex.Message}")
-            ' ⛔ Do NOT enable OK here. With no master data there is nothing to validate against, so
+            ' Do NOT enable OK here. With no master data there is nothing to validate against, so
             ' waving the user through loads plugins whose dependencies were never checked — and a
             ' plugin merged before its master resolves every reference it owns against a master list
             ' that is not in the index yet, silently filing its records under another plugin's
-            ' FormIDs. A gate that opens when its own input is missing is not a gate. xEdit refuses
-            ' to load a module whose masters it cannot account for (wbLoadOrder.pas:404-421).
+            ' FormIDs. A gate that opens when its own input is missing is not a gate. La regla de
+            ' carga es rechazar un módulo cuyos masters no se pueden resolver, no adivinar.
             _mastersReady = False
             RecomputeValidation()   ' disables OK and early-returns WITHOUT touching LabelStatus...
             LabelStatus.Text = "Could not read the plugin masters, so this selection cannot be " &
@@ -438,8 +438,7 @@ Public Class Preflight_Form
             If Not _mastersByName.TryGetValue(pluginName, masters) Then Continue For
             ' Nothing = its header could not be read, so its dependencies are UNKNOWN. Unknown counts
             ' as broken: letting it load means every reference it owns resolves against a master list
-            ' we never saw. xEdit infects a dependent the same way when a master is unaccounted for
-            ' (wbLoadOrder.pas:418-421).
+            ' we never saw. Un master sin resolver contagia igual a cualquier plugin que dependa de él.
             If masters Is Nothing Then
                 _brokenPlugins.Add(pluginName)
                 Continue For
@@ -461,11 +460,11 @@ Public Class Preflight_Form
         ' plugin with unsatisfied masters, and (c) ningun conflicto IRREPARABLE de grupo. Los conflictos de
         ' orden REPARABLES no bloquean: LoadOrderPlanner los deja en cero salvo header corrupto, y si quedara
         ' el aviso lo dice. Bloquear por algo que la app puede arreglar sola seria un callejon sin salida.
-        ' ⛔ Los GroupConflicts AVISAN pero NO bloquean. Un plugin del grupo master que dependa de un .esp es
+        ' Los GroupConflicts AVISAN pero NO bloquean. Un plugin del grupo master que dependa de un .esp es
         ' algo que ESTA MISMA APP fabrica con un click: guardar un override con "Mark as master" le pone el
         ' flag ESM, y sus MAST son los .esp de origen de los NPC. Bloquear OK por eso dejaba al usuario sin
-        ' salida en el Preflight siguiente, con la única opción de destildar su propio plugin. Ni el motor ni
-        ' xEdit lo tratan como fatal: cargan igual, con la precedencia que el aviso explica.
+        ' salida en el Preflight siguiente, con la única opción de destildar su propio plugin. El motor no lo
+        ' trata como fatal: carga igual, con la precedencia que el aviso explica.
         ButtonOk.Enabled = (_checkedPlugins.Count > 0 AndAlso _brokenPlugins.Count = 0)
         ' "Check Masters" affordance: shown whenever a checked plugin is broken. Clicking ticks the
         ' fixable masters (present on disk) transitively and reports any that are missing on disk.
@@ -592,7 +591,7 @@ Public Class Preflight_Form
 
 #Region "Orden de carga — la grilla ES un Plugins.txt virtual"
 
-    ' ⛔ NINGUNA ley vive acá. La grilla del Preflight es un Plugins.txt virtual: las filas tildadas SON el load
+    ' NINGUNA ley vive acá. La grilla del Preflight es un Plugins.txt virtual: las filas tildadas SON el load
     ' order y su posición ES el miPluginsTxtIndex. Resolver eso al orden que va a usar el motor (partición por
     ' grupo master) y detectar los conflictos de masters es trabajo de `LoadOrderPlanner`, en la librería, donde
     ' entra todo por parámetro y el probe puede llamarlo. Este region es UI: mover filas, pintar y avisar.
@@ -626,7 +625,7 @@ Public Class Preflight_Form
     End Function
 
     ''' <summary>Resuelve el plan y APLICA el orden reparado a <c>_allRows</c>.
-    ''' <para>⛔ NO exige que el barrido de masters haya terminado. El ORDEN EFECTIVO no depende de los masters
+    ''' <para>NO exige que el barrido de masters haya terminado. El ORDEN EFECTIVO no depende de los masters
     ''' — sale del orden literal más la partición del motor — y sólo el diagnóstico de conflictos los necesita.
     ''' Atarlo al barrido dejaba la columna "Load #" en "-" hasta que el usuario tocara algo: el bug que reportó
     ''' con el diálogo recién abierto.</para>
@@ -654,7 +653,7 @@ Public Class Preflight_Form
     End Sub
 
     ''' <summary>Refresca la columna "Load #" y los colores SIN reconstruir la lista.
-    ''' <para>⛔⛔ Existe por un CRASH REAL que metí: llamar a <see cref="ApplyFilter"/> (que hace
+    ''' <para>Existe por un CRASH REAL que metí: llamar a <see cref="ApplyFilter"/> (que hace
     ''' <c>Items.Clear()</c>) desde adentro del handler <c>ItemChecked</c> desprende el propio
     ''' <c>ListViewItem</c> que el ListView está procesando, y al pedirle su objeto de accesibilidad tira
     ''' <c>InvalidOperationException: no se puede obtener el objeto accessibility cuando ListViewItem no está
@@ -686,7 +685,7 @@ Public Class Preflight_Form
     ''' <param name="checkSetChanged">True cuando cambió QUÉ está tildado por fuera del propio ListView (los
     ''' botones "Only actives" / "Mark all" / "Unmark all" / "Check Masters"). En ese caso hay que RECONSTRUIR
     ''' la grilla para que los checkboxes reflejen <c>_checkedPlugins</c>.
-    ''' <para>⛔ Sin esto la grilla MENTÍA: los bulk buttons rellenan <c>_checkedPlugins</c> pero
+    ''' <para>Sin esto la grilla MENTÍA: los bulk buttons rellenan <c>_checkedPlugins</c> pero
     ''' <see cref="RefreshPlanColumnsInPlace"/> sólo escribe la columna "Load #" y el color — nunca toca
     ''' <c>it.Checked</c>. El usuario veía sus tildes viejos y OK cargaba otra cosa. El ApplyFilter diferido
     ''' tampoco lo salvaba porque corría sólo si el planner había reordenado filas, y con un Plugins.txt ya
@@ -698,7 +697,7 @@ Public Class Preflight_Form
         If checkSetChanged OrElse _planReorderedRows Then
             ' Diferido SIEMPRE: reconstruir la grilla desde adentro de un evento del ListView desprende el
             ' item que el control está procesando. Ver RefreshPlanColumnsInPlace.
-            ' ⛔ La bandera se consume DENTRO del If: si no hay handle no se puede diferir, y apagarla antes
+            ' La bandera se consume DENTRO del If: si no hay handle no se puede diferir, y apagarla antes
             ' perdía la reconstrucción pendiente sin que nada la recordara.
             If Not IsDisposed AndAlso IsHandleCreated Then
                 _planReorderedRows = False
@@ -713,7 +712,7 @@ Public Class Preflight_Form
     ''' <summary>Vuelve el orden de la grilla al que dicta el JUEGO: <c>PluginManager.ReadActiveLoadOrder</c>
     ''' (Plugins.txt / loadorder.txt + la partición por grupo master del motor) para los activos, y el resto
     ''' alfabético detrás — exactamente el mismo criterio con el que se arma el diálogo la primera vez.
-    ''' <para>⛔ Toca el ORDEN y nada más: no cambia qué está tildado. Son dos ejes independientes y mezclarlos
+    ''' <para>Toca el ORDEN y nada más: no cambia qué está tildado. Son dos ejes independientes y mezclarlos
     ''' haría que "ordenar" borre una selección curada a mano.</para>
     ''' <para>Después corre el planner igual que cualquier otro cambio, así que si el orden del juego dejara a
     ''' alguien cargando antes de un master suyo, los masters se suben y se avisa.</para></summary>
@@ -757,7 +756,7 @@ Public Class Preflight_Form
 
     ''' <summary>Mueve las filas seleccionadas una posición arriba (<paramref name="delta"/> = -1) o abajo (+1)
     ''' dentro de <c>_allRows</c>, que es el orden literal de este Plugins.txt virtual.
-    ''' <para>⛔ El movimiento es RELATIVO AL VECINO VISIBLE, no al índice crudo: con un filtro puesto, "subir"
+    ''' <para>El movimiento es RELATIVO AL VECINO VISIBLE, no al índice crudo: con un filtro puesto, "subir"
     ''' tiene que dejar la fila arriba de la que el usuario VE arriba, saltando las ocultas. Moviendo de a un
     ''' índice crudo el botón parecería no hacer nada cuando la fila de al lado está filtrada.</para>
     ''' <para>Después de mover se re-resuelve el plan, que puede ARRASTRAR MASTERS para que el resultado siga
@@ -842,7 +841,7 @@ Public Class Preflight_Form
         Else
             Return
         End If
-        ' ⛔ Se marca Handled ANTES y el movimiento se DIFIERE. MoveSelection llama a ApplyFilter, que hace
+        ' Se marca Handled ANTES y el movimiento se DIFIERE. MoveSelection llama a ApplyFilter, que hace
         ' Items.Clear(): hacerlo acá adentro desprende el item que el ListView está procesando y después el
         ' WndProc base sigue trabajando contra él — es la misma InvalidOperationException de accesibilidad que
         ' ya rompió el click en un tilde. La regla vale para TODOS los eventos del control, no sólo ItemChecked.
@@ -949,7 +948,7 @@ Public Class Preflight_Form
             _suspendItemChecked = False
         End Try
 
-        ' ⛔ checkSetChanged:=False A PROPÓSITO: este camino YA puso `it.Checked` en cada item visible, así
+        ' checkSetChanged:=False A PROPÓSITO: este camino YA puso `it.Checked` en cada item visible, así
         ' que la grilla no miente y reconstruirla sería tirar y rehacer N ListViewItem para llegar al mismo
         ' estado — con los 1500 plugins del Case19, 1500 items por click en "Mark all". El flag es para los
         ' que tocan `_checkedPlugins` SIN tocar el ListView.
@@ -963,7 +962,7 @@ Public Class Preflight_Form
             Return
         End If
 
-        ' ⛔ Sin Plugins.txt no se sigue. Este es el modo de falla que motivó todo el rediseño de rutas y es
+        ' Sin Plugins.txt no se sigue. Este es el modo de falla que motivó todo el rediseño de rutas y es
         ' MUDO: ReadActiveLoadOrder devuelve los masters implícitos y nada más, o sea una lista válida que
         ' describe un juego sin un solo mod. Además arrastra el mount de archives (FilesDictionary usa el
         ' mismo load order para la prioridad de BA2/BSA), así que cada mod se vería como vanilla. Cargar así
@@ -1012,19 +1011,19 @@ Public Class Preflight_Form
             If _checkedPlugins.Contains(row.Name) Then SelectedPlugins.Add(row.Name)
         Next
 
-        ' ⛔ Lo que se PERSISTE es el orden LITERAL de la grilla — el Plugins.txt virtual tal como el usuario lo
+        ' Lo que se PERSISTE es el orden LITERAL de la grilla — el Plugins.txt virtual tal como el usuario lo
         ' dejo — y no el particionado de abajo. Guardar el particionado haria que al reabrir se viera un orden
         ' que el usuario nunca tipeo, y ademas la particion se re-aplica sola en cada apertura, asi que
         ' guardarla es redundante. Es la misma separacion que hace el motor: Plugins.txt guarda el literal,
         ' el orden efectivo se deriva.
         Dim literalSelection = New List(Of String)(SelectedPlugins)
 
-        ' ⛔ Los INACTIVOS que el usuario tilda entran a _allRows appendeados al final y en orden ALFABÉTICO
+        ' Los INACTIVOS que el usuario tilda entran a _allRows appendeados al final y en orden ALFABÉTICO
         ' (:282-287): nunca pasaron por Plugins.txt, así que no traen posición. Sin esta línea la lista quedaba
         ' con DOS leyes — la mitad de arriba (los activos, que salen de ReadActiveLoadOrder) ya particionada por
         ' grupo master, y la de abajo no. Un `.esm` tildado caía último y le ganaba TODO override, y su .ba2 todo
         ' conflicto de textura (BuildArchivePriority asigna SourceOrder por posición en ESTA lista).
-        ' El motor particiona (wbLoadOrder.pas:202-216) y el Preflight existe para mostrar cómo va a quedar, así
+        ' El motor particiona por grupo master y el Preflight existe para mostrar cómo va a quedar, así
         ' que la selección entera se ordena con la MISMA función que el lector, no con una copia.
         ' forcedCount = 0: acá no hay tramo forzado — los masters implícitos y el CC no son filas de esta grilla.
         PluginManager.StablePartitionMasterGroup(SelectedPlugins, 0, Config_App.Current.DataPath)
@@ -1045,7 +1044,7 @@ Public Class Preflight_Form
 
         ' Finalize plugin text encoding for the game the user settled on. Program.Main ran this once at
         ' startup against the persisted default; the user may have switched games in this dialog, so redo
-        ' it here — BEFORE LoadAllPlugins below — mirroring xEdit's "configure encoding → load → edit" order.
+        ' it here — BEFORE LoadAllPlugins below — respetando el orden: configurar encoding → cargar → editar.
         PluginEncodingSettings.InitializeForGame(Config_App.Current.Game)
         PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
         PluginEncodingSettings.ApplyOverrideIni(AppDomain.CurrentDomain.BaseDirectory)
@@ -1168,7 +1167,7 @@ Public Class Preflight_Form
                                                                                 loadedPlugins:=SelectedPlugins))
 
             ' No-op unless the app was launched with --diagnoseLoad (see WritePreflightDiagnostics): a normal
-            ' run writes nothing at all. ⛔ NOT wired to Logger.Enabled — that flag also drives
+            ' run writes nothing at all. NOT wired to Logger.Enabled — that flag also drives
             ' FaceGenBuilder.DebugMode, so using it as a profiling switch would silently change FaceGen bakes.
             WritePreflightDiagnostics(FilesDictionary_class.LastScanDiagnostics)
 
@@ -1209,12 +1208,12 @@ Public Class Preflight_Form
     End Sub
 
     ''' <summary>Write the last dictionary scan's phase breakdown to <c>preflight.log</c> next to the exe —
-    ''' ⛔ ONLY when the app was launched with <c>--diagnoseLoad</c>. A normal run writes NOTHING and does
+    ''' ONLY when the app was launched with <c>--diagnoseLoad</c>. A normal run writes NOTHING and does
     ''' not touch the disk: shipping software does not leave logs behind, and the fix for a slow preflight
     ''' is a fast preflight, not a log we ask the user to mail us. This exists purely as an opt-in switch we
     ''' can drive OURSELVES when profiling a rig.
     '''
-    ''' <para>⛔ OVERWRITE, not append: the file is FRESHLY created on every diagnosed run and holds exactly
+    ''' <para>OVERWRITE, not append: the file is FRESHLY created on every diagnosed run and holds exactly
     ''' the last one's line — no history to grow unbounded and no stale line to be mistaken for the current
     ''' run's. (A load reloads the dictionary at most once, so there is only ever one line to write.)</para></summary>
     Private Shared Sub WritePreflightDiagnostics(summary As String)

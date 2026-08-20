@@ -91,7 +91,7 @@ Public Module BssliderSidecar
         ''' persona del jugador, que un NPC no usa — pero el "Save RaceMenu preset" reconstruye un
         ''' <c>RaceMenuJslot</c> nuevo desde el carrier, así que sin persistirlos el preset re-exportado sale SIN
         ''' ellos. Nullable; serializado bajo <c>sseFirstPersonTransforms</c>.
-        ''' <para>⛔ Es la TERCERA vez en este subsistema que un dato que el modelo tiene y el disco no mata
+        ''' <para>Es la TERCERA vez en este subsistema que un dato que el modelo tiene y el disco no mata
         ''' información al cerrar la app (antes: la matriz cruda de rotación y los nombres colapsados). En un preset
         ''' real esto NO es un borde: casi todo nodo aparece dos veces en el archivo, una por vista.</para></summary>
         Public SseFirstPersonTransformsRaw As List(Of String) = Nothing
@@ -257,7 +257,7 @@ Public Module BssliderSidecar
             preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(entry.SseBodyOverlays)
         End If
         ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the carrier.
-        ' ⭐ El Clone() se trae el `Raw`, que el sidecar ahora SÍ persiste. Antes el comentario de acá decía "Raw
+        ' El Clone() se trae el `Raw`, que el sidecar ahora SÍ persiste. Antes el comentario de acá decía "Raw
         ' stays Nothing → a later .jslot export rebuilds each element from the modeled fields", y esa reconstrucción
         ' era justamente la pérdida: se iba la key 40 (re-parenteo), la 33 y todo value no modelado.
         If entry.SseNodeTransforms IsNot Nothing AndAlso entry.SseNodeTransforms.Count > 0 Then
@@ -267,7 +267,7 @@ Public Module BssliderSidecar
             Next
             preset.SseNodeTransforms = nts
         End If
-        ' ⛔ SEGUNDO CAMINO DE HIDRATACIÓN: éste se me pasó cuando agregué el campo (el otro está en MainForm). Sin la
+        ' SEGUNDO CAMINO DE HIDRATACIÓN: éste se me pasó cuando agregué el campo (el otro está en MainForm). Sin la
         ' línea, un NPC que entra por acá exportaba el preset sin los elementos de primera persona.
         If entry.SseFirstPersonTransformsRaw IsNot Nothing AndAlso entry.SseFirstPersonTransformsRaw.Count > 0 Then
             preset.SseFirstPersonTransformsRaw = New List(Of String)(entry.SseFirstPersonTransformsRaw)
@@ -364,7 +364,7 @@ Public Module BssliderSidecar
         ' entry so an edited position/rotation survives a reload, not just the scale (SSE-only, nullable).
         If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
             Dim list As New List(Of RaceMenuJslot.JslotNodeTransform)(overlay.SseNodeTransforms.Count)
-            ' ⛔⛔ EL GATE ERA `Not nt.IsIdentity` Y ESO PERDÍA DATOS. `IsIdentity` contesta "¿mueve el hueso?" —la
+            ' EL GATE ERA `Not nt.IsIdentity` Y ESO PERDÍA DATOS. `IsIdentity` contesta "¿mueve el hueso?" —la
             ' pregunta del render y del punto de la UI—, NO "¿hay algo que guardar?". Dos cosas se caían por acá: un
             ' nodo cuyo único contenido es la key 40 (el re-parenteo de XPMSE) no prende ningún Has* ⇒ "era
             ' identidad" ⇒ desaparecía del .jslot re-exportado; y una REFLEXIÓN se veía como identidad porque su
@@ -581,12 +581,12 @@ Public Module BssliderSidecar
                 If te.TryGetProperty("r", f) AndAlso f.ValueKind = JsonValueKind.Array AndAlso f.GetArrayLength() = 3 Then
                     nt.RotX = f(0).GetSingle() : nt.RotY = f(1).GetSingle() : nt.RotZ = f(2).GetSingle() : nt.HasRotation = True
                 End If
-                ' ⭐ `rm` = la matriz CRUDA de 9 floats. AUSENTE en todo sidecar de una versión anterior, y ahí está el
+                ' `rm` = la matriz CRUDA de 9 floats. AUSENTE en todo sidecar de una versión anterior, y ahí está el
                 ' punto: NO hay default que aplicar (el centinela es el propio `Nothing`), así que un sidecar viejo
                 ' sigue rindiendo exactamente lo que rendía — el axis-angle de `r`. Cuando está, gana, porque es lo
                 ' único que sobrevive a 180° y a una reflexión (ver RaceMenuJslot.RotationRowMajor, que es quien
                 ' elige).
-                ' ⚠️ Sólo se toma si `r` estaba: sin HasRotation el modelo no tiene rotación y una matriz suelta no
+                ' Sólo se toma si `r` estaba: sin HasRotation el modelo no tiene rotación y una matriz suelta no
                 ' debería inventarla.
                 If nt.HasRotation Then
                     Dim rmEl As JsonElement
@@ -596,10 +596,10 @@ Public Module BssliderSidecar
                         nt.RotMatrixRaw = m
                     End If
                 End If
-                ' ⭐ `cl` = los nombres de las capas colapsadas. AUSENTE en todo sidecar anterior, y ahí está el
+                ' `cl` = los nombres de las capas colapsadas. AUSENTE en todo sidecar anterior, y ahí está el
                 ' punto: no hay default que aplicar (el centinela es el propio `Nothing`), así que un sidecar viejo
                 ' se comporta exactamente como antes — no neutraliza nada, que es lo que hacía.
-                ' ⛔ Se vuelve a filtrar con IsNeutralizableLayerName aunque la app ya lo hizo al leer el .jslot: un
+                ' Se vuelve a filtrar con IsNeutralizableLayerName aunque la app ya lo hizo al leer el .jslot: un
                 ' sidecar es un archivo editable, y `internal` acá abajo hundiría al NPC en el piso.
                 Dim clEl As JsonElement
                 If te.TryGetProperty("cl", clEl) AndAlso clEl.ValueKind = JsonValueKind.Array Then
@@ -613,11 +613,11 @@ Public Module BssliderSidecar
                     Next
                     If names.Count > 0 Then nt.CollapsedLayerNames = names
                 End If
-                ' ⭐⭐ El elemento crudo del .jslot. Sin esto, `RaceMenuJslot.BuildTransformRaw` reconstruía el
+                ' El elemento crudo del .jslot. Sin esto, `RaceMenuJslot.BuildTransformRaw` reconstruía el
                 ' elemento desde los campos modelados y se perdía todo lo que la app NO modela: la key 40
                 ' (re-parenteo), la key 33, y cualquier value nuevo. Ausente ⇒ `Raw = Nothing` ⇒ comportamiento
                 ' viejo, así que un sidecar anterior sigue funcionando igual.
-                ' ⛔ Se acepta sólo un objeto: un `raw` escalar o array sería un archivo corrupto o editado a mano, y
+                ' Se acepta sólo un objeto: un `raw` escalar o array sería un archivo corrupto o editado a mano, y
                 ' `Save` espera el elemento { node, firstPerson, keys:[...] }.
                 Dim rawEl As JsonElement
                 If te.TryGetProperty("raw", rawEl) AndAlso rawEl.ValueKind = JsonValueKind.Object Then
@@ -788,7 +788,7 @@ Public Module BssliderSidecar
             OrderBy(Function(kv) kv.Key, StringComparer.OrdinalIgnoreCase).
             ToList()
 
-        ' ⛔ NO borrar el archivo si guarda una GENERACION: el contador tiene que sobrevivir a un
+        ' NO borrar el archivo si guarda una GENERACION: el contador tiene que sobrevivir a un
         ' guardado sin overlays. Si se borrara, el proximo Save ESP volveria a la generacion 1 y todo
         ' jugador que ya tuviera esa generacion recibiria el payload rancio, en silencio.
         If kept.Count = 0 AndAlso sidecar.PayloadGeneration <= 0 Then
@@ -903,7 +903,7 @@ Public Module BssliderSidecar
                             w.WriteStartObject()
                             w.WriteString("node", nt.NodeName)
                             If nt.HasScale Then w.WriteNumber("s", nt.Scale)
-                            ' ⛔ `sm` YA NO SE ESCRIBE: el scaleMode por nodo es inerte en skee (busca (33,-1) y se
+                            ' `sm` YA NO SE ESCRIBE: el scaleMode por nodo es inerte en skee (busca (33,-1) y se
                             ' almacena en (33,0) — ver RaceMenuJslot, decode de transforms) ⇒ nadie lo lee, ni el
                             ' motor ni nosotros. Se sigue LEYENDO por tolerancia con sidecars viejos.
                             If nt.HasPosition Then
@@ -915,7 +915,7 @@ Public Module BssliderSidecar
                                 w.WriteStartArray("r")
                                 w.WriteNumberValue(nt.RotX) : w.WriteNumberValue(nt.RotY) : w.WriteNumberValue(nt.RotZ)
                                 w.WriteEndArray()
-                                ' ⭐⭐ Y LA MATRIZ CRUDA, QUE ES LA QUE MANDA CUANDO ESTÁ. Sin esto el arreglo de la
+                                ' Y LA MATRIZ CRUDA, QUE ES LA QUE MANDA CUANDO ESTÁ. Sin esto el arreglo de la
                                 ' rotación moría en el disco: el `r` de arriba es AXIS-ANGLE, y la vuelta
                                 ' matriz→axis-angle→matriz destruye 180° y las reflexiones (a 180° la matriz es
                                 ' simétrica, los términos del eje se anulan y el fallback elige el eje X). Así que un
@@ -929,7 +929,7 @@ Public Module BssliderSidecar
                                     w.WriteEndArray()
                                 End If
                             End If
-                            ' ⭐⭐ LOS NOMBRES DE LAS CAPAS QUE LA APP COLAPSO. Sin esto se pierden al cerrar y reabrir,
+                            ' LOS NOMBRES DE LAS CAPAS QUE LA APP COLAPSO. Sin esto se pierden al cerrar y reabrir,
                             ' y el ESP dejaría de neutralizarlas ⇒ nuestro total volvería a sumarse al aporte que el
                             ' mismo preset pudo haber dejado en el co-save del jugador. Es EXACTAMENTE el defecto que
                             ' ya mordió con `rm`: un dato derivado que no sobrevive al disco es un dato perdido.
@@ -941,7 +941,7 @@ Public Module BssliderSidecar
                                 Next
                                 w.WriteEndArray()
                             End If
-                            ' ⭐⭐ EL ELEMENTO CRUDO DEL .jslot, VERBATIM. Es el arreglo de RAÍZ de una familia entera de
+                            ' EL ELEMENTO CRUDO DEL .jslot, VERBATIM. Es el arreglo de RAÍZ de una familia entera de
                             ' pérdidas: el modelo NO modela todo lo que el archivo lleva (la key 40 = re-parenteo, la
                             ' key 33, cualquier value que RaceMenu agregue mañana), y esas cosas viajan justamente
                             ' PORQUE viajan en `Raw`. Sin persistirlo, `BuildTransformRaw` reconstruía el elemento
@@ -1076,7 +1076,7 @@ Public Module BssliderSidecar
     ''' and a (global) FormID. The hex part is the owner's OBJECT ID with no load-order information in
     ''' it — 12 bits for a light plugin, 24 for a full one — which is the inverse of Bethesda's own
     ''' <c>ModInfo::GetFormID</c> (f4se GameData.h:93-96).
-    ''' <para>⛔ This used to mask with <c>&amp; 0xFFFFFF</c> and claim that dropping the high byte made
+    ''' <para>This used to mask with <c>&amp; 0xFFFFFF</c> and claim that dropping the high byte made
     ''' the identifier "stable across load orders". FALSE for a LIGHT owner: a light global is
     ''' <c>0xFE | lightSlot&lt;&lt;12 | object12</c>, so 24 bits keep the SLOT in bits 12..23 and every row
     ''' written for an ESL carried the slot of the session that wrote it. Adding, removing or unticking
@@ -1105,7 +1105,7 @@ Public Module BssliderSidecar
     ''' <summary>Normaliza IN PLACE todas las claves del sidecar a la forma canónica de
     ''' <see cref="BuildIdentifier"/> (master + OBJECT ID pelado). Devuelve cuántas filas se movieron o
     ''' descartaron. Se corre UNA vez, al leer el sidecar en el guardado — ver el llamador.
-    ''' <para>⛔ Reemplaza al viejo <c>FoldLegacyKeys</c>, que sólo plegaba las filas del NPC que se estaba
+    ''' <para>Reemplaza al viejo <c>FoldLegacyKeys</c>, que sólo plegaba las filas del NPC que se estaba
     ''' re-grabando: las otras N-1 sobrevivían con la forma vieja y salían así al <c>morphs.ini</c>. Normalizar
     ''' el diccionario entero hace que la ley la imponga el DATO, no cada consumidor.</para>
     ''' <para>Reglas, en orden:
@@ -1118,7 +1118,7 @@ Public Module BssliderSidecar
     ''' <item>Distinta y el destino YA existe ⇒ gana la canónica y la vieja se descarta, con log. El usuario
     ''' aceptó explícitamente perder filas legacy antes que mantener dos leyes; igual se nombra cuál se fue.</item>
     ''' </list></para>
-    ''' <para>⚠️ Se itera sobre una COPIA de las claves: se muta el diccionario adentro del bucle.</para></summary>
+    ''' <para>Se itera sobre una COPIA de las claves: se muta el diccionario adentro del bucle.</para></summary>
     Friend Function NormalizeKeys(npcs As Dictionary(Of String, NpcEntry), pluginManager As PluginManager) As Integer
         If pluginManager Is Nothing Then Return 0
         Return NormalizeKeys(npcs, Function(k) LooksmenuLoader.ResolveFormIdentifier(k, pluginManager))

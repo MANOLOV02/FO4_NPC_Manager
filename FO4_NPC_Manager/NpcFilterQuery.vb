@@ -103,7 +103,7 @@ End Class
 ''' <summary>Parsed contents of the NPC search box: the free text (what the quick filter has always
 ''' matched) plus zero or more advanced `facet:value` terms.
 '''
-''' <para>⛔ NO-OP CONTRACT — the reason this class exists at all. When the text carries NO recognised
+''' <para>NO-OP CONTRACT — the reason this class exists at all. When the text carries NO recognised
 ''' facet token, <see cref="FreeText"/> is the input string VERBATIM (not trimmed, not rebuilt, not
 ''' normalized) and <see cref="Terms"/> is empty. The caller then runs exactly the code it ran before
 ''' this feature existed, so a plain search costs what it always cost and cannot change results. The
@@ -179,7 +179,7 @@ Friend NotInheritable Class NpcFilterQuery
             End If
         Next
 
-        ' ⛔ Nothing recognised → hand back the ORIGINAL string. Rebuilding it from tokens would
+        ' Nothing recognised → hand back the ORIGINAL string. Rebuilding it from tokens would
         ' already be a behaviour change (it collapses runs of spaces, which the current filter matches
         ' literally). This is the no-op contract; Tools/NpcFilterGate is the gate on it.
         If terms.Count = 0 AndAlso Not sawMode Then

@@ -14,15 +14,17 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 '''
 ''' <para>Every rule replicated here is the one the render/bake path already obeys, cited per section:
 ''' head parts → <see cref="HeadPartResolver.IsHdptValidForRace"/> (engine RNAM/FLST + race-default gate);
-''' FO4 tints → <c>RACE_Data.FindTintOption</c> (the compositor skips a layer whose index doesn't resolve);
+''' FO4 tints → <c>CanonInterpretacion.BuscarOpcion</c> sobre la lista fusionada (the compositor skips a
+''' layer whose index doesn't resolve);
 ''' SSE tints → <see cref="SseFaceTintComposer.GetRaceLayersOrdered"/> (the composer iterates RACE layers, so
 ''' an authored index the RACE doesn't declare is never visited); FO4 chargen morphs → RACE MSID/MPPI defs
 ''' (<see cref="NpcMorphResolver"/>); SSE custom morphs → <see cref="NpcMorphResolver.SliderCatalog"/>.</para>
 '''
-''' <para>Never mutates the preset: it only parses records and probes the files dictionary. The one side effect
-''' is <see cref="LmCustomTintLoader.EnsureMerged"/> on the shared cached RACE (idempotent, and the render path
-''' does it anyway) — without it a preset using LooksMenu custom tints would be reported as broken when it is
-''' not. Safe to call on every list selection; the browser caches the result per preset.</para></summary>
+''' <para>Never mutates the preset: it only parses records and probes the files dictionary. Los tints
+''' custom de LooksMenu se leen vía <see cref="LmCustomTintLoader.Fusionar"/>, que arma una lista aparte
+''' del RACE (cacheada por raza+género, no muta el record) — sin esto un preset usando tints custom de
+''' LooksMenu se reportaría como roto cuando no lo está. Safe to call on every list selection; the
+''' browser caches the result per preset.</para></summary>
 Public Module PresetCompatibilityReport
 
     ''' <summary>Severity/nature of one finding. Drives grouping and the leading glyph in the text report.</summary>
@@ -97,7 +99,7 @@ Public Module PresetCompatibilityReport
         Public PluginManager As PluginManager
         Public DataPath As String = ""
         Public RaceFormID As UInteger
-        Public Race As RACE_Data
+        Public Race As Canon.IRace
         Public RaceDisplayName As String = ""
         Public IsFemale As Boolean
         Public RaceDefaults As HashSet(Of UInteger)
@@ -315,17 +317,20 @@ Public Module PresetCompatibilityReport
             Return
         End If
 
-        ' LooksMenu CUSTOM tint templates (Data\F4SE\Plugins\F4EE\Tints\...) are merged into the RACE's option
-        ' list on demand; without this a preset using a custom tint would be reported as broken when it isn't.
+        ' LooksMenu CUSTOM tint templates (Data\F4SE\Plugins\F4EE\Tints\...) se funden con las Options del
+        ' RACE en una lista aparte; sin esto un preset que usa un tint custom se reportaria como roto
+        ' cuando no lo esta.
+        Dim tintGroups As List(Of GrupoDeTinteEfectivo) = Nothing
         Try
-            LmCustomTintLoader.EnsureMerged(ctx.Race, ctx.PluginManager, ctx.DataPath)
+            tintGroups = LmCustomTintLoader.Fusionar(ctx.Race, ctx.IsFemale, ctx.PluginManager, ctx.DataPath)
         Catch
+            tintGroups = New List(Of GrupoDeTinteEfectivo)
         End Try
 
         Dim okCount As Integer = 0
         For Each tl In p.FaceTintLayers
             If tl Is Nothing Then Continue For
-            Dim opt = ctx.Race.FindTintOption(tl.Index, ctx.IsFemale)
+            Dim opt = tintGroups.BuscarOpcion(tl.Index)
             If opt IsNot Nothing Then
                 okCount += 1
                 Continue For
@@ -336,14 +341,14 @@ Public Module PresetCompatibilityReport
         If okCount > 0 Then r.Resolved.Add($"{okCount} tint layer(s) resolve against this race")
     End Sub
 
-    Private Function ColorText(tl As NPC_FaceTintLayerData) As String
+    Private Function ColorText(tl As LooksmenuLoader.CapaDeTintePreset) As String
         If tl.Color.IsEmpty Then Return "(texture-set layer)"
         Return $"#{tl.Color.R:X2}{tl.Color.G:X2}{tl.Color.B:X2}"
     End Function
 
     Private Sub AuditSseTints(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
-        If Not p.HasSseTints OrElse p.SseTintRawOverride Is Nothing OrElse p.SseTintRawOverride.Count = 0 Then Return
+        If Not p.HasSseTints OrElse p.SseTintLayers Is Nothing OrElse p.SseTintLayers.Count = 0 Then Return
         If ctx.RaceFormID = 0UI OrElse ctx.PluginManager Is Nothing Then Return
 
         ' The RACE's declared layer indices, in the same order the composer uses.
@@ -361,10 +366,9 @@ Public Module PresetCompatibilityReport
         End If
 
         Dim okCount As Integer = 0
-        For Each sr In p.SseTintRawOverride
-            If sr Is Nothing OrElse Not String.Equals(sr.Sig, "TINI", StringComparison.Ordinal) Then Continue For
-            If sr.Data Is Nothing OrElse sr.Data.Length < 2 Then Continue For
-            Dim idx As Integer = BitConverter.ToUInt16(sr.Data, 0)
+        For Each sr In p.SseTintLayers
+            If sr Is Nothing OrElse Not sr.Indice.HasValue Then Continue For
+            Dim idx As Integer = CInt(sr.Indice.Value)
             If raceIdx.Contains(idx) Then
                 okCount += 1
             Else
@@ -395,12 +399,12 @@ Public Module PresetCompatibilityReport
     Private Sub AuditHairColor(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
 
-        ' ⭐ EL CASO FRECUENTE, y el que faltaba: el identificador NO resolvió porque el mod que trae el color
+        ' EL CASO FRECUENTE, y el que faltaba: el identificador NO resolvió porque el mod que trae el color
         ' no está instalado. El loader deja HairColorFormID=0, y el `Return` de abajo lo hacía indistinguible
         ' de "el preset no declara color de pelo" ⇒ cero hallazgos. La rama MissingRecord de más abajo sólo
         ' cubre el caso raro (el plugin SÍ está pero el form no existe).
         If p.HairColorFormID = 0UI AndAlso Not String.IsNullOrWhiteSpace(p.UnresolvedHairColor) Then
-            ' ⛔ NO asumir la causa. ResolveFormIdentifier devuelve 0 por TRES motivos distintos y cada uno
+            ' NO asumir la causa. ResolveFormIdentifier devuelve 0 por TRES motivos distintos y cada uno
             ' necesita otra acción del usuario: identificador mal formado (el mod lo escribió mal), parte hex
             ' ilegible, o plugin ausente. Decir siempre "el plugin no está instalado" mandaba a buscar un mod
             ' que en dos de los tres casos YA está — y con un identificador sin '|' el mensaje llegaba a
@@ -457,13 +461,13 @@ Public Module PresetCompatibilityReport
         LmHairColorLutLoader.EnsureLoaded(ctx.PluginManager, ctx.DataPath)
         ' Las DOS cosas de la MISMA lectura del snapshot: pedirlas por separado deja una ventana en la que un
         ' Invalidate() entre medio devuelve `lut` del registro viejo y la custom del nuevo.
-        ' ⛔ Es la LUT custom APLICADA, no la que el registro tenga para ese color. Con una raza cuyo HNAM no
+        ' Es la LUT custom APLICADA, no la que el registro tenga para ese color. Con una raza cuyo HNAM no
         ' es la gradient vanilla, ProcessEyebrowPath NO aplica la custom aunque el registro la tenga: leer
         ' "la que tiene" hacía que el reporte afirmara que la ceja usa una paleta que no usa, y que el aviso
         ' de textura faltante le atribuyera al haircolors.json el path del HNAM de la raza.
         Dim appliedCustom As String = Nothing
         Dim lut = LmHairColorLutLoader.ResolveBrowPaletteTexture(ctx.Race, p.HairColorFormID, appliedCustom)
-        ' ⛔ If(a, b) devuelve b sólo si a es Nothing, NO si es "". Canon.IClfm.FullName arranca en "" y sólo se
+        ' If(a, b) devuelve b sólo si a es Nothing, NO si es "". Canon.IClfm.FullName arranca en "" y sólo se
         ' asigna si hay subrecord FULL, así que un CLFM sin FULL —común en packs generados— imprimía comillas
         ' vacías: "'' is a palette colour but…".
         Dim colourName = If(String.IsNullOrEmpty(clfm.Name),
@@ -540,19 +544,17 @@ Public Module PresetCompatibilityReport
     Private Sub AuditFaceMorphs(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
         If Not ctx.IsSse Then
-            If p.ChargenFaceMorphs IsNot Nothing AndAlso p.ChargenFaceMorphs.Count > 0 AndAlso ctx.Race IsNot Nothing Then
+            ' MorphValues/MorphPresets son exclusivos de Fallout 4 — Skyrim no los declara en RACE.
+            Dim raceFo4 = TryCast(ctx.Race, Canon.RaceFO4)
+            If p.ChargenFaceMorphs IsNot Nothing AndAlso p.ChargenFaceMorphs.Count > 0 AndAlso raceFo4 IsNot Nothing Then
                 Dim known As New HashSet(Of UInteger)
-                If ctx.Race.MorphValues IsNot Nothing Then
-                    For Each mv In ctx.Race.MorphValues
-                        known.Add(mv.Index)
-                    Next
-                End If
-                Dim presets = If(ctx.IsFemale, ctx.Race.FemaleMorphPresets, ctx.Race.MaleMorphPresets)
-                If presets IsNot Nothing Then
-                    For Each mp In presets
-                        known.Add(mp.Index)
-                    Next
-                End If
+                For Each mv In raceFo4.MorphValues
+                    known.Add(mv.ValueIndex)
+                Next
+                Dim presets = raceFo4.ReadMorphPresetsFlat(ctx.IsFemale)
+                For Each mp In presets
+                    known.Add(mp.Index)
+                Next
                 Dim unknown As New List(Of UInteger)
                 For Each kv In p.ChargenFaceMorphs
                     If Not known.Contains(kv.Key) Then unknown.Add(kv.Key)
@@ -578,11 +580,11 @@ Public Module PresetCompatibilityReport
             End If
 
             ' MRSV body regions are positional against the RACE's MorphValues definitions.
-            If p.BodyMorphValues IsNot Nothing AndAlso p.BodyMorphValues.Count > 0 AndAlso ctx.Race IsNot Nothing AndAlso
-               ctx.Race.MorphValues IsNot Nothing AndAlso ctx.Race.MorphValues.Count > 0 AndAlso
-               p.BodyMorphValues.Count > ctx.Race.MorphValues.Count Then
+            Dim raceMorphValueCount = If(raceFo4 Is Nothing, 0, raceFo4.MorphValues.Count)
+            If p.BodyMorphValues IsNot Nothing AndAlso p.BodyMorphValues.Count > 0 AndAlso raceMorphValueCount > 0 AndAlso
+               p.BodyMorphValues.Count > raceMorphValueCount Then
                 r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Body regions",
-                                       $"{p.BodyMorphValues.Count} MRSV values vs {ctx.Race.MorphValues.Count} defined by this race",
+                                       $"{p.BodyMorphValues.Count} MRSV values vs {raceMorphValueCount} defined by this race",
                                        "The extra positional values have no definition on this race and are ignored."))
             End If
             Return
@@ -664,7 +666,7 @@ Public Module PresetCompatibilityReport
             ' Una sola lectura del ini para todo el reporte (OverlayCount statea el archivo en cada llamada).
             Dim slotLimits = {SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Body), SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Hands),
                               SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Feet), SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face)}
-            ' ⛔⛔ Y LOS DEL POOL MAGIC, QUE SON OTRA KEY. `ZoneOfNode` ahora reclama también los nodos [SOvl{n}]
+            ' Y LOS DEL POOL MAGIC, QUE SON OTRA KEY. `ZoneOfNode` ahora reclama también los nodos [SOvl{n}]
             ' (son autorables), así que sin esto un `Body [SOvl2]` se validaba contra el iNumOverlays del pool
             ' NORMAL: con 6/1 daba "resuelve OK" para un nodo que el motor no crea, y con 0/2 daba un issue falso
             ' que mandaba a subir iNumOverlays — la key que NO gobierna ese nodo. Es exactamente el defecto que el
@@ -672,7 +674,7 @@ Public Module PresetCompatibilityReport
             ' sesión (o sea el único lugar donde el que abre un preset ajeno se enteraría).
             Dim spellLimits = {SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Body), SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Hands),
                                SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Feet), SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Face)}
-            ' ⛔ La fuente TAMBIÉN se saca una vez. Pedirla adentro del loop anulaba el hoist de arriba —vuelve a
+            ' La fuente TAMBIÉN se saca una vez. Pedirla adentro del loop anulaba el hoist de arriba —vuelve a
             ' statear por cada overlay— y encima abría una ventana por fila para que el número impreso y el
             ' archivo nombrado dejen de corresponderse.
             Dim countSource = SseCatalogs.OverlayCountSource()
@@ -685,7 +687,7 @@ Public Module PresetCompatibilityReport
                     Continue For
                 End If
                 Dim bad As Boolean = False
-                ' ⛔ El nodo puede ser válido y aun así NO EXISTIR: skee sólo instancia iNumOverlays nodos por zona
+                ' El nodo puede ser válido y aun así NO EXISTIR: skee sólo instancia iNumOverlays nodos por zona
                 ' y el editor deja autorar más (avisa una vez por sesión, que se pierde al cerrar). Este reporte es
                 ' la superficie que SOBREVIVE, así que el que abre un preset ajeno se entera acá. No es MissingAsset:
                 ' la textura está, el que falta es el nodo.
@@ -695,16 +697,16 @@ Public Module PresetCompatibilityReport
                 Dim slotLimit = If(isSpell, spellLimits(CInt(zone.Value)), slotLimits(CInt(zone.Value)))
                 Dim tag = If(isSpell, "SOvl", "Ovl")
                 Dim keyName = If(isSpell, "iSpellOverlays", "iNumOverlays")
-                ' ⛔ ACÁ HABÍA UNA RAMA PARA UN SEGUNDO TOPE DEL POOL MAGIC ("la app no escribe un magic con índice
+                ' ACÁ HABÍA UNA RAMA PARA UN SEGUNDO TOPE DEL POOL MAGIC ("la app no escribe un magic con índice
                 ' ≥ 8"). Ese tope se fue entero: estaba apoyado en que Papyrus no exponía el contador del pool magic,
                 ' y SÍ lo expone (GetNumSpell*Overlays, PapyrusNiOverride.cpp:1844-1853). Hoy el pool magic tiene UN
                 ' solo límite —el del motor, igual que el normal— y es el que evalúa la rama de abajo.
                 If slot >= slotLimit Then
-                    ' ⛔ Con bEnableFaceOverlays=0 el contador de cara es 0 pase lo que pase con iNumOverlays:
+                    ' Con bEnableFaceOverlays=0 el contador de cara es 0 pase lo que pase con iNumOverlays:
                     ' mandar a subir esa key sería mandarlo a una que su archivo ya tiene puesta. Vale para los DOS
                     ' pools de la cara: el flag apaga g_numFaceOverlays y g_numSpellFaceOverlays (main.cpp:833-836).
                     Dim byFlag = zone.Value = SseCatalogs.OverlayZone.Face AndAlso slotLimit = 0 AndAlso SseCatalogs.FaceOverlaysDisabledByIni()
-                    ' ⛔⛔ EL TÍTULO DECÍA SÓLO "is past the N slot(s)", y el reporte agrupa esto bajo "will NOT reach the
+                    ' EL TÍTULO DECÍA SÓLO "is past the N slot(s)", y el reporte agrupa esto bajo "will NOT reach the
                     ' NPC". Eso es IMPRECISO y hace dudar de la herramienta: el override SÍ se escribe (va al ESP y al
                     ' co-save, y empieza a pintar el día que suban la key). Lo que NO pasa es que PINTE, porque el juego
                     ' no construye ese nodo. Encontrado probando de verdad: "el compatibility me dice que no va a llegar
@@ -734,11 +736,11 @@ Public Module PresetCompatibilityReport
                 End If
             Next
             If okOv > 0 Then r.Resolved.Add($"{okOv} RaceMenu overlay(s) resolve (node + textures installed)")
-            ' ⭐ El pool MAGIC merece su propia línea: no es "un overlay más". Se entrega por otra vía (el
+            ' El pool MAGIC merece su propia línea: no es "un overlay más". Se entrega por otra vía (el
             ' apply-script, nunca el bake) y su opacidad la ANIMA el motor, así que ni el preview ni el bake pueden
             ' mostrar "cómo se va a ver" — y eso es justo lo que el usuario viene a preguntarle a este reporte.
             If okMagic > 0 Then
-                ' ⛔ "nunca se hornean" NO es una propiedad del pool magic fuera de la CARA: ningún overlay de
+                ' "nunca se hornean" NO es una propiedad del pool magic fuera de la CARA: ningún overlay de
                 ' cuerpo/manos/pies se hornea (el fold es sólo de la cara), así que decirlo así presentaba como
                 ' diferencia algo que comparte con el pool normal. Lo que sí es propio del magic en TODAS las zonas
                 ' es la alpha animada por el motor; lo del bake se aclara sólo para la cara.

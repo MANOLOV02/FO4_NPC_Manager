@@ -14,7 +14,7 @@ Partial Class BoneRegionCard
 
     Private components As System.ComponentModel.IContainer
 
-    ' ⛔ LAS MEDIDAS NO SE REDONDEAN: son las mismas que calculaba BuildBoneCard.
+    ' LAS MEDIDAS NO SE REDONDEAN: son las mismas que calculaba BuildBoneCard.
     '   RowH = 26  >= TinySliderTextBox.MinimumSize.Height (24). Una fila mas baja clava el slider en su
     '          minimo mientras el boton se encoge, y dejan de coincidir.
     '   HdrH = 18  para los tres encabezados de seccion.
@@ -98,7 +98,7 @@ Partial Class BoneRegionCard
         LayoutCard.RowStyles.Add(New RowStyle(SizeType.Absolute, 26.0F))
         LayoutCard.RowStyles.Add(New RowStyle(SizeType.Absolute, 18.0F))
         LayoutCard.RowStyles.Add(New RowStyle(SizeType.Absolute, 26.0F))
-        ' ⛔ Ultima fila FLEXIBLE, no AutoSize: absorbe el alto que sobra en una tarjeta de tamano fijo para
+        ' Ultima fila FLEXIBLE, no AutoSize: absorbe el alto que sobra en una tarjeta de tamano fijo para
         ' que las filas de arriba conserven su alto exacto (los botones siguen alineados con los sliders)
         ' en vez de estirarse la ultima. Una fila AutoSize vacia mide 0 y no absorberia nada.
         LayoutCard.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))

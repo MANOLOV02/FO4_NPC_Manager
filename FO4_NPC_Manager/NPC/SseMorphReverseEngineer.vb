@@ -163,7 +163,7 @@ Public Module SseMorphReverseEngineer
 
         ' ---- 3) Recorrer los head parts igual que el bake ------------------------------------
         Dim mergedRoots = HeadPartResolver.MergeHeadPartsWithRaceDefaults(
-            state.NpcData.RaceFormID, state.NpcData.IsFemale, state.NpcData.HeadPartFormIDs, pluginManager)
+            state.NpcData.Record.Race, state.NpcData.Record.ConfigurationFlagsFemale, state.NpcData.Record.PartesDeCabeza(), pluginManager)
 
         ' Caché local de conteos de vértices por .tri para el redirect High Poly Head (mismo resolver
         ' que usan render y bake — no se replica la regla, se llama).
@@ -193,9 +193,9 @@ Public Module SseMorphReverseEngineer
 
         For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
             Dim hdpt = entry.Hdpt
-            If hdpt Is Nothing OrElse String.IsNullOrEmpty(hdpt.ModelModelFileName) Then Continue For
+            If hdpt Is Nothing OrElse String.IsNullOrEmpty(hdpt.ModelFileName) Then Continue For
 
-            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.ModelModelFileName)
+            Dim baseKey = MeshPathHelpers.NormalizeMeshKey(hdpt.ModelFileName)
             Dim baseBytes As Byte() = Nothing
             Try
                 baseBytes = FilesDictionary_class.GetBytes(baseKey)
@@ -232,7 +232,7 @@ Public Module SseMorphReverseEngineer
 
                 Dim bakedGeom = ShapeGeometryFactory.[For](bakedShape, bakedNif)
                 If bakedGeom.VertexCount <> nv Then
-                    ' ⛔ Sin correspondencia índice-a-índice no hay resta posible. Puede ser una malla
+                    ' Sin correspondencia índice-a-índice no hay resta posible. Puede ser una malla
                     ' custom, otra raza, o un NIF pasado por NIF Optimizer (suelda/reordena vértices).
                     res.Shapes.Add(New ShapeReport With {
                         .ShapeName = ShapeNameOf(srcShape), .VertexCount = nv,
@@ -322,19 +322,20 @@ Public Module SseMorphReverseEngineer
         ' 0 = "Default", N = "<familia><N>"). Así que no se ajusta por mínimos cuadrados: se PRUEBAN los
         ' candidatos que el .tri realmente contiene y se elige el que minimiza el residual.
         '
-        ' ⭐ Por qué se ajusta en vez de leerla del record: si el mod borró/cambió la NAMA (igual que hizo
+        ' Por qué se ajusta en vez de leerla del record: si el mod borró/cambió la NAMA (igual que hizo
         ' con los NAM9), asumirla del record haría que la diferencia entre el tipo real y el del record
         ' cayera ENTERA en el sculpt — un preset de tipo disfrazado de escultura, y la NAMA sin recuperar.
         ' Ajustándola deja de importar de dónde leerla: no se asume, se mide.
         '
-        ' ⛔ Se evalúa construyendo el plan COMPLETO por el motor con cada NAMA candidata, no sumando
+        ' Se evalúa construyendo el plan COMPLETO por el motor con cada NAMA candidata, no sumando
         ' columnas por familia. Motivo: AddNamaTypePreset mapea el valor 0 de CUALQUIER familia al MISMO
         ' morph "Default", y el dedup-suma del plan colapsa esos canales sumando pesos (dos familias en 0
         ' ⇒ "Default" a peso 2,0). Columnas independientes por familia no reproducirían eso.
+        Dim namaActual = state.NpcData.Record.PartesDeCara()
         Dim namaVec(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
         For f = 0 To namaVec.Length - 1
-            namaVec(f) = If(state.NpcData.NamaRaw IsNot Nothing AndAlso state.NpcData.NamaRaw.Length >= 16,
-                            BitConverter.ToUInt32(state.NpcData.NamaRaw, f * 4), SseNam9MorphMap.NamaUnset)
+            namaVec(f) = If(namaActual IsNot Nothing AndAlso f < namaActual.Length,
+                            namaActual(f), SseNam9MorphMap.NamaUnset)
         Next
 
         Dim bestW = EvaluateNama(jobs, state, namaVec, morphRaceEd, raceKeywords, g, nCols)
@@ -393,10 +394,10 @@ Public Module SseMorphReverseEngineer
         ' regla que LoadSseMorphValues (EditFace_Form.vb) para que el diálogo y el tab coincidan.
         Dim before(SseNam9MorphMap.Nam9SliderCount - 1) As Single
         Dim curEffective = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets)
-        Dim beforeRaw = If(curEffective IsNot Nothing, curEffective.Nam9Raw, Nothing)
-        If beforeRaw IsNot Nothing AndAlso beforeRaw.Length >= 76 Then
-            For s = 0 To before.Length - 1
-                Dim v = BitConverter.ToSingle(beforeRaw, s * 4)
+        Dim beforeRaw = If(curEffective IsNot Nothing, curEffective.Record.DeslizadoresDeCara(), Nothing)
+        If beforeRaw IsNot Nothing Then
+            For s = 0 To Math.Min(before.Length, beforeRaw.Length) - 1
+                Dim v = beforeRaw(s)
                 If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0
                 before(s) = v
             Next
@@ -407,10 +408,10 @@ Public Module SseMorphReverseEngineer
         ' ApplyJslotToPreset la escribe siempre ⇒ aplicar revierte cualquier tipo editado en el overlay.
         Dim namaBefore(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
         For f = 0 To namaBefore.Length - 1 : namaBefore(f) = SseNam9MorphMap.NamaUnset : Next
-        Dim namaBeforeRaw = If(curEffective IsNot Nothing, curEffective.NamaRaw, Nothing)
-        If namaBeforeRaw IsNot Nothing AndAlso namaBeforeRaw.Length >= 16 Then
-            For f = 0 To namaBefore.Length - 1
-                namaBefore(f) = BitConverter.ToUInt32(namaBeforeRaw, f * 4)
+        Dim namaBeforeRaw = If(curEffective IsNot Nothing, curEffective.Record.PartesDeCara(), Nothing)
+        If namaBeforeRaw IsNot Nothing Then
+            For f = 0 To Math.Min(namaBefore.Length, namaBeforeRaw.Length) - 1
+                namaBefore(f) = namaBeforeRaw(f)
             Next
         End If
         res.NamaBefore = namaBefore
@@ -419,7 +420,7 @@ Public Module SseMorphReverseEngineer
         ' Superposición aditiva exacta: como el gate no depende del peso, aplicar dos canales del mismo
         ' morph o uno con la suma de pesos da idéntico resultado (misma máscara, mismos deltas) — que es
         ' justo lo que hace el dedup-suma de NpcMorphResolver.vb:559.
-        ' ⛔ NO se construye un .jslot ni se pasa por ApplyJslotToPreset. Ese camino escribe SEIS campos
+        ' NO se construye un .jslot ni se pasa por ApplyJslotToPreset. Ese camino escribe SEIS campos
         ' INCONDICIONALMENTE (RaceMenuPresetMapper.vb:315-328: SseWeight, BodyMorphSliders,
         ' BodyMorphsKeyed, SseBodyOverlays, SseNodeTransforms, SseSkinOverrides), así que un jslot que no
         ' los trajera ponía el peso a 0 (síntoma: cuello y cuerpo cambian) y borraba body morphs,
@@ -646,7 +647,7 @@ Public Module SseMorphReverseEngineer
     ''' que reconstruye, y ningún otro:
     '''     SseNam9 · SseNama · HasSseMorphs · SseSculptParts · SseSculptHead
     '''
-    ''' ⛔ Deliberadamente NO se pasa por RaceMenuPresetMapper.ApplyJslotToPreset. Ese camino existe para
+    ''' Deliberadamente NO se pasa por RaceMenuPresetMapper.ApplyJslotToPreset. Ese camino existe para
     ''' cargar un .jslot COMPLETO de disco y por eso escribe seis campos más de forma incondicional
     ''' (SseWeight, BodyMorphSliders, BodyMorphsKeyed, SseBodyOverlays, SseNodeTransforms,
     ''' SseSkinOverrides). Alimentarlo con un jslot parcial ponía el peso a 0 y borraba el resto; y
@@ -685,15 +686,9 @@ Public Module SseMorphReverseEngineer
                                   morphRaceEd As String,
                                   raceKeywords As List(Of String),
                                   g As Double(,), nCols As Integer) As (W As Double(), ResidualSq As Double)
-        ' ⛔ Se ASIGNA un array nuevo a NamaRaw, nunca se muta el existente: el shadow que devuelve
-        ' ResolveOverlaidNpcData comparte la referencia del array del NPC_Data CRUDO cacheado
-        ' (NpcRecordOverlay.vb:317 `shadow.NamaRaw = raw.NamaRaw`), así que escribir dentro del array
-        ' corrompería el record en caché para toda la app.
-        Dim raw(15) As Byte
-        For f = 0 To Math.Min(namaVec.Length, SseNam9MorphMap.NamaFamilyCount) - 1
-            BitConverter.GetBytes(namaVec(f)).CopyTo(raw, f * 4)
-        Next
-        state.NpcData.NamaRaw = raw
+        ' Se escribe sobre el record de la sombra, que es una COPIA propia: el overlay clona el arbol,
+        ' asi que esto no toca el que quedo en la cache.
+        state.NpcData.Record.PonerPartesDeCara(namaVec)
 
         Dim c(nCols - 1) As Double
         Dim bNormSq As Double = 0
@@ -752,13 +747,13 @@ Public Module SseMorphReverseEngineer
     ''' valor actual. Enumerar sólo morphs existentes no pierde nada: el motor resuelve por NOMBRE y un
     ''' tipo cuyo morph no existe es indistinguible de "unset" (AddNam9Channel no-opea en el miss).</summary>
     Private Function NamaCandidates(catalog As SseNam9MorphMap.NamaTypeCatalog, familyIndex As Integer, current As UInteger) As List(Of UInteger)
-        ' ⭐ La ley "¿este nombre es el tipo N de esta familia?" vive en UN solo lugar
+        ' La ley "¿este nombre es el tipo N de esta familia?" vive en UN solo lugar
         ' (SseNam9MorphMap.BuildTypeCatalog → TryParseFamilyMember), compartida con el combo del editor.
         ' Antes esto parseaba la cola con UInteger.TryParse por su cuenta y aceptaba de más: "NoseType03"
         ' entraba como 3 (pero el motor pide "NoseType3", que es otro morph o ninguno) y "NoseType0" entraba
         ' como candidato 0 DUPLICANDO el "Default" que se agrega aparte. El round-trip contra MorphForType
         ' descarta los dos casos por construcción.
-        ' ⚠️ CAMBIO DE COMPORTAMIENTO declarado: los candidatos ahora salen ORDENADOS ascendente (el
+        ' CAMBIO DE COMPORTAMIENTO declarado: los candidatos ahora salen ORDENADOS ascendente (el
         ' catálogo los ordena) y antes venían en orden de aparición en los .tri. Importa porque el descenso
         ' se queda con el PRIMERO que mejora y exige otro 0,1% a los siguientes: entre dos tipos casi
         ' equivalentes, el orden decide cuál gana, y eso se escribe en la NAMA. El orden nuevo es
@@ -832,7 +827,7 @@ Public Module SseMorphReverseEngineer
     End Function
 
     ''' <summary>Empareja un shape base con el del FaceGen horneado. Por NOMBRE primero; si falla, por
-    ''' conteo de vértices SÓLO si es inequívoco. ⛔ Nunca cae a FirstOrDefault: un emparejamiento
+    ''' conteo de vértices SÓLO si es inequívoco. Nunca cae a FirstOrDefault: un emparejamiento
     ''' equivocado produciría un sculpt silenciosamente basura en vez de un error visible.</summary>
     Private Function MatchBakedShape(bakedNif As Nifcontent_Class_Manolo, srcShape As INiShape,
                                      nv As Integer, used As HashSet(Of INiShape)) As INiShape
@@ -873,8 +868,8 @@ Public Module SseMorphReverseEngineer
     End Function
 
     Private Function WeightOf(npc As NPC_Data) As Single
-        Dim n7 = npc.Nam7Raw
-        If n7 IsNot Nothing AndAlso n7.Length >= 4 Then Return BitConverter.ToSingle(n7, 0)
+        ' Sin NAM7 el peso es 100: es el valor con el que el motor dibuja un actor que no lo declara.
+        If npc.Record.TienePesoDeSkyrim() Then Return npc.Record.PesoDeSkyrim()
         Return 100.0F
     End Function
 

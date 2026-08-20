@@ -33,7 +33,7 @@ Public Module BodyGenIniWriter
         ''' must be the source master — not the override plugin we are saving to.</summary>
         Public MasterPluginFileName As String = ""
         ''' <summary>OBJECT ID del dueño en hex de 6 dígitos: 12 bits útiles si el master es light, 24 si es
-        ''' completo (PluginManager.ToFaceGenLocalFormID). ⛔ NO es "el local de 24 bits": para un master ESL eso
+        ''' completo (PluginManager.ToFaceGenLocalFormID). NO es "el local de 24 bits": para un master ESL eso
         ''' arrastraría el light slot de la sesión que lo escribió, y f4ee ORea 24 bits CRUDOS sin enmascarar
         ''' (BodyGenInterface.cpp:319-321), con lo que el slot viejo se mezcla con el actual y da uno tercero.
         ''' El valor llega ya canónico porque BssliderSidecar.NormalizeKeys normaliza la clave del sidecar.</summary>

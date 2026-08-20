@@ -84,7 +84,7 @@ Public Class BodySlideMorphResolver
             Return plan
         End If
 
-        ' ⭐⭐ GATE DE COTA DE skee64 — es POR MORPH ENTERO, no por vertice, y SOLO en SSE.
+        ' GATE DE COTA DE skee64 — es POR MORPH ENTERO, no por vertice, y SOLO en SSE.
         '
         ' Los dos motores difieren y hay que respetar cada uno:
         '   • skee64 (SSE): `if (m_maxIndex < vertexCount) { aplica TODOS los deltas } else { _ERROR }`
@@ -94,7 +94,7 @@ Public Class BodySlideMorphResolver
         '   • f4ee (FO4): chequeo POR VERTICE, aplica los que entran y warnea una vez
         '     (BodyMorphInterface.cpp:60-70 / :90-100). Esa es la ley que ya implementa MorphEngine.
         '
-        ' ⛔ Por eso el gate vive ACA (el emisor) y NO en MorphEngine: el motor de morphs es COMPARTIDO
+        ' Por eso el gate vive ACA (el emisor) y NO en MorphEngine: el motor de morphs es COMPARTIDO
         ' — lo usan FO4, los .tri de FaceGen y los .osd de WM — y su descarte por vertice es la ley
         ' CORRECTA para todos ellos. Meterlo alla le impondria la ley de skee64 a FO4.
         '
@@ -116,18 +116,18 @@ Public Class BodySlideMorphResolver
             ' Un slider de BodySlide puede traer datos de POSICION, de UV, o de los dos: son dos
             ' secciones distintas del PIRT con el mismo nombre de morph.
             '
-            ' ⛔ EL BUG ORIGINAL: GetMorph no filtraba por tipo, asi que los deltas de UV se aplicaban
+            ' EL BUG ORIGINAL: GetMorph no filtraba por tipo, asi que los deltas de UV se aplicaban
             ' como POSICIONES y deformaban la malla en los DOS juegos. Eso es lo que arregla el
             ' `TriMorphType.UV` de abajo, y vale para FO4 y para SSE por igual.
             '
-            ' ⭐ NO se filtra por juego: DECIDE EL DATO. Si el .tri no trae seccion UV para este morph,
+            ' NO se filtra por juego: DECIDE EL DATO. Si el .tri no trae seccion UV para este morph,
             ' GetMorph devuelve Nothing y no se emite canal — que es lo que pasa hoy con todo el corpus
             ' de FO4 (0 sliders uv de 232.265 medidos). Un gate `Game = Skyrim` no agregaba nada en ese
             ' caso y en el otro DESCARTABA datos autorados a proposito. Ademas Wardrobe Manager aplica
             ' el canal UV en los dos juegos: gatear solo aca hacia que las dos apps mostraran cosas
             ' distintas con los mismos archivos. Ver [[00-reglas-motor-y-datos]]: cero hardcoding.
             '
-            ' ⚠️ Lo que SI es cierto del motor, y queda anotado porque es la razon por la que el dato
+            ' Lo que SI es cierto del motor, y queda anotado porque es la razon por la que el dato
             ' normalmente no existe en FO4: f4ee NO aplica UV. `BodyMorphMap` es
             ' `unordered_map<F4EEFixedString, TriShapeVertexDataPtr>` (f4ee/BodyMorphInterface.h:75),
             ' UN solo puntero por nombre, y la unica firma de apply es

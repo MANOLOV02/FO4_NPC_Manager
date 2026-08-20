@@ -18,7 +18,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 Public Class HeadPartPicker_Form
 
     ' HDPT.DATA flag bits — match the constants documented at MainForm.vb:78-87 (by-position
-    ' interpretation of the wbFlags array, validated empirically against Cait's HDPT byte 0x35).
+    ' interpretation of the flags byte, validated empirically against Cait's HDPT byte 0x35).
     Private Const FlagBitMale As Byte = &H2
     Private Const FlagBitFemale As Byte = &H4
     Private Const FlagBitIsExtra As Byte = &H8
@@ -51,7 +51,7 @@ Public Class HeadPartPicker_Form
     ''' <param name="raceEditorID">Display name of the race for the header.</param>
     ''' <param name="isFemale">Gender filter applied to HDPT.DATA flags.</param>
     ''' <param name="partType">PNAM type to filter by (1=Face, 2=Eyes, 3=Hair, 4=Facial Hair,
-    ''' 5=Scar, 6=Eyebrows, 7=Meatcaps, 8=Teeth, 9=Head Rear). Per wbDefinitionsFO4.pas:7373.</param>
+    ''' 5=Scar, 6=Eyebrows, 7=Meatcaps, 8=Teeth, 9=Head Rear).</param>
     ''' <param name="partTypeLabel">Human-readable label of the part type for the header.</param>
     Public Sub New(pluginManager As PluginManager,
                    raceFormID As UInteger,
@@ -228,10 +228,10 @@ Public Class HeadPartPicker_Form
             For Each chainEntry In HeadPartResolver.EnumerateHdptChain({c.FormID}, _pluginManager)
                 Dim hdpt = chainEntry.Hdpt
                 chainCount += 1
-                If String.IsNullOrEmpty(hdpt.ModelModelFileName) Then Continue For
+                If String.IsNullOrEmpty(hdpt.ModelFileName) Then Continue For
 
                 ' Resolve the NIF bytes via FilesDictionary (same path MainForm.vb:7305 uses).
-                Dim dictKey = NormalizeMeshKey(hdpt.ModelModelFileName)
+                Dim dictKey = NormalizeMeshKey(hdpt.ModelFileName)
                 Dim loc As FilesDictionary_class.File_Location = Nothing
                 If Not FilesDictionary_class.Dictionary.TryGetValue(dictKey, loc) Then Continue For
                 Dim bytes As Byte() = Nothing

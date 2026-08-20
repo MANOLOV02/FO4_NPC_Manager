@@ -1,33 +1,41 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
-''' <summary>Modal editor for a SINGLE <see cref="NPC_FactionEntry"/> (SNAM Faction FormID + s8 Rank) of an
-''' NPC's faction list, opened from the NPC Editor's "Factions" tab (Add/Edit button / double-click a row).
+''' <summary>Modal editor for the dos campos de UNA entrada SNAM (Faction FormID + s8 Rank) de la lista de
+''' facciones de un NPC, abierto desde la pestaña "Factions" del editor de NPC (botón Add/Edit / doble clic
+''' en una fila).
 '''
-''' A working copy is edited in place and copied out into <see cref="ResultEntry"/> on OK; a Cancel never
-''' mutates the caller's entry (mirror of <see cref="ArmoDamageResistEditor_Form"/>). The Faction picker is a
-''' FormIdPicker over FACT records.</summary>
+''' Entran y salen los dos VALORES, no una entrada: la entrada es un nodo del record y la escribe el que
+''' llama, recién con OK. Cancelar no toca nada. El picker de facción es un FormIdPicker sobre FACT.</summary>
 Public Class NpcFactionEntryEditor_Form
 
     Private ReadOnly _mainForm As MainForm
     Private _factionFormID As UInteger
 
-    ''' <summary>The edited faction entry, valid only after <c>DialogResult.OK</c>. A fresh copy — caller owns it.</summary>
-    Public ReadOnly Property ResultEntry As NPC_FactionEntry
+    ''' <summary>La facción elegida, válida sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultFormID As UInteger
         Get
-            Return _result
+            Return _resultFormID
         End Get
     End Property
-    Private _result As NPC_FactionEntry
+    Private _resultFormID As UInteger
+
+    ''' <summary>El rango elegido, válido sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultRank As SByte
+        Get
+            Return _resultRank
+        End Get
+    End Property
+    Private _resultRank As SByte
 
     ''' <param name="mainForm">Owner — supplies the PluginManager for the FACT picker + display names.</param>
-    ''' <param name="entry">The faction entry to edit. Copied in (never aliased); Nothing starts empty.</param>
-    Public Sub New(mainForm As MainForm, entry As NPC_FactionEntry)
+    ''' <param name="factionFormID">La facción con la que arranca el formulario (0 = ninguna).</param>
+    ''' <param name="rank">El rango con el que arranca el formulario.</param>
+    Public Sub New(mainForm As MainForm, factionFormID As UInteger, rank As SByte)
         InitializeComponent()
         _mainForm = mainForm
 
-        Dim src = If(entry, New NPC_FactionEntry())
-        _factionFormID = src.FactionFormID
-        NumRank.Value = ClampDec(CDec(src.Rank), NumRank)
+        _factionFormID = factionFormID
+        NumRank.Value = ClampDec(CDec(rank), NumRank)
         RenderFaction()
 
         AddHandler ButtonPickFaction.Click, AddressOf OnPickFaction
@@ -58,7 +66,8 @@ Public Class NpcFactionEntryEditor_Form
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        _result = New NPC_FactionEntry With {.FactionFormID = _factionFormID, .Rank = CSByte(NumRank.Value)}
+        _resultFormID = _factionFormID
+        _resultRank = CSByte(NumRank.Value)
         DialogResult = DialogResult.OK
         Close()
     End Sub

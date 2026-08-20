@@ -1,4 +1,5 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' Reusable FMRS → face-bone pose builder. Builds a <see cref="Poses_class"/> of per-bone
@@ -20,7 +21,8 @@ Public Module FaceBonePoseBuilder
     Public Function BuildFaceBoneTransforms(npcData As NPC_Data,
                                              regionsFile As FacialBoneRegionsFile) As Poses_class
         If npcData Is Nothing OrElse regionsFile Is Nothing Then Return Nothing
-        If npcData.FaceMorphs Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return Nothing
+        Dim npcFo4 = TryCast(npcData.Record, Canon.NpcFO4)
+        If npcFo4 Is Nothing OrElse npcFo4.FaceMorphs.Count = 0 Then Return Nothing
 
         ' CK accumulates the raw 9-float FMRS deltas ADDITIVELY across regions (decompiled
         ' FUN_140419a30 = pure dst[i]+=src[i], per region in FUN_140a8f530), then builds ONE
@@ -30,13 +32,13 @@ Public Module FaceBonePoseBuilder
         Dim accPos As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
         Dim accRot As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
         Dim accScale As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
-        Dim fmin = If(npcData.FacialMorphIntensity <= 0.0F, 1.0F, npcData.FacialMorphIntensity)
+        Dim fmin = If(npcData.Record.IntensidadDeMorfoFacial() <= 0.0F, 1.0F, npcData.Record.IntensidadDeMorfoFacial())
 
         ' Log RACE region count vs NPC FaceMorphs count, and which indices the NPC references
         ' vs which ones the JSON declares. Helps spot missing regions (CK shows all RACE regions
         ' as sliders; NPC only stores the ones with non-default values).
         Dim raceRegionIndices = regionsFile.Regions.Keys.OrderBy(Function(i) i).ToList()
-        Dim npcIndices = npcData.FaceMorphs.Select(Function(f) f.Index).OrderBy(Function(i) i).ToList()
+        Dim npcIndices = npcFo4.FaceMorphs.Select(Function(f) f.FaceMorphIndex).OrderBy(Function(i) i).ToList()
         Dim missingInNpc = raceRegionIndices.Except(npcIndices).ToList()
         Dim extraInNpc = npcIndices.Except(raceRegionIndices).ToList()
         If missingInNpc.Count > 0 Then
@@ -47,19 +49,19 @@ Public Module FaceBonePoseBuilder
                                                                                End Function))
         End If
 
-        For Each fm In npcData.FaceMorphs
+        For Each fm In npcFo4.FaceMorphs
             Dim region As FacialBoneRegion = Nothing
-            If Not regionsFile.Regions.TryGetValue(fm.Index, region) Then
+            If Not regionsFile.Regions.TryGetValue(fm.FaceMorphIndex, region) Then
                 Continue For
             End If
 
-            Dim px = fm.PositionX
-            Dim py = fm.PositionY
-            Dim pz = fm.PositionZ
-            Dim rx = fm.RotationX
-            Dim ry = fm.RotationY
-            Dim rz = fm.RotationZ
-            Dim sc = fm.Scale
+            Dim px = fm.ValuesPositionX
+            Dim py = fm.ValuesPositionY
+            Dim pz = fm.ValuesPositionZ
+            Dim rx = fm.ValuesRotationX
+            Dim ry = fm.ValuesRotationY
+            Dim rz = fm.ValuesRotationZ
+            Dim sc = fm.ValuesScale
 
             Dim isZero As Boolean = (Math.Abs(px) < 0.0001F AndAlso Math.Abs(py) < 0.0001F AndAlso Math.Abs(pz) < 0.0001F AndAlso
                                      Math.Abs(rx) < 0.0001F AndAlso Math.Abs(ry) < 0.0001F AndAlso Math.Abs(rz) < 0.0001F AndAlso
@@ -166,7 +168,8 @@ Public Module FaceBonePoseBuilder
                                           neckNnamX As Single,
                                           neckNnamY As Single) As (ScaleY As Single, ScaleZ As Single)
         If npcData Is Nothing OrElse regionsFile Is Nothing Then Return (1.0F, 1.0F)
-        If npcData.FaceMorphs Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return (1.0F, 1.0F)
+        Dim npcFo4 = TryCast(npcData.Record, Canon.NpcFO4)
+        If npcFo4 Is Nothing OrElse npcFo4.FaceMorphs.Count = 0 Then Return (1.0F, 1.0F)
 
         ' Pick the neck region THROUGH THE NPC'S OWN FMRI, not by scanning the table for the first
         ' IsNeckRegion. regionsFile is now the MERGED both-gender table (see
@@ -177,16 +180,16 @@ Public Module FaceBonePoseBuilder
         ' Driving off fm.Index is order-independent AND automatically gender-correct: the NPC's FMRI
         ' identifies the table it came from, which is exactly the rule the merge is built on.
         Dim block2 As Single = 0.0F
-        For Each fm In npcData.FaceMorphs
+        For Each fm In npcFo4.FaceMorphs
             Dim r As FacialBoneRegion = Nothing
-            If regionsFile.Regions.TryGetValue(fm.Index, r) AndAlso r IsNot Nothing AndAlso r.IsNeckRegion Then
-                block2 = fm.PositionZ
+            If regionsFile.Regions.TryGetValue(fm.FaceMorphIndex, r) AndAlso r IsNot Nothing AndAlso r.IsNeckRegion Then
+                block2 = fm.ValuesPositionZ
                 Exit For
             End If
         Next
         If block2 <= 0.0F Then Return (1.0F, 1.0F)
 
-        Dim fmin = If(npcData.FacialMorphIntensity <= 0.0F, 1.0F, npcData.FacialMorphIntensity)
+        Dim fmin = If(npcData.Record.IntensidadDeMorfoFacial() <= 0.0F, 1.0F, npcData.Record.IntensidadDeMorfoFacial())
         Return (1.0F + neckNnamX * fmin * block2, 1.0F + neckNnamY * fmin * block2)
     End Function
 
@@ -198,7 +201,7 @@ Public Module FaceBonePoseBuilder
     Public ClampHits As Long = 0
     Public ReadOnly ClampSamples As New List(Of String)
 
-    ''' <summary>⭐ EL CLAMP SE QUITO (2026-07-29). El motor NO clampea — ya estaba verificado por RE
+    ''' <summary>EL CLAMP SE QUITO (2026-07-29). El motor NO clampea — ya estaba verificado por RE
     ''' (sin <c>minss</c>/<c>maxss</c> en <c>FUN_1403fd920</c> ni <c>FUN_140419CD0</c>) y el comentario
     ''' original dejaba el clamp puesto BAJO LA CONDICION de que el contador diera 0 sobre el corpus
     ''' ("si el contador da 0 ... la divergencia es demostrablemente inerte").
@@ -235,7 +238,7 @@ Public Module FaceBonePoseBuilder
     ''' only outputs reachable are s·max and |s|·min, so the axis is dead iff BOTH endpoints are
     ''' zero — regardless of the region's Defaults.
     '''
-    ''' ⛔ Do NOT compare against the region Default. That was the old editor rule
+    ''' Do NOT compare against the region Default. That was the old editor rule
     ''' (BoneRegionCard.RegionLiveComponents, que hasta la migración al Designer vivía en
     ''' EditFace_Form) and it contradicts the engine: with a non-zero
     ''' Default it would both hide live axes (min=max=0 but Default≠0 → reported live... and

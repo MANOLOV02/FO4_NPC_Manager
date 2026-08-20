@@ -5,6 +5,7 @@ Imports System.Linq
 Imports System.Threading
 Imports System.Threading.Tasks
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
@@ -64,16 +65,18 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' ⇒ costura de cuello en todo weight ≠ 100 (render≠bake y render≠engine). BuildFaceMorphPlanFromNam9
         ' no-opea por canal cuando falta el dato, así que el resolver SSE "vacío" es naturalmente barato.
         Dim isSse = (npcData.Game = Config_App.Game_Enum.Skyrim)
-        If Not isSse AndAlso (genderOverride OrElse npcData.MorphValues.Count = 0) Then Return Nothing
+        If Not isSse AndAlso (genderOverride OrElse npcData.Record.MorfosDeCara().Count = 0) Then Return Nothing
 
         ' Get RACE morph definitions for mapping MSDK keys ? morph names
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = _ctx.ParseRaceCached(raceRec)
+        Dim race = _ctx.ParseRaceCanonCached(raceRec)
+        ' MorphValues/MorphPresets/MorphGroups son exclusivos de Fallout 4 — Skyrim no los declara en RACE.
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
 
-        Dim morphValueDefs = race.MorphValues
-        Dim morphPresetDefs = If(state.IsFemale, race.FemaleMorphPresets, race.MaleMorphPresets)
-        Dim morphGroups = If(state.IsFemale, race.FemaleMorphGroups, race.MaleMorphGroups)
+        Dim morphValueDefs = raceFo4.MorphValues
+        Dim morphPresetDefs = raceFo4.ReadMorphPresetsFlat(state.IsFemale)
+        Dim morphGroups = raceFo4.ReadMorphGroups(state.IsFemale)
 
 
         ' Dump raw MSDK/MSDV table from this NPC (to see what keys+weights the record really has).
@@ -81,7 +84,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' to show where each morph came from and why it's in the NPC.
         Dim sliderIndexSet As New HashSet(Of UInteger)
         If morphValueDefs IsNot Nothing Then
-            For Each mv In morphValueDefs : sliderIndexSet.Add(mv.Index) : Next
+            For Each mv In morphValueDefs : sliderIndexSet.Add(mv.ValueIndex) : Next
         End If
         Dim presetIndexMap As New Dictionary(Of UInteger, String)
         If morphPresetDefs IsNot Nothing Then
@@ -89,7 +92,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
                 If Not presetIndexMap.ContainsKey(mp.Index) Then presetIndexMap(mp.Index) = mp.MorphName
             Next
         End If
-        For Each kvp In npcData.MorphValues
+        For Each kvp In npcData.Record.MorfosDeCara()
             Dim key = kvp.Key
             Dim value = kvp.Value
             Dim classification As String
@@ -97,8 +100,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Dim value1 As String = Nothing
 
             If sliderIndexSet.Contains(key) Then
-                Dim mvDef = morphValueDefs.FirstOrDefault(Function(m) m.Index = key)
-                classification = $"SLIDER (RACE.MSID) MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}'"
+                Dim mvDef = morphValueDefs.FirstOrDefault(Function(m) m.ValueIndex = key)
+                classification = $"SLIDER (RACE.MSID) MSM0='{mvDef.ValueMinName}' MSM1='{mvDef.ValueMaxName}'"
             ElseIf presetIndexMap.TryGetValue(key, value1) Then
                 classification = $"PRESET (RACE.MPPI) morphName='{value1}'"
             Else
@@ -188,7 +191,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim npcData = _overlay(_ctx.GetParsedNpc(NpcStateFactory.FaceAppearanceSourceFormID(state)), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
         If npcData.Game <> Config_App.Game_Enum.Skyrim Then Return Nothing
-        Dim w = If(npcData.Nam7Raw IsNot Nothing AndAlso npcData.Nam7Raw.Length >= 4, BitConverter.ToSingle(npcData.Nam7Raw, 0), 100.0F)
+        ' Sin NAM7 el peso es 100: es el valor con el que el motor dibuja un actor que no lo declara.
+        Dim w = If(npcData.Record.TienePesoDeSkyrim(), npcData.Record.PesoDeSkyrim(), 100.0F)
         Dim t = Math.Max(0.0F, Math.Min(1.0F, w / 100.0F))
         Return New SseBodyWeightMorphResolver(t, state.IsFemale, renderData.MeshDictKeys, renderData.ShapeCandidate, _ctx)
     End Function
@@ -217,7 +221,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' asi que cambiar de NPC no puede filtrar los tatuajes del anterior.</para></summary>
     ''' <param name="host">El host QUE ESTÁ RENDERIZANDO (no <c>_hostProvider()</c>): de él sale
     ''' editor puedan discrepar sobre el pool magic.
-    ''' <para>⛔ ES OBLIGATORIO. Era <c>Optional</c> "por compat de los call sites que no tienen host a mano", y esa
+    ''' <para>ES OBLIGATORIO. Era <c>Optional</c> "por compat de los call sites que no tienen host a mano", y esa
     ''' compat no existía: los dos call sites lo tenían. El único que lo omitía (el camino live) caía al
     ''' <c>_hostProvider()</c> = el host PRINCIPAL y borraba los overlays magic del preview del editor. Obligatorio,
     ''' el compilador cierra esa trampa para el próximo call site en vez de dejarla esperando.</para></param>
@@ -511,11 +515,11 @@ Friend NotInheritable Class NpcMorphPoseResolver
                     If ov Is Nothing OrElse String.IsNullOrEmpty(ov.DiffusePath) OrElse Not SseTextureExists(ov.DiffusePath) Then Continue For
                     Dim applies As Boolean
                     If SseOverlayIsFaceNode(ov.NodeName) Then
-                        ' ⭐⭐ LA CARA TIENE DOS MECANISMOS Y NO SE SOLAPAN (ver SseOverlayCompositor.IsFoldableFaceOverlay):
+                        ' LA CARA TIENE DOS MECANISMOS Y NO SE SOLAPAN (ver SseOverlayCompositor.IsFoldableFaceOverlay):
                         '   Face [Ovl{n}]  (no-magic) ⇒ lo PLIEGA NpcFaceTintResolver dentro del diffuse de la cabeza,
                         '                               igual que el bake ⇒ acá NO va decal.
                         '   Face [SOvl{n}] (magic)    ⇒ NO se pliega nunca ⇒ acá SÍ va decal vivo.
-                        ' ⛔ ESTO ARREGLA UN DOBLE APLICADO REAL Y PREEXISTENTE: los dos caminos leen el MISMO
+                        ' ESTO ARREGLA UN DOBLE APLICADO REAL Y PREEXISTENTE: los dos caminos leen el MISMO
                         ' `preset.SseBodyOverlays` y los dos corrían sin gate, así que un face-paint normal se
                         ' componía DOS veces en el preview (horneado en el diffuse plegado + decal encima) y salía
                         ' más oscuro/saturado que lo que el bake escribe. El bake nunca tuvo el decal ⇒ era también
@@ -640,7 +644,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     End Function
 
     ''' <summary>Cache of parsed FacialBoneRegions files per race/gender key (e.g. "HumanRace:female").
-    ''' <para>⛔⛔ CONCURRENTDICTIONARY, NO Dictionary, y el motivo NO es cosmetico: el bake hornea VARIOS
+    ''' <para>CONCURRENTDICTIONARY, NO Dictionary, y el motivo NO es cosmetico: el bake hornea VARIOS
     ''' NPCs a la vez y esto se pide POR NPC (via BuildCharGen). Un Dictionary en escritura concurrente puede
     ''' PERDER una entrada o colgarse re-hasheando, y perder una entrada aca significa saltear el morph
     ''' FMRS/FMRI ⇒ <b>CARA NEUTRA</b>, distinta en cada corrida. Es el unico race del bake que puede mover
@@ -666,7 +670,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' It is NOT the right table to resolve an NPC's FMRI values against — for that use
     ''' <see cref="GetFacialBoneRegionsForFmriResolution"/>, which merges both gender tables
     ''' (see the measured evidence documented there).</para></summary>
-    Friend Shared Function GetFacialBoneRegionsForRace(race As RACE_Data, isFemale As Boolean) As FacialBoneRegionsFile
+    Friend Shared Function GetFacialBoneRegionsForRace(race As Canon.IRace, isFemale As Boolean) As FacialBoneRegionsFile
         If race Is Nothing OrElse String.IsNullOrEmpty(race.EditorID) Then Return Nothing
 
         Dim genderKey = If(isFemale, "Female", "Male")
@@ -679,7 +683,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim dataPath = $"meshes\actors\character\characterassets\{race.EditorID}FacialBoneRegions{genderKey}.txt".ToLowerInvariant()
         Dim loc As FilesDictionary_class.File_Location = Nothing
         If Not FilesDictionary_class.Dictionary.TryGetValue(dataPath, loc) Then
-            ' ⛔ FALLO SILENCIOSO — ya no. Antes esto cacheaba Nothing y volvia mudo: un NPC con entradas
+            ' FALLO SILENCIOSO — ya no. Antes esto cacheaba Nothing y volvia mudo: un NPC con entradas
             ' FMRI/FMRS cuya raza no tiene <Race>FacialBoneRegions<G>.txt se come una CARA NEUTRA sin que
             ' nadie se entere. Vanilla solo trae HumanRace / GhoulRace / PowerArmorRace; NO existe
             ' HumanChildRaceFacialBoneRegions{Male,Female}.txt. Hoy es inerte —medido: los 42 NPCs
@@ -697,8 +701,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Try
             Dim bytes = loc.GetBytes()
             ' Dump the raw JSON to a sibling file so we can see exactly what the engine reads
-            ' (independent of our parser). Compares against xEdit hex IDs to catch any parser
-            ' bug. Path: same directory as the log file, named per gender.
+            ' (independent of our parser). Compares against externally-sourced hex IDs to
+            ' catch any parser bug. Path: same directory as the log file, named per gender.
             If Logger.Enabled Then
                 Try
                     Dim dumpPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"fbr_dump_{race.EditorID}_{genderKey}.txt")
@@ -716,7 +720,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     End Function
 
     ''' <summary>Cache of the MERGED (both-gender) FacialBoneRegions table, keyed by race EditorID.
-    ''' <para>⛔ ConcurrentDictionary por el MISMO motivo que <see cref="_facialBoneRegionsCache"/>: se pide por
+    ''' <para>ConcurrentDictionary por el MISMO motivo que <see cref="_facialBoneRegionsCache"/>: se pide por
     ''' NPC y el bake corre varios NPCs en paralelo. Perder una entrada = FMRI sin resolver = cara neutra.
     ''' El merge es funcion pura de (EditorID, genero) ⇒ last-write-wins es byte-neutro.</para></summary>
     Private Shared ReadOnly _facialBoneRegionsMergedCache As New Concurrent.ConcurrentDictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
@@ -748,7 +752,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' devuelve Nothing sin tirar, asi que con las dos presentes hay union, con una sola esa (PowerArmorRace
     ''' vanilla trae solo la Male) y sin ninguna, Nothing - que todos los callers ya tratan como "sin pose
     ''' osea".</para></summary>
-    Friend Shared Function GetFacialBoneRegionsForFmriResolution(race As RACE_Data, isFemale As Boolean) As FacialBoneRegionsFile
+    Friend Shared Function GetFacialBoneRegionsForFmriResolution(race As Canon.IRace, isFemale As Boolean) As FacialBoneRegionsFile
         If race Is Nothing OrElse String.IsNullOrEmpty(race.EditorID) Then Return Nothing
 
         Dim cacheKey = race.EditorID & ":" & If(isFemale, "Female", "Male") & ":merged"
@@ -789,11 +793,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
 
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
         Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
-        If npcData Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return Nothing
+        Dim npcFo4 = TryCast(If(npcData Is Nothing, Nothing, npcData.Record), Canon.NpcFO4)
+        If npcFo4 Is Nothing OrElse npcFo4.FaceMorphs.Count = 0 Then Return Nothing
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = _ctx.ParseRaceCached(raceRec)
+        Dim race = _ctx.ParseRaceCanonCached(raceRec)
 
         ' FMRI RESOLUTION → merged both-gender table (disjoint ID namespaces; 10 vanilla NPCs carry
         ' opposite-gender FMRI). See GetFacialBoneRegionsForFmriResolution.
@@ -820,14 +825,25 @@ Friend NotInheritable Class NpcMorphPoseResolver
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return (1.0F, 1.0F)
-        Dim race = _ctx.ParseRaceCached(raceRec)
+        Dim race = _ctx.ParseRaceCanonCached(raceRec)
 
         ' Same FMRI resolution rule as BuildFaceBoneTransforms: merged both-gender table.
         Dim regionsFile = GetFacialBoneRegionsForFmriResolution(race, state.IsFemale)
         If regionsFile Is Nothing Then Return (1.0F, 1.0F)
 
-        Dim neckNnamX As Single = If(state.IsFemale, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)
-        Dim neckNnamY As Single = If(state.IsFemale, race.FemaleNeckNNAMY, race.MaleNeckNNAMY)
+        ' NNAM (Neck Fat Adjustments Scale) es exclusivo de Fallout 4 — Skyrim no lo declara en RACE.
+        Dim raceFo4Neck = TryCast(race, Canon.RaceFO4)
+        Dim neckNnamX As Single = 0.0F
+        Dim neckNnamY As Single = 0.0F
+        If raceFo4Neck IsNot Nothing Then
+            If state.IsFemale Then
+                neckNnamX = raceFo4Neck.FemaleNeckFatAdjustmentsScaleX
+                neckNnamY = raceFo4Neck.FemaleNeckFatAdjustmentsScaleY
+            Else
+                neckNnamX = raceFo4Neck.MaleNeckFatAdjustmentsScaleX
+                neckNnamY = raceFo4Neck.MaleNeckFatAdjustmentsScaleY
+            End If
+        End If
 
         Return FaceBonePoseBuilder.ComputeNeckNnamScale(npcData, regionsFile, neckNnamX, neckNnamY)
     End Function
@@ -878,7 +894,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <summary>Resolve the NPC's MWGT weights and the RACE's per-bone weight scale data for
     ''' use by the skeleton resolver. Returns Nothing if the NPC has no MWGT or the RACE has
     ''' no bone data for the NPC's gender.</summary>
-    Private Function ResolveBodyWeightData(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult) As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3))
+    Private Function ResolveBodyWeightData(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult) As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As Canon.RaceFO4_BoneScaleData, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3), HayDatos As Boolean)
         If state Is Nothing Then Return Nothing
 
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
@@ -899,7 +915,9 @@ Friend NotInheritable Class NpcMorphPoseResolver
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = _ctx.ParseRaceCached(raceRec)
+        ' Bone Data (Weight Scale + Range Modifier) es exclusivo de Fallout 4 — Skyrim no lo declara.
+        Dim raceFo4 = TryCast(_ctx.ParseRaceCanonCached(raceRec), Canon.RaceFO4)
+        Dim boneData = raceFo4.BoneScaleData
 
         ' Log the FaceGen clamps for reference. TBD whether they apply to body BSMS output
         ' or only to face slider*FMIN. Not applying any clamp formula without spec.
@@ -909,21 +927,26 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' RACE.BoneData resolution.
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
-        For Each bd In race.BoneData
-            If bd.Gender = targetGender Then
+        For Each bd In boneData
+            If bd.BoneWeightScaleDataWeightScaleTargetGender = targetGender Then
                 ' Dump archetype values for diagnostic bones to verify what the record actually says.
                 Dim diagBones As String() = {"LBreast_skin", "RBreast_skin", "LButtFat_skin", "RButtFat_skin",
                                               "Belly_skin", "UpperBelly_skin", "Chest_skin", "Chest_Rear_Skin",
                                               "LArm_ShoulderFat_skin", "LLeg_Calf_skin", "LLeg_Thigh_skin"}
                 For Each diagBone In diagBones
-                    Dim bbb = bd.Bones.FirstOrDefault(Function(x) x.BoneName.Equals(diagBone, StringComparison.OrdinalIgnoreCase))
+                    Dim bbb = bd.BoneWeightScales.FirstOrDefault(Function(x) x.BoneWeightScaleSetName.Equals(diagBone, StringComparison.OrdinalIgnoreCase))
                 Next
-                If bd.Bones.Count > 0 Then Return (wt, wm, wf, bd, npcData.BodyMorphRegionValues, armaDeltas)
+                If bd.BoneWeightScales.Count > 0 OrElse bd.BoneRangeModifiers.Count > 0 Then
+                    Return (wt, wm, wf, bd, npcData.Record.ValoresDeRegionCorporal(), armaDeltas, True)
+                End If
                 Exit For
             End If
         Next
+        ' Sin bloque de huesos del RACE pero con deltas de escultura del ARMA: la pose se arma
+        ' igual, sólo que la capa de peso queda en identidad. Lo dice HayDatos, no el bloque: el
+        ' bloque ahora ES el del record y no hay ninguno que representar vacío.
         If hasArmaDeltas Then
-            Return (wt, wm, wf, New RACE_BoneDataGender With {.Gender = targetGender}, npcData.BodyMorphRegionValues, armaDeltas)
+            Return (wt, wm, wf, Nothing, npcData.Record.ValoresDeRegionCorporal(), armaDeltas, True)
         End If
         Return Nothing
     End Function
@@ -933,8 +956,16 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return 1.0F
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return 1.0F
-        Dim race = _ctx.ParseRaceCached(raceRec)
-        Dim h = If(state.IsFemale, race.FemaleHeight, race.MaleHeight)
+        Dim race = _ctx.ParseRaceCanonCached(raceRec)
+        ' MaleHeight/FemaleHeight: mismo campo, cada juego lo declara con su propio subrecord/offset.
+        Dim h As Single
+        Dim nf = TryCast(race, Canon.RaceFO4)
+        If nf IsNot Nothing Then
+            h = If(state.IsFemale, nf.DataFemaleHeight, nf.DataMaleHeight)
+        Else
+            Dim nsse = TryCast(race, Canon.RaceSSE)
+            h = If(nsse Is Nothing, 0.0F, If(state.IsFemale, nsse.FemaleHeight, nsse.MaleHeight))
+        End If
         If h <= 0 Then Return 1.0F
         Return h
     End Function
@@ -967,7 +998,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim hasSculpt = (armaSculptOverride IsNot Nothing AndAlso armaSculptOverride.Count > 0)
         If bodyWeightEnabled OrElse hasSculpt Then
             Dim bwData = ResolveBodyWeightData(state, renderData)
-            If bwData.GenderBlock IsNot Nothing Then
+            If bwData.HayDatos Then
                 Dim sculpt = If(armaSculptOverride, New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase))
                 bwPose = PoseMath.BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
                                              bwData.GenderBlock, bwData.MrsvValues, sculpt,
@@ -981,7 +1012,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' (ResolveNeckNnamScale). Se emite como su propio entry del hueso "Neck"; la anti-propagación a
         ' los hijos la hace el post-pase NpcMorphPoseResolver.ApplyNeckNnamCompensation (que lee esta S
         ' del "Neck" aplicado → auto-gateada: si acá no se emite, no hay comp).
-        ' ⚠ NO se afirma que sea el mecanismo del engine (consumidor del +0x50 nunca hallado); es la
+        ' NO se afirma que sea el mecanismo del engine (consumidor del +0x50 nunca hallado); es la
         ' compensación por-pose que da el resultado observable correcto (cara no se infla; escala solo
         ' los verts pegados al "Neck").
         Dim nnamPose As Poses_class = Nothing
@@ -1015,7 +1046,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' PoseTransformData per named skeleton bone carrying the full TRS — uniform scale (key 30), translation
     ''' (key 31 → X/Y/Z) and rotation (key 32 → the axis-angle Yaw/Pitch/Roll the WardrobeManager pose source
     ''' feeds straight into BSRotationToMatrix33).
-    ''' <para>⚠️ DECÍA "reproducing the .jslot's 3×3 matrix exactly" y hay que acotarlo: el pose sólo puede llevar
+    ''' <para>DECÍA "reproducing the .jslot's 3×3 matrix exactly" y hay que acotarlo: el pose sólo puede llevar
     ''' AXIS-ANGLE (<c>PoseTransformData</c> no tiene campo de matriz), mientras el <c>.jslot</c> y el ESP re-emiten
     ''' la matriz CRUDA cuando la hay. Reproduce la matriz exactamente para toda rotación propia — incluida la de
     ''' 180°, desde que <c>Matrix33ToBSRotation</c> saca bien ese eje. Lo que NO puede reproducir es una REFLEXIÓN

@@ -14,7 +14,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' <summary>Pipeline de CANDIDATOS del preview: recolecta (ARMO/OTFT/head parts/chunks de robot) →
 ''' resuelve conflicto de slots y oclusión por headwear → carga los NIF y aplica los overrides de material
 ''' por shape.
-''' <para>⛔ Datos y parsing puros: NADA de WinForms ni de GL acá, porque corre en el Task de render. La
+''' <para>Datos y parsing puros: NADA de WinForms ni de GL acá, porque corre en el Task de render. La
 ''' orquestación y el esqueleto se quedan en MainForm. Ver 61-perf-mainform-split.md.</para></summary>
 Friend NotInheritable Class NpcMeshCollector
     Private ReadOnly _ctx As NpcRenderContext
@@ -47,9 +47,9 @@ Friend NotInheritable Class NpcMeshCollector
         _raceIsPowerArmor = raceIsPowerArmor
     End Sub
 
-    ''' <summary>⭐ EL discriminador de FaceGen, engine-faithful: <c>RACE.DATA</c> bit 0x2 "FaceGen Head".
+    ''' <summary>EL discriminador de FaceGen, engine-faithful: <c>RACE.DATA</c> bit 0x2 "FaceGen Head".
     ''' Con el bit claro, ninguno de los dos motores construye cabeza. Ver 40-bake-leyes-fo4.md.
-    ''' <para>⛔ NO confundirlo con "¿existe el FaceGeom horneado?": aguas abajo del gate el motor elige
+    ''' <para>NO confundirlo con "¿existe el FaceGeom horneado?": aguas abajo del gate el motor elige
     ''' entre cargar el NIF horneado o armar la cabeza desde head parts, así que la ausencia del NIF elige
     ''' RAMA, no apaga el FaceGen. Usar esa heurística dejaba el insumo <c>_faceBones</c> sin recolectar y
     ''' los sliders de Bone Regions del editor no hacían nada.</para>
@@ -59,7 +59,13 @@ Friend NotInheritable Class NpcMeshCollector
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return False
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return False
-        Return _ctx.ParseRaceCached(raceRec).FaceGenHead
+        Dim race = _ctx.ParseRaceCanonCached(raceRec)
+        ' DATA\Flags\FaceGen Head: mismo bit, declarado por cada juego con su propio nombre generado.
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
+        If raceFo4 IsNot Nothing Then Return raceFo4.DataFlagsFaceGenHead
+        Dim raceSse = TryCast(race, Canon.RaceSSE)
+        If raceSse IsNot Nothing Then Return raceSse.FlagsFaceGenHead
+        Return False
     End Function
 
     Friend Function ResolvePreviewVariant(previewVariant As MainForm.PreviewVariantDefinition) As MainForm.PreviewResolutionResult
@@ -80,10 +86,10 @@ Friend NotInheritable Class NpcMeshCollector
         ' drive both SelectWinningCandidates (which head parts to occlude/zap) and the render-time worn-slot
         ' slice (result.HeadOcclusionMask, consumed by NpcRenderHost.ApplyRenderToggleVisibility). Nothing race
         ' -> all masks 0 -> nothing occludes (safe under-hide), matching the old const's zero behaviour.
-        Dim raceData As RACE_Data = Nothing
+        Dim raceData As Canon.IRace = Nothing
         If state.RaceFormID <> 0UI Then
             Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
-            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then raceData = _ctx.ParseRaceCached(raceRec)
+            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then raceData = _ctx.ParseRaceCanonCached(raceRec)
         End If
         Dim faceCullMask As UInteger = RaceUtil.RaceFaceCullMask(raceData)
         Dim hairMask As UInteger = RaceUtil.RaceHairMask(raceData)
@@ -93,8 +99,8 @@ Friend NotInheritable Class NpcMeshCollector
         ' fase 2). result.HeadOcclusionMask se fija abajo, ya con los winners resueltos (máscara EFECTIVA).
         result.HeadFaceCullMask = faceCullMask
         result.HeadHairSlotMask = hairMask
-        ' Slot que ESTA raza reserva para el Pipboy (RACE.DATA 'Pipboy Biped Object',
-        ' wbDefinitionsFO4.pas:11538). Es dato POR RAZA, no la constante 60 — el render lo consume para el
+        ' Slot que ESTA raza reserva para el Pipboy (RACE.DATA 'Pipboy Biped Object').
+        ' Es dato POR RAZA, no la constante 60 — el render lo consume para el
         ' strip coexist-by-design. 0 en Skyrim (el campo no existe en ese layout).
         result.PipboySlotMask = RaceUtil.RacePipboyMask(raceData)
 
@@ -140,7 +146,8 @@ Friend NotInheritable Class NpcMeshCollector
         Dim globalSculptSource As MainForm.MeshCandidate = Nothing
         Dim uSculptSourceByBit As New Dictionary(Of Integer, MainForm.MeshCandidate)
         ' SCULPT (ARMA BSMS bone-scale) es un mecanismo EXCLUSIVO de FO4: Skyrim ARMA no tiene NINGÚN
-        ' subrecord BSMP/BSMB/BSMS (verificado: wbDefinitionsTES5.pas no los define) → ArmaBoneScaleDeltas
+        ' subrecord BSMP/BSMB/BSMS (verificado contra el esquema del record ARMA de Skyrim, que no
+        ' los define) → ArmaBoneScaleDeltas
         ' siempre vacío en SSE. Gate EXPLÍCITO FO4-only para que los bits de slot FO4 de abajo nunca se
         ' ejerzan bajo Skyrim (defensivo; el bloque ya era no-op data-driven). FO4 sin cambios.
         If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then
@@ -194,7 +201,8 @@ Friend NotInheritable Class NpcMeshCollector
                 ' Check NoUnderarmorScaling flag (opt-out from receiving scaling).
                 Dim noUnderArmorFlag As Boolean = False
                 If candidate.ArmorAddonFormID <> 0UI Then
-                    Dim aa = _ctx.GetParsedArma(candidate.ArmorAddonFormID)
+                    ' NoUnderarmorScaling es un bit de cabecera del ARMA de Fallout 4 solamente.
+                    Dim aa = TryCast(_ctx.GetParsedArma(candidate.ArmorAddonFormID), Canon.ArmaFO4)
                     If aa IsNot Nothing Then noUnderArmorFlag = aa.NoUnderarmorScaling
                 End If
 
@@ -232,7 +240,7 @@ Friend NotInheritable Class NpcMeshCollector
                 Dim slotL = candidate.SlotMask
                 Dim isPOL = isPureOverArmor
                 Dim ownDeltasL = If(candidate.ArmaBoneScaleDeltas Is Nothing, 0, candidate.ArmaBoneScaleDeltas.Count)
-                Dim aaL = If(candFidL <> 0UI, _ctx.GetParsedArma(candFidL), Nothing)
+                Dim aaL = If(candFidL <> 0UI, TryCast(_ctx.GetParsedArma(candFidL), Canon.ArmaFO4), Nothing)
                 Dim noUaL = aaL IsNot Nothing AndAlso aaL.NoUnderarmorScaling
                 Dim hasSculptL = aaL IsNot Nothing AndAlso aaL.HasSculptData
                 Dim srcL = sourceFormID
@@ -345,7 +353,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' Camino robot (NPC_.ObjectTemplate). Regla del motor: ObjectTemplateResolver elige UNA combinacion
         ' (kw-match -> primer Default -> primera); cada IncludedOmod con ModelPath es un chunk a montar por
         ' BSConnectPoint::Parents del skeleton del actor; los OMOD sin ModelPath pero con Properties alimentan
-        ' OmodResolutionApplier con formType="NPC_". El AttachPoint se resuelve OMOD.AttachPointFormID -> KYWD
+        ' OmodResolutionApplier con formType="NPC_". El AttachPoint se resuelve OMOD.DataAttachPoint -> KYWD
         ' -> EditorID, matcheado case-insensitive contra ConnectPointInfo.Name. Ver 24-robots-mounting.
         If Not onlyOutfitCollect AndAlso state.HasObjectTemplate AndAlso state.ObjectTemplateCombinations IsNot Nothing _
            AndAlso state.ObjectTemplateCombinations.Count > 0 Then
@@ -361,7 +369,7 @@ Friend NotInheritable Class NpcMeshCollector
     Friend Function MergeHeadPartsWithRaceDefaults(state As MainForm.NPCVisualState) As List(Of UInteger)
         If state Is Nothing Then Return New List(Of UInteger)
         Return HeadPartResolver.MergeHeadPartsWithRaceDefaults(state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, _ctx.PluginManager,
-                                                               AddressOf _ctx.ParseRaceCached, AddressOf _ctx.ParseHdptCached)
+                                                               AddressOf _ctx.ParseRaceCanonCached, AddressOf _ctx.ParseHdptCached)
     End Function
 
     ''' <param name="raceFilterBypassArmaFormID">Preview-only: the ONE ARMA (the ARMA editor's "Only Model"
@@ -390,7 +398,7 @@ Friend NotInheritable Class NpcMeshCollector
         If state.RaceFormID <> 0UI Then
             Dim hdRaceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
             If hdRaceRec IsNot Nothing AndAlso hdRaceRec.Header.Signature = "RACE" Then
-                raceHeadOcclSlots = RaceUtil.RaceHeadOcclusionMask(_ctx.ParseRaceCached(hdRaceRec))
+                raceHeadOcclSlots = RaceUtil.RaceHeadOcclusionMask(_ctx.ParseRaceCanonCached(hdRaceRec))
             End If
         End If
         Dim skinSlots As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body) Or BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
@@ -425,7 +433,9 @@ Friend NotInheritable Class NpcMeshCollector
         ' Resolve OBTS/OMOD canonical view ONCE per ARMO. Shared by every MainForm.MeshCandidate
         ' produced for this ARMO's addons — they all live under the same combination overlay.
         ' The applier runs in ApplyShapeMaterialOverrides after the ARMA-direct base swap.
-        Dim omodResolution = ObjectTemplateResolver.ResolveArmoCombinations(armo, ctxKeywords, _ctx.PluginManager)
+        ' OBTS sólo existe en Fallout 4: Nothing en Skyrim resuelve a un CombinationResolution vacío,
+        ' mismo comportamiento que antes cuando el SSE ARMO_Data.Combinations venía siempre vacío.
+        Dim omodResolution = ObjectTemplateResolver.ResolveArmoCombinations(TryCast(armo, Canon.ArmoFO4), ctxKeywords, _ctx.PluginManager)
 
         ' [FASE 3] Chunk-mount path biped: OMODs con AttachPoint != 0 AND ModelPath != "" se
         ' montan vía BSConnectPoint igual que robot chunks. Delegate al shared con
@@ -437,52 +447,58 @@ Friend NotInheritable Class NpcMeshCollector
 
         Dim addonOrder As List(Of UInteger)
         If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-            ' ⭐ Skyrim ARMO Armature = RArray PLANO de MODL (ARMA FormIDs), SIN INDX/Addon-Index
+            ' Skyrim ARMO Armature = RArray PLANO de MODL (ARMA FormIDs), SIN INDX/Addon-Index
             ' (verificado: SkinNaked 0x00000D64 = 25×MODL, 0×INDX). TODOS los armatures aplican
             ' (torso/hands/feet + variantes por raza/bestia/niño); el filtro de raza (raceOk) de abajo
             ' elige los que matchean al NPC. El INDX-variant grouping de FO4 NO existe en Skyrim, y
             ' aplicarlo tomaba sólo el armature en posición 0 (el parser da índice posicional sin INDX)
             ' → una skin multi-armature perdía body/hands/feet = "sin manos"/"sin cuerpo".
-            addonOrder = armo.ArmorAddonFormIDs.ToList()
-        ElseIf armo.ArmorAddons.Count >= 1 Then
-            ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
-            ' HasValue=True cuando hay OMOD override keyword-driven; sino Nothing → usar
-            ' BaseAddonIndex (FNAM) si está, sino 0 (vanilla default).
-            Dim resolved = ResolveEffectiveAddonIndex(armo, ctxKeywords)
-            Dim effectiveIdx As Integer
-            If resolved.HasValue Then
-                effectiveIdx = resolved.Value
-            ElseIf armo.BaseAddonIndex >= 0 Then
-                effectiveIdx = armo.BaseAddonIndex
-            Else
-                effectiveIdx = 0
-            End If
-
-            ' Take ALL models whose INDX matches the effective AddonIndex (group, not single).
-            addonOrder = New List(Of UInteger)
-            For Each entry In armo.ArmorAddons
-                If CInt(entry.AddonIndex) = effectiveIdx Then
-                    addonOrder.Add(entry.ArmaFormID)
-                End If
-            Next
-            ' Defensive fallback: si el INDX resuelto no existe en los Models (datos malformados
-            ' o keyword-driven INDX que apunta a un grupo no presente), usar todas las entries
-            ' con el menor INDX disponible — no crashear ni dejar el outfit vacío.
-            If addonOrder.Count = 0 Then
-                Dim minIdx As Integer = armo.ArmorAddons.Min(Function(e) CInt(e.AddonIndex))
-                For Each entry In armo.ArmorAddons
-                    If CInt(entry.AddonIndex) = minIdx Then addonOrder.Add(entry.ArmaFormID)
-                Next
-            End If
+            addonOrder = ArmoEditor_Form.ReadAddons(armo).Select(Function(a) a.ArmaFormID).ToList()
         Else
-            addonOrder = armo.ArmorAddonFormIDs.ToList()
+            ' Models/BaseAddonIndex/Combinations sólo existen en el ARMO de Fallout 4 — la rama
+            ' Skyrim ya volvió arriba, así que acá "armo" siempre resuelve a ArmoFO4.
+            Dim armoFo4 = TryCast(armo, Canon.ArmoFO4)
+            Dim fo4Models = If(armoFo4 IsNot Nothing, armoFo4.Models, New List(Of Canon.ArmoFO4_Models))
+            If fo4Models.Count >= 1 Then
+                ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
+                ' HasValue=True cuando hay OMOD override keyword-driven; sino Nothing → usar
+                ' BaseAddonIndex (FNAM) si está, sino 0 (vanilla default).
+                Dim resolved = ResolveEffectiveAddonIndex(armoFo4, ctxKeywords)
+                Dim effectiveIdx As Integer
+                If resolved.HasValue Then
+                    effectiveIdx = resolved.Value
+                ElseIf armoFo4.BaseAddonIndex <> &HFFFFUS Then
+                    effectiveIdx = armoFo4.BaseAddonIndex
+                Else
+                    effectiveIdx = 0
+                End If
+
+                ' Take ALL models whose INDX matches the effective AddonIndex (group, not single).
+                addonOrder = New List(Of UInteger)
+                For Each entry In fo4Models
+                    If CInt(entry.ModelAddonIndex) = effectiveIdx Then
+                        addonOrder.Add(entry.ModelArmorAddon)
+                    End If
+                Next
+                ' Defensive fallback: si el INDX resuelto no existe en los Models (datos malformados
+                ' o keyword-driven INDX que apunta a un grupo no presente), usar todas las entries
+                ' con el menor INDX disponible — no crashear ni dejar el outfit vacío.
+                If addonOrder.Count = 0 Then
+                    Dim minIdx As Integer = fo4Models.Min(Function(e) CInt(e.ModelAddonIndex))
+                    For Each entry In fo4Models
+                        If CInt(entry.ModelAddonIndex) = minIdx Then addonOrder.Add(entry.ModelArmorAddon)
+                    Next
+                End If
+            Else
+                addonOrder = ArmoEditor_Form.ReadAddons(armo).Select(Function(a) a.ArmaFormID).ToList()
+            End If
         End If
 
         ' Within-ARMO armature slot occupancy (engine "first addon claims the slot" rule, see the
         ' coveredSlots check before candidates.Add below). Accumulates the biped slots already taken
         ' by earlier race-matching armature entries of THIS ARMO.
         Dim coveredSlots As UInteger = 0UI
-        ' ⭐ LEY ÚNICA: raza y footprint por armature salen de EquipResolver (FO4_Base_Library), acotado al
+        ' LEY ÚNICA: raza y footprint por armature salen de EquipResolver (FO4_Base_Library), acotado al
         ' grupo de Models que el AddonIndex efectivo seleccionó. Este bucle ya no decide slots: sólo resuelve
         ' lo suyo (malla, facebones, material swap, bone scale) para los armatures que la ley deja pasar.
         Dim armoFp = EquipResolver.BuildFootprint(armoFormID, _ctx.EquipCtx(state.RaceFormID, state.IsFemale), addonOrder)
@@ -512,12 +528,21 @@ Friend NotInheritable Class NpcMeshCollector
                 Dim afid = armaFormID
                 Dim armoFid = armoFormID
                 Dim rOkL = raceOk
+                Dim aFo4Log = TryCast(a, Canon.ArmaFO4)
+                Dim maleFlagsLog As Byte = If(aFo4Log IsNot Nothing, aFo4Log.MaleFlags, CByte(0))
+                Dim femaleFlagsLog As Byte = If(aFo4Log IsNot Nothing, aFo4Log.FemaleFlags, CByte(0))
+                Dim maleFlags2Log As Byte = If(aFo4Log IsNot Nothing, aFo4Log.MaleFlags2, CByte(0))
+                Dim femaleFlags2Log As Byte = If(aFo4Log IsNot Nothing, aFo4Log.FemaleFlags2, CByte(0))
+                Dim maleSwapLog As UInteger = If(aFo4Log IsNot Nothing, aFo4Log.MaleMaterialSwap, 0UI)
+                Dim femaleSwapLog As UInteger = If(aFo4Log IsNot Nothing, aFo4Log.FemaleMaterialSwap, 0UI)
+                Dim maleRemapLog As Single? = If(aFo4Log IsNot Nothing AndAlso aFo4Log.MaleColorRemappingIndexPresente,
+                                                 CType(aFo4Log.MaleColorRemappingIndex, Single?), Nothing)
                 Logger.LogLazy(Function() $"[ARMA-MODELFLAGS] ARMO=0x{armoFid:X8} ARMA=0x{afid:X8} '{a.EditorID}' " &
-                    $"race=0x{a.RaceFormID:X8} addRaces=[{String.Join(",", a.AdditionalRaces.Select(Function(x) x.ToString("X8")))}] raceOk={rOkL} slot=0x{a.SlotMask:X8} | " &
-                    $"MO2F=0x{a.MaleModelFlags:X2}({NpcManagerFormat.DescribeModelFlags(a.MaleModelFlags)}) MO3F=0x{a.FemaleModelFlags:X2}({NpcManagerFormat.DescribeModelFlags(a.FemaleModelFlags)}) " &
-                    $"MO4F=0x{a.MaleFPModelFlags:X2} MO5F=0x{a.FemaleFPModelFlags:X2} | " &
-                    $"MO2S(matswap)=0x{a.MaleMaterialSwapFormID:X8} MO3S=0x{a.FemaleMaterialSwapFormID:X8} MO2C(remap)={If(a.MaleColorRemapIndex.HasValue, a.MaleColorRemapIndex.Value.ToString("F3"), "none")} | " &
-                    $"MOD2='{a.MaleMeshPath}' MOD3='{a.FemaleMeshPath}' MOD4='{a.MaleFPMeshPath}' MOD5='{a.FemaleFPMeshPath}'")
+                    $"race=0x{a.Race:X8} addRaces=[{String.Join(",", a.AdditionalRaces.Select(Function(x) x.Race.ToString("X8")))}] raceOk={rOkL} slot=0x{a.SlotMaskDe():X8} | " &
+                    $"MO2F=0x{maleFlagsLog:X2}({NpcManagerFormat.DescribeModelFlags(maleFlagsLog)}) MO3F=0x{femaleFlagsLog:X2}({NpcManagerFormat.DescribeModelFlags(femaleFlagsLog)}) " &
+                    $"MO4F=0x{maleFlags2Log:X2} MO5F=0x{femaleFlags2Log:X2} | " &
+                    $"MO2S(matswap)=0x{maleSwapLog:X8} MO3S=0x{femaleSwapLog:X8} MO2C(remap)={If(maleRemapLog.HasValue, maleRemapLog.Value.ToString("F3"), "none")} | " &
+                    $"MOD2='{a.MaleModelFilename}' MOD3='{a.FemaleModelFilename}' MOD4='{a.MaleModelFilename2}' MOD5='{a.FemaleModelFilename2}'")
             End If
             If Not raceOk Then
                 Continue For
@@ -528,26 +553,30 @@ Friend NotInheritable Class NpcMeshCollector
             ' to shape the outfit around the body (cinched waist, wider hips, vest volume).
             Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
             Dim genderBoneScale As List(Of ARMA_BoneScaleDelta) = Nothing
-            For Each bsg In arma.BoneScaleData
-                If bsg.Gender <> targetGender Then Continue For
-                If bsg.Bones.Count = 0 Then Continue For
-                genderBoneScale = bsg.Bones
-                For Each bd In bsg.Bones
-                    Dim mag = Math.Sqrt(bd.DeltaX * bd.DeltaX + bd.DeltaY * bd.DeltaY + bd.DeltaZ * bd.DeltaZ)
+            ' El sculpt (BSMP/BSMB/BSMS) sólo existe en el ARMA de Fallout 4.
+            Dim armaFo4ForSculpt = TryCast(arma, Canon.ArmaFO4)
+            If armaFo4ForSculpt IsNot Nothing Then
+                For Each bsg In ArmaEditor_Form.ReadAllBoneScaleFromRecord(armaFo4ForSculpt)
+                    If bsg.Gender <> targetGender Then Continue For
+                    If bsg.Bones.Count = 0 Then Continue For
+                    genderBoneScale = bsg.Bones
+                    For Each bd In bsg.Bones
+                        Dim mag = Math.Sqrt(bd.DeltaX * bd.DeltaX + bd.DeltaY * bd.DeltaY + bd.DeltaZ * bd.DeltaZ)
+                    Next
+                    Exit For
                 Next
-                Exit For
-            Next
+            End If
 
             ' Resolve mesh path with ARMA-first / ARMO-WorldModel-fallback semantics.
-            ' ARMO.MOD2 (male) / MOD4 (female) per wbDefinitionsFO4.pas:6164-6175 populate when the
+            ' ARMO.MOD2 (male) / MOD4 (female) populate when the
             ' mesh is authored at ARMO level (robots: Assaultron skin has ARMO.MOD2=Assaultron.nif
             ' with empty ARMA.MOD2/MOD3). Humanoid armors inverse: ARMA has the mesh, ARMO.MOD2/MOD4
             ' usually empty. Gender mirror inside each source: try same-gender first, then opposite.
-            Dim meshPath = If(state.IsFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
-            If meshPath = "" Then meshPath = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
+            Dim meshPath = If(state.IsFemale, arma.FemaleModelFilename, arma.MaleModelFilename)
+            If meshPath = "" Then meshPath = If(arma.MaleModelFilename <> "", arma.MaleModelFilename, arma.FemaleModelFilename)
             If meshPath = "" Then
-                meshPath = If(state.IsFemale, armo.FemaleWorldModelPath, armo.MaleWorldModelPath)
-                If meshPath = "" Then meshPath = If(armo.MaleWorldModelPath <> "", armo.MaleWorldModelPath, armo.FemaleWorldModelPath)
+                meshPath = If(state.IsFemale, armo.WorldModelModelFilename2, armo.WorldModelModelFilename)
+                If meshPath = "" Then meshPath = If(armo.WorldModelModelFilename <> "", armo.WorldModelModelFilename, armo.WorldModelModelFilename2)
             End If
             If meshPath = "" Then
                 Continue For
@@ -565,7 +594,10 @@ Friend NotInheritable Class NpcMeshCollector
             ' excepción para ARMA (194 NIFs, no marginal). Sólo FO4: en SSE TryGetFaceBonesVariant da "".
             Dim armaFaceBonesInputKey As String = ""
             If useFaceGen AndAlso NPC_Config.IsHeadBakeActive() Then
-                Dim modelFlags As Byte = If(state.IsFemale, arma.FemaleModelFlags, arma.MaleModelFlags)
+                ' MO2F/MO3F (model flags) sólo existen en el ARMA de Fallout 4.
+                Dim armaFo4ForFlags = TryCast(arma, Canon.ArmaFO4)
+                Dim modelFlags As Byte = If(armaFo4ForFlags IsNot Nothing,
+                    If(state.IsFemale, armaFo4ForFlags.FemaleFlags, armaFo4ForFlags.MaleFlags), CByte(0))
                 If (modelFlags And &H1) <> 0 Then
                     Dim fbKey = MeshPathHelpers.TryGetFaceBonesVariant(armaDictKey)
                     If fbKey <> "" Then
@@ -607,32 +639,41 @@ Friend NotInheritable Class NpcMeshCollector
             ' head/face/neck bits are added; body/hand/[A]/[U] bits the ARMO might declare are NOT (that gating
             ' is what keeps this from over-marking body skin as covered — the earlier full-union broke hands).
             ' The within-ARMO armature dedup above intentionally stays on the per-ARMA effSlotMask.
+            ' MO2S/MO3S (material swap) y MO2C/MO3C (color remap) sólo existen en el ARMA de Fallout 4.
+            Dim armaFo4ForSwap = TryCast(arma, Canon.ArmaFO4)
+            Dim maleSwapC As UInteger = If(armaFo4ForSwap IsNot Nothing, armaFo4ForSwap.MaleMaterialSwap, 0UI)
+            Dim femaleSwapC As UInteger = If(armaFo4ForSwap IsNot Nothing, armaFo4ForSwap.FemaleMaterialSwap, 0UI)
+            Dim maleRemapC As Single? = If(armaFo4ForSwap IsNot Nothing AndAlso armaFo4ForSwap.MaleColorRemappingIndexPresente,
+                                           CType(armaFo4ForSwap.MaleColorRemappingIndex, Single?), Nothing)
+            Dim femaleRemapC As Single? = If(armaFo4ForSwap IsNot Nothing AndAlso armaFo4ForSwap.FemaleColorRemappingIndexPresente,
+                                             CType(armaFo4ForSwap.FemaleColorRemappingIndex, Single?), Nothing)
+            Dim armoSlotDe = armo.SlotMaskDe()
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = armaDictKey,
                 .FaceBonesDictKey = armaFaceBonesInputKey,
-                .SlotMask = effSlotMask Or (armo.SlotMask And headOcclGate),
+                .SlotMask = effSlotMask Or (armoSlotDe And headOcclGate),
                 .ArmaOwnSlotMask = effSlotMask,
-                .ArmoOwnSlotMask = armo.SlotMask,
-                .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
+                .ArmoOwnSlotMask = armoSlotDe,
+                .Priority = If(state.IsFemale, arma.DataFemalePriority, arma.DataMalePriority),
                 .Kind = kind,
                 .SourceFormID = armoFormID,
                 .ArmorAddonFormID = armaFormID,
                 .TextureSetFormID = If(state.IsFemale,
-                                       If(arma.FemaleSkinTextureFormID <> 0UI, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID),
-                                       If(arma.MaleSkinTextureFormID <> 0UI, arma.MaleSkinTextureFormID, arma.FemaleSkinTextureFormID)),
+                                       If(arma.FemaleSkinTexture <> 0UI, arma.FemaleSkinTexture, arma.MaleSkinTexture),
+                                       If(arma.MaleSkinTexture <> 0UI, arma.MaleSkinTexture, arma.FemaleSkinTexture)),
                 .MaterialSwapFormID = If(state.IsFemale,
-                                          If(arma.FemaleMaterialSwapFormID <> 0UI, arma.FemaleMaterialSwapFormID, arma.MaleMaterialSwapFormID),
-                                          If(arma.MaleMaterialSwapFormID <> 0UI, arma.MaleMaterialSwapFormID, arma.FemaleMaterialSwapFormID)),
+                                          If(femaleSwapC <> 0UI, femaleSwapC, maleSwapC),
+                                          If(maleSwapC <> 0UI, maleSwapC, femaleSwapC)),
                 .ColorRemapIndex = If(state.IsFemale,
-                                       If(arma.FemaleColorRemapIndex.HasValue, arma.FemaleColorRemapIndex, arma.MaleColorRemapIndex),
-                                       If(arma.MaleColorRemapIndex.HasValue, arma.MaleColorRemapIndex, arma.FemaleColorRemapIndex)),
+                                       If(femaleRemapC.HasValue, femaleRemapC, maleRemapC),
+                                       If(maleRemapC.HasValue, maleRemapC, femaleRemapC)),
                 .OmodResolution = omodResolution,
                 .Order = order,
                 .ArmaBoneScaleDeltas = genderBoneScale
             })
 
             ' [OUTFIT-RESOLVE] dump por cada candidate emitido. Tag PIPBOY-CANDIDATE cuando el
-            ' SlotMask contiene bit 30 (slot 60 - Pipboy, wbDefinitionsFO4.pas:3776). Permite ver
+            ' SlotMask contiene bit 30 (slot 60 - Pipboy). Permite ver
             ' qué ARMA produce el mesh del Pipboy, qué path se resuelve, qué slot mask trae, y
             ' poder cotejar contra el NIF (skinned? BSConnectPoint::Parents declarado?).
             Dim slotHex = effSlotMask.ToString("X8")
@@ -663,7 +704,7 @@ Friend NotInheritable Class NpcMeshCollector
                                             ByRef order As Integer,
                                             warnings As List(Of String))
         ' [DIAG] Entry log — confirma estado de entrada del robot path.
-        ' ⛔ GATEADO POR Logger.Enabled: `LogLazy` hace lazy el STRING, no el CALCULO, y `apSlotStr` resuelve
+        ' GATEADO POR Logger.Enabled: `LogLazy` hace lazy el STRING, no el CALCULO, y `apSlotStr` resuelve
         ' un KYWD (GetRecord + parse del EditorID) POR CADA attach-point del NPC. Eso se pagaba entero en
         ' release, donde el log ni existe.
         If Logger.Enabled Then
@@ -677,25 +718,17 @@ Friend NotInheritable Class NpcMeshCollector
             Logger.LogLazy(Function() $"[ROBOT-ENTRY] npc=0x{stateFid:X8} race=0x{stateRace:X8} hasOT={hasOT} combos={otCount} npcAPPR={apSlotCount}={apSlotStr}")
         End If
 
-        ' Build a stub NPC_Data carrying the OBTE so we can re-use ResolveNpcCombinations.
-        Dim stubNpc As New NPC_Data With {
-            .FormID = state.FormID,
-            .HasObjectTemplate = state.HasObjectTemplate,
-            .RaceFormID = state.RaceFormID
-        }
-        For Each ch In state.ObjectTemplateCombinations
-            stubNpc.ObjectTemplateCombinations.Add(ch)
-        Next
-        ' Propagate NPC.APPR — initial pool for the AP-filter inside ObjectTemplateResolver.
-        ' RACE.APPR is read by the resolver itself via stubNpc.RaceFormID.
-        If state.AttachParentSlotFormIDs IsNot Nothing Then
-            stubNpc.AttachParentSlotFormIDs.AddRange(state.AttachParentSlotFormIDs)
-        End If
-
-        ' ctxKeywords: NPC robots typically don't get LVLI.LLKC propagation (they're not
-        ' wrapped in OTFT). Pass empty so the resolver falls through to first-Default.
+        ' ctxKeywords: los robots NPC no suelen recibir la propagacion de LLKC de una LVLI (no van
+        ' envueltos en un OTFT). Se pasa vacio para que el resolver caiga en la primera por defecto.
+        ' El estado ya trae las combinaciones y los enganches del NPC; la APPR de la RAZA la lee el
+        ' resolver por su cuenta a partir de la raza.
         Dim ctxKeywords As New List(Of UInteger)
-        Dim resolution = ObjectTemplateResolver.ResolveNpcCombinations(stubNpc, ctxKeywords, _ctx.PluginManager)
+        Dim combos As New List(Of Canon.IBloque_Combinations)
+        For Each ch In state.ObjectTemplateCombinations
+            If ch IsNot Nothing Then combos.Add(ch)
+        Next
+        Dim resolution = ObjectTemplateResolver.ResolveNpcCombinations(
+            combos, state.AttachParentSlotFormIDs, state.RaceFormID, ctxKeywords, _ctx.PluginManager)
 
         ' Delegate to shared OMOD chunk-mounting collector (robot + biped share capas 1+2:
         ' coord fix + socket disambig). Capa 3 (V2 SKEL-OVERRIDE) aplica a robot Y biped
@@ -751,8 +784,8 @@ Friend NotInheritable Class NpcMeshCollector
         ' armors y caen al fallback __chunkAnchor__ con offset incorrecto.
         For preIdx = 0 To resolution.IncludedOmods.Count - 1
             Dim omodPre = resolution.IncludedOmods(preIdx)
-            If omodPre Is Nothing OrElse String.IsNullOrEmpty(omodPre.ModelPath) Then Continue For
-            Dim dictKeyPre = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(omodPre.ModelPath)
+            If omodPre Is Nothing OrElse String.IsNullOrEmpty(omodPre.ModelFileName) Then Continue For
+            Dim dictKeyPre = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(omodPre.ModelFileName)
             Dim bytesPre = MeshPathHelpers.TryLoadMeshBytes(dictKeyPre)
             If bytesPre Is Nothing Then Continue For
             Try
@@ -874,12 +907,12 @@ Friend NotInheritable Class NpcMeshCollector
             Dim hostFid As UInteger = If(i < resolution.IncludedOmodHostFormID.Count, resolution.IncludedOmodHostFormID(i), 0UI)
             Dim hostApIdx As Byte = If(i < resolution.IncludedOmodHostApIdx.Count, resolution.IncludedOmodHostApIdx(i), CByte(0))
             If omod Is Nothing Then Continue For
-            If String.IsNullOrEmpty(omod.ModelPath) Then Continue For ' property-only OMODs
+            If String.IsNullOrEmpty(omod.ModelFileName) Then Continue For ' property-only OMODs
             ' Note: vanilla rusty/variant OMODs (Bot_ArmLeftProtectronRusty1 etc.) have
             ' FormType=NONE while the originals have FormType=NPC_. Filtering by FormType
             ' would drop the variants — they render in-game, so we accept any FormType here.
 
-            Dim apEditorId = _mountingResolver.ResolveAttachPointEditorId(omod.AttachPointFormID)
+            Dim apEditorId = _mountingResolver.ResolveAttachPointEditorId(omod.DataAttachPoint)
             ' Host-scoped resolution: walk host chain por ORDINAL hasta caer en skeleton root.
             ' Devuelve MainForm.PublisherSocketInfo (con HostSocketGlobalT precomputado) + matchedHostOrdinal —
             ' el consumer no re-descubre el publisher después.
@@ -920,7 +953,7 @@ Friend NotInheritable Class NpcMeshCollector
             Dim skelFbForLog = skelFallbackSocket
             Logger.LogLazy(Function() $"[ROBOT-CHUNK] omod={omod.EditorID}({omod.FormID:X8}) ord={ordLog} apEditor='{apEditorLog}' apIdx={apIdxLog} host=(ord={hostOrdLog},0x{hostFidLog:X8},apIdx={hostApIdxLog}) matchedHost=(ord={matchedOrdLog},0x{matchedHostFidLog:X8}) → socket={If(socketLocalForLog Is Nothing, "NOT-FOUND", $"'{socketLocalForLog.Name}' onBone='{socketLocalForLog.ParentBoneName}'")} skelFallback={If(skelFbForLog Is Nothing, "NOT-FOUND", $"'{skelFbForLog.Name}' onBone='{skelFbForLog.ParentBoneName}'")}")
 
-            Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(omod.ModelPath)
+            Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(omod.ModelFileName)
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = dictKey,
                 .SlotMask = 0UI,
@@ -1014,21 +1047,21 @@ Friend NotInheritable Class NpcMeshCollector
         ' Shared rule = single source of truth with the bake's EnumerateHdptChain.
         Dim effectivePartType = HeadPartResolver.ResolveEffectivePartType(hdpt.TipoDeParte(), parentPartType, hdptFormID, miscToParentEffective)
 
-        ' ⛔ NO agregar acá un gate por HDPT.RNAM: el motor NO filtra por "Valid Races" las head parts que un
+        ' NO agregar acá un gate por HDPT.RNAM: el motor NO filtra por "Valid Races" las head parts que un
         ' actor LLEVA — RNAM es filtro del CATÁLOGO del chargen (por eso los pickers sí lo aplican). Ponerlo
         ' en el render nos hacía más estrictos que el juego: los NPC de razas custom, cuyas razas se inyectan
         ' en las FormLists en RUNTIME por script, salían pelados. El gate real del motor es de RAZA
         ' (RACE.DATA bit 0x2) y lo aplica el caller. Ver 40-bake-reglas-comunes.md.
 
-        If hdpt.ModelModelFileName <> "" Then
+        If hdpt.ModelFileName <> "" Then
             ' El `_faceBones` (rig de los 68 huesos de cara: Jaw, LipUpper_L, Cheek_R…) es lo que permite
             ' que el FMRS deforme la malla. Se recolecta para toda raza que construya cabeza FaceGen
             ' (RaceBuildsFaceGenHead — el bit 0x2, ya garantizado por el early-return de
             ' CollectHeadPartCandidates); `useFaceGen` acá sólo puede venir en False por el
             ' PreviewGenderOverride de los editores ARMA/ARMO ("Show other gender" dibuja una cabeza
             ' race-default del OTRO género, que no es la del NPC y no debe morfear con su FMRS).
-            Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hdpt.ModelModelFileName)
-            ' ⭐ Camino head-bake: NO se redirige. Se dibuja la malla PLANA — que es lo que dibujan el motor y
+            Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hdpt.ModelFileName)
+            ' Camino head-bake: NO se redirige. Se dibuja la malla PLANA — que es lo que dibujan el motor y
             ' el CK — y el `_faceBones` queda como INSUMO para HeadBakeService. Medido: el FaceGeom del BA2 usa
             ' el UV del PLANO 227 a 0, y su base material es la del plano con el TNAM encima; dibujar el
             ' `_faceBones` hacía caer el body-weight sobre los 68 huesos de cara en vez de los ~10 del rig plano.
@@ -1052,7 +1085,7 @@ Friend NotInheritable Class NpcMeshCollector
                 Dim hdptEidC = If(hdptRec.EditorID, "")
                 Dim rawTypeC = hdpt.TipoDeParte()
                 Dim effTypeC = effectivePartType
-                Dim origMeshC = If(hdpt.ModelModelFileName, "")
+                Dim origMeshC = If(hdpt.ModelFileName, "")
                 Dim finalKeyC = dictKey
                 Dim fbInputC = faceBonesInputKey
                 Dim tnamC = hdpt.TextureSet
@@ -1141,7 +1174,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' Primera pasada: candidates CON slot.
         ' En FO4 las capas [U] (36-40) y [A] (41-45) están diseñadas para coexistir, así que el underarmor
         ' declara bits que las piezas de over-armor solapan parcialmente.
-        ' ⛔ Regla "extended underarmor": un candidate que declara BODY o algún bit [U] Y ADEMÁS algún bit
+        ' Regla "extended underarmor": un candidate que declara BODY o algún bit [U] Y ADEMÁS algún bit
         ' [A] es un underarmor extendido cuya malla YA cubre esos slots [A] (incluye piernas o brazos). No
         ' puede coexistir con un over-armor puro [A] que reclame los mismos bits: serían dos geometrías
         ' superpuestas, con clip visible. Por eso RESERVA sus bits [A] y descarta entero al que los pida.
@@ -1149,7 +1182,7 @@ Friend NotInheritable Class NpcMeshCollector
 
         ' Skin candidates (NPC_.WNAM / RACE.WNAM via state.SkinFormID) representan la base body
         ' geometry del NPC — NO son piezas equipables que compitan por slots con outfits/armor.
-        ' xEdit wbDefinitionsFO4.pas:10705 + 11434 confirman que NPC_.WNAM y RACE.WNAM son slots
+        ' El esquema del record confirma que NPC_.WNAM y RACE.WNAM son slots
         ' dedicados ("Skin" ARMO), distintos del inventory de outfits. Cita engine doc Steam/Nexus
         ' habla de "vault suit + something else" — outfit vs outfit, nunca outfit vs body skin.
         ' Conceptualmente: un actor SIEMPRE tiene body mesh; un outfit lo CUBRE visualmente, no
@@ -1167,7 +1200,7 @@ Friend NotInheritable Class NpcMeshCollector
 
         ' La resolución de conflicto de slots vive en EquipResolver (FO4_Base_Library), para que el render y la pestaña
         ' Create del editor de outfits usen las MISMAS reglas del motor.
-        ' ⛔ Se resuelve a nivel ARMO EQUIPADO, no por ARMA: el motor hace mutex sobre el BOD2 del item
+        ' Se resuelve a nivel ARMO EQUIPADO, no por ARMA: el motor hace mutex sobre el BOD2 del item
         ' equipado como unidad — el ARMO entero gana o pierde. Alimentar las ARMA sueltas al resolver dejaba
         ' que un ARMO PARCIALMENTE perdedor conservara las ARMA cuyos slots no chocaban con el ganador (un
         ' outfit que pierde el torso pero conserva sus guantes), lo que diverge del juego Y de la pestaña
@@ -1190,7 +1223,7 @@ Friend NotInheritable Class NpcMeshCollector
                 grp.Add(c)
             End If
         Next
-        ' ⭐ LEY ÚNICA (EquipResolver, FO4_Base_Library). Un EquipItem por ARMO equipado, con sus tres
+        ' LEY ÚNICA (EquipResolver, FO4_Base_Library). Un EquipItem por ARMO equipado, con sus tres
         ' máscaras: EquipMask = BOD2 crudo del ARMO (con la que el motor decide el mutex, en los DOS juegos)
         ' · GeometryMask = unión de los BOD2 de las ARMA del grupo (particiones; es lo que mira la excepción
         ' anti-clipping) · OcclusionMask = lo que el render venía usando como SlotMask (ARMA ∪ headwear del
@@ -1214,7 +1247,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' Cada candidate ya es un armature filtrado por raza/género = el que el engine adjuntaría.
         wornItemMasks = slotResolution.Winners.SelectMany(Function(it) DirectCast(it.Tag, List(Of MainForm.MeshCandidate))).
             Select(Function(c) c.ArmaOwnSlotMask).Where(Function(m) m <> 0UI).ToList()
-        ' ⭐ WORN MASK DEL MOTOR — OR del BOD2 de los ARMO EQUIPADOS, y NADA de la ARMA. Verificado byte-level
+        ' WORN MASK DEL MOTOR — OR del BOD2 de los ARMO EQUIPADOS, y NADA de la ARMA. Verificado byte-level
         ' en el Fallout4.exe instalado: `0x14051F530` recorre la lista de ítems equipados del actor 3D
         ' (`[actor3D+0xF8]`, count `+0x68` / data `+0x58`, stride 0x10), saltea LIGH/WEAP/AMMO y por cada uno
         ' llama al virtual `vtable+0x238` = `GetBipedObjectSlotMask 0x140313B80`, que es
@@ -1245,7 +1278,7 @@ Friend NotInheritable Class NpcMeshCollector
         '   9 HeadRear   : NUNCA, es geometria base del craneo.
         ' Rama por juego: FO4 intersecta lo equipado con el canal de pelo; SSE usa el BOD2 completo del item
         ' que ocupa el slot de pelo, no la union de lo equipado (ver HeadPartHideMask).
-        ' ⛔ FO4: los tres canales se testean contra el WORN MASK DEL MOTOR (BOD2 de los ARMO equipados), no
+        ' FO4: los tres canales se testean contra el WORN MASK DEL MOTOR (BOD2 de los ARMO equipados), no
         ' contra `occupiedSlots` (que trae además los bits de la ARMA). Medido: 8 ARMO vanilla declaran el
         ' slot 32 en su ARMA y NO en su ARMO (Armor_HazmatSuit(+Damaged), Clothes_RaiderMod_Hood1/2/3,
         ' Armor_Raider_GreenHoodGasmask, Armor_Power_Raider_Helm, Clothes_InstituteWorkerwithHelmet) — con
@@ -1521,8 +1554,9 @@ Friend NotInheritable Class NpcMeshCollector
     Friend Shared Function ClassifyShapeCategory(candidate As MainForm.MeshCandidate) As MainForm.ShapeRenderCategory
         If candidate.Kind = MainForm.MeshCandidateKind.HeadPart Then Return MainForm.ShapeRenderCategory.HeadPart
 
-        ' ⭐ Máscaras derivadas de la TABLA AUTORITATIVA por-juego (BipedSlots.RegionMask, sourced de
-        ' los nombres de biped-object flags de xEdit wbDefinitionsFO4/TES5 — NO heurística). Aplicar la
+        ' Máscaras derivadas de la TABLA AUTORITATIVA por-juego (BipedSlots.RegionMask, sourced de
+        ' los nombres oficiales de biped-object flags del esquema de cada juego — NO heurística).
+        ' Aplicar la
         ' semántica FO4 sobre datos SSE clasificaba mal TODO (medido con --slot-diag): armadura de cuerpo
         ' Skyrim (slot 32) → Headwear → auto-oclusión = "armadura oculta"; cuerpo desnudo (32) → Other.
         Dim BODY_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body)
@@ -1560,14 +1594,16 @@ Friend NotInheritable Class NpcMeshCollector
         ' Pipboy (slot 60 / 0x40000000) — accesorio de antebrazo izq. que el engine vanilla
         ' monta hardcoded en el player. Como NPC outfit puede aparecer y debe respetar el toggle
         ' "Render armor". No declara bits [A], por eso lo agrupamos acá explícito. FO4-ONLY: en SSE
-        ' slot 60 es un slot modular genérico (xEdit '60 - Unnamed'), no un Pipboy → no forzar ArmorOver.
+        ' slot 60 es un slot modular genérico (sin nombre asignado en el esquema), no un Pipboy →
+        ' no forzar ArmorOver.
         If (Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim) _
            AndAlso (slot And BipedSlots.SlotBitPipboy) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
         ' SSE — ACCESORIOS Y MOD-SLOTS → categoría ArmorOver, que en Skyrim el toggle rotula
         ' "Render accessories" (RenderToggleLabels). Skyrim NO tiene capa [U]/[A]: el eje real es
         ' "lo que viste" (cuerpo/manos → Underarmor/GloveOutfit, arriba) vs "lo que cuelga": anillo (36),
-        ' escudo (39, rígido al antebrazo vía Prn='SHIELD'/ApplyPrnRigidAttach), cola (40) y los slots
-        ' modulares sin nombre en xEdit (44-49 / 52-61: capas, mochilas, SOS…). Ninguno ocluye piel.
+        ' escudo (39, rígido al antebrazo vía Prn='SHIELD'/ApplyPrnRigidAttach), cola (40) y los
+        ' slots modulares sin nombre asignado (44-49 / 52-61: capas, mochilas, SOS…).
+        ' Ninguno ocluye piel.
         ' Generaliza la regla que antes era sólo del escudo (usuario 2026-07-09: "cablea el shield al
         ' toggle show armor como el pipboy") — mismo destino, ahora para todo el grupo.
         ' El amuleto (35) NO cae acá: está en la región Headwear (BipedSlots) y lo agarra la regla de
@@ -1588,18 +1624,20 @@ Friend NotInheritable Class NpcMeshCollector
     ''' (torso + guantes, se cargan los dos) del Combat Torso, donde la keyword Heavy fuerza INDX=2.</para>
     ''' <para>BaseAddonIndex (FNAM) NO se usa como filtro: es el default al que apunta el ARMO si nadie lo
     ''' modifica, pero el motor sigue cargando los demas addons salvo override. Ver 23-armor-arma-sculpt.</para></summary>
-    Private Function ResolveEffectiveAddonIndex(armo As ARMO_Data, ctxKeywords As List(Of UInteger)) As Integer?
+    Private Function ResolveEffectiveAddonIndex(armo As Canon.ArmoFO4, ctxKeywords As List(Of UInteger)) As Integer?
         ' OBTS combinations override sólo cuando hay keyword match con el contexto.
-        If ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0 OrElse armo.Combinations Is Nothing Then
+        If ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0 OrElse armo Is Nothing Then
             Return Nothing
         End If
 
         Dim effectiveIdx As Integer = -1
-        For Each combo In armo.Combinations
+        ' El bucle declara la interfaz de FORMA, no la clase generada: los nombres de las listas de
+        ' adentro llevan sufijo en la clase (Keywords2, Properties2) y sin sufijo en la interfaz.
+        For Each combo As Canon.IBloque_Combinations In armo.Combinations
             If combo.Keywords Is Nothing OrElse combo.Keywords.Count = 0 Then Continue For
             Dim matches = False
             For Each kw In combo.Keywords
-                If ctxKeywords.Contains(kw) Then
+                If ctxKeywords.Contains(kw.Keyword) Then
                     matches = True
                     Exit For
                 End If
@@ -1607,21 +1645,22 @@ Friend NotInheritable Class NpcMeshCollector
             If Not matches Then Continue For
 
             ' Layer 1: la OBTS combination misma puede dictar el AddonIndex via su s16
-            ' "Parent Combination Index" (wbDefinitionsFO4.pas:5874). -1 = "no override desde la
+            ' "Parent Combination Index". -1 = "no override desde la
             ' OBTS, dejar que un OMOD include lo decida". ≥0 = la combination fija el AddonIndex.
-            If combo.ParentCombinationIndex >= 0 Then
-                effectiveIdx = combo.ParentCombinationIndex
+            If combo.ObjectModTemplateItemParentCombinationIndex >= 0 Then
+                effectiveIdx = combo.ObjectModTemplateItemParentCombinationIndex
             End If
 
             ' Layer 2: cada OMOD include dentro de la combination puede sobrescribir via su
-            ' AddonIndex Property. wbDefinitionsFO4.pas:5710+5842 — FunctionType=0 SET (overwrite),
+            ' AddonIndex Property. FunctionType=0 SET (overwrite),
             ' FunctionType=2 ADD (add to running value). Vanilla dump v2 (2026-05-10): 59 SET
             ' casos + 10 ADD casos confirman ambos. Walk ops en orden de declaración del OMOD.
-            For Each omodFid In combo.IncludeOMODFormIDs
-                Dim omodRec = _ctx.PluginManager.GetRecord(omodFid)
+            For Each inc In combo.Includes
+                Dim omodRec = _ctx.PluginManager.GetRecord(inc.IncludeMod)
                 If omodRec Is Nothing OrElse omodRec.Header.Signature <> "OMOD" Then Continue For
-                Dim omod = CraftingRecordParsers.ParseOMOD(omodRec, _ctx.PluginManager)
-                For Each addonOp In omod.GetAddonIndexOps()
+                Dim omod = Canon.CanonRecords.Omod(omodRec, _ctx.PluginManager)
+                If omod Is Nothing Then Continue For
+                For Each addonOp In AddonIndexOpsDe(omod)
                     Dim opLabel = If(addonOp.IsSet, "SET", "ADD")
                     Dim oldIdx = effectiveIdx
                     If addonOp.IsSet Then
@@ -1637,6 +1676,28 @@ Friend NotInheritable Class NpcMeshCollector
 
         If effectiveIdx >= 0 Then Return effectiveIdx
         Return Nothing
+    End Function
+
+    ''' <summary>Reimplementacion local de OMOD_Data.GetAddonIndexOps del parser viejo: junta todos los
+    ''' ops de la Property de indice 7 (AddonIndex), en orden de declaracion, para que el caller los
+    ''' pliegue via SET (pisa)/ADD (acumula). AddonIndex viaja siempre en la rama Int de la union
+    ''' Value1 — dato de esquema, no una suposicion — asi que alcanza con esa
+    ''' rama; una Property de indice 7 con otro ValueType es un record que no cumple el esquema y se
+    ''' descarta en vez de adivinar de que rama leer.</summary>
+    Private Function AddonIndexOpsDe(omod As Canon.IOmod) As List(Of (Value As Integer, IsSet As Boolean))
+        Const AddonIndexProperty As UShort = 7US
+        Const ValueTypeInt As Byte = 0 ' Canon.CanonRecords.Omod: Property\Value Type = Int.
+        Dim ops As New List(Of (Integer, Boolean))
+        For Each prop In omod.Properties
+            If prop.[Property] <> AddonIndexProperty Then Continue For
+            If prop.PropertyValueType <> ValueTypeInt Then Continue For
+            ' Reinterpretar los 4 bytes crudos como Int32 (no convertir el VALOR): AddonIndex puede
+            ' ser negativo y el patron de bits tiene que sobrevivir intacto, igual que hacia el
+            ' parser viejo yendo y viniendo por un Single.
+            Dim asInt = BitConverter.ToInt32(BitConverter.GetBytes(prop.PropertyValue1Int), 0)
+            ops.Add((asInt, prop.PropertyFunctionType = 0))
+        Next
+        Return ops
     End Function
 
     Private Sub LoadNifShapes(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, loadedNifs As Dictionary(Of String, Nifcontent_Class_Manolo), result As MainForm.PreviewResolutionResult,
@@ -1677,7 +1738,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' Existe porque algunas mallas de piel vanilla son bundles all-in-one: la de pies de niño trae
             ' además cuerpo, manos y cabeza, y el override de skin-TXST terminaba pintando la textura de los
             ' pies sobre esa cabeza, haciendo z-fighting con la FaceGen.
-            ' ⛔ EL GATE Kind=Skin ES ESENCIAL: "partición fuera del BOD2" es común y LEGÍTIMO en ropa y
+            ' EL GATE Kind=Skin ES ESENCIAL: "partición fuera del BOD2" es común y LEGÍTIMO en ropa y
             ' armadura (botas con geometría de pierna, etc.), así que aplicar la regla ahí descartaría shapes
             ' válidas. Además es SSE-only y nunca descarta si el mesh no se puede leer (keep-on-doubt).
             Const EnableSseSkinPartitionDedup As Boolean = True
@@ -1703,7 +1764,7 @@ Friend NotInheritable Class NpcMeshCollector
                             If dism IsNot Nothing AndAlso dism.Partitions IsNot Nothing Then
                                 For Each p In dism.Partitions
                                     ' Ley del plegado: BipedSlots.FoldPartitionBodyPart (una sola sede).
-                                    ' ⛔ ACÁ NO SE FILTRA [30,61], y NO es un olvido: abajo `parts.Count = 0`
+                                    ' ACÁ NO SE FILTRA [30,61], y NO es un olvido: abajo `parts.Count = 0`
                                     ' significa "no clasificable ⇒ conservar la shape". Filtrar convertiría
                                     ' una malla con todas sus particiones fuera de rango de DESCARTADA a
                                     ' RENDERIZADA. Ver la doc de FoldPartitionBodyPart.
@@ -1936,7 +1997,7 @@ Friend NotInheritable Class NpcMeshCollector
                     result.ShapeIsPipboyDevice(shape) = _ctx.PipboyDeviceArmoFormIDs().Contains(candidate.SourceFormID)
                 End If
                 result.ShapeUsesBodyTexture(shape) = candidate.UsesBodyTexture
-                ' HDPT type=7 Meatcaps (CK enum 7=Meatcaps, ver wbDefinitionsFO4 + comment en
+                ' HDPT type=7 Meatcaps (CK enum 7=Meatcaps, ver comment en
                 ' CollectHeadPartCandidate). Confirmed por estar en enum oficial de Bethesda;
                 ' mismo nivel de certeza que BSDismemberBodyPartType SECTIONCAP/TORSOCAP. La
                 ' clasificación por geometría (ClassifyShapeMeatcap) corre después en el loop
@@ -2122,11 +2183,11 @@ Friend NotInheritable Class NpcMeshCollector
                 If sh IsNot Nothing Then result.ShapeCandidate(sh) = candidate
             Next
         Catch ex As Exception
-            ' ⛔⛔ ESTE Try ABARCA ~470 LÍNEAS Y SU ÚLTIMA SENTENCIA ES LA PUBLICACIÓN. Cualquier excepción
+            ' ESTE Try ABARCA ~470 LÍNEAS Y SU ÚLTIMA SENTENCIA ES LA PUBLICACIÓN. Cualquier excepción
             ' en el medio deja el candidato con CERO shapes, que es indistinguible de "esta pieza no tiene
             ' malla" — el NPC se hornea sin la pieza y nadie se entera. Este mismo archivo ya loguea esta
             ' clase de fallo en otros dos sitios; acá faltaba.
-            ' ⛔ El ToString va con su propia red: esto corre DENTRO de un Catch de un metodo cuyo diseño
+            ' El ToString va con su propia red: esto corre DENTRO de un Catch de un metodo cuyo diseño
             ' entero es tragar y seguir. Una excepcion acá escaparia de ese contrato.
             Dim nm As String
             Try : nm = If(candidate Is Nothing, "<nothing>", candidate.ToString()) : Catch : nm = "<?>" : End Try

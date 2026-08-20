@@ -13,10 +13,9 @@ Imports FO4_Base_Library
 ''' (confirmed by dumping the shipped <c>Meshes\...\*.sclp</c> from the BA2) — while some third-party
 ''' exporters put x/y/z FLAT on the entry. <see cref="Load"/> accepts BOTH; <see cref="Save"/> writes
 ''' the nested (vanilla) form. x/y/z are ABSOLUTE scale values (1.0 = unchanged). One <c>.sclp</c> file
-''' represents ONE gender (the xEdit importer prompts Male/Female on import).</para>
+''' represents ONE gender (the importer prompts Male/Female on import).</para>
 '''
-''' <para>Conversion to BSMS (xEdit-faithful, see the .pas lines 56 + 82-84):
-''' the importer SKIPS entries equal to (1.0, 1.0, 1.0), and writes
+''' <para>Conversion to BSMS: the importer SKIPS entries equal to (1.0, 1.0, 1.0), and writes
 ''' <c>BSMS_delta = absolute − 1.0</c> per axis (X→Value#0, Y→#1, Z→#2). We mirror both rules
 ''' in <see cref="ToGenderBlock"/>.</para>
 '''
@@ -114,7 +113,7 @@ Public Module SclpFile
         Return root
     End Function
 
-    ''' <summary>Read one axis value, accepting either the lower-case key (as the xEdit format
+    ''' <summary>Read one axis value, accepting either the lower-case key (the vanilla format
     ''' uses) or an upper-case alias. Numbers are read directly; numeric strings are parsed with
     ''' invariant culture (some exporters quote the floats). Missing/non-numeric → 1.0
     ''' (identity, the neutral scale). NaN/Infinity are coerced to 1.0 as a guard.</summary>
@@ -192,17 +191,17 @@ Public Module SclpFile
     ' =====================================================================
 
     ''' <summary>Convert ABSOLUTE sclp values to an <see cref="ARMA_BoneScaleGender"/> with
-    ''' DeltaX/Y/Z = (absolute − 1.0). Mirrors the xEdit importer: entries equal to (1,1,1) are
-    ''' SKIPPED (they're no-ops in the BSMS = 0 delta sense). Entries with a blank Name are also
-    ''' skipped (no bone to attach to).</summary>
-    ''' <param name="gender">0 = Male, 1 = Female (xEdit wbSexEnum / ARMA BSMP).</param>
+    ''' DeltaX/Y/Z = (absolute − 1.0). Entries equal to (1,1,1) are SKIPPED (they're no-ops in
+    ''' the BSMS = 0 delta sense). Entries with a blank Name are also skipped (no bone to
+    ''' attach to).</summary>
+    ''' <param name="gender">0 = Male, 1 = Female (mismo orden que ARMA BSMP).</param>
     Public Function ToGenderBlock(bones As IEnumerable(Of SclpBoneAbsolute), gender As UInteger) As ARMA_BoneScaleGender
         Dim block As New ARMA_BoneScaleGender With {.Gender = gender}
         If bones Is Nothing Then Return block
         For Each b In bones
             If b Is Nothing OrElse String.IsNullOrEmpty(b.Name) Then Continue For
-            ' xEdit-faithful identity skip (see .pas line 56). Exact 1.0 compare matches the
-            ' script's intent: only literal unchanged rows are dropped.
+            ' Identity skip: comparación exacta contra 1.0, sólo se descartan filas literalmente
+            ' sin cambios.
             If b.X = 1.0F AndAlso b.Y = 1.0F AndAlso b.Z = 1.0F Then Continue For
             block.Bones.Add(New ARMA_BoneScaleDelta With {
                 .BoneName = b.Name,
@@ -235,7 +234,7 @@ Public Module SclpFile
     ' Self-test (invoked by Tools/SclpRoundTripProbe)
     ' =====================================================================
 
-    ' ⛔ EL SELF-TEST YA NO VIVE ACA. Se mudó a Tools/SclpRoundTripProbe el 2026-08-08: eran 98 líneas
+    ' EL SELF-TEST YA NO VIVE ACA. Se mudó a Tools/SclpRoundTripProbe el 2026-08-08: eran 98 líneas
     ' `Public` dentro del exe que se distribuye —que además escribían archivos temporales— y NO las llamaba
     ' NADIE de la app, sólo esa probe. Es I/O de JSON: da lo mismo en toda máquina.
     ' Ver memoria 00-reglas-self-tests-no-van-en-el-binario.

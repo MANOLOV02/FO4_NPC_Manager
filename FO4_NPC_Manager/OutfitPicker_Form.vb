@@ -136,7 +136,7 @@ Public Class OutfitPicker_Form
         ''' draft currently open, so Edit/Remove at that level mutate the real draft. Nothing for TOP-LEVEL outfit
         ''' pieces (which are the outfit's own items, not entries of a parent list). Its Level/Count/ChanceNone are
         ''' shown in the row and edited in place.</summary>
-        Public SourceEntry As LeveledListDraft.LeveledEntry
+        Public SourceEntry As Canon.ILvli_LeveledListEntries
     End Class
 
     Private Class Candidate
@@ -205,7 +205,7 @@ Public Class OutfitPicker_Form
         AddHandler ButtonReroll.Click, AddressOf OnReroll
         AddHandler ButtonNewLvl.Click, AddressOf OnNewLvl
         AddHandler ButtonAddToLvl.Click, AddressOf OnAddToLvl
-        ' Explicit New-record vs Override intent for the OUTFIT (xEdit model), replacing the old New/Override radio.
+        ' Explicit New-record vs Override intent for the OUTFIT, replacing the old New/Override radio.
         AddHandler ButtonNewOutfit.Click, AddressOf OnActionNewOutfit
         AddHandler ButtonOverrideOutfit.Click, AddressOf OnActionOverrideOutfit
         AddHandler TextBoxEdid.TextChanged, AddressOf OnCreateEdidChanged
@@ -406,9 +406,10 @@ Public Class OutfitPicker_Form
                     ' The preview draft is FLAT terminal ARMOs: ARMO pieces + each LVLI piece's current
                     ' cached realization (ver PieceTerminals). So it renders exactly the sample shown in the
                     ' pieces list, with no fresh re-roll on every render.
-                    Dim d As New OutfitDraft With {.FormID = OutfitDraft.PreviewDraftFormID,
-                                                   .EditorID = OutfitDraft.EditorIdPrefix & "(preview)"}
-                    d.ItemFormIDs.AddRange(reqDraftItems)
+                    Dim d = OutfitDraft.Nuevo(OutfitDraft.PreviewDraftFormID,
+                                              Canon.CanonBridge.SessionGame())
+                    d.Record.EditorID = OutfitDraft.EditorIdPrefix & "(preview)"
+                    d.ReemplazarPrendas(reqDraftItems)
                     _mainForm.RegisterOutfitDraft(d)
                     _previewDraftRegistered = True
                 End If
@@ -567,7 +568,8 @@ Public Class OutfitPicker_Form
         Dim sb As New System.Text.StringBuilder("Outfit")
         For Each fid In _lvlNavStack
             Dim d = _mainForm.TryGetLeveledListDraft(fid)
-            sb.Append("  ▸  ").Append(If(d IsNot Nothing, StripLvlPrefix(d.EditorID), fid.ToString("X8")))
+            sb.Append("  ▸  ").Append(If(d IsNot Nothing, StripLvlPrefix(d.Record.EditorID),
+                      fid.ToString("X8")))
         Next
         sb.Append(":")
         Return sb.ToString()
@@ -607,7 +609,7 @@ Public Class OutfitPicker_Form
         Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
         If _itemCandidatesByFid.TryGetValue(fid, it) Then Return it.DisplayName
         Dim d = _mainForm.TryGetLeveledListDraft(fid)
-        If d IsNot Nothing Then Return StripLvlPrefix(d.EditorID) & "  [LVL]"
+        If d IsNot Nothing Then Return StripLvlPrefix(d.Record.EditorID) & "  [LVL]"
         Return _mainForm.GetRecordDisplayNameForEditor(fid)
     End Function
 
@@ -636,7 +638,7 @@ Public Class OutfitPicker_Form
     End Sub
 
     ''' <summary>Render the current nested LVLI draft's LVLO entries into the pieces list (one row per entry, with
-    ''' the resolved ref name + 🎲 for a leveled ref, sampled slots, and a "Lvl N · ×C · cn X" column). Slot-conflict
+    ''' the resolved ref name + for a leveled ref, sampled slots, and a "Lvl N · ×C · cn X" column). Slot-conflict
     ''' resolution + outfit preview are TOP-LEVEL only, so they're skipped here. Updates breadcrumb + chrome.</summary>
     Private Sub RenderLeveledLevel()
         Dim d = CurrentLevelDraft()
@@ -648,15 +650,17 @@ Public Class OutfitPicker_Form
         Dim keep As UInteger = If(SelectedPieceEntry()?.FormID, 0UI)
         _levelView.Clear()
         Dim ord As Integer = 0
-        For Each en In d.Entries
+        For Each en In d.Record.LeveledListEntries
             ord += 1
-            Dim isLvl = _mainForm.IsLeveledItem(en.RefFormID)
+            Dim isLvl = _mainForm.IsLeveledItem(en.LeveledListEntryItem)
             ' Robust slot footprint for ANY reference (in or out of the candidate universe) so the column never
             ' spuriously shows "(none)" for an item that has slots. LVLI → union of terminals; ARMO → effective mask.
-            Dim slot = _mainForm.GetReferenceSlotMask(en.RefFormID, _raceFormID, _isFemale)
+            Dim slot = _mainForm.GetReferenceSlotMask(en.LeveledListEntryItem, _raceFormID,
+                                                      _isFemale)
             _levelView.Add(New PieceEntry With {
-                .FormID = en.RefFormID, .Display = ResolveRefDisplay(en.RefFormID), .SlotMask = slot,
-                .Order = ord, .IsLeveled = isLvl, .SourceEntry = en})
+                .FormID = en.LeveledListEntryItem,
+                .Display = ResolveRefDisplay(en.LeveledListEntryItem),
+                .SlotMask = slot, .Order = ord, .IsLeveled = isLvl, .SourceEntry = en})
         Next
         ListViewPieces.BeginUpdate()
         Try
@@ -665,7 +669,10 @@ Public Class OutfitPicker_Form
                 Dim en = p.SourceEntry
                 Dim row As New ListViewItem(If(p.IsLeveled, "🎲 " & p.Display, p.Display))
                 row.SubItems.Add(DescribeSlotMask(p.SlotMask))
-                row.SubItems.Add($"Lvl {en.Level} · ×{en.Count}" & If(en.ChanceNone > 0, $" · cn {en.ChanceNone}", ""))
+                Dim cn = EntryChanceNone(en)
+                Dim cnSuffix = If(cn > 0, $" · cn {cn}", "")
+                Dim lvlText = $"Lvl {en.LeveledListEntryLevel} · ×{en.LeveledListEntryCount}"
+                row.SubItems.Add(lvlText & cnSuffix)
                 row.SubItems.Add("")
                 row.Tag = p
                 If keep <> 0UI AndAlso p.FormID = keep Then row.Selected = True
@@ -675,7 +682,10 @@ Public Class OutfitPicker_Form
             ListViewPieces.EndUpdate()
         End Try
         LabelPieces.Text = BuildBreadcrumb()
-        LabelCreateStatus.Text = $"{d.Entries.Count} entry(ies) in '{StripLvlPrefix(d.EditorID)}'" & If(d.IsOverride, "  ·  override", "  ·  new")
+        Dim entryCount = d.Record.LeveledListEntries.Count
+        Dim overrideSuffix = If(d.IsOverride, "  ·  override", "  ·  new")
+        Dim lvlName = StripLvlPrefix(d.Record.EditorID)
+        LabelCreateStatus.Text = $"{entryCount} entry(ies) in '{lvlName}'" & overrideSuffix
         ButtonReroll.Enabled = False
         UpdateLevelChrome()
         UpdateAddToLvlEnabled()
@@ -698,10 +708,16 @@ Public Class OutfitPicker_Form
                             "Add item", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
-        Using dlg As New LeveledEntryDialog_Form($"Add '{ResolveRefDisplay(itemFid)}'  →  '{StripLvlPrefix(d.EditorID)}'")
+        Dim addLvlName = StripLvlPrefix(d.Record.EditorID)
+        Dim addTitle = $"Add '{ResolveRefDisplay(itemFid)}'  →  '{addLvlName}'"
+        Using dlg As New LeveledEntryDialog_Form(addTitle)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            d.Entries.Add(New LeveledListDraft.LeveledEntry With {
-                .RefFormID = itemFid, .Level = dlg.LevelValue, .Count = dlg.CountValue, .ChanceNone = dlg.ChanceNoneValue})
+            Dim en = d.Record.AgregarLeveledListEntries()
+            If en Is Nothing Then Return
+            en.LeveledListEntryItem = itemFid
+            en.LeveledListEntryLevel = dlg.LevelValue
+            en.LeveledListEntryCount = dlg.CountValue
+            SetEntryChanceNone(en, dlg.ChanceNoneValue)
             d.IsModified = True
         End Using
         _lvlDirtyResample = True
@@ -715,11 +731,14 @@ Public Class OutfitPicker_Form
         Dim p = SelectedPieceEntry()
         If p Is Nothing OrElse p.SourceEntry Is Nothing Then Return
         Dim en = p.SourceEntry
-        Using dlg As New LeveledEntryDialog_Form($"Edit '{ResolveRefDisplay(en.RefFormID)}'", en.Level, en.Count, en.ChanceNone)
+        Dim editTitle = $"Edit '{ResolveRefDisplay(en.LeveledListEntryItem)}'"
+        Using dlg As New LeveledEntryDialog_Form(editTitle,
+                                                  en.LeveledListEntryLevel,
+                                                  en.LeveledListEntryCount, EntryChanceNone(en))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            en.Level = dlg.LevelValue
-            en.Count = dlg.CountValue
-            en.ChanceNone = dlg.ChanceNoneValue
+            en.LeveledListEntryLevel = dlg.LevelValue
+            en.LeveledListEntryCount = dlg.CountValue
+            SetEntryChanceNone(en, dlg.ChanceNoneValue)
             d.IsModified = True
         End Using
         _lvlDirtyResample = True
@@ -732,7 +751,7 @@ Public Class OutfitPicker_Form
         If d Is Nothing Then Return
         Dim p = SelectedPieceEntry()
         If p Is Nothing OrElse p.SourceEntry Is Nothing Then Return
-        d.Entries.Remove(p.SourceEntry)
+        RemoveEntry(d.Record, p.SourceEntry)
         d.IsModified = True
         _lvlDirtyResample = True
         RefreshPieces()
@@ -758,7 +777,7 @@ Public Class OutfitPicker_Form
     End Sub
 
     ''' <summary>Open the ARMO editor with <paramref name="armoFid"/> pre-loaded as its template in the requested
-    ''' mode (<paramref name="asOverride"/> → xEdit "copy as override" vs "copy as new record"), then FULLY
+    ''' mode (<paramref name="asOverride"/> → cargarlo como override vs. como nuevo record), then FULLY
     ''' refresh the Create tab ON RETURN (regardless of OK/Cancel): an edit may have added/changed a draft, and
     ''' the editor's own GL preview host teardown leaves ours needing a re-render. RefreshItemCandidates re-fetches
     ''' the candidate universe + rebuilds the item list; ResyncPiecesFromCandidates pulls any overridden ARMO's
@@ -784,7 +803,7 @@ Public Class OutfitPicker_Form
     Private Const OutfitContextFormID As UInteger = &HFF0007FDUI
     Private _outfitContextRegistered As Boolean
 
-    ''' <summary>⭐ Las unidades de equip de las piezas armadas, para la LEY ÚNICA
+    ''' <summary>Las unidades de equip de las piezas armadas, para la LEY ÚNICA
     ''' (<see cref="EquipResolver"/>). La unidad del motor es UN ARMO, así que una pieza leveled aporta una
     ''' unidad POR TERMINAL de su realización — igual que el render, que compite por ARMO terminal. El
     ''' <c>Tag</c> de cada unidad es su <see cref="PieceEntry"/>, para mapear el veredicto de vuelta a la
@@ -837,9 +856,9 @@ Public Class OutfitPicker_Form
     Private Function RegisterOutfitContextDraft() As UInteger
         Dim winners = WinningTerminals(EquipResolver.Resolve(BuildEquipUnits()))
         If winners.Count = 0 Then Return 0UI
-        Dim d As New OutfitDraft With {.FormID = OutfitContextFormID,
-                                       .EditorID = OutfitDraft.EditorIdPrefix & "(outfitcontext)"}
-        d.ItemFormIDs.AddRange(winners)
+        Dim d = OutfitDraft.Nuevo(OutfitContextFormID, Canon.CanonBridge.SessionGame())
+        d.Record.EditorID = OutfitDraft.EditorIdPrefix & "(outfitcontext)"
+        d.ReemplazarPrendas(winners)
         _mainForm.RegisterOutfitDraft(d)
         _outfitContextRegistered = True
         Return OutfitContextFormID
@@ -974,7 +993,7 @@ Public Class OutfitPicker_Form
     ''' <summary>Reorder the selected top-level piece one slot up/down in equip sequence by SWAPPING its Order
     ''' with the adjacent piece (Order is the INAM/equip sequence — later = equipped last = wins slot conflicts,
     ''' so ▼ promotes a piece over an overlapping one). No-op when nested (LVLO rows aren't equip-ordered),
-    ''' nothing selected, or already at the edge. RefreshPieces re-sorts by Order, repaints ✓/✗, preserves the
+    ''' nothing selected, or already at the edge. RefreshPieces re-sorts by Order, repaints/, preserves the
     ''' selection by FormID, and re-previews.</summary>
     Private Sub MoveSelectedPiece(delta As Integer)
         If Not IsAtTopLevel() Then Return
@@ -1026,27 +1045,28 @@ Public Class OutfitPicker_Form
     End Sub
 
     ''' <summary>Rebuild the Create item-candidate list (after a new LVL draft is created) so own LVL drafts
-    ''' (🎲) appear/update, then re-apply the current filter.</summary>
+    ''' () appear/update, then re-apply the current filter.</summary>
     Private Sub RefreshItemCandidates()
         SetItemCandidates(_mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale))
         OnItemFilterChanged(Me, EventArgs.Empty)   ' re-filters + RefreshItemList
     End Sub
 
     ''' <summary>"New LVL…" → modal (name + 3 LVLF flags + Chance None + Max Count) → register an empty own
-    ''' LeveledListDraft, which then shows in the item list (🎲) ready to be filled via "Add to lvl".</summary>
+    ''' LeveledListDraft, which then shows in the item list () ready to be filled via "Add to lvl".</summary>
     Private Sub OnNewLvl(sender As Object, e As EventArgs)
         Using dlg As New LeveledListEditor_Form(_mainForm)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            Dim d As New LeveledListDraft With {
-                .FormID = _mainForm.AllocateDraftFormID(),
-                .EditorID = dlg.FullEditorID,
-                .CalcAllLevels = dlg.CalcAllLevels,
-                .CalcEachInCount = dlg.CalcEachInCount,
-                .UseAll = dlg.UseAll,
-                .ChanceNone = dlg.ChanceNoneValue,
-                .MaxCount = dlg.MaxCountValue,
-                .IsNew = True
-            }
+            Dim d = LeveledListDraft.Nuevo(_mainForm.AllocateDraftFormID(),
+                                           Canon.CanonBridge.SessionGame())
+            d.Record.EditorID = dlg.FullEditorID
+            d.Record.FlagsCalculateFromAllLevelsPlayerSLevel = dlg.CalcAllLevels
+            d.Record.FlagsCalculateForEachItemInCount = dlg.CalcEachInCount
+            d.Record.FlagsUseAll = dlg.UseAll
+            d.Record.ChanceNone = dlg.ChanceNoneValue
+            ' Max Count (LVLM) sólo existe en Fallout 4 — en Skyrim ese subrecord no está en el
+            ' formato.
+            Dim fo4Rec = TryCast(d.Record, Canon.LvliFO4)
+            If fo4Rec IsNot Nothing Then fo4Rec.MaxCount = dlg.MaxCountValue
             _mainForm.RegisterLeveledListDraft(d)
             RefreshItemCandidates()
             ' Auto-add the new (empty) leveled list as a piece, then select it so "Add to lvl" is enabled
@@ -1081,10 +1101,16 @@ Public Class OutfitPicker_Form
         If lvl Is Nothing Then Return
         Dim itemCand As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
         Dim itemName As String = If(_itemCandidatesByFid.TryGetValue(itemFid, itemCand), itemCand.DisplayName, Nothing)
-        Using dlg As New LeveledEntryDialog_Form($"Add '{If(itemName, itemFid.ToString("X8"))}'  →  '{lvl.EditorID}'")
+        Dim itemLabel = If(itemName, itemFid.ToString("X8"))
+        Dim addToLvlTitle = $"Add '{itemLabel}'  →  '{lvl.Record.EditorID}'"
+        Using dlg As New LeveledEntryDialog_Form(addToLvlTitle)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            lvl.Entries.Add(New LeveledListDraft.LeveledEntry With {
-                .RefFormID = itemFid, .Level = dlg.LevelValue, .Count = dlg.CountValue, .ChanceNone = dlg.ChanceNoneValue})
+            Dim en = lvl.Record.AgregarLeveledListEntries()
+            If en Is Nothing Then Return
+            en.LeveledListEntryItem = itemFid
+            en.LeveledListEntryLevel = dlg.LevelValue
+            en.LeveledListEntryCount = dlg.CountValue
+            SetEntryChanceNone(en, dlg.ChanceNoneValue)
             lvl.IsModified = True
         End Using
         ' The LVL's contents changed → re-sample the affected piece's realization + refresh list/candidates.
@@ -1108,7 +1134,7 @@ Public Class OutfitPicker_Form
     End Sub
 
     ''' <summary>Run the shared slot-conflict resolver over the assembled pieces, repaint the list
-    ''' (✓ winners / ✗ eliminated, losers greyed), preview the resolved (winner) set, and update the
+    ''' (winners / eliminated, losers greyed), preview the resolved (winner) set, and update the
     ''' status line. Losers stay visible so the user sees what got eliminated and can remove a winner
     ''' to promote a loser; only winners are saved into the outfit (the resolved, conflict-free set).</summary>
     Private Async Sub RefreshPieces()
@@ -1139,11 +1165,11 @@ Public Class OutfitPicker_Form
         ' leveled list) without re-selecting it every time. No-op if that piece is gone (e.g. Remove).
         Dim keepSelectedFid As UInteger = If(SelectedPieceEntry()?.FormID, 0UI)
 
-        ' ⭐ La MISMA ley que el render: una unidad por ARMO terminal, veredicto por unidad, agregado por fila.
+        ' La MISMA ley que el render: una unidad por ARMO terminal, veredicto por unidad, agregado por fila.
         Dim units = BuildEquipUnits()
         Dim res = EquipResolver.Resolve(units)
         Dim verdicts = PieceVerdicts(res)
-        ' La máscara que se pinta es EXACTAMENTE la que decidió el ✓/✗ (EquipResolver.MutexMaskOf), no otra:
+        ' La máscara que se pinta es EXACTAMENTE la que decidió el/(EquipResolver.MutexMaskOf), no otra:
         ' hoy en FO4 esa no es el BOD2 del ARMO, y pintar el BOD2 daba dos listas de slots distintas para el
         ' mismo ítem en la misma ventana. Cuando FO4 pase a EquipMask, esta columna lo sigue sola.
         Dim mutexMaskByPiece As New Dictionary(Of PieceEntry, UInteger)
@@ -1180,7 +1206,7 @@ Public Class OutfitPicker_Form
                     slotsText = DescribeSlotMask(mutexMaskByPiece(p))
                     row.ForeColor = Color.Gray
                 Else
-                    ' Una lista UseAll puede realizar en varios ARMO: unos ganan y otros caen. Pintarla ✓ o ✗
+                    ' Una lista UseAll puede realizar en varios ARMO: unos ganan y otros caen. Pintarla o
                     ' sería mentira en los dos sentidos.
                     renderingCount += 1
                     status = $"◐ {v.Won}/{v.Won + v.Lost}  ·  {v.Lost} eliminated"
@@ -1212,7 +1238,7 @@ Public Class OutfitPicker_Form
 
         ' Preview only when the Create tab is active and the host exists (skipped during construction,
         ' where the active tab is Browse and _host has not been created yet). The list repaint above ran
-        ' synchronously before this Await, so the ✓/✗ feedback is immediate. RefreshCreatePreview honors
+        ' synchronously before this Await, so the/feedback is immediate. RefreshCreatePreview honors
         ' the whole-outfit vs selected-piece toggle.
         If TabsMain.SelectedTab Is TabPageCreate AndAlso _host IsNot Nothing Then
             Await RefreshCreatePreview()
@@ -1345,7 +1371,7 @@ Public Class OutfitPicker_Form
         End If
     End Function
 
-    ''' <summary>"New outfit" action → author a brand-new OTFT (xEdit "new record"): clear any override target,
+    ''' <summary>"New outfit" action → author a brand-new OTFT record: clear any override target,
     ''' re-enable + clear the EDID (a user-typed name, prefixed + uniqueness-checked on commit). The assembled
     ''' pieces are kept (the user builds the new outfit from whatever is in the list). Refreshes the banner.</summary>
     Private Sub OnActionNewOutfit(sender As Object, e As EventArgs)
@@ -1368,7 +1394,7 @@ Public Class OutfitPicker_Form
     End Sub
 
     ''' <summary>"Override selected/loaded outfit…" action → edit the Browse-selected (or currently-loaded) OTFT
-    ''' as an OVERRIDE (xEdit "copy as override"): keep its FormID + EditorID (EDID locked), pre-fill its pieces.
+    ''' as an OVERRIDE: keep its FormID + EditorID (EDID locked), pre-fill its pieces.
     ''' No-op with a message when there's no concrete outfit to override. Refreshes the banner.</summary>
     Private Sub OnActionOverrideOutfit(sender As Object, e As EventArgs)
         Dim target = ResolveOverrideTarget()
@@ -1471,7 +1497,7 @@ Public Class OutfitPicker_Form
     ''' New → prefix+name EDID (uniqueness-checked) + provisional FormID. Override → keep the existing
     ''' OTFT's FormID + EditorID. Vetoes the close (DialogResult.None) on validation failure.</summary>
     Private Sub CommitCreate()
-        ' Persist ALL assembled pieces, NOT just the slot-conflict winners. The "✗ eliminated" tag in the
+        ' Persist ALL assembled pieces, NOT just the slot-conflict winners. The "eliminated" tag in the
         ' pieces list is a LIVE PREVIEW of what the render won't show right now (slot overlap, last-equipped-
         ' wins) — never a reason to drop the item from the outfit. A vanilla OTFT lists every item and the
         ' engine resolves overlaps at EQUIP time; our render (CollectMeshCandidates → SelectWinningCandidates,
@@ -1488,13 +1514,12 @@ Public Class OutfitPicker_Form
             Return
         End If
 
-        Dim draft As New OutfitDraft()
+        Dim draft As OutfitDraft
         If _overrideTargetFormID <> 0UI Then
             ' A draft target (provisional 0xFF FormID) is a NEW owned record being re-edited — RENAMEABLE: keep
             ' its FormID but rebuild the EDID from the editable name box. A real OTFT FormID is an OVERRIDE — keep
             ' its FormID + EditorID verbatim.
             Dim isDraftTarget = OutfitDraft.IsDraftFormID(_overrideTargetFormID)
-            draft.FormID = _overrideTargetFormID
             If isDraftTarget Then
                 Dim suffix = TextBoxEdid.Text.Trim()
                 If suffix.Length = 0 Then
@@ -1507,7 +1532,8 @@ Public Class OutfitPicker_Form
                 ' Uniqueness EXCLUDING self: keeping the same name must be allowed (the draft is still registered
                 ' under this FormID, so IsOutfitEditorIdAvailable would report its own EDID as taken).
                 Dim current = _mainForm.TryGetOutfitDraft(_overrideTargetFormID)
-                Dim currentEdid = If(current IsNot Nothing, current.EditorID, _overrideTargetEditorID)
+                Dim currentEdid = If(current IsNot Nothing, current.Record.EditorID,
+                                     _overrideTargetEditorID)
                 If Not String.Equals(fullEdid, currentEdid, StringComparison.OrdinalIgnoreCase) _
                    AndAlso Not _mainForm.IsOutfitEditorIdAvailable(fullEdid) Then
                     MessageBox.Show(Me, $"EditorID '{fullEdid}' is already in use. Choose another name.",
@@ -1515,10 +1541,12 @@ Public Class OutfitPicker_Form
                     DialogResult = DialogResult.None
                     Return
                 End If
-                draft.EditorID = fullEdid
+                draft = OutfitDraft.Nuevo(_overrideTargetFormID, Canon.CanonBridge.SessionGame())
+                draft.Record.EditorID = fullEdid
                 draft.IsOverride = False
             Else
-                draft.EditorID = _overrideTargetEditorID
+                draft = OutfitDraft.Nuevo(_overrideTargetFormID, Canon.CanonBridge.SessionGame())
+                draft.Record.EditorID = _overrideTargetEditorID
                 draft.IsOverride = True
             End If
         Else
@@ -1536,13 +1564,14 @@ Public Class OutfitPicker_Form
                 DialogResult = DialogResult.None
                 Return
             End If
-            draft.FormID = _mainForm.AllocateDraftFormID()
-            draft.EditorID = fullEdid
+            draft = OutfitDraft.Nuevo(_mainForm.AllocateDraftFormID(),
+                                      Canon.CanonBridge.SessionGame())
+            draft.Record.EditorID = fullEdid
             draft.IsOverride = False
         End If
         ' INAM = EVERY assembled piece FormID as authored — ARMO or LVLI (LVLIs persist as leveled entries).
         ' Slot conflicts are resolved at render/equip time, never dropped at save (see the header comment).
-        draft.ItemFormIDs.AddRange(allPieces.Select(Function(p) p.FormID))
+        draft.ReemplazarPrendas(allPieces.Select(Function(p) p.FormID))
         ' Carry each LVLI piece's current realization to the draft so the committed render matches the
         ' picker's preview (until rerolled later). The draft still saves the LVLI ref in INAM.
         For Each p In allPieces
@@ -1578,7 +1607,7 @@ Public Class OutfitPicker_Form
             For Each d In _mainForm.OutfitDrafts()
                 If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
                 draftFids.Add(d.FormID)
-                Dim row As New ListViewItem(d.EditorID)
+                Dim row As New ListViewItem(d.Record.EditorID)
                 row.SubItems.Add(If(d.IsOverride OrElse Not d.IsNew, "Override (unsaved)", "New (unsaved)"))
                 row.Tag = d
                 ListViewMyOutfits.Items.Add(row)
@@ -1644,15 +1673,15 @@ Public Class OutfitPicker_Form
     Private Sub LoadOutfitDraftForEdit(d As OutfitDraft)
         If d Is Nothing Then Return
         _overrideTargetFormID = d.FormID
-        _overrideTargetEditorID = d.EditorID
+        _overrideTargetEditorID = d.Record.EditorID
         ' A NEW owned draft is renameable (editable name, live preview, keeps its FormID on re-commit); a real
         ' OVERRIDE draft keeps its EDID read-only. Identity for CommitCreate is carried by _overrideTargetFormID.
-        RefreshOutfitEdidField(d.IsNew, d.EditorID)
+        RefreshOutfitEdidField(d.IsNew, d.Record.EditorID)
         ' Populate _itemCandidatesByFid before the per-item lookups in AddItemFidAsPiece.
         RefreshItemCandidates()
         _pieces.Clear()
         _pieceOrderCounter = 0
-        For Each fid In d.ItemFormIDs
+        For Each fid In d.Prendas()
             AddItemFidAsPiece(fid)   ' builds the PieceEntry (samples LVLI realizations) exactly like "Add to outfit"
         Next
         TabsMain.SelectedTab = TabPageCreate
@@ -1692,7 +1721,8 @@ Public Class OutfitPicker_Form
         If d Is Nothing Then Return
 
         If d.IsOverride OrElse Not d.IsNew Then
-            If MessageBox.Show(Me, $"Revert outfit '{d.EditorID}' to the original? Your changes will be discarded.",
+            If MessageBox.Show(Me, $"Revert outfit '{d.Record.EditorID}' to the original? " &
+                               "Your changes will be discarded.",
                                "Revert outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
             _mainForm.UnregisterOutfitDraft(d.FormID)
             ' Dropping the in-memory draft is NOT enough: if this override was ALREADY SAVED into the plugin, the
@@ -1709,7 +1739,8 @@ Public Class OutfitPicker_Form
                                 "Delete outfit draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return
             End If
-            If MessageBox.Show(Me, $"Delete outfit draft '{d.EditorID}'?", "Delete outfit draft",
+            If MessageBox.Show(Me, $"Delete outfit draft '{d.Record.EditorID}'?",
+                               "Delete outfit draft",
                                MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
             _mainForm.UnregisterOutfitDraft(d.FormID)
         End If
@@ -1723,6 +1754,38 @@ Public Class OutfitPicker_Form
         RefreshMyOutfitDrafts()
         RefreshItemCandidates()
         RefreshPieces()
+    End Sub
+
+    ''' <summary>El "chance none" POR ENTRADA (LVLO\Chance None) sólo existe en Fallout 4 — en
+    ''' Skyrim ese
+    ''' byte no está en el formato. 0 para una entrada de Skyrim, nunca un dato inventado.</summary>
+    Friend Shared Function EntryChanceNone(en As Canon.ILvli_LeveledListEntries) As Byte
+        Dim fo4 = TryCast(en, Canon.LvliFO4_LeveledListEntries)
+        Return If(fo4 IsNot Nothing, fo4.LeveledListEntryChanceNone, CByte(0))
+    End Function
+
+    ''' <summary>Contraparte de <see cref="EntryChanceNone"/>: no-op en Skyrim, donde el campo no
+    ''' existe.</summary>
+    Friend Shared Sub SetEntryChanceNone(en As Canon.ILvli_LeveledListEntries, value As Byte)
+        Dim fo4 = TryCast(en, Canon.LvliFO4_LeveledListEntries)
+        If fo4 IsNot Nothing Then fo4.LeveledListEntryChanceNone = value
+    End Sub
+
+    ''' <summary>Saca <paramref name="en"/> de <paramref name="rec"/> por posición — las vistas
+    ''' generadas
+    ''' sólo ofrecen "quitar por índice", no por referencia. Compara por <c>Node</c> (el árbol es el
+    ''' único
+    ''' dueño de los datos) y no por la vista en sí: cada llamado a <c>LeveledListEntries</c>
+    ''' envuelve los
+    ''' mismos nodos en objetos nuevos.</summary>
+    Private Shared Sub RemoveEntry(rec As Canon.ILvli, en As Canon.ILvli_LeveledListEntries)
+        Dim entries = rec.LeveledListEntries
+        For i = 0 To entries.Count - 1
+            If entries(i).Node Is en.Node Then
+                rec.QuitarLeveledListEntries(i)
+                Return
+            End If
+        Next
     End Sub
 
     ''' <summary>Human-readable list of the biped slots a mask occupies, GAME-AWARE: names come from the

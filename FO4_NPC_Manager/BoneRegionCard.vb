@@ -9,7 +9,7 @@
 ''' Lo único que varía por región es el rótulo, el tooltip y CUÁLES ejes están vivos, y eso lo pone
 ''' <see cref="Bind"/>. Se instancia una vez por región (N variable ⇒ población dinámica permitida por
 ''' 00-reglas-ui-y-vb §1).</para>
-''' <para>⛔ Reemplaza a <c>EditFace_Form.BuildBoneCard</c>, que armaba esto por código con dos bucles
+''' <para>Reemplaza a <c>EditFace_Form.BuildBoneCard</c>, que armaba esto por código con dos bucles
 ''' anidados. Con él se fue el camino de tarjeta MULTI-REGIÓN (<c>showSub</c> / <c>VariantLabel</c> / la
 ''' banda gris de separación): el colapso de regiones que comparten bone-set lo DESCARTÓ el usuario, y el
 ''' único call site pasaba siempre una lista de un solo miembro, así que era código muerto — no una
@@ -75,7 +75,7 @@ Friend Class BoneRegionCard
     ''' <summary>Cuáles de los 7 componentes FMRS (PosX/Y/Z, RotX/Y/Z, Scale) pueden producir un delta de
     ''' hueso no nulo. Delega la regla en <see cref="FaceBonePoseBuilder.IsFmrsAxisLive"/> para que el editor y
     ''' el camino render/bake compartan UNA convención: un eje está vivo si su Minima o su Maxima no es cero.
-    ''' <para>⛔ Antes se comparaba Minima/Maxima contra los Defaults de la región, lo que contradice al motor:
+    ''' <para>Antes se comparaba Minima/Maxima contra los Defaults de la región, lo que contradice al motor:
     ''' el lerp FMRS nunca lee Defaults (RE de los dos binarios: reciben un struct de 18 floats
     ''' [Minima|Maxima] sin slot de Defaults y no tienen ni una resta). Las dos convenciones coinciden sólo
     ''' porque toda región vanilla trae Defaults = 0; una raza modeada con Defaults != 0 habría hecho que el

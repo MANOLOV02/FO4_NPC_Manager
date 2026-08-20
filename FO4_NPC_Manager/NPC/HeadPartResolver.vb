@@ -25,15 +25,15 @@ Public Module HeadPartResolver
     ''' NPC override wins; fall back to RACE default per type (gender-specific).
     ''' Type 0 Misc: should only appear as extras inside each main HDPT's HNAM; freestanding top-level
     ''' type=0 entries (rare/undocumented in vanilla) are preserved as additive to avoid data loss.
-    ''' HDPT spec: wbDefinitionsFO4.pas:7373-7384.
-    ''' RACE.HeadParts per gender: parsed into RACE_Data.MaleHeadPartFormIDs / FemaleHeadPartFormIDs.</summary>
+    ''' RACE.HeadParts per gender: Head Part\HEAD (con su propio INDX), declarado en la interfaz de cada
+    ''' juego con su propia colección — RaceFO4.MaleHeadParts/FemaleHeadParts, RaceSSE.HeadParts/HeadParts2.</summary>
     ''' <param name="parseRace">Optional cached RACE parser. <param name="parseHdpt">Optional cached
-    ''' HDPT parser. Both fall back to direct <c>RecordParsers.Parse*</c> when Nothing (offline bake path).</param>
+    ''' HDPT parser. Both fall back to direct <c>Canon.CanonRecords.Race</c> when Nothing (offline bake path).</param>
     Public Function MergeHeadPartsWithRaceDefaults(raceFormID As UInteger,
                                                    isFemale As Boolean,
                                                    npcHeadPartFormIDs As IReadOnlyList(Of UInteger),
                                                    pluginManager As PluginManager,
-                                                   Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing,
+                                                   Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
                                                    Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As List(Of UInteger)
         Dim safeNpcParts As IReadOnlyList(Of UInteger) = If(npcHeadPartFormIDs, CType(New List(Of UInteger)(), IReadOnlyList(Of UInteger)))
         If raceFormID = 0UI Then Return safeNpcParts.ToList()
@@ -41,8 +41,34 @@ Public Module HeadPartResolver
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then
             Return safeNpcParts.ToList()
         End If
-        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
-        Dim raceDefaults = If(isFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
+        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, pluginManager))
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
+        Dim raceSse = TryCast(race, Canon.RaceSSE)
+        ' Las listas de cada género son de tipos DISTINTOS, así que elegirlas con un ternario deja el
+        ' resultado sin tipo común y la llamada que sigue se resuelve recién en ejecución — donde falla.
+        ' Se recorre cada una por separado, que además no depende de que el archivo importe nada.
+        Dim raceDefaults As New List(Of UInteger)
+        If raceFo4 IsNot Nothing Then
+            If isFemale Then
+                For Each h In raceFo4.FemaleHeadParts
+                    raceDefaults.Add(h.HeadPartHead)
+                Next
+            Else
+                For Each h In raceFo4.MaleHeadParts
+                    raceDefaults.Add(h.HeadPartHead)
+                Next
+            End If
+        ElseIf raceSse IsNot Nothing Then
+            If isFemale Then
+                For Each h In raceSse.HeadParts2
+                    raceDefaults.Add(h.HeadPartHead)
+                Next
+            Else
+                For Each h In raceSse.HeadParts
+                    raceDefaults.Add(h.HeadPartHead)
+                Next
+            End If
+        End If
 
         ' Build merged dict by PartType for main types (1..9).
         Dim mergedByType As New Dictionary(Of Integer, UInteger)
@@ -61,7 +87,7 @@ Public Module HeadPartResolver
         Next
 
         ' Step 2: override with NPC.PNAM (NPC wins per main type, or accumulates for misc)
-        ' ⭐ El PNAM del NPC es una LISTA EXPLÍCITA, no un slot por tipo: puede traer VARIOS head parts del
+        ' El PNAM del NPC es una LISTA EXPLÍCITA, no un slot por tipo: puede traer VARIOS head parts del
         ' MISMO PartType y el CK los hornea TODOS. El caso vanilla son las cicatrices (PartType=5 Scar): un
         ' NPC con LeftGash + RightGash listaba dos HDPT tipo 5 y el `mergedByType(tipo) = fid` de acá se
         ' quedaba SÓLO con el último ⇒ las demás nunca llegaban al hdptMap y no se clonaban nunca.
@@ -176,7 +202,7 @@ Public Module HeadPartResolver
                                                raceFormID As UInteger,
                                                isFemale As Boolean,
                                                pluginManager As PluginManager,
-                                               race As RACE_Data,
+                                               race As Canon.IRace,
                                                flstCache As Dictionary(Of UInteger, Canon.IFlst),
                                                raceDefaults As HashSet(Of UInteger),
                                                Optional ignoreFaceBaseHeadPart As Boolean = False) As Boolean

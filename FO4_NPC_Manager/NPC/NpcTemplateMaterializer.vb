@@ -1,4 +1,5 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Hace que un NPC que hereda por plantilla PASE A SER DUENIO de una categoria de template-flag, para
 ''' que una edicion en esa categoria sobreviva in-game en vez de que la pise la resolucion de plantillas.
@@ -72,16 +73,13 @@ Friend NotInheritable Class NpcTemplateMaterializer
                     Case NPC_TemplateCategory.Stats
                         MaterializeStats(npc, resolution.Source)
                     Case NPC_TemplateCategory.Keywords
-                        npc.KeywordFormIDs = New List(Of UInteger)(resolution.Source.KeywordFormIDs)
-                        npc.HasKsizCounter = resolution.Source.HasKsizCounter
+                        npc.Record.PonerPalabrasClave(resolution.Source.Record.PalabrasClave())
                     Case NPC_TemplateCategory.Factions
-                        npc.Factions = CloneFactions(resolution.Source.Factions)
+                        npc.Record.PonerFacciones(resolution.Source.Record.Factions)
                     Case NPC_TemplateCategory.Inventory
-                        npc.Inventory = CloneInventory(resolution.Source.Inventory)
-                        npc.HasCoctCounter = resolution.Source.HasCoctCounter
+                        npc.Record.PonerInventario(resolution.Source.Record.Items)
                     Case NPC_TemplateCategory.SpellList
-                        npc.ActorEffectFormIDs = New List(Of UInteger)(resolution.Source.ActorEffectFormIDs)
-                        npc.HasSpctCounter = resolution.Source.HasSpctCounter
+                        npc.Record.PonerEfectosDeActor(resolution.Source.Record.EfectosDeActor())
                 End Select
                 ClearFlagBit(npc, category)
                 If resolution.Outcome = MaterializeOutcome.MaterializedFromLeveledPick Then
@@ -99,7 +97,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 ClearFlagBit(npc, category)
 
             Case Else   ' Unresolvable
-                ' ⛔ THE FLAG STAYS SET. This is NOT the leveled-list case (that one gets pinned above) — it is
+                ' THE FLAG STAYS SET. This is NOT the leveled-list case (that one gets pinned above) — it is
                 ' the genuinely empty one: an unreadable/foreign source record, a cycle, or a list with no NPC_
                 ' leaves at all. There is nothing to copy, so clearing the bit would drop the NPC to its own
                 ' (usually EMPTY) Traits and the face would collapse to the race default. MEASURED own-record
@@ -119,7 +117,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
                                             category As NPC_TemplateCategory,
                                             getParsedNpc As Func(Of UInteger, NPC_Data),
                                             Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As TraitsResolution
-        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, category) Then
+        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then
             Return New TraitsResolution With {.Outcome = MaterializeOutcome.NotInheriting}
         End If
 
@@ -191,7 +189,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
         Dim wentThroughLeveledList = False
 
         For depth = 0 To MaxChainDepth - 1
-            If Not NpcTemplateHelpers.HasTemplateFlag(current.TemplateFlags, category) Then
+            If Not NpcTemplateHelpers.HasTemplateFlag(current.Record.ConfigurationTemplateFlags, category) Then
                 ' current owns the category → it is the source (unless it IS the original npc, which by
                 ' contract inherits, so we only get here after ≥1 hop).
                 If ReferenceEquals(current, npc) Then
@@ -259,7 +257,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
                                                             category As NPC_TemplateCategory,
                                                             getParsedNpc As Func(Of UInteger, NPC_Data),
                                                             Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As NPC_Data
-        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, category) Then Return npc
+        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return npc
         Dim resolution = ResolveCategorySource(npc, category, getParsedNpc, resolveLvlnPick)
         If resolution.Outcome = MaterializeOutcome.Materialized OrElse
            resolution.Outcome = MaterializeOutcome.MaterializedFromLeveledPick Then Return resolution.Source
@@ -269,214 +267,227 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' <summary>Copy the Traits appearance/identity set from the resolved source into <paramref name="npc"/>.
     ''' Unconditional per-field overwrite (verdict c): the source is exactly what the engine would have
     ''' copied, so the NPC ends up identical to its in-template look. The caller re-applies the user's edit
-    ''' AFTER this, so the edited field is not lost.</summary>
+    ''' AFTER this, so the edited field is not lost.
+    ''' <para>Un campo que la fuente NO declara se SACA del destino: copiar el valor y dejar el subrecord
+    ''' puesto lo convertiria en un valor propio que la plantilla nunca tuvo.</para></summary>
     Private Shared Sub MaterializeTraits(npc As NPC_Data, src As NPC_Data, Optional skipOverlayOwned As Boolean = False)
-        ' Scalar identity FormIDs the overlay never owns — always materialize (with Has* emit-gate).
-        npc.RaceFormID = src.RaceFormID
-        npc.HasRace = src.HasRace
-        npc.VoiceFormID = src.VoiceFormID
-        npc.HasVoice = src.HasVoice
-        npc.DeathItemFormID = src.DeathItemFormID
-        npc.HasDeathItem = src.HasDeathItem
-        npc.FarAwayModelFormID = src.FarAwayModelFormID
-        npc.HasFarAwayModel = src.HasFarAwayModel
-        npc.IsFemale = src.IsFemale
-        EnsureAcbs(npc)
-        npc.Acbs.Flags = MergeMaskedFlags(CurrentAcbsFlags(npc), CurrentAcbsFlags(src), NpcTemplateHelpers.TraitsAcbsFlagsMask)
-        npc.AcbsFlags = npc.Acbs.Flags
-        If src.Acbs IsNot Nothing Then
-            npc.Acbs.DispositionBase = src.Acbs.DispositionBase
-        End If
-        npc.ClassFormID = src.ClassFormID
-        npc.HasClass = src.HasClass
-        npc.CombatStyleFormID = src.CombatStyleFormID
-        npc.HasCombatStyle = src.HasCombatStyle
+        Dim d = npc.Record, s = src.Record
+        ' Scalar identity FormIDs the overlay never owns — always materialize.
+        CopiarReferencia(d, s.RacePresente, s.Race, "RNAM", Sub(v) d.Race = v)
+        CopiarReferencia(d, s.VoicePresente, s.Voice, "VTCK", Sub(v) d.Voice = v)
+        CopiarReferencia(d, s.DeathItemPresente, s.DeathItem, "INAM", Sub(v) d.DeathItem = v)
+        CopiarReferencia(d, s.FarAwayModelPresente, s.FarAwayModel, "ANAM", Sub(v) d.FarAwayModel = v)
+        d.ConfigurationFlags = MergeMaskedFlags(d.ConfigurationFlags, s.ConfigurationFlags,
+                                                NpcTemplateHelpers.TraitsAcbsFlagsMask)
+        d.PonerBaseDeDisposicion(s.BaseDeDisposicion())
+        CopiarReferencia(d, s.ClassPresente, s.[Class], "CNAM", Sub(v) d.[Class] = v)
+        CopiarReferencia(d, s.CombatStylePresente, s.CombatStyle, "ZNAM", Sub(v) d.CombatStyle = v)
 
         ' Height — not overlay-owned.
-        npc.HeightMin = src.HeightMin
-        npc.HasHeightMin = src.HasHeightMin
-        npc.HeightMax = src.HeightMax
-        npc.HasHeightMax = src.HasHeightMax
+        If s.TieneAltura() Then d.PonerAltura(s.Altura()) Else d.QuitarSubrecord("NAM6")
+        If s.TieneAlturaMaxima() Then d.PonerAlturaMaxima(s.AlturaMaxima()) Else d.QuitarSubrecord("NAM4")
 
         ' Overlay-OWNED appearance/body fields: skip when a LooksMenu overlay already populated them on the shadow
         ' (skipOverlayOwned) so the overlay wins; otherwise materialize from the template as before.
         If Not skipOverlayOwned Then
-            npc.SkinFormID = src.SkinFormID
-            npc.HasSkin = src.HasSkin
-            npc.HairColorFormID = src.HairColorFormID
-            npc.FacialHairColorFormID = src.FacialHairColorFormID
-            ' HCLF/BCLF EMIT GATES. The values above travelled since day one but their Has* flags did not,
-            ' so a materialized NPC whose OWN record carried no HCLF got the template's colour in memory and
-            ' NO subrecord in the ESP (NpcSubrecordWriter.vb:80/81 gate on the flag alone) — the exact shape
-            ' of the HasHairColor bug already fixed on the overlay side. MEASURED (TemplateTraitsProbe, real
-            ' load orders): SSE 2 NPCs, FO4 0.
-            npc.HasHairColor = src.HasHairColor
-            npc.HasFacialHairColor = src.HasFacialHairColor
+            CopiarReferencia(d, s.SkinPresente, s.Skin, "WNAM", Sub(v) d.Skin = v)
+            ' HCLF/BCLF. Antes viajaba el valor y no la presencia, asi que un NPC materializado cuyo record
+            ' propio no traia HCLF se quedaba con el color de la plantilla en memoria y SIN el subrecord en el
+            ' plugin. MEDIDO (TemplateTraitsProbe, load orders reales): SSE 2 NPC, FO4 0.
+            CopiarReferencia(d, s.HairColorPresente, s.HairColor, "HCLF", Sub(v) d.HairColor = v)
+            If s.TieneColorDeBarba() Then d.PonerColorDeBarba(s.ColorDeBarba()) Else d.QuitarSubrecord("BCLF")
             ' FTST (face TextureSet) — Traits bucket per TraitsState, resolved through the chain by the RENDER
             ' (NpcStateResolver.ResolveTraitsStateFromNPC → state.HeadTextureFormID). It was never materialized,
             ' so clearing Use-Traits dropped the inherited face TXST and the head fell back to the race DFTM in
-            ' ApplyRaceFallbacks. The pair travels together — HasHeadTexture is the writer's FTST emit gate
-            ' (NpcSubrecordWriter.vb:113) and a value without its flag is written as nothing at all.
-            ' MEASURED: SSE 40 NPCs lose a real FTST (e.g. TreasCorpseVampire* ← EncVampire01*F = 02006F9C);
-            ' FO4 0 (its templated NPCs duplicate the value on their own record — latent there, not silent).
-            npc.HeadTextureFormID = src.HeadTextureFormID
-            npc.HasHeadTexture = src.HasHeadTexture
-            ' QNAM (texture lighting / body skin tone). THREE fields, not two: the RENDER reads the
-            ' Has+Color pair (state.TextureLightingColor → TryApplyBodySkinSoftLight) but the WRITER emits the
-            ' subrecord ONLY from TextureLightingFloats (NpcSubrecordWriter.vb:114 EmitQnam, Nothing ⇒ no QNAM).
-            ' Copying just the pair would fix the preview and leave the ESP silently unchanged — the same
-            ' split that makes this bug class invisible. MEASURED: SSE 40 NPCs, FO4 0.
-            npc.HasTextureLighting = src.HasTextureLighting
-            npc.TextureLightingColor = src.TextureLightingColor
-            npc.TextureLightingFloats = src.TextureLightingFloats
-            npc.WeightThin = src.WeightThin
-            npc.WeightMuscular = src.WeightMuscular
-            npc.WeightFat = src.WeightFat
-            npc.HeadPartFormIDs = New List(Of UInteger)(src.HeadPartFormIDs)
-            npc.MorphValues = New Dictionary(Of UInteger, Single)(src.MorphValues)
-            npc.FaceTintLayers = CloneTintLayers(src.FaceTintLayers)
-            npc.FaceMorphs = CloneFaceMorphs(src.FaceMorphs)
-            npc.BodyMorphRegionValues = New List(Of Single)(src.BodyMorphRegionValues)
-            npc.FacialMorphIntensity = src.FacialMorphIntensity
+            ' ApplyRaceFallbacks. MEASURED: SSE 40 NPCs lose a real FTST (e.g. TreasCorpseVampire* ←
+            ' EncVampire01*F = 02006F9C); FO4 0 (its templated NPCs duplicate the value on their own record).
+            CopiarReferencia(d, s.HeadTexturePresente, s.HeadTexture, "FTST", Sub(v) d.HeadTexture = v)
+            ' QNAM (texture lighting / body skin tone). Lo lee el render como color y el plugin lo guarda como
+            ' cuatro floats: es UN campo, no dos, asi que copiarlo entero es copiar el subrecord.
+            ' MEDIDO: SSE 40 NPC, FO4 0.
+            If s.TextureLightingRedPresente Then
+                d.TextureLightingRed = s.TextureLightingRed
+                d.TextureLightingGreen = s.TextureLightingGreen
+                d.TextureLightingBlue = s.TextureLightingBlue
+                Dim sf4 = TryCast(s, Canon.NpcFO4)
+                Dim df4 = TryCast(d, Canon.NpcFO4)
+                If sf4 IsNot Nothing AndAlso df4 IsNot Nothing AndAlso sf4.TextureLightingAlphaPresente Then
+                    df4.TextureLightingAlpha = sf4.TextureLightingAlpha
+                End If
+            Else
+                d.QuitarSubrecord("QNAM")
+            End If
+            If s.PesoDelCuerpo(0).HasValue OrElse s.PesoDelCuerpo(1).HasValue OrElse s.PesoDelCuerpo(2).HasValue Then
+                d.PonerPesoDelCuerpo(0, s.PesoDelCuerpo(0))
+                d.PonerPesoDelCuerpo(1, s.PesoDelCuerpo(1))
+                d.PonerPesoDelCuerpo(2, s.PesoDelCuerpo(2))
+            Else
+                d.QuitarSubrecord("MWGT")
+            End If
+            d.PonerPartesDeCabeza(s.PartesDeCabeza())
+            d.PonerMorfosDeCara(s.MorfosDeCara())
+            CopiarCapasDeTinte(d, s)
+            CopiarMorfosDeRegion(d, s)
+            Dim regiones = s.ValoresDeRegionCorporal()
+            If regiones.Count > 0 Then d.PonerValoresDeRegionCorporal(regiones) Else d.QuitarSubrecord("MRSV")
+            If s.TieneIntensidadDeMorfoFacial() Then
+                d.PonerIntensidadDeMorfoFacial(s.IntensidadDeMorfoFacial())
+            Else
+                d.QuitarSubrecord("FMIN")
+            End If
         End If
 
-        ' Object Template (OBTS) — the robot/OMOD combinations. Deep-copied so the NPC owns them outright.
-        ' NOT overlay-owned (the overlay never touches OBTS). The Object Template editor overwrites/edits these
-        ' AFTER MakeCategoryOwn returns via the record override.
-        npc.ObjectTemplateCombinations = CloneObjectTemplateCombinations(src.ObjectTemplateCombinations)
-        npc.HasObjectTemplate = src.HasObjectTemplate
-        npc.ObjectTemplateOMODFormIDs = New List(Of UInteger)(src.ObjectTemplateOMODFormIDs)
-        ' APPR (Attach Parent Slots) — rides the Traits chain alongside OBTS (TraitsState.AttachParentSlotFormIDs,
-        ' seeded by CreateOwnTraitsState) and seeds the AP-pool filter in ObjectTemplateResolver, so dropping it
-        ' while KEEPING the OBTS combinations would leave the robot path with combinations it can no longer
-        ' filter. Not overlay-owned (the overlay never touches APPR — CopyRoundTripOnlyFieldsFromRaw carries it
-        ' verbatim), hence outside the skip block, exactly like OBTS above.
-        ' MEASURED: 0 NPCs lose a value in either vanilla load order (the templated ones duplicate APPR on their
-        ' own record); materialized for the same reason OBTS is — the chain is what the app reads it through.
-        npc.AttachParentSlotFormIDs = New List(Of UInteger)(If(src.AttachParentSlotFormIDs, New List(Of UInteger)))
+        ' Object Template (OBTS) — las combinaciones de mods de los robots. NO la posee el overlay (nunca las
+        ' toca). El editor de Object Template las reescribe DESPUES de que MakeCategoryOwn vuelve.
+        d.ReemplazarCombinations(s.CombinacionesDelNpc())
+        ' APPR (Attach Parent Slots) — viaja por la cadena de Traits junto con OBTS y alimenta el filtro del
+        ' pool de enganches en ObjectTemplateResolver, asi que soltarlo dejaria al robot con combinaciones que
+        ' ya no puede filtrar. MEDIDO: 0 NPC pierden un valor en los dos load orders de vanilla (los
+        ' templateados duplican APPR en su propio record); se materializa por el mismo motivo que OBTS.
+        d.PonerRanurasDeEnganche(s.RanurasDeEnganche())
+    End Sub
+
+    ''' <summary>Copia un campo de referencia entero: si la fuente lo declara se escribe, y si no se SACA del
+    ''' destino. Escribir el valor sin mirar la presencia le inventaria al destino un subrecord que la fuente
+    ''' no tiene.</summary>
+    Private Shared Sub CopiarReferencia(destino As Canon.INpc, presente As Boolean, valor As UInteger,
+                                        firma As String, escribir As Action(Of UInteger))
+        If presente Then
+            escribir(valor)
+        Else
+            destino.QuitarSubrecord(firma)
+        End If
+    End Sub
+
+    ''' <summary>Copia las capas de tinte de cara de un record al otro, reemplazando las que el destino
+    ''' tenia. El destino queda con las mismas capas, en el mismo orden y con los mismos campos
+    ''' declarados: lo que la fuente no trae, el destino tampoco.
+    ''' <para>Solo Fallout 4: Skyrim no declara TETI/TEND y la copia no hace nada.</para></summary>
+    Private Shared Sub CopiarCapasDeTinte(destino As Canon.INpc, origen As Canon.INpc)
+        Dim d = TryCast(destino, Canon.NpcFO4)
+        Dim s = TryCast(origen, Canon.NpcFO4)
+        If d Is Nothing OrElse s Is Nothing Then Return
+        While d.FaceTintingLayers.Count > 0
+            If Not d.QuitarFaceTintingLayers(0) Then Exit While
+        End While
+        For Each c In s.FaceTintingLayers
+            Dim e = d.AgregarFaceTintingLayers()
+            If e Is Nothing Then Return
+            If c.IndexDataTypePresente Then e.IndexDataType = c.IndexDataType
+            If c.LayerIndexPresente Then e.LayerIndex = c.LayerIndex
+            If c.DataValuePresente Then e.DataValue = c.DataValue
+            If c.ColorRedPresente Then e.ColorRed = c.ColorRed
+            If c.ColorGreenPresente Then e.ColorGreen = c.ColorGreen
+            If c.ColorBluePresente Then e.ColorBlue = c.ColorBlue
+            If c.DataTemplateColorIndexPresente Then e.DataTemplateColorIndex = c.DataTemplateColorIndex
+        Next
+    End Sub
+
+    ''' <summary>Copia los morfos por region de cara de un record al otro. Mismo criterio que
+    ''' <see cref="CopiarCapasDeTinte"/>.</summary>
+    Private Shared Sub CopiarMorfosDeRegion(destino As Canon.INpc, origen As Canon.INpc)
+        Dim d = TryCast(destino, Canon.NpcFO4)
+        Dim s = TryCast(origen, Canon.NpcFO4)
+        If d Is Nothing OrElse s Is Nothing Then Return
+        While d.FaceMorphs.Count > 0
+            If Not d.QuitarFaceMorphs(0) Then Exit While
+        End While
+        For Each m In s.FaceMorphs
+            Dim e = d.AgregarFaceMorphs()
+            If e Is Nothing Then Return
+            If m.FaceMorphIndexPresente Then e.FaceMorphIndex = m.FaceMorphIndex
+            If m.ValuesPositionXPresente Then e.ValuesPositionX = m.ValuesPositionX
+            If m.ValuesPositionYPresente Then e.ValuesPositionY = m.ValuesPositionY
+            If m.ValuesPositionZPresente Then e.ValuesPositionZ = m.ValuesPositionZ
+            If m.ValuesRotationXPresente Then e.ValuesRotationX = m.ValuesRotationX
+            If m.ValuesRotationYPresente Then e.ValuesRotationY = m.ValuesRotationY
+            If m.ValuesRotationZPresente Then e.ValuesRotationZ = m.ValuesRotationZ
+            If m.ValuesScalePresente Then e.ValuesScale = m.ValuesScale
+        Next
     End Sub
 
     Private Shared Sub MaterializeBaseData(npc As NPC_Data, src As NPC_Data)
-        npc.FullName = src.FullName
-        npc.HasFull = src.HasFull
-        npc.ShortName = src.ShortName
-        npc.HasShortName = src.HasShortName
-        EnsureAcbs(npc)
-        npc.Acbs.Flags = MergeMaskedFlags(CurrentAcbsFlags(npc), CurrentAcbsFlags(src), NpcTemplateHelpers.BaseDataAcbsFlagsMask)
-        npc.AcbsFlags = npc.Acbs.Flags
+        Dim d = npc.Record, s = src.Record
+        If s.NamePresente Then d.Name = s.Name Else d.QuitarSubrecord("FULL")
+        If s.ShortNamePresente Then d.ShortName = s.ShortName Else d.QuitarSubrecord("SHRT")
+        d.ConfigurationFlags = MergeMaskedFlags(d.ConfigurationFlags, s.ConfigurationFlags,
+                                                NpcTemplateHelpers.BaseDataAcbsFlagsMask)
     End Sub
 
     Private Shared Sub MaterializeStats(npc As NPC_Data, src As NPC_Data)
-        npc.CalculatedStats = CloneCalculatedStats(src.CalculatedStats)
-        npc.SsePlayerSkills = ClonePlayerSkills(src.SsePlayerSkills)
-        EnsureAcbs(npc)
-        npc.Acbs.Flags = MergeMaskedFlags(CurrentAcbsFlags(npc), CurrentAcbsFlags(src), NpcTemplateHelpers.StatsAcbsFlagsMask)
-        npc.AcbsFlags = npc.Acbs.Flags
-        If src.Acbs Is Nothing Then Return
-        npc.Acbs.XpValueOffset = src.Acbs.XpValueOffset
-        npc.Acbs.LevelOrLevelMult = src.Acbs.LevelOrLevelMult
-        npc.Acbs.CalcMinLevel = src.Acbs.CalcMinLevel
-        npc.Acbs.CalcMaxLevel = src.Acbs.CalcMaxLevel
-        npc.Acbs.MagickaOffset = src.Acbs.MagickaOffset
-        npc.Acbs.StaminaOffset = src.Acbs.StaminaOffset
-        npc.Acbs.SpeedMultiplier = src.Acbs.SpeedMultiplier
-        npc.Acbs.HealthOffset = src.Acbs.HealthOffset
+        Dim d = npc.Record, s = src.Record
+        ' DNAM: en Fallout 4 son las estadisticas calculadas y en Skyrim el bloque de habilidades. Se copia
+        ' el subrecord entero, que es lo que el motor copia por esta categoria.
+        CopiarDnam(d, s)
+        d.ConfigurationFlags = MergeMaskedFlags(d.ConfigurationFlags, s.ConfigurationFlags,
+                                                NpcTemplateHelpers.StatsAcbsFlagsMask)
+        d.PonerNivelDeConfiguracion(s.NivelDeConfiguracion())
+        d.ConfigurationCalcMinLevel = s.ConfigurationCalcMinLevel
+        d.ConfigurationCalcMaxLevel = s.ConfigurationCalcMaxLevel
+        Dim sf4 = TryCast(s, Canon.NpcFO4), df4 = TryCast(d, Canon.NpcFO4)
+        If sf4 IsNot Nothing AndAlso df4 IsNot Nothing Then
+            df4.ConfigurationXPValueOffset = sf4.ConfigurationXPValueOffset
+        End If
+        Dim ss = TryCast(s, Canon.NpcSSE), ds = TryCast(d, Canon.NpcSSE)
+        If ss IsNot Nothing AndAlso ds IsNot Nothing Then
+            ds.ConfigurationMagickaOffset = ss.ConfigurationMagickaOffset
+            ds.ConfigurationStaminaOffset = ss.ConfigurationStaminaOffset
+            ds.ConfigurationSpeedMultiplier = ss.ConfigurationSpeedMultiplier
+            ds.ConfigurationHealthOffset = ss.ConfigurationHealthOffset
+        End If
     End Sub
 
-    Private Shared Sub EnsureAcbs(npc As NPC_Data)
-        If npc.Acbs Is Nothing Then npc.Acbs = New NPC_AcbsData()
+    ''' <summary>DNAM completo. Los dos juegos guardan cosas distintas ahi: Fallout 4 salud y puntos de
+    ''' accion calculados, Skyrim las habilidades del jugador con sus valores y desplazamientos.</summary>
+    Private Shared Sub CopiarDnam(destino As Canon.INpc, origen As Canon.INpc)
+        Dim sf4 = TryCast(origen, Canon.NpcFO4), df4 = TryCast(destino, Canon.NpcFO4)
+        If sf4 IsNot Nothing AndAlso df4 IsNot Nothing Then
+            If Not sf4.CalculatedHealthPresente Then
+                destino.QuitarSubrecord("DNAM")
+                Return
+            End If
+            df4.CalculatedHealth = sf4.CalculatedHealth
+            df4.CalculatedActionPoints = sf4.CalculatedActionPoints
+            df4.FarAwayModelDistance = sf4.FarAwayModelDistance
+            df4.GearedUpWeapons = sf4.GearedUpWeapons
+            Return
+        End If
+        Dim ss = TryCast(origen, Canon.NpcSSE), ds = TryCast(destino, Canon.NpcSSE)
+        If ss Is Nothing OrElse ds Is Nothing Then Return
+        If Not ss.PlayerSkillsHealthPresente Then
+            destino.QuitarSubrecord("DNAM")
+            Return
+        End If
+        ds.PlayerSkillsHealth = ss.PlayerSkillsHealth
+        ds.PlayerSkillsMagicka = ss.PlayerSkillsMagicka
+        ds.PlayerSkillsStamina = ss.PlayerSkillsStamina
+        ds.PlayerSkillsFarAwayModelDistance = ss.PlayerSkillsFarAwayModelDistance
+        ds.PlayerSkillsGearedUpWeapons = ss.PlayerSkillsGearedUpWeapons
+        While ds.SkillValues.Count > 0
+            If Not ds.QuitarSkillValues(0) Then Exit While
+        End While
+        For Each v In ss.SkillValues
+            Dim e = ds.AgregarSkillValues()
+            If e IsNot Nothing Then e.Skill = v.Skill
+        Next
+        While ds.SkillOffsets.Count > 0
+            If Not ds.QuitarSkillOffsets(0) Then Exit While
+        End While
+        For Each v In ss.SkillOffsets
+            Dim e = ds.AgregarSkillOffsets()
+            If e IsNot Nothing Then e.Skill = v.Skill
+        Next
     End Sub
 
     Private Shared Function MergeMaskedFlags(current As UInteger, source As UInteger, mask As UInteger) As UInteger
         Return (current And Not mask) Or (source And mask)
     End Function
 
-    Private Shared Function CurrentAcbsFlags(npc As NPC_Data) As UInteger
-        If npc Is Nothing Then Return 0UI
-        Return If(npc.Acbs IsNot Nothing, npc.Acbs.Flags, npc.AcbsFlags)
-    End Function
-
-    ''' <summary>Drop <paramref name="category"/>'s bit from both TemplateFlags mirrors (NPC_Data + ACBS
-    ''' struct) so the writer emits the cleared value and the engine skips the category's template copy.</summary>
+    ''' <summary>Baja el bit de <paramref name="category"/> en las banderas de plantilla, para que el emisor
+    ''' escriba el valor bajado y el motor saltee la copia de esa categoria.</summary>
     Private Shared Sub ClearFlagBit(npc As NPC_Data, category As NPC_TemplateCategory)
         Dim mask As UShort = CUShort(1 << CInt(category))
-        npc.TemplateFlags = CUShort(npc.TemplateFlags And Not mask)
-        If npc.Acbs IsNot Nothing Then npc.Acbs.TemplateFlags = npc.TemplateFlags
+        npc.Record.ConfigurationTemplateFlags = CUShort(npc.Record.ConfigurationTemplateFlags And Not mask)
     End Sub
-
-    ' ---- deep-copy helpers (avoid aliasing the source NPC's parsed sub-objects) ----
-
-    Private Shared Function CloneFactions(src As List(Of NPC_FactionEntry)) As List(Of NPC_FactionEntry)
-        Dim dst As New List(Of NPC_FactionEntry)
-        If src Is Nothing Then Return dst
-        For Each f In src
-            dst.Add(New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank,
-                    .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))})
-        Next
-        Return dst
-    End Function
-
-    Private Shared Function CloneInventory(src As List(Of NPC_InventoryItem)) As List(Of NPC_InventoryItem)
-        Dim dst As New List(Of NPC_InventoryItem)
-        If src Is Nothing Then Return dst
-        For Each i In src
-            dst.Add(New NPC_InventoryItem With {.ItemFormID = i.ItemFormID, .Count = i.Count, .HasCoed = i.HasCoed,
-                    .CoedOwnerFormID = i.CoedOwnerFormID, .CoedOwnerExtra = i.CoedOwnerExtra,
-                    .CoedExtraIsFormID = i.CoedExtraIsFormID, .CoedItemCondition = i.CoedItemCondition})
-        Next
-        Return dst
-    End Function
-
-    Private Shared Function CloneCalculatedStats(src As NPC_CalculatedStats) As NPC_CalculatedStats
-        If src Is Nothing Then Return Nothing
-        Return New NPC_CalculatedStats With {.CalculatedHealth = src.CalculatedHealth,
-                .CalculatedActionPoints = src.CalculatedActionPoints, .FarAwayModelDistance = src.FarAwayModelDistance,
-                .GearedUpWeapons = src.GearedUpWeapons, .Unused7 = src.Unused7}
-    End Function
-
-    Private Shared Function ClonePlayerSkills(src As NPC_SsePlayerSkills) As NPC_SsePlayerSkills
-        If src Is Nothing Then Return Nothing
-        Return MainForm.ClonePlayerSkills(src)
-    End Function
-
-    Private Shared Function CloneTintLayers(src As List(Of NPC_FaceTintLayerData)) As List(Of NPC_FaceTintLayerData)
-        Dim dst As New List(Of NPC_FaceTintLayerData)
-        If src Is Nothing Then Return dst
-        For Each l In src
-            dst.Add(New NPC_FaceTintLayerData With {
-                .Discriminator = l.Discriminator, .Index = l.Index, .Value = l.Value, .Color = l.Color,
-                .TemplateColorIndex = l.TemplateColorIndex,
-                .RawTetiBytes = If(l.RawTetiBytes Is Nothing, Nothing, CType(l.RawTetiBytes.Clone(), Byte())),
-                .RawTendBytes = If(l.RawTendBytes Is Nothing, Nothing, CType(l.RawTendBytes.Clone(), Byte()))})
-        Next
-        Return dst
-    End Function
-
-    Private Shared Function CloneFaceMorphs(src As List(Of NPC_FaceMorphData)) As List(Of NPC_FaceMorphData)
-        Dim dst As New List(Of NPC_FaceMorphData)
-        If src Is Nothing Then Return dst
-        For Each m In src
-            dst.Add(New NPC_FaceMorphData With {
-                .Index = m.Index,
-                .Values = New List(Of Single)(m.Values),
-                .SourcePlugin = m.SourcePlugin,
-                .RawFmriBytes = If(m.RawFmriBytes Is Nothing, Nothing, CType(m.RawFmriBytes.Clone(), Byte())),
-                .RawFmrsBytes = If(m.RawFmrsBytes Is Nothing, Nothing, CType(m.RawFmrsBytes.Clone(), Byte()))})
-        Next
-        Return dst
-    End Function
-
-    Private Shared Function CloneObjectTemplateCombinations(src As List(Of NPC_ObjectTemplateCombination)) As List(Of NPC_ObjectTemplateCombination)
-        Dim dst As New List(Of NPC_ObjectTemplateCombination)
-        If src Is Nothing Then Return dst
-        For Each c In src
-            dst.Add(New NPC_ObjectTemplateCombination With {
-                .IsEditorOnly = c.IsEditorOnly,
-                .DisplayName = c.DisplayName,
-                .Combination = c.Combination,
-                .RawObtsBytes = If(c.RawObtsBytes Is Nothing, Nothing, CType(c.RawObtsBytes.Clone(), Byte()))})
-        Next
-        Return dst
-    End Function
 
 End Class

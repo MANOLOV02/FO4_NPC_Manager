@@ -4,8 +4,8 @@ Imports FO4_Base_Library
 ''' <summary>A reusable, signature-filtered FormID PICKER dialog. Replaces the per-field FormID
 ''' comboboxes in the upcoming ARMA/ARMO editors with a proper modal list: a live filter, sortable
 ''' columns (Name / EditorID / FormID-hex / Plugin / Signature), and an optional pinned "(none / NULL)"
-''' row. The CALLER decides which record signatures are valid for a given field (per the xEdit
-''' <c>wbFormIDCk</c> rule for that field — e.g. ARMA RNAM → {"RACE"}, ARMO KWDA → {"KYWD"},
+''' row. The CALLER decides which record signatures are valid for a given field (per the field's
+''' allowed-signature rule — e.g. ARMA RNAM → {"RACE"}, ARMO KWDA → {"KYWD"},
 ''' material swap → {"MSWP"}, skin texture → {"TXST"}, NAM2 → {"FLST"}, ARMO addon → {"ARMA"}); the
 ''' picker itself contains NO field-specific logic — it only honors <c>allowedSignatures</c> +
 ''' <c>allowNull</c>.
@@ -97,8 +97,9 @@ Public Class FormIdPicker_Form
     End Class
 
     ''' <param name="pluginManager">Master plugin manager — the record source for every allowed signature.</param>
-    ''' <param name="allowedSignatures">Record signatures the field accepts, per the caller's xEdit
-    ''' <c>wbFormIDCk</c> rule (e.g. {"RACE"}, {"KYWD"}, {"TXST"}, {"FLST"}, {"MSWP"}, {"ARMA"}, {"ARMO"}).</param>
+    ''' <param name="allowedSignatures">Record signatures the field accepts, per the caller's
+    ''' allowed-signature rule (e.g. {"RACE"}, {"KYWD"}, {"TXST"}, {"FLST"}, {"MSWP"}, {"ARMA"},
+    ''' {"ARMO"}).</param>
     ''' <param name="title">Optional window caption; a sensible default is derived from the signatures.</param>
     ''' <param name="currentFormID">The field's current value — preselected in the list when present.</param>
     ''' <param name="allowNull">True → include a pinned "(none / NULL)" row that returns FormID 0.</param>

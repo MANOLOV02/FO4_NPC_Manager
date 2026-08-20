@@ -1,6 +1,7 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.Linq
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Multi-tab editor for a single NPC_ record — Name/flags/level + identity FormIDs (General),
 ''' the object-template combinations (Object Template), keywords, factions and inventory. Companion to
@@ -32,12 +33,24 @@ Public Class NpcEditor_Form
     ' Working buffers (edited by the Add/Remove/modal handlers; flushed into _npc only on OK).
     Private ReadOnly _keywords As New List(Of UInteger)
     Private ReadOnly _appr As New List(Of UInteger)          ' APPR — attach-parent-slot KYWDs
-    Private ReadOnly _factions As New List(Of NPC_FactionEntry)
-    Private ReadOnly _inventory As New List(Of NPC_InventoryItem)
-    Private ReadOnly _perks As New List(Of NPC_PerkEntry)          ' PRKR
     Private ReadOnly _actorEffects As New List(Of UInteger)        ' SPLO → SPEL
-    Private ReadOnly _properties As New List(Of NPC_PropertyEntry) ' PRPS
-    Private ReadOnly _combos As New List(Of NPC_ObjectTemplateCombination)
+    ''' <summary>Las combinaciones del Object Template, en el orden de las filas. Cada elemento es una vista
+    ''' sobre <see cref="_comboHost"/>.</summary>
+    Private ReadOnly _combos As New List(Of Canon.IBloque_Combinations)
+
+    ''' <summary>El NPC_ sobre el que viven las combinaciones que el usuario está armando: una COPIA del que
+    ''' las trajo. Una vista no existe sin un nodo, y el nodo tiene que colgar de algún árbol; al ser copia
+    ''' del original hereda su contexto, y cancelar no le deja nada escrito al record de verdad.</summary>
+    Private _comboHost As Canon.INpc = Nothing
+
+    ''' <summary>El borrador: un CLON del record del NPC. Las listas que se editan por fila —SNAM, CNTO/COED,
+    ''' PRKR, PRPS— y el DNAM de Skyrim viven acá, en el árbol, no en una copia con otros nombres. Cancelar es
+    ''' tirar el clon; aceptar es volcarlo sobre el record vivo. Las filas que el editor no toca conservan cada
+    ''' byte, incluidos los campos que ningún control muestra.</summary>
+    Private ReadOnly _borrador As Canon.INpc
+    ''' <summary>Otro clon, tomado al terminar de cargar los paneles: la línea base contra la que se decide
+    ''' qué cambió de verdad.</summary>
+    Private _snapRecord As Canon.INpc
 
     ' ACBS flag bit map (checkbox → bit) built from the NPC_AcbsData bit definitions. The union is used to
     ' preserve bits NOT surfaced as a checkbox when re-composing the flags word.
@@ -49,15 +62,15 @@ Public Class NpcEditor_Form
     Private ReadOnly _isSkyrim As Boolean = (Config_App.Current IsNot Nothing AndAlso
                                              Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
 
-    ' The 18 Designer spinner pairs, indexed by DNAM skill index (= NPC_SsePlayerSkills.SkillNames order).
+    ' Los 18 pares de spinners del Designer, indexados por el indice de skill del DNAM.
     ' Arrays of already-built controls, not UI construction — the tab itself lives in the Designer.
     Private _skillVals As NumericUpDown()
     Private _skillOffs As NumericUpDown()
+    Private _skillLabels As Label()
 
-    ' Open-time snapshot of DNAM (SSE). The struct is cloned so an edit never mutates the live parse before OK;
-    ' the far-away-model float is also kept as the DECIMAL the spinner was seeded with, so an untouched value
-    ' re-emits its exact original float instead of a NumericUpDown round-trip of it.
-    Private _snapSkills As NPC_SsePlayerSkills
+    ' El DNAM de apertura (SSE) vive en _snapRecord, igual que el resto del record. Acá queda sólo el
+    ' float de far-away-model como el DECIMAL con el que se sembró el spinner, para que un valor sin tocar
+    ' re-emita su float original en vez de la ida y vuelta por el NumericUpDown.
     Private _snapFarModelDec As Decimal
     Private _snapMagickaOff As Short, _snapStaminaOff As Short, _snapHealthOff As Short
     Private _snapSpeedMult As UShort
@@ -76,15 +89,11 @@ Public Class NpcEditor_Form
     Private _snapXp As Short
     Private _snapKeywords As New List(Of UInteger)
     Private _snapAppr As New List(Of UInteger)
-    Private _snapFactions As New List(Of NPC_FactionEntry)
-    Private _snapInventory As New List(Of NPC_InventoryItem)
     ' Outfits (DOFT/SOFT) — raw record value (for the "reverted to record default → clear override" decision)
     ' and the effective (overlay-aware) value shown at open (the snapshot baseline for change detection).
     Private _rawDefaultOutfit As UInteger, _rawSleepOutfit As UInteger
     Private _snapDefaultOutfit As UInteger, _snapSleepOutfit As UInteger
-    Private _snapPerks As New List(Of NPC_PerkEntry)
     Private _snapActorEffects As New List(Of UInteger)
-    Private _snapProperties As New List(Of NPC_PropertyEntry)
     Private _snapCombosSig As String = ""
 
     ''' <summary>True after an OK that actually changed something — the launcher marks the NPC dirty only then.</summary>
@@ -108,6 +117,7 @@ Public Class NpcEditor_Form
         _npc = npc
         _npcFormID = npcFormID
         _getParsedNpc = getParsedNpc
+        _borrador = npc.Record.Copia()
 
         BuildSkillControlMap()
         BuildFlagChecks()
@@ -215,10 +225,10 @@ Public Class NpcEditor_Form
         End If
     End Sub
 
-    ''' <summary>Index the 18 Designer spinner pairs by DNAM skill index and label them from the record schema
-    ''' (<see cref="NPC_SsePlayerSkills.SkillNames"/>), which IS the byte order — index i is the value at +i and
-    ''' the offset at +18+i. Sourcing the labels from the schema (rather than trusting the Designer text) means a
-    ''' row can never drift out of sync with the byte it writes.</summary>
+    ''' <summary>Indexa por índice de skill del DNAM los 18 pares de spinners del Designer. El índice ES el
+    ''' orden de bytes: el i-ésimo es el valor en +i y el desplazamiento en +18+i. Las etiquetas las pone
+    ''' <see cref="LoadPlayerSkills"/> con el nombre que el esquema le da a cada elemento del arreglo, así
+    ''' que una fila no puede quedar desfasada del byte que escribe.</summary>
     Private Sub BuildSkillControlMap()
         _skillVals = {NumSkillVal0, NumSkillVal1, NumSkillVal2, NumSkillVal3, NumSkillVal4, NumSkillVal5,
                       NumSkillVal6, NumSkillVal7, NumSkillVal8, NumSkillVal9, NumSkillVal10, NumSkillVal11,
@@ -226,12 +236,9 @@ Public Class NpcEditor_Form
         _skillOffs = {NumSkillOff0, NumSkillOff1, NumSkillOff2, NumSkillOff3, NumSkillOff4, NumSkillOff5,
                       NumSkillOff6, NumSkillOff7, NumSkillOff8, NumSkillOff9, NumSkillOff10, NumSkillOff11,
                       NumSkillOff12, NumSkillOff13, NumSkillOff14, NumSkillOff15, NumSkillOff16, NumSkillOff17}
-        Dim labels = {LabelSkill0, LabelSkill1, LabelSkill2, LabelSkill3, LabelSkill4, LabelSkill5,
-                      LabelSkill6, LabelSkill7, LabelSkill8, LabelSkill9, LabelSkill10, LabelSkill11,
-                      LabelSkill12, LabelSkill13, LabelSkill14, LabelSkill15, LabelSkill16, LabelSkill17}
-        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
-            labels(i).Text = NPC_SsePlayerSkills.SkillNames(i) & ":"
-        Next
+        _skillLabels = {LabelSkill0, LabelSkill1, LabelSkill2, LabelSkill3, LabelSkill4, LabelSkill5,
+                        LabelSkill6, LabelSkill7, LabelSkill8, LabelSkill9, LabelSkill10, LabelSkill11,
+                        LabelSkill12, LabelSkill13, LabelSkill14, LabelSkill15, LabelSkill16, LabelSkill17}
     End Sub
 
     ' =====================================================================
@@ -239,12 +246,12 @@ Public Class NpcEditor_Form
     ' =====================================================================
 
     Private Sub BuildFlagChecks()
-        ' ACBS Flags bit values. VERIFIED identical between FO4 (wbDefinitionsFO4) and Skyrim (wbDefinitionsTES5,
-        ' the ACBS 'Flags' wbFlags block) for EVERY surfaced flag EXCEPT bit 0x800000: FO4 = "No Activation /
-        ' Hellos", Skyrim = "Unknown 23" (unused). So ChkNoActHellos is added ONLY on FO4 — on Skyrim its bit stays
-        ' OUT of _managedFlagMask and is preserved verbatim by ComposeFlags (the checkbox is hidden in
-        ' ApplyGameGating). Note: ACBS bit 0x04 (Is CharGen Face Preset) is intentionally NOT surfaced here (both
-        ' games) — owned by the Face editor, preserved verbatim.
+        ' ACBS Flags bit values. VERIFIED identical between FO4 and Skyrim for EVERY surfaced
+        ' flag EXCEPT bit 0x800000: FO4 = "No Activation / Hellos", Skyrim = "Unknown 23"
+        ' (unused). So ChkNoActHellos is added ONLY on FO4 — on Skyrim its bit stays OUT of
+        ' _managedFlagMask and is preserved verbatim by ComposeFlags (the checkbox is hidden in
+        ' ApplyGameGating). Note: ACBS bit 0x04 (Is CharGen Face Preset) is intentionally NOT
+        ' surfaced here (both games) — owned by the Face editor, preserved verbatim.
         Dim isSkyrim = _isSkyrim
         _flagChecks.Add((ChkFemale, &H1UI))
         _flagChecks.Add((ChkEssential, &H2UI))
@@ -329,18 +336,18 @@ Public Class NpcEditor_Form
             Dim inventoryNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, lvlnPick)
             Dim spellsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, lvlnPick)
             ' General.
-            TextBoxFull.Text = If(baseNpc.FullName, "")
-            TextBoxShort.Text = If(baseNpc.ShortName, "")
-            Dim raceFid = If(traitsNpc.RaceFormID <> 0UI, traitsNpc.RaceFormID, fallbackRaceFormID)
+            TextBoxFull.Text = If(baseNpc.Record.Name, "")
+            TextBoxShort.Text = If(baseNpc.Record.ShortName, "")
+            Dim raceFid = If(traitsNpc.Record.Race <> 0UI, traitsNpc.Record.Race, fallbackRaceFormID)
             SetFidText(TextBoxRace, raceFid)
-            SetFidText(TextBoxVoice, traitsNpc.VoiceFormID)
-            SetFidText(TextBoxClass, traitsNpc.ClassFormID)
-            SetFidText(TextBoxZnam, traitsNpc.CombatStyleFormID)
+            SetFidText(TextBoxVoice, traitsNpc.Record.Voice)
+            SetFidText(TextBoxClass, traitsNpc.Record.[Class])
+            SetFidText(TextBoxZnam, traitsNpc.Record.CombatStyle)
 
-            Dim traitsFlags As UInteger = If(traitsNpc.Acbs IsNot Nothing, traitsNpc.Acbs.Flags, traitsNpc.AcbsFlags)
-            Dim statsFlags As UInteger = If(statsNpc.Acbs IsNot Nothing, statsNpc.Acbs.Flags, statsNpc.AcbsFlags)
-            Dim baseFlags As UInteger = If(baseNpc.Acbs IsNot Nothing, baseNpc.Acbs.Flags, baseNpc.AcbsFlags)
-            Dim ownFlags As UInteger = If(_npc.Acbs IsNot Nothing, _npc.Acbs.Flags, _npc.AcbsFlags)
+            Dim traitsFlags As UInteger = traitsNpc.Record.ConfigurationFlags
+            Dim statsFlags As UInteger = statsNpc.Record.ConfigurationFlags
+            Dim baseFlags As UInteger = baseNpc.Record.ConfigurationFlags
+            Dim ownFlags As UInteger = _npc.Record.ConfigurationFlags
             Dim governedMask As UInteger = NpcTemplateHelpers.ClassifiedAcbsFlagsMask
             Dim flagsWord As UInteger = (ownFlags And Not governedMask) Or
                                         (traitsFlags And NpcTemplateHelpers.TraitsAcbsFlagsMask) Or
@@ -349,80 +356,66 @@ Public Class NpcEditor_Form
             _loadedFlagsWord = flagsWord
             SetFlagChecks(flagsWord)   ' fires ChkPCLevelMult.CheckedChanged, guarded by _loading (no-op here)
             ' Level union — mode from the PC Level Mult flag (0x80), value from the raw u16.
-            Dim acbs = statsNpc.Acbs
-            ConfigureLevelControl((flagsWord And &H80UI) <> 0UI, If(acbs IsNot Nothing, acbs.LevelOrLevelMult, 0US))
-            NumXp.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.XpValueOffset, 0S)), NumXp)
-            NumCalcMin.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.CalcMinLevel, 0US)), NumCalcMin)
-            NumCalcMax.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.CalcMaxLevel, 0US)), NumCalcMax)
-            Dim traitsAcbs = traitsNpc.Acbs
-            NumDisp.Value = ClampDec(CDec(If(traitsAcbs IsNot Nothing, traitsAcbs.DispositionBase, 0S)), NumDisp)
+            ConfigureLevelControl((flagsWord And &H80UI) <> 0UI, statsNpc.Record.NivelDeConfiguracion())
+            Dim statsFo4 = TryCast(statsNpc.Record, Canon.NpcFO4)
+            NumXp.Value = ClampDec(CDec(If(statsFo4 Is Nothing, 0S, statsFo4.ConfigurationXPValueOffset)), NumXp)
+            NumCalcMin.Value = ClampDec(CDec(statsNpc.Record.ConfigurationCalcMinLevel), NumCalcMin)
+            NumCalcMax.Value = ClampDec(CDec(statsNpc.Record.ConfigurationCalcMaxLevel), NumCalcMax)
+            NumDisp.Value = ClampDec(CDec(traitsNpc.Record.BaseDeDisposicion()), NumDisp)
             ' SSE-only ACBS offsets (hidden on FO4, whose 20-byte struct has no slot for them).
-            Dim statsAcbs = statsNpc.Acbs
-            NumMagickaOff.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.MagickaOffset, 0S)), NumMagickaOff)
-            NumStaminaOff.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.StaminaOffset, 0S)), NumStaminaOff)
-            NumHealthOff.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.HealthOffset, 0S)), NumHealthOff)
-            NumSpeedMult.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.SpeedMultiplier, 0US)), NumSpeedMult)
+            Dim statsSse = TryCast(statsNpc.Record, Canon.NpcSSE)
+            NumMagickaOff.Value = ClampDec(CDec(If(statsSse Is Nothing, 0S, statsSse.ConfigurationMagickaOffset)), NumMagickaOff)
+            NumStaminaOff.Value = ClampDec(CDec(If(statsSse Is Nothing, 0S, statsSse.ConfigurationStaminaOffset)), NumStaminaOff)
+            NumHealthOff.Value = ClampDec(CDec(If(statsSse Is Nothing, 0S, statsSse.ConfigurationHealthOffset)), NumHealthOff)
+            NumSpeedMult.Value = ClampDec(CDec(If(statsSse Is Nothing, 0US, statsSse.ConfigurationSpeedMultiplier)), NumSpeedMult)
 
             ' Stats — DNAM Player Skills (SSE). The tab is removed on FO4, so this is a no-op there.
             LoadPlayerSkills(statsNpc)
 
-            ' Object Template — deep-copy the wrapper list into the working buffer (never alias the parse).
+            ' Object Template — se edita sobre una COPIA del record que trae las combinaciones, así el
+            ' sub-editor y el reordenamiento no tocan el original.
+            _comboHost = traitsNpc.Record.Copia()
             _combos.Clear()
-            _combos.AddRange(CloneCombos(traitsNpc.ObjectTemplateCombinations))
+            If _comboHost IsNot Nothing Then _combos.AddRange(_comboHost.CombinacionesDelNpc())
             RefreshCombosGrid()
 
             ' Keywords.
             _keywords.Clear()
-            _keywords.AddRange(keywordsNpc.KeywordFormIDs)
+            _keywords.AddRange(keywordsNpc.Record.PalabrasClave())
             RefreshKeywordsList()
 
             ' Attach Parent Slots (APPR).
             _appr.Clear()
-            _appr.AddRange(traitsNpc.AttachParentSlotFormIDs)
+            _appr.AddRange(traitsNpc.Record.RanurasDeEnganche())
             RefreshApprList()
 
-            ' Factions (deep-copy).
-            _factions.Clear()
-            For Each f In factionsNpc.Factions
-                _factions.Add(New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank,
-                    .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))})
-            Next
+            ' Factions — la fuente resuelta se vuelca en el borrador (las entradas son nodos del árbol).
+            _borrador.PonerFacciones(factionsNpc.Record.Factions)
             RefreshFactionsGrid()
 
-            ' Inventory (deep-copy — carries the COED block).
-            _inventory.Clear()
-            For Each it In inventoryNpc.Inventory
-                _inventory.Add(CloneInventoryItem(it))
-            Next
+            ' Inventory — con el bloque COED de cada entrada.
+            _borrador.PonerInventario(inventoryNpc.Record.Items)
             RefreshInventoryGrid()
 
             ' Outfits (DOFT/SOFT). Seed with the EFFECTIVE (overlay-aware) values: a prior Edit Outfit pick
             ' lives in the LooksMenu overlay, not on _npc, so show the overlaid value. Keep the raw record value
             ' too so OnOk can map "reverted to the record's own outfit" back to a cleared override.
-            _rawDefaultOutfit = _npc.DefaultOutfitFormID
-            _rawSleepOutfit = _npc.SleepOutfitFormID
+            _rawDefaultOutfit = _npc.Record.DefaultOutfit
+            _rawSleepOutfit = _npc.Record.SleepingOutfit
             Dim effDefaultOutfit = _rawDefaultOutfit, effSleepOutfit = _rawSleepOutfit
             _mainForm.GetEffectiveNpcOutfitsForEditor(_npcFormID, _rawDefaultOutfit, _rawSleepOutfit, effDefaultOutfit, effSleepOutfit)
             SetFidText(TextBoxDefaultOutfit, effDefaultOutfit)
             SetFidText(TextBoxSleepOutfit, effSleepOutfit)
 
-            ' Perks (deep-copy).
-            _perks.Clear()
-            For Each p In _npc.Perks
-                _perks.Add(ClonePerk(p))
-            Next
+            ' Perks — sin categoría de plantilla: siempre las propias del record.
             RefreshPerksGrid()
 
             ' Actor Effects (SPLO).
             _actorEffects.Clear()
-            _actorEffects.AddRange(spellsNpc.ActorEffectFormIDs)
+            _actorEffects.AddRange(spellsNpc.Record.EfectosDeActor())
             RefreshSpellList()
 
-            ' Properties (PRPS) (deep-copy).
-            _properties.Clear()
-            For Each p In _npc.Properties
-                _properties.Add(New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value})
-            Next
+            ' Properties (PRPS) — sin categoría de plantilla, igual que las ventajas.
             RefreshPropsGrid()
         Finally
             _loading = False
@@ -447,7 +440,7 @@ Public Class NpcEditor_Form
     End Sub
 
     ''' <summary>Configure NumLevel for the given mode from a raw u16. Mult (PC Level Mult ON): "Level Mult",
-    ''' 3 decimals, value = raw/1000 (xEdit shows the mult as value/1000). Fixed (OFF): integer "Level".</summary>
+    ''' 3 decimals, value = raw/1000. Fixed (OFF): integer "Level".</summary>
     Private Sub ConfigureLevelControl(mult As Boolean, raw As UShort)
         _levelIsMult = mult
         If mult Then
@@ -481,57 +474,75 @@ Public Class NpcEditor_Form
     ' Stats tab — DNAM Player Skills (SSE)
     ' =====================================================================
 
-    ''' <summary>Seed the Stats spinners from the NPC's DNAM. The struct is CLONED into <see cref="_snapSkills"/>
-    ''' as the open-time baseline: the edit is built by patching that clone, so every field the user did not
-    ''' touch — including the two verbatim wbUnused runs and any trailing bytes — is carried through unchanged
-    ''' and the record re-emits byte-identical. A Skyrim NPC whose DNAM was too short to model (no struct) gets a
-    ''' zeroed baseline; nothing is written back unless the user actually edits a value.</summary>
-    Private Sub LoadPlayerSkills(sourceNpc As NPC_Data)
-        If Not _isSkyrim Then Return
-        Dim ps = If(sourceNpc.SsePlayerSkills, New NPC_SsePlayerSkills())
-        _snapSkills = MainForm.ClonePlayerSkills(ps)
+    ''' <summary>El DNAM de Skyrim del borrador, o Nothing cuando el NPC no es de Skyrim.</summary>
+    Private Function BorradorSse() As Canon.NpcSSE
+        If Not _isSkyrim Then Return Nothing
+        Return TryCast(_borrador, Canon.NpcSSE)
+    End Function
 
-        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
-            _skillVals(i).Value = ClampDec(CDec(ps.SkillValues(i)), _skillVals(i))
-            _skillOffs(i).Value = ClampDec(CDec(ps.SkillOffsets(i)), _skillOffs(i))
+    ''' <summary>El DNAM de la línea base de apertura, o Nothing cuando el NPC no es de Skyrim.</summary>
+    Private Function LineaBaseSse() As Canon.NpcSSE
+        If Not _isSkyrim OrElse _snapRecord Is Nothing Then Return Nothing
+        Return TryCast(_snapRecord, Canon.NpcSSE)
+    End Function
+
+    ''' <summary>Copia el DNAM de la fuente resuelta al borrador y siembra con él los spinners de Stats. El
+    ''' bloque viaja como subrecord entero: los campos que ningún control muestra —los dos tramos de relleno
+    ''' sin usar incluidos— quedan tal cual y el record re-emite byte a byte. Un NPC de Skyrim con un DNAM
+    ''' demasiado corto para modelar arranca en cero y no se escribe nada salvo que el usuario edite.</summary>
+    Private Sub LoadPlayerSkills(sourceNpc As NPC_Data)
+        Dim ns = BorradorSse()
+        If ns Is Nothing Then Return
+        If Not ReferenceEquals(sourceNpc.Record, _npc.Record) Then _borrador.CopiarSubrecord(sourceNpc.Record, "DNAM")
+
+        For i = 0 To Math.Min(ns.SkillValues.Count, ns.SkillOffsets.Count) - 1
+            If i >= _skillVals.Length Then Exit For
+            _skillVals(i).Value = ClampDec(CDec(ns.SkillValues(i).Skill), _skillVals(i))
+            _skillOffs(i).Value = ClampDec(CDec(ns.SkillOffsets(i).Skill), _skillOffs(i))
+            ' El nombre sale del esquema, que es donde vive el orden real del arreglo. Sin DNAM no hay
+            ' elementos de los que sacarlo y la fila conserva el texto del Designer.
+            Dim nombre = ns.SkillValues(i).Node?.Name
+            If Not String.IsNullOrEmpty(nombre) Then _skillLabels(i).Text = nombre & ":"
         Next
-        NumHealth.Value = ClampDec(CDec(ps.Health), NumHealth)
-        NumMagicka.Value = ClampDec(CDec(ps.Magicka), NumMagicka)
-        NumStamina.Value = ClampDec(CDec(ps.Stamina), NumStamina)
-        NumGeared.Value = ClampDec(CDec(ps.GearedUpWeapons), NumGeared)
-        NumFarModel.Value = ClampDec(CDec(ps.FarAwayModelDistance), NumFarModel)
+        NumHealth.Value = ClampDec(CDec(ns.PlayerSkillsHealth), NumHealth)
+        NumMagicka.Value = ClampDec(CDec(ns.PlayerSkillsMagicka), NumMagicka)
+        NumStamina.Value = ClampDec(CDec(ns.PlayerSkillsStamina), NumStamina)
+        NumGeared.Value = ClampDec(CDec(ns.PlayerSkillsGearedUpWeapons), NumGeared)
+        NumFarModel.Value = ClampDec(CDec(ns.PlayerSkillsFarAwayModelDistance), NumFarModel)
         _snapFarModelDec = NumFarModel.Value
     End Sub
 
-    ''' <summary>Read the Stats panel back into a NEW struct, patched onto the open-time clone so untouched
-    ''' fields (and the unused/trailing bytes) survive verbatim. The far-away-model float is only overwritten
-    ''' when its spinner actually moved — a NumericUpDown cannot represent every float, so re-reading an
-    ''' untouched one would perturb the bytes.</summary>
-    Private Function ComposePlayerSkills() As NPC_SsePlayerSkills
-        Dim ps = MainForm.ClonePlayerSkills(_snapSkills)
-        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
-            ps.SkillValues(i) = CByte(_skillVals(i).Value)
-            ps.SkillOffsets(i) = CByte(_skillOffs(i).Value)
+    ''' <summary>Vuelca el panel de Stats en el DNAM del borrador. Lo que ningún control muestra sigue donde
+    ''' estaba. El float de far-away-model se pisa sólo si su spinner se movió de verdad: un NumericUpDown no
+    ''' representa todos los floats y releerlo sin haberlo tocado correría los bytes.</summary>
+    Private Sub ComposePlayerSkills()
+        Dim ns = BorradorSse()
+        If ns Is Nothing Then Return
+        For i = 0 To Math.Min(ns.SkillValues.Count, ns.SkillOffsets.Count) - 1
+            If i >= _skillVals.Length Then Exit For
+            ns.SkillValues(i).Skill = CByte(_skillVals(i).Value)
+            ns.SkillOffsets(i).Skill = CByte(_skillOffs(i).Value)
         Next
-        ps.Health = CUShort(NumHealth.Value)
-        ps.Magicka = CUShort(NumMagicka.Value)
-        ps.Stamina = CUShort(NumStamina.Value)
-        ps.GearedUpWeapons = CByte(NumGeared.Value)
-        If NumFarModel.Value <> _snapFarModelDec Then ps.FarAwayModelDistance = CSng(NumFarModel.Value)
-        Return ps
-    End Function
+        ns.PlayerSkillsHealth = CUShort(NumHealth.Value)
+        ns.PlayerSkillsMagicka = CUShort(NumMagicka.Value)
+        ns.PlayerSkillsStamina = CUShort(NumStamina.Value)
+        ns.PlayerSkillsGearedUpWeapons = CByte(NumGeared.Value)
+        If NumFarModel.Value <> _snapFarModelDec Then ns.PlayerSkillsFarAwayModelDistance = CSng(NumFarModel.Value)
+    End Sub
 
     ''' <summary>True when any Stats-tab value differs from the open-time snapshot.</summary>
     Private Function PlayerSkillsChanged() As Boolean
-        If Not _isSkyrim OrElse _snapSkills Is Nothing Then Return False
-        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
-            If CByte(_skillVals(i).Value) <> _snapSkills.SkillValues(i) Then Return True
-            If CByte(_skillOffs(i).Value) <> _snapSkills.SkillOffsets(i) Then Return True
+        Dim ns = LineaBaseSse()
+        If ns Is Nothing Then Return False
+        For i = 0 To Math.Min(ns.SkillValues.Count, ns.SkillOffsets.Count) - 1
+            If i >= _skillVals.Length Then Exit For
+            If CByte(_skillVals(i).Value) <> ns.SkillValues(i).Skill Then Return True
+            If CByte(_skillOffs(i).Value) <> ns.SkillOffsets(i).Skill Then Return True
         Next
-        Return CUShort(NumHealth.Value) <> _snapSkills.Health OrElse
-               CUShort(NumMagicka.Value) <> _snapSkills.Magicka OrElse
-               CUShort(NumStamina.Value) <> _snapSkills.Stamina OrElse
-               CByte(NumGeared.Value) <> _snapSkills.GearedUpWeapons OrElse
+        Return CUShort(NumHealth.Value) <> ns.PlayerSkillsHealth OrElse
+               CUShort(NumMagicka.Value) <> ns.PlayerSkillsMagicka OrElse
+               CUShort(NumStamina.Value) <> ns.PlayerSkillsStamina OrElse
+               CByte(NumGeared.Value) <> ns.PlayerSkillsGearedUpWeapons OrElse
                NumFarModel.Value <> _snapFarModelDec
     End Function
 
@@ -572,16 +583,13 @@ Public Class NpcEditor_Form
         _snapStaminaOff = CShort(NumStaminaOff.Value)
         _snapHealthOff = CShort(NumHealthOff.Value)
         _snapSpeedMult = CUShort(NumSpeedMult.Value)
-        ' _snapSkills / _snapFarModelDec are taken in LoadPlayerSkills (it clones the struct before seeding).
+        ' _snapFarModelDec sale de LoadPlayerSkills; el DNAM y las listas por fila salen del clon de abajo.
+        _snapRecord = _borrador.Copia()
         _snapKeywords = New List(Of UInteger)(_keywords)
         _snapAppr = New List(Of UInteger)(_appr)
-        _snapFactions = CloneFactions(_factions)
-        _snapInventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
         _snapDefaultOutfit = GetFid(TextBoxDefaultOutfit)
         _snapSleepOutfit = GetFid(TextBoxSleepOutfit)
-        _snapPerks = ClonePerks(_perks)
         _snapActorEffects = New List(Of UInteger)(_actorEffects)
-        _snapProperties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
         _snapCombosSig = CombosSignature(_combos)
     End Sub
 
@@ -599,18 +607,15 @@ Public Class NpcEditor_Form
         Dim selIdx = If(GridCombos.CurrentRow IsNot Nothing, GridCombos.CurrentRow.Index, -1)
         GridCombos.Rows.Clear()
         For i = 0 To _combos.Count - 1
-            Dim w = _combos(i)
-            Dim c = w.Combination
-            Dim name = If(Not String.IsNullOrEmpty(w.DisplayName), w.DisplayName,
-                          If(c IsNot Nothing AndAlso Not String.IsNullOrEmpty(c.DisplayName), c.DisplayName, "(unnamed)"))
+            Dim c = _combos(i)
             GridCombos.Rows.Add((i + 1).ToString(CultureInfo.InvariantCulture),
-                                name,
-                                If(c IsNot Nothing AndAlso c.IsDefault, "Yes", ""),
-                                If(w.IsEditorOnly, "Yes", ""),
-                                If(c IsNot Nothing, c.Includes.Count, 0).ToString(CultureInfo.InvariantCulture),
-                                If(c IsNot Nothing, c.Properties.Count, 0).ToString(CultureInfo.InvariantCulture),
-                                If(c IsNot Nothing, c.Keywords.Count, 0).ToString(CultureInfo.InvariantCulture),
-                                If(c Is Nothing, "raw", ""))
+                                If(Not String.IsNullOrEmpty(c.CombinationName), c.CombinationName, "(unnamed)"),
+                                If(c.ObjectModTemplateItemDefault, "Yes", ""),
+                                If(c.CombinationEditorOnly, "Yes", ""),
+                                c.Includes.Count.ToString(CultureInfo.InvariantCulture),
+                                c.Properties.Count.ToString(CultureInfo.InvariantCulture),
+                                c.Keywords.Count.ToString(CultureInfo.InvariantCulture),
+                                "")
         Next
         SelectGridRow(GridCombos, selIdx)
     End Sub
@@ -623,9 +628,11 @@ Public Class NpcEditor_Form
     End Function
 
     Private Sub OnAddCombo(sender As Object, e As EventArgs)
-        Using dlg As New ObtsCombinationEditor_Form(_mainForm, New ARMO_Combination())
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultCombination IsNot Nothing Then
-                _combos.Add(WrapCombination(dlg.ResultCombination))
+        Dim nueva = _comboHost.AgregarCombinacion(Nothing)
+        If nueva Is Nothing Then Return
+        Using dlg As New ObtsCombinationEditor_Form(_mainForm, nueva)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                _combos.Add(nueva)
                 RefreshCombosGrid()
             End If
         End Using
@@ -634,7 +641,9 @@ Public Class NpcEditor_Form
     Private Sub OnDuplicateCombo(sender As Object, e As EventArgs)
         Dim i = SelectedComboIndex()
         If i < 0 Then Return
-        _combos.Insert(i + 1, CloneCombo(_combos(i)))
+        Dim copia = _comboHost.AgregarCombinacion(_combos(i))
+        If copia Is Nothing Then Return
+        _combos.Insert(i + 1, copia)
         RefreshCombosGrid()
     End Sub
 
@@ -666,31 +675,20 @@ Public Class NpcEditor_Form
         EditComboAt(e.RowIndex)
     End Sub
 
-    ''' <summary>Edit the wrapper's inner <see cref="ARMO_Combination"/> in the shared modal sub-editor. The
-    ''' wrapper-level DisplayName / IsEditorOnly are synced from the sub-editor's result, and the preserved raw
-    ''' OBTS bytes are dropped (the combination was structurally edited, so the bytes no longer match).</summary>
+    ''' <summary>Edita una combinacion en el sub-editor compartido, el mismo que usa el editor de ARMO. El
+    ''' sub-editor trabaja sobre una copia aparte, así cancelar deja la fila como estaba.</summary>
     Private Sub EditComboAt(i As Integer)
         If i < 0 OrElse i >= _combos.Count Then Return
-        Dim w = _combos(i)
-        Dim seed = If(w.Combination, New ARMO_Combination())
-        If String.IsNullOrEmpty(seed.DisplayName) Then seed.DisplayName = w.DisplayName
-        If w.IsEditorOnly Then seed.IsEditorOnly = True
-        Using dlg As New ObtsCombinationEditor_Form(_mainForm, seed)
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultCombination IsNot Nothing Then
-                _combos(i) = WrapCombination(dlg.ResultCombination)
+        Dim trabajo = _comboHost.AgregarCombinacion(_combos(i))
+        If trabajo Is Nothing Then Return
+        Using dlg As New ObtsCombinationEditor_Form(_mainForm, trabajo)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                _combos(i) = trabajo
                 RefreshCombosGrid()
                 SelectGridRow(GridCombos, i)
             End If
         End Using
     End Sub
-
-    ''' <summary>Wrap a freshly-edited ARMO_Combination into an NPC OBTS wrapper (mirrors the CK's OBTF/FULL/OBTS
-    ''' sequence). RawObtsBytes = Nothing: the wrapper is now authored from the structured combination.</summary>
-    Private Shared Function WrapCombination(c As ARMO_Combination) As NPC_ObjectTemplateCombination
-        Return New NPC_ObjectTemplateCombination With {
-            .Combination = c, .DisplayName = If(c IsNot Nothing, c.DisplayName, ""),
-            .IsEditorOnly = c IsNot Nothing AndAlso c.IsEditorOnly, .RawObtsBytes = Nothing}
-    End Function
 
     ' =====================================================================
     ' Keywords
@@ -768,9 +766,9 @@ Public Class NpcEditor_Form
     Private Sub RefreshFactionsGrid()
         Dim selIdx = If(GridFactions.CurrentRow IsNot Nothing, GridFactions.CurrentRow.Index, -1)
         GridFactions.Rows.Clear()
-        For Each f In _factions
-            GridFactions.Rows.Add($"{DisplayFor(f.FactionFormID)} [0x{f.FactionFormID:X8}]",
-                                  f.Rank.ToString(CultureInfo.InvariantCulture))
+        For Each f In _borrador.Factions
+            GridFactions.Rows.Add($"{DisplayFor(f.Faction)} [0x{f.Faction:X8}]",
+                                  f.FactionRank.ToString(CultureInfo.InvariantCulture))
         Next
         SelectGridRow(GridFactions, selIdx)
     End Sub
@@ -778,15 +776,22 @@ Public Class NpcEditor_Form
     Private Function SelectedFactionIndex() As Integer
         If GridFactions.CurrentRow Is Nothing Then Return -1
         Dim i = GridFactions.CurrentRow.Index
-        If i < 0 OrElse i >= _factions.Count Then Return -1
+        If i < 0 OrElse i >= _borrador.Factions.Count Then Return -1
         Return i
     End Function
 
+    ''' <summary>Agrega una faccion. La entrada se crea en el borrador ANTES de abrir el sub-editor -es un
+    ''' nodo del arbol, no un objeto suelto- y se saca de vuelta si el usuario cancela.</summary>
     Private Sub OnAddFaction(sender As Object, e As EventArgs)
-        Using dlg As New NpcFactionEntryEditor_Form(_mainForm, New NPC_FactionEntry())
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _factions.Add(dlg.ResultEntry)
+        Dim entrada = _borrador.AgregarFactions()
+        If entrada Is Nothing Then Return
+        Using dlg As New NpcFactionEntryEditor_Form(_mainForm, 0UI, 0)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.Faction = dlg.ResultFormID
+                entrada.FactionRank = dlg.ResultRank
                 RefreshFactionsGrid()
+            Else
+                _borrador.QuitarFactions(_borrador.Factions.Count - 1)
             End If
         End Using
     End Sub
@@ -801,10 +806,12 @@ Public Class NpcEditor_Form
     End Sub
 
     Private Sub EditFactionAt(i As Integer)
-        If i < 0 OrElse i >= _factions.Count Then Return
-        Using dlg As New NpcFactionEntryEditor_Form(_mainForm, _factions(i))
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _factions(i) = dlg.ResultEntry
+        If i < 0 OrElse i >= _borrador.Factions.Count Then Return
+        Dim entrada = _borrador.Factions(i)
+        Using dlg As New NpcFactionEntryEditor_Form(_mainForm, entrada.Faction, entrada.FactionRank)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.Faction = dlg.ResultFormID
+                entrada.FactionRank = dlg.ResultRank
                 RefreshFactionsGrid()
                 SelectGridRow(GridFactions, i)
             End If
@@ -814,7 +821,7 @@ Public Class NpcEditor_Form
     Private Sub OnRemoveFaction(sender As Object, e As EventArgs)
         Dim i = SelectedFactionIndex()
         If i < 0 Then Return
-        _factions.RemoveAt(i)
+        _borrador.QuitarFactions(i)
         RefreshFactionsGrid()
     End Sub
 
@@ -825,9 +832,9 @@ Public Class NpcEditor_Form
     Private Sub RefreshInventoryGrid()
         Dim selIdx = If(GridInventory.CurrentRow IsNot Nothing, GridInventory.CurrentRow.Index, -1)
         GridInventory.Rows.Clear()
-        For Each it In _inventory
-            GridInventory.Rows.Add($"{DisplayFor(it.ItemFormID)} [0x{it.ItemFormID:X8}]",
-                                   it.Count.ToString(CultureInfo.InvariantCulture))
+        For Each it In _borrador.Items
+            GridInventory.Rows.Add($"{DisplayFor(it.Item)} [0x{it.Item:X8}]",
+                                   it.ItemCount.ToString(CultureInfo.InvariantCulture))
         Next
         SelectGridRow(GridInventory, selIdx)
     End Sub
@@ -835,15 +842,20 @@ Public Class NpcEditor_Form
     Private Function SelectedItemIndex() As Integer
         If GridInventory.CurrentRow Is Nothing Then Return -1
         Dim i = GridInventory.CurrentRow.Index
-        If i < 0 OrElse i >= _inventory.Count Then Return -1
+        If i < 0 OrElse i >= _borrador.Items.Count Then Return -1
         Return i
     End Function
 
     Private Sub OnAddItem(sender As Object, e As EventArgs)
-        Using dlg As New NpcInventoryEntryEditor_Form(_mainForm, New NPC_InventoryItem())
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _inventory.Add(dlg.ResultEntry)
+        Dim entrada = _borrador.AgregarItems()
+        If entrada Is Nothing Then Return
+        Using dlg As New NpcInventoryEntryEditor_Form(_mainForm, 0UI, 1)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.Item = dlg.ResultFormID
+                entrada.ItemCount = dlg.ResultCount
                 RefreshInventoryGrid()
+            Else
+                _borrador.QuitarItems(_borrador.Items.Count - 1)
             End If
         End Using
     End Sub
@@ -857,11 +869,15 @@ Public Class NpcEditor_Form
         EditItemAt(e.RowIndex)
     End Sub
 
+    ''' <summary>Edita item y cantidad de una entrada. El bloque COED de propiedad, que el sub-editor no
+    ''' muestra, queda intacto: se escribe sobre la MISMA entrada del borrador, no sobre una copia.</summary>
     Private Sub EditItemAt(i As Integer)
-        If i < 0 OrElse i >= _inventory.Count Then Return
-        Using dlg As New NpcInventoryEntryEditor_Form(_mainForm, _inventory(i))
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _inventory(i) = dlg.ResultEntry
+        If i < 0 OrElse i >= _borrador.Items.Count Then Return
+        Dim entrada = _borrador.Items(i)
+        Using dlg As New NpcInventoryEntryEditor_Form(_mainForm, entrada.Item, entrada.ItemCount)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.Item = dlg.ResultFormID
+                entrada.ItemCount = dlg.ResultCount
                 RefreshInventoryGrid()
                 SelectGridRow(GridInventory, i)
             End If
@@ -871,7 +887,7 @@ Public Class NpcEditor_Form
     Private Sub OnRemoveItem(sender As Object, e As EventArgs)
         Dim i = SelectedItemIndex()
         If i < 0 Then Return
-        _inventory.RemoveAt(i)
+        _borrador.QuitarItems(i)
         RefreshInventoryGrid()
     End Sub
 
@@ -882,9 +898,9 @@ Public Class NpcEditor_Form
     Private Sub RefreshPerksGrid()
         Dim selIdx = If(GridPerks.CurrentRow IsNot Nothing, GridPerks.CurrentRow.Index, -1)
         GridPerks.Rows.Clear()
-        For Each p In _perks
-            GridPerks.Rows.Add($"{DisplayFor(p.PerkFormID)} [0x{p.PerkFormID:X8}]",
-                               p.Rank.ToString(CultureInfo.InvariantCulture))
+        For Each p In _borrador.Perks
+            GridPerks.Rows.Add($"{DisplayFor(p.Perk)} [0x{p.Perk:X8}]",
+                               p.PerkRank.ToString(CultureInfo.InvariantCulture))
         Next
         SelectGridRow(GridPerks, selIdx)
     End Sub
@@ -892,15 +908,20 @@ Public Class NpcEditor_Form
     Private Function SelectedPerkIndex() As Integer
         If GridPerks.CurrentRow Is Nothing Then Return -1
         Dim i = GridPerks.CurrentRow.Index
-        If i < 0 OrElse i >= _perks.Count Then Return -1
+        If i < 0 OrElse i >= _borrador.Perks.Count Then Return -1
         Return i
     End Function
 
     Private Sub OnAddPerk(sender As Object, e As EventArgs)
-        Using dlg As New NpcPerkEntryEditor_Form(_mainForm, New NPC_PerkEntry())
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _perks.Add(dlg.ResultEntry)
+        Dim entrada = _borrador.AgregarPerks()
+        If entrada Is Nothing Then Return
+        Using dlg As New NpcPerkEntryEditor_Form(_mainForm, 0UI, 0)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.Perk = dlg.ResultFormID
+                entrada.PerkRank = dlg.ResultRank
                 RefreshPerksGrid()
+            Else
+                _borrador.QuitarPerks(_borrador.Perks.Count - 1)
             End If
         End Using
     End Sub
@@ -915,10 +936,12 @@ Public Class NpcEditor_Form
     End Sub
 
     Private Sub EditPerkAt(i As Integer)
-        If i < 0 OrElse i >= _perks.Count Then Return
-        Using dlg As New NpcPerkEntryEditor_Form(_mainForm, _perks(i))
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _perks(i) = dlg.ResultEntry
+        If i < 0 OrElse i >= _borrador.Perks.Count Then Return
+        Dim entrada = _borrador.Perks(i)
+        Using dlg As New NpcPerkEntryEditor_Form(_mainForm, entrada.Perk, entrada.PerkRank)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.Perk = dlg.ResultFormID
+                entrada.PerkRank = dlg.ResultRank
                 RefreshPerksGrid()
                 SelectGridRow(GridPerks, i)
             End If
@@ -928,7 +951,7 @@ Public Class NpcEditor_Form
     Private Sub OnRemovePerk(sender As Object, e As EventArgs)
         Dim i = SelectedPerkIndex()
         If i < 0 Then Return
-        _perks.RemoveAt(i)
+        _borrador.QuitarPerks(i)
         RefreshPerksGrid()
     End Sub
 
@@ -960,12 +983,24 @@ Public Class NpcEditor_Form
     ' Properties (PRPS — AVIF FormID + f32 Value)
     ' =====================================================================
 
+    ''' <summary>El borrador visto como record de Fallout 4, o Nothing en Skyrim: PRPS es de Fallout 4 y
+    ''' la pestaña que lo muestra no existe en el otro juego.</summary>
+    Private Function BorradorFo4() As Canon.NpcFO4
+        Return TryCast(_borrador, Canon.NpcFO4)
+    End Function
+
+    Private Function PropiedadesDelBorrador() As IReadOnlyList(Of Canon.NpcFO4_Properties2)
+        Dim nf = BorradorFo4()
+        If nf Is Nothing Then Return Array.Empty(Of Canon.NpcFO4_Properties2)()
+        Return nf.Properties2
+    End Function
+
     Private Sub RefreshPropsGrid()
         Dim selIdx = If(GridProps.CurrentRow IsNot Nothing, GridProps.CurrentRow.Index, -1)
         GridProps.Rows.Clear()
-        For Each p In _properties
-            GridProps.Rows.Add($"{DisplayFor(p.ActorValueFormID)} [0x{p.ActorValueFormID:X8}]",
-                               p.Value.ToString(CultureInfo.InvariantCulture))
+        For Each p In PropiedadesDelBorrador()
+            GridProps.Rows.Add($"{DisplayFor(p.PropertyActorValue)} [0x{p.PropertyActorValue:X8}]",
+                               p.PropertyValue.ToString(CultureInfo.InvariantCulture))
         Next
         SelectGridRow(GridProps, selIdx)
     End Sub
@@ -973,15 +1008,22 @@ Public Class NpcEditor_Form
     Private Function SelectedPropIndex() As Integer
         If GridProps.CurrentRow Is Nothing Then Return -1
         Dim i = GridProps.CurrentRow.Index
-        If i < 0 OrElse i >= _properties.Count Then Return -1
+        If i < 0 OrElse i >= PropiedadesDelBorrador().Count Then Return -1
         Return i
     End Function
 
     Private Sub OnAddProp(sender As Object, e As EventArgs)
-        Using dlg As New NpcPropertyEntryEditor_Form(_mainForm, New NPC_PropertyEntry())
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _properties.Add(dlg.ResultEntry)
+        Dim nf = BorradorFo4()
+        If nf Is Nothing Then Return
+        Dim entrada = nf.AgregarProperties2()
+        If entrada Is Nothing Then Return
+        Using dlg As New NpcPropertyEntryEditor_Form(_mainForm, 0UI, 0.0F)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.PropertyActorValue = dlg.ResultFormID
+                entrada.PropertyValue = dlg.ResultValue
                 RefreshPropsGrid()
+            Else
+                nf.QuitarProperties2(nf.Properties2.Count - 1)
             End If
         End Using
     End Sub
@@ -996,10 +1038,13 @@ Public Class NpcEditor_Form
     End Sub
 
     Private Sub EditPropAt(i As Integer)
-        If i < 0 OrElse i >= _properties.Count Then Return
-        Using dlg As New NpcPropertyEntryEditor_Form(_mainForm, _properties(i))
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
-                _properties(i) = dlg.ResultEntry
+        Dim lista = PropiedadesDelBorrador()
+        If i < 0 OrElse i >= lista.Count Then Return
+        Dim entrada = lista(i)
+        Using dlg As New NpcPropertyEntryEditor_Form(_mainForm, entrada.PropertyActorValue, entrada.PropertyValue)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                entrada.PropertyActorValue = dlg.ResultFormID
+                entrada.PropertyValue = dlg.ResultValue
                 RefreshPropsGrid()
                 SelectGridRow(GridProps, i)
             End If
@@ -1007,9 +1052,11 @@ Public Class NpcEditor_Form
     End Sub
 
     Private Sub OnRemoveProp(sender As Object, e As EventArgs)
+        Dim nf = BorradorFo4()
+        If nf Is Nothing Then Return
         Dim i = SelectedPropIndex()
         If i < 0 Then Return
-        _properties.RemoveAt(i)
+        nf.QuitarProperties2(i)
         RefreshPropsGrid()
     End Sub
 
@@ -1032,7 +1079,7 @@ Public Class NpcEditor_Form
         Dim flagsChanged = changedFlagBits <> 0UI
         Dim unsupportedChangedFlagBits = changedFlagBits And
                                          (_managedFlagMask And Not NpcTemplateHelpers.ClassifiedAcbsFlagsMask)
-        If unsupportedChangedFlagBits <> 0UI AndAlso _npc.TemplateFlags <> 0US Then
+        If unsupportedChangedFlagBits <> 0UI AndAlso _npc.Record.ConfigurationTemplateFlags <> 0US Then
             Dim flagNames = String.Join(", ", _flagChecks.
                                         Where(Function(fc) (unsupportedChangedFlagBits And fc.Mask) <> 0UI).
                                         Select(Function(fc) fc.Chk.Text))
@@ -1051,18 +1098,22 @@ Public Class NpcEditor_Form
                             (GetFid(TextBoxRace) <> _snapRace) OrElse (GetFid(TextBoxVoice) <> _snapVoice) OrElse
                             (GetFid(TextBoxClass) <> _snapClass) OrElse (GetFid(TextBoxZnam) <> _snapZnam) OrElse
                             CShort(NumDisp.Value) <> _snapDisp OrElse combosChanged OrElse apprChanged
-        ' DNAM, level and the SSE-only ACBS offsets ride Use-Stats. Class and Combat Style are Traits per
-        ' xEdit's historical actor-template field callbacks; do not move them here without runtime evidence.
+        ' DNAM, level and the SSE-only ACBS offsets ride Use-Stats. Class and Combat Style are
+        ' Traits under the historical FNV actor-template field categorization (see
+        ' NpcTemplateHelpers); do not move them here without runtime evidence.
         Dim skillsChanged = PlayerSkillsChanged()
+        ' El DNAM del borrador se compone ACA, antes de registrar el override y antes de aplicar: los dos
+        ' salen del mismo bloque.
+        If skillsChanged Then ComposePlayerSkills()
         Dim statsChanged = (changedFlagBits And NpcTemplateHelpers.StatsAcbsFlagsMask) <> 0UI OrElse CurrentLevelRaw() <> _snapLevel OrElse
                            CShort(NumXp.Value) <> _snapXp OrElse CUShort(NumCalcMin.Value) <> _snapCalcMin OrElse
                            CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse skillsChanged OrElse SseAcbsOffsetsChanged()
         Dim keywordsChanged = Not SequenceEqualU(_keywords, _snapKeywords)
-        Dim factionsChanged = Not FactionsEqual(_factions, _snapFactions)
-        Dim inventoryChanged = Not InventoryEqual(_inventory, _snapInventory)
-        Dim perksChanged = Not PerksEqual(_perks, _snapPerks)
+        Dim factionsChanged = Not FactionsEqual(_borrador.Factions, _snapRecord.Factions)
+        Dim inventoryChanged = Not InventoryEqual(_borrador.Items, _snapRecord.Items)
+        Dim perksChanged = Not PerksEqual(_borrador.Perks, _snapRecord.Perks)
         Dim actorEffectsChanged = Not SequenceEqualU(_actorEffects, _snapActorEffects)
-        Dim propertiesChanged = Not PropertiesEqual(_properties, _snapProperties)
+        Dim propertiesChanged = Not PropertiesEqual(BorradorFo4(), TryCast(_snapRecord, Canon.NpcFO4))
         Dim defaultOutfitChanged = GetFid(TextBoxDefaultOutfit) <> _snapDefaultOutfit
         Dim sleepOutfitChanged = GetFid(TextBoxSleepOutfit) <> _snapSleepOutfit
 
@@ -1171,26 +1222,56 @@ Public Class NpcEditor_Form
         If CShort(NumStaminaOff.Value) <> _snapStaminaOff Then ov.StaminaOffset = CShort(NumStaminaOff.Value)
         If CShort(NumHealthOff.Value) <> _snapHealthOff Then ov.HealthOffset = CShort(NumHealthOff.Value)
         If CUShort(NumSpeedMult.Value) <> _snapSpeedMult Then ov.SpeedMultiplier = CUShort(NumSpeedMult.Value)
-        If PlayerSkillsChanged() Then ov.SsePlayerSkills = ComposePlayerSkills()
+        ' El DNAM ya está compuesto en el borrador (OnOk lo hace antes de llegar acá); el override se lleva
+        ' un clon para no compartir nodos con lo que el editor deja vivo.
+        If PlayerSkillsChanged() Then ov.SsePlayerSkills = TryCast(_borrador.Copia(), Canon.NpcSSE)
         If GetFid(TextBoxRace) <> _snapRace Then ov.RaceFormID = GetFid(TextBoxRace)
         If GetFid(TextBoxVoice) <> _snapVoice Then ov.VoiceFormID = GetFid(TextBoxVoice)
         If GetFid(TextBoxClass) <> _snapClass Then ov.ClassFormID = GetFid(TextBoxClass)
         If GetFid(TextBoxZnam) <> _snapZnam Then ov.CombatStyleFormID = GetFid(TextBoxZnam)
         If keywordsChanged Then ov.Keywords = New List(Of UInteger)(_keywords)
         If apprChanged Then ov.AttachParentSlots = New List(Of UInteger)(_appr)
-        If factionsChanged Then ov.Factions = _factions.Select(Function(f) New NPC_FactionEntry With {
-            .FactionFormID = f.FactionFormID, .Rank = f.Rank,
-            .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))}).ToList()
-        If inventoryChanged Then ov.Inventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
-        If perksChanged Then ov.Perks = ClonePerks(_perks)
+        ' Las listas por fila salen de UN clon del borrador: el override se queda con nodos propios, que no
+        ' comparte con el editor ni con el record vivo.
+        If factionsChanged OrElse inventoryChanged OrElse perksChanged OrElse propertiesChanged Then
+            Dim guardado = _borrador.Copia()
+            If factionsChanged Then ov.Factions = guardado.Factions.ToList()
+            If inventoryChanged Then ov.Inventory = guardado.Items.ToList()
+            If perksChanged Then ov.Perks = guardado.Perks.ToList()
+            If propertiesChanged Then
+                Dim gf = TryCast(guardado, Canon.NpcFO4)
+                If gf IsNot Nothing Then ov.Properties = gf.Properties2.ToList()
+            End If
+        End If
         If actorEffectsChanged Then ov.ActorEffects = New List(Of UInteger)(_actorEffects)
-        If propertiesChanged Then ov.Properties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
-        If combosChanged Then ov.ObjectTemplateCombinations = CloneCombos(_combos)
+        If combosChanged Then ov.ObjectTemplateCombinations = CombosParaElOverride()
         ov.TraitsChanged = ov.TraitsChanged OrElse traitsChanged
         ov.BaseDataChanged = ov.BaseDataChanged OrElse baseDataChanged
         ov.StatsChanged = ov.StatsChanged OrElse statsChanged
 
         _mainForm.SetNpcRecordOverride(_npcFormID, ov)
+    End Sub
+
+    ''' <summary>Escribe un texto en el record, o SACA el subrecord cuando el texto queda vacio y el
+    ''' record no lo traia. Escribirlo vacio no es lo mismo: crea un subrecord con la cadena vacia.</summary>
+    Private Shared Sub EscribirTextoOSacar(destino As Canon.INpc, texto As String, yaLoTraia As Boolean,
+                                           firma As String, escribir As Action(Of String))
+        If texto.Length > 0 OrElse yaLoTraia Then
+            escribir(texto)
+        Else
+            destino.QuitarSubrecord(firma)
+        End If
+    End Sub
+
+    ''' <summary>Escribe una referencia en el record, o SACA el subrecord cuando vale cero: el picker
+    ''' vacio significa "ninguno", no "una referencia a cero".</summary>
+    Private Shared Sub EscribirReferenciaOSacar(destino As Canon.INpc, fid As UInteger,
+                                                firma As String, escribir As Action(Of UInteger))
+        If fid <> 0UI Then
+            escribir(fid)
+        Else
+            destino.QuitarSubrecord(firma)
+        End If
     End Sub
 
     ''' <summary>Write the panel state into <see cref="_npc"/> (in place — the caller's live cache instance).</summary>
@@ -1200,97 +1281,55 @@ Public Class NpcEditor_Form
                            perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean)
         ' General identity.
         If baseDataChanged Then
-            Dim full = TextBoxFull.Text.Trim()
-            _npc.FullName = full
-            _npc.HasFull = _npc.HasFull OrElse full.Length > 0
-            Dim shortN = TextBoxShort.Text.Trim()
-            _npc.ShortName = shortN
-            _npc.HasShortName = _npc.HasShortName OrElse shortN.Length > 0
+            ' Escribir el campo CREA el subrecord; con el texto vacio y el record sin traerlo, se saca,
+            ' que es distinto de emitir un FULL vacio.
+            EscribirTextoOSacar(_npc.Record, TextBoxFull.Text.Trim(), _npc.Record.NamePresente,
+                                "FULL", Sub(v) _npc.Record.Name = v)
+            EscribirTextoOSacar(_npc.Record, TextBoxShort.Text.Trim(), _npc.Record.ShortNamePresente,
+                                "SHRT", Sub(v) _npc.Record.ShortName = v)
         End If
 
         If traitsChanged Then
-            Dim raceFid = GetFid(TextBoxRace)
-            _npc.RaceFormID = raceFid
-            _npc.HasRace = raceFid <> 0UI
-            Dim voiceFid = GetFid(TextBoxVoice)
-            _npc.VoiceFormID = voiceFid
-            _npc.HasVoice = voiceFid <> 0UI
-            Dim classFid = GetFid(TextBoxClass)
-            _npc.ClassFormID = classFid
-            _npc.HasClass = classFid <> 0UI
-            Dim znamFid = GetFid(TextBoxZnam)
-            _npc.CombatStyleFormID = znamFid
-            _npc.HasCombatStyle = znamFid <> 0UI
+            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxRace), "RNAM", Sub(v) _npc.Record.Race = v)
+            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxVoice), "VTCK", Sub(v) _npc.Record.Voice = v)
+            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxClass), "CNAM", Sub(v) _npc.Record.[Class] = v)
+            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxZnam), "ZNAM", Sub(v) _npc.Record.CombatStyle = v)
         End If
 
-        ' ACBS struct (create if missing — required subrecord).
-        If _npc.Acbs Is Nothing AndAlso (traitsChanged OrElse statsChanged OrElse changedFlagBits <> 0UI) Then
-            _npc.Acbs = New NPC_AcbsData()
-        End If
-        If traitsChanged Then _npc.Acbs.DispositionBase = CShort(NumDisp.Value)
+        If traitsChanged Then _npc.Record.PonerBaseDeDisposicion(CShort(NumDisp.Value))
         If changedFlagBits <> 0UI Then
-            Dim mergedFlags = (_npc.Acbs.Flags And Not changedFlagBits) Or (newFlags And changedFlagBits)
-            _npc.Acbs.Flags = mergedFlags
-            _npc.AcbsFlags = mergedFlags
-            _npc.IsFemale = (mergedFlags And &H1UI) <> 0UI
+            _npc.Record.ConfigurationFlags = (_npc.Record.ConfigurationFlags And Not changedFlagBits) Or
+                                             (newFlags And changedFlagBits)
         End If
         If statsChanged Then
-            _npc.Acbs.LevelOrLevelMult = CurrentLevelRaw()
-            _npc.Acbs.XpValueOffset = CShort(NumXp.Value)
-            _npc.Acbs.CalcMinLevel = CUShort(NumCalcMin.Value)
-            _npc.Acbs.CalcMaxLevel = CUShort(NumCalcMax.Value)
-        ' SSE-only ACBS offsets. Written only under Skyrim: on FO4 the spinners are hidden (never seeded from the
-        ' record, so they read 0) and writing them would zero fields the FO4 writer ignores but a later game
-        ' switch would not — keep the parse untouched instead.
-            If _isSkyrim Then
-                _npc.Acbs.MagickaOffset = CShort(NumMagickaOff.Value)
-                _npc.Acbs.StaminaOffset = CShort(NumStaminaOff.Value)
-                _npc.Acbs.HealthOffset = CShort(NumHealthOff.Value)
-                _npc.Acbs.SpeedMultiplier = CUShort(NumSpeedMult.Value)
-            ' DNAM Player Skills — only on a real edit, so an NPC whose DNAM was too short to model keeps its
-            ' verbatim raw block instead of being silently replaced by a well-formed zeroed one.
-                If skillsChanged Then _npc.SsePlayerSkills = ComposePlayerSkills()
+            _npc.Record.PonerNivelDeConfiguracion(CurrentLevelRaw())
+            _npc.Record.ConfigurationCalcMinLevel = CUShort(NumCalcMin.Value)
+            _npc.Record.ConfigurationCalcMaxLevel = CUShort(NumCalcMax.Value)
+            Dim nf4 = TryCast(_npc.Record, Canon.NpcFO4)
+            If nf4 IsNot Nothing Then nf4.ConfigurationXPValueOffset = CShort(NumXp.Value)
+            ' Los desplazamientos de ACBS son de Skyrim. En Fallout 4 los controles estan ocultos y nunca se
+            ' sembraron del record, asi que escribirlos pondria ceros donde el record tiene otra cosa.
+            Dim ns4 = TryCast(_npc.Record, Canon.NpcSSE)
+            If _isSkyrim AndAlso ns4 IsNot Nothing Then
+                ns4.ConfigurationMagickaOffset = CShort(NumMagickaOff.Value)
+                ns4.ConfigurationStaminaOffset = CShort(NumStaminaOff.Value)
+                ns4.ConfigurationHealthOffset = CShort(NumHealthOff.Value)
+                ns4.ConfigurationSpeedMultiplier = CUShort(NumSpeedMult.Value)
+                ' DNAM: solo con una edicion real, para que un NPC cuyo DNAM no se pudo modelar conserve el
+                ' bloque tal cual en vez de que lo reemplace uno bien formado lleno de ceros. Viaja como
+                ' subrecord entero, asi que lo que ningun control muestra pasa sin tocarse.
+                If skillsChanged Then _npc.Record.CopiarSubrecord(_borrador, "DNAM")
             End If
         End If
 
-        ' Keywords.
-        If keywordsChanged Then
-            _npc.KeywordFormIDs = New List(Of UInteger)(_keywords)
-            _npc.HasKsizCounter = _npc.HasKsizCounter OrElse _keywords.Count > 0
-        End If
-
-        ' Attach Parent Slots (APPR).
-        If traitsChanged Then _npc.AttachParentSlotFormIDs = New List(Of UInteger)(_appr)
-
-        ' Factions (deep-copy out).
-        If factionsChanged Then _npc.Factions = CloneFactions(_factions)
-
-        ' Inventory (deep-copy out — carries COED).
-        If inventoryChanged Then
-            _npc.Inventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
-            _npc.HasCoctCounter = _npc.HasCoctCounter OrElse _inventory.Count > 0
-        End If
-
-        ' Perks (deep-copy out).
-        If perksChanged Then
-            _npc.Perks = ClonePerks(_perks)
-            _npc.HasPrkzCounter = _npc.HasPrkzCounter OrElse _perks.Count > 0
-        End If
-
-        ' Actor Effects (SPLO).
-        If actorEffectsChanged Then
-            _npc.ActorEffectFormIDs = New List(Of UInteger)(_actorEffects)
-            _npc.HasSpctCounter = _npc.HasSpctCounter OrElse _actorEffects.Count > 0
-        End If
-
-        ' Properties (PRPS) (deep-copy out).
-        If propertiesChanged Then _npc.Properties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
-
-        ' Object Template (deep-copy out).
-        If traitsChanged Then
-            _npc.ObjectTemplateCombinations = CloneCombos(_combos)
-            _npc.HasObjectTemplate = _npc.HasObjectTemplate OrElse _combos.Count > 0
-        End If
+        If keywordsChanged Then _npc.Record.PonerPalabrasClave(_keywords)
+        If traitsChanged Then _npc.Record.PonerRanurasDeEnganche(_appr)
+        If factionsChanged Then _npc.Record.PonerFacciones(_borrador.Factions)
+        If inventoryChanged Then _npc.Record.PonerInventario(_borrador.Items)
+        If perksChanged Then _npc.Record.PonerVentajas(_borrador.Perks)
+        If actorEffectsChanged Then _npc.Record.PonerEfectosDeActor(_actorEffects)
+        If propertiesChanged Then _npc.Record.PonerPropiedades(PropiedadesDelBorrador())
+        If traitsChanged Then _npc.Record.ReemplazarCombinations(_combos)
     End Sub
 
     ' =====================================================================
@@ -1334,65 +1373,36 @@ Public Class NpcEditor_Form
     ' Deep-copy + equality helpers
     ' =====================================================================
 
-    Private Shared Function CloneInventoryItem(it As NPC_InventoryItem) As NPC_InventoryItem
-        Return New NPC_InventoryItem With {
-            .ItemFormID = it.ItemFormID, .Count = it.Count, .HasCoed = it.HasCoed,
-            .CoedOwnerFormID = it.CoedOwnerFormID, .CoedOwnerExtra = it.CoedOwnerExtra,
-            .CoedExtraIsFormID = it.CoedExtraIsFormID, .CoedItemCondition = it.CoedItemCondition}
+    ''' <summary>Una copia independiente de la lista, para que el override guardado no comparta nodos con
+    ''' lo que el editor siga tocando. Las combinaciones se cuelgan de un NPC_ aparte -otra copia del que las
+    ''' trajo- que sólo existe para sostenerlas.</summary>
+    Private Function CombosParaElOverride() As List(Of Canon.IBloque_Combinations)
+        Dim host = _comboHost.Copia()
+        If host Is Nothing Then Return New List(Of Canon.IBloque_Combinations)
+        host.ReemplazarCombinations(_combos)
+        Return New List(Of Canon.IBloque_Combinations)(host.CombinacionesDelNpc())
     End Function
 
-    Private Shared Function CloneFactions(src As IEnumerable(Of NPC_FactionEntry)) As List(Of NPC_FactionEntry)
-        Return src.Select(Function(f) New NPC_FactionEntry With {
-            .FactionFormID = f.FactionFormID, .Rank = f.Rank,
-            .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))}).ToList()
-    End Function
-
-    Private Shared Function ClonePerk(p As NPC_PerkEntry) As NPC_PerkEntry
-        Return New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank,
-            .SseUnused = If(p.SseUnused Is Nothing, Nothing, CType(p.SseUnused.Clone(), Byte()))}
-    End Function
-
-    Private Shared Function ClonePerks(src As IEnumerable(Of NPC_PerkEntry)) As List(Of NPC_PerkEntry)
-        Return src.Select(AddressOf ClonePerk).ToList()
-    End Function
-
-    Private Shared Function CloneCombo(w As NPC_ObjectTemplateCombination) As NPC_ObjectTemplateCombination
-        Dim innerCopy As ARMO_Combination = Nothing
-        If w.Combination IsNot Nothing Then
-            innerCopy = ArmoDraft.CloneCombinations(New List(Of ARMO_Combination) From {w.Combination})(0)
-        End If
-        Return New NPC_ObjectTemplateCombination With {
-            .IsEditorOnly = w.IsEditorOnly, .DisplayName = w.DisplayName, .Combination = innerCopy,
-            .RawObtsBytes = If(w.RawObtsBytes Is Nothing, Nothing, CType(w.RawObtsBytes.Clone(), Byte()))}
-    End Function
-
-    Private Shared Function CloneCombos(src As List(Of NPC_ObjectTemplateCombination)) As List(Of NPC_ObjectTemplateCombination)
-        Dim dst As New List(Of NPC_ObjectTemplateCombination)
-        If src Is Nothing Then Return dst
-        For Each w In src
-            If w Is Nothing Then Continue For
-            dst.Add(CloneCombo(w))
-        Next
-        Return dst
-    End Function
-
-    ''' <summary>Content signature of the OBTS wrapper list for change detection (name + flags + inner combination
-    ''' includes/props/keywords + preserved-raw marker). Order-sensitive.</summary>
-    Private Shared Function CombosSignature(list As List(Of NPC_ObjectTemplateCombination)) As String
+    ''' <summary>Firma de contenido de la lista de combinaciones, para detectar cambios: nombre, banderas,
+    ''' includes, propiedades y palabras clave. Sensible al orden.</summary>
+    Private Shared Function CombosSignature(list As List(Of Canon.IBloque_Combinations)) As String
         Dim parts As New List(Of String)
-        For Each w In list
-            Dim c = w.Combination
-            Dim incl = "", props = "", kwds = ""
-            If c IsNot Nothing Then
-                incl = String.Join("|", c.Includes.Select(Function(i) i.ModFormID.ToString("X8") & ":" & i.AttachPointIndex.ToString(CultureInfo.InvariantCulture) & ":" & If(i.IsOptional, "1", "0") & If(i.DontUseAll, "1", "0")))
-                props = String.Join("|", c.Properties.Select(Function(p) $"{CInt(p.ValueType)}/{p.FunctionType}/{p.PropertyIndex}/{p.Value1FormID:X8}/{BitConverter.ToInt32(BitConverter.GetBytes(p.Value1), 0)}/{BitConverter.ToInt32(BitConverter.GetBytes(p.Value2), 0)}"))
-                kwds = String.Join(",", c.Keywords.Select(Function(k) k.ToString("X8")))
-            End If
-            Dim rawLen = If(w.RawObtsBytes IsNot Nothing, w.RawObtsBytes.Length, -1)
-            Dim isDefault = If(c IsNot Nothing AndAlso c.IsDefault, "1", "0")
-            parts.Add($"{w.DisplayName}#{If(w.IsEditorOnly, 1, 0)}#{isDefault}#{incl}#{props}#{kwds}#{rawLen}")
+        For Each c In list
+            If c Is Nothing Then Continue For
+            Dim incl = String.Join("|", c.Includes.Select(Function(i) i.IncludeMod.ToString("X8") & ":" & i.IncludeAttachPointIndex.ToString(CultureInfo.InvariantCulture) & ":" & If(i.IncludeOptional, "1", "0") & If(i.IncludeDonTUseAll, "1", "0")))
+            Dim props = String.Join("|", c.Properties.Select(Function(v) DescribirPropiedad(v)))
+            Dim kwds = String.Join(",", c.Keywords.Select(Function(k) k.Keyword.ToString("X8")))
+            parts.Add($"{c.CombinationName}#{If(c.CombinationEditorOnly, 1, 0)}#{If(c.ObjectModTemplateItemDefault, 1, 0)}#{incl}#{props}#{kwds}")
         Next
         Return String.Join("~", parts)
+    End Function
+
+    ''' <summary>La parte de una Property que cambia lo que el Object Template aplica, en texto.</summary>
+    Private Shared Function DescribirPropiedad(vista As Canon.IBloque_Properties4) As String
+        Dim p = vista.LeerPropiedad()
+        Return $"{CInt(p.ValueType)}/{p.FunctionType}/{p.PropertyIndex}/{p.Value1FormID:X8}/" &
+               $"{BitConverter.ToInt32(BitConverter.GetBytes(p.Value1), 0)}/" &
+               $"{BitConverter.ToInt32(BitConverter.GetBytes(p.Value2), 0)}"
     End Function
 
     Private Shared Function SequenceEqualU(a As List(Of UInteger), b As List(Of UInteger)) As Boolean
@@ -1403,34 +1413,41 @@ Public Class NpcEditor_Form
         Return True
     End Function
 
-    Private Shared Function FactionsEqual(a As List(Of NPC_FactionEntry), b As List(Of NPC_FactionEntry)) As Boolean
+    Private Shared Function FactionsEqual(a As IReadOnlyList(Of Canon.INpc_Factions),
+                                          b As IReadOnlyList(Of Canon.INpc_Factions)) As Boolean
         If a.Count <> b.Count Then Return False
         For i = 0 To a.Count - 1
-            If a(i).FactionFormID <> b(i).FactionFormID OrElse a(i).Rank <> b(i).Rank Then Return False
+            If a(i).Faction <> b(i).Faction OrElse a(i).FactionRank <> b(i).FactionRank Then Return False
         Next
         Return True
     End Function
 
-    Private Shared Function InventoryEqual(a As List(Of NPC_InventoryItem), b As List(Of NPC_InventoryItem)) As Boolean
+    Private Shared Function InventoryEqual(a As IReadOnlyList(Of Canon.INpc_Items),
+                                           b As IReadOnlyList(Of Canon.INpc_Items)) As Boolean
         If a.Count <> b.Count Then Return False
         For i = 0 To a.Count - 1
-            If a(i).ItemFormID <> b(i).ItemFormID OrElse a(i).Count <> b(i).Count Then Return False
+            If a(i).Item <> b(i).Item OrElse a(i).ItemCount <> b(i).ItemCount Then Return False
         Next
         Return True
     End Function
 
-    Private Shared Function PerksEqual(a As List(Of NPC_PerkEntry), b As List(Of NPC_PerkEntry)) As Boolean
+    Private Shared Function PerksEqual(a As IReadOnlyList(Of Canon.INpc_Perks),
+                                       b As IReadOnlyList(Of Canon.INpc_Perks)) As Boolean
         If a.Count <> b.Count Then Return False
         For i = 0 To a.Count - 1
-            If a(i).PerkFormID <> b(i).PerkFormID OrElse a(i).Rank <> b(i).Rank Then Return False
+            If a(i).Perk <> b(i).Perk OrElse a(i).PerkRank <> b(i).PerkRank Then Return False
         Next
         Return True
     End Function
 
-    Private Shared Function PropertiesEqual(a As List(Of NPC_PropertyEntry), b As List(Of NPC_PropertyEntry)) As Boolean
-        If a.Count <> b.Count Then Return False
-        For i = 0 To a.Count - 1
-            If a(i).ActorValueFormID <> b(i).ActorValueFormID OrElse a(i).Value <> b(i).Value Then Return False
+    ''' <summary>Compara los PRPS de dos records de Fallout 4. En Skyrim no hay subrecord y los dos llegan
+    ''' Nothing: no hay nada que haya podido cambiar.</summary>
+    Private Shared Function PropertiesEqual(a As Canon.NpcFO4, b As Canon.NpcFO4) As Boolean
+        If a Is Nothing OrElse b Is Nothing Then Return a Is Nothing AndAlso b Is Nothing
+        If a.Properties2.Count <> b.Properties2.Count Then Return False
+        For i = 0 To a.Properties2.Count - 1
+            If a.Properties2(i).PropertyActorValue <> b.Properties2(i).PropertyActorValue Then Return False
+            If a.Properties2(i).PropertyValue <> b.Properties2(i).PropertyValue Then Return False
         Next
         Return True
     End Function

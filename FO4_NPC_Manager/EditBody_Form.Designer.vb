@@ -797,7 +797,7 @@ Partial Class EditBody_Form
         GroupBoxSseWeight.Dock = DockStyle.Fill
         GroupBoxSseWeight.Location = New Point(3, 459)
         GroupBoxSseWeight.Name = "GroupBoxSseWeight"
-        GroupBoxSseWeight.Size = New Size(812, 218)
+        GroupBoxSseWeight.Size = New Size(812, 83)
         GroupBoxSseWeight.TabIndex = 4
         GroupBoxSseWeight.TabStop = False
         GroupBoxSseWeight.Text = "Weight (NPC.NAM7 — SSE _0 / _1 body morph)"
@@ -820,7 +820,7 @@ Partial Class EditBody_Form
         SseWeightLayout.RowCount = 2
         SseWeightLayout.RowStyles.Add(New RowStyle())
         SseWeightLayout.RowStyles.Add(New RowStyle())
-        SseWeightLayout.Size = New Size(806, 196)
+        SseWeightLayout.Size = New Size(806, 61)
         SseWeightLayout.TabIndex = 0
         ' 
         ' LabelSseWeightNote
@@ -838,7 +838,7 @@ Partial Class EditBody_Form
         ' 
         LabelSseWeight.Anchor = AnchorStyles.Left
         LabelSseWeight.AutoSize = True
-        LabelSseWeight.Location = New Point(6, 103)
+        LabelSseWeight.Location = New Point(6, 34)
         LabelSseWeight.Margin = New Padding(2, 6, 8, 2)
         LabelSseWeight.Name = "LabelSseWeight"
         LabelSseWeight.Size = New Size(117, 15)
@@ -849,14 +849,14 @@ Partial Class EditBody_Form
         ' SliderSseWeight
         ' 
         SliderSseWeight.AccentColor = SystemColors.HotTrack
+        SliderSseWeight.Anchor = AnchorStyles.Left Or AnchorStyles.Right
         SliderSseWeight.BackColor = SystemColors.Control
         SliderSseWeight.DisplayFormat = "0\%"
-        SliderSseWeight.Dock = DockStyle.Fill
-        SliderSseWeight.Location = New Point(133, 27)
+        SliderSseWeight.Location = New Point(133, 33)
         SliderSseWeight.Margin = New Padding(2)
         SliderSseWeight.MinimumSize = New Size(140, 28)
         SliderSseWeight.Name = "SliderSseWeight"
-        SliderSseWeight.Size = New Size(667, 163)
+        SliderSseWeight.Size = New Size(667, 28)
         SliderSseWeight.TabIndex = 2
         SliderSseWeight.TextBoxTextAlign = HorizontalAlignment.Right
         SliderSseWeight.ThumbColor = SystemColors.HotTrack

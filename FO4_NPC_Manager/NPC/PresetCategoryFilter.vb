@@ -1,8 +1,9 @@
 ﻿Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>UNIFIED per-category merge, shared by Paste Look and by the LooksMenu/RaceMenu preset loader,
 ''' for BOTH games. Replaces the old MainForm.BuildFilteredPaste / BuildFilteredPasteSse pair, whose
-''' "shared" record-field block was physically duplicated under a ⚠ SYNC OBLIGATION comment — the two
+''' "shared" record-field block was physically duplicated under a SYNC OBLIGATION comment — the two
 ''' copies are now one code path with per-game branches only where the CARRIER genuinely differs.
 '''
 ''' <para><b>Shape.</b> Start from a full clone of the SOURCE preset, then for every category the user did
@@ -55,7 +56,7 @@ Public Module PresetCategoryFilter
         ' the parts were preserved or nothing was replaced, so lashes/AO/wet on untouched parents are safe.
         If resolveHdpt IsNot Nothing AndAlso targetRaw IsNot Nothing Then
             p.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
-                targetRaw.HeadPartFormIDs, p.HeadPartFormIDs, resolveHdpt)
+                targetRaw.Record.PartesDeCabeza(), p.HeadPartFormIDs, resolveHdpt)
         End If
 
         ' If the result carries an LM skin template, populate the origin tracker so a later Retract (user
@@ -91,15 +92,15 @@ Public Module PresetCategoryFilter
                 If isSse Then
                     If baseline IsNot Nothing AndAlso baseline.SseWeight.HasValue Then
                         p.SseWeight = baseline.SseWeight.Value
-                    ElseIf raw IsNot Nothing AndAlso raw.Nam7Raw IsNot Nothing AndAlso raw.Nam7Raw.Length >= 4 Then
-                        p.SseWeight = BitConverter.ToSingle(raw.Nam7Raw, 0)
+                    ElseIf raw IsNot Nothing AndAlso raw.Record.TienePesoDeSkyrim() Then
+                        p.SseWeight = raw.Record.PesoDeSkyrim()
                     Else
                         p.SseWeight = 100.0F
                     End If
                 Else
-                    p.WeightThin = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightThin), If(raw Is Nothing, 0.0F, raw.WeightThin))
-                    p.WeightMuscular = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightMuscular), If(raw Is Nothing, 0.0F, raw.WeightMuscular))
-                    p.WeightFat = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightFat), If(raw Is Nothing, 0.0F, raw.WeightFat))
+                    p.WeightThin = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightThin), If(raw Is Nothing, 0.0F, raw.Record.PesoDelCuerpo(0)))
+                    p.WeightMuscular = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightMuscular), If(raw Is Nothing, 0.0F, raw.Record.PesoDelCuerpo(1)))
+                    p.WeightFat = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightFat), If(raw Is Nothing, 0.0F, raw.Record.PesoDelCuerpo(2)))
                 End If
 
             Case PresetCategory.BodyRegions
@@ -109,7 +110,7 @@ Public Module PresetCategoryFilter
                 If baseline IsNot Nothing AndAlso baseline.HasBodyMorphValues Then
                     p.BodyMorphValues.AddRange(baseline.BodyMorphValues)
                 ElseIf raw IsNot Nothing Then
-                    p.BodyMorphValues.AddRange(raw.BodyMorphRegionValues)
+                    p.BodyMorphValues.AddRange(raw.Record.ValoresDeRegionCorporal())
                 End If
                 p.HasBodyMorphValues = True
 
@@ -128,7 +129,7 @@ Public Module PresetCategoryFilter
             Case PresetCategory.BodyScale
                 ' RaceMenu NiOverride node transforms (SSE-only) — overlay-only carrier.
                 p.SseNodeTransforms = If(baseline Is Nothing, Nothing, LooksmenuLoader.CloneSseNodeTransforms(baseline.SseNodeTransforms))
-                ' ⛔ FALTABA ESTO. Los elementos de primera persona son la OTRA MITAD del mismo array `transforms` del
+                ' FALTABA ESTO. Los elementos de primera persona son la OTRA MITAD del mismo array `transforms` del
                 ' .jslot, así que destildar esta categoría tiene que devolverlos al baseline igual que los otros. Sin la
                 ' línea, los del preset RECHAZADO se quedaban en el carrier, iban al sidecar y se re-emitían en el
                 ' próximo "Save RaceMenu preset" — y como todas las demás asignaciones están gateadas por Count > 0,
@@ -192,7 +193,7 @@ Public Module PresetCategoryFilter
                 p.UnresolvedHeadParts.Clear()
                 p.SseUnresolvedHeadParts.Clear()
                 p.HeadPartFormIDsIncludeRawExtras = False
-                ' ⛔ `Nothing` (= "sin override, preservar el FTST del target"), NUNCA `0UI`: con el carrier
+                ' `Nothing` (= "sin override, preservar el FTST del target"), NUNCA `0UI`: con el carrier
                 ' tri-estado, 0 significa CLEAR EXPLÍCITO. Poner 0 acá —el camino de "categoría NO tickeada",
                 ' o sea preservar— le BORRARÍA el FTST al target en el Paste más común del diálogo, y en AMBOS
                 ' juegos: este Case no está gateado por juego y NpcRecordOverlay tampoco. Es la única línea de
@@ -204,7 +205,7 @@ Public Module PresetCategoryFilter
                     p.SseUnresolvedHeadParts.AddRange(baseline.SseUnresolvedHeadParts)
                     p.HeadPartFormIDsIncludeRawExtras = baseline.HeadPartFormIDsIncludeRawExtras
                 ElseIf raw IsNot Nothing Then
-                    p.HeadPartFormIDs.AddRange(raw.HeadPartFormIDs)
+                    p.HeadPartFormIDs.AddRange(raw.Record.PartesDeCabeza())
                 End If
                 If baseline IsNot Nothing Then p.SseHeadTextureFormIDOverride = baseline.SseHeadTextureFormIDOverride
                 p.HasHeadPartFormIDs = True
@@ -214,7 +215,7 @@ Public Module PresetCategoryFilter
                 If baseline IsNot Nothing AndAlso baseline.HairColorFormID <> 0UI Then
                     p.HairColorFormID = baseline.HairColorFormID
                 Else
-                    p.HairColorFormID = If(raw Is Nothing, 0UI, raw.HairColorFormID)
+                    p.HairColorFormID = If(raw Is Nothing, 0UI, raw.Record.HairColor)
                 End If
                 p.SseHairColorRgb = If(baseline Is Nothing, Nothing, baseline.SseHairColorRgb)
                 ' El identificador sin resolver viaja con el color: acá el color se REEMPLAZA por el del
@@ -226,21 +227,30 @@ Public Module PresetCategoryFilter
 
             Case PresetCategory.FaceTints
                 If isSse Then
-                    p.SseTintRawOverride = Nothing
+                    p.SseTintLayers = Nothing
                     p.SseTintTexOverride = Nothing
                     p.HasSseTints = False
-                    If baseline IsNot Nothing AndAlso baseline.HasSseTints AndAlso baseline.SseTintRawOverride IsNot Nothing Then
-                        p.SseTintRawOverride = CloneSseTintRaw(baseline.SseTintRawOverride)
+                    If baseline IsNot Nothing AndAlso baseline.HasSseTints AndAlso baseline.SseTintLayers IsNot Nothing Then
+                        p.SseTintLayers = CloneSseTintLayers(baseline.SseTintLayers)
                         p.HasSseTints = True
                         If baseline.SseTintTexOverride IsNot Nothing Then p.SseTintTexOverride = New Dictionary(Of Integer, String)(baseline.SseTintTexOverride)
-                    ElseIf raw IsNot Nothing AndAlso raw.SseTintRaw IsNot Nothing AndAlso raw.SseTintRaw.Count > 0 Then
-                        p.SseTintRawOverride = CloneSseTintRaw(raw.SseTintRaw)
-                        p.HasSseTints = True
+                    ElseIf raw IsNot Nothing Then
+                        Dim delRecord = LooksmenuLoader.CapasDeTinteSseDelRecord(raw.Record)
+                        If delRecord.Count > 0 Then
+                            p.SseTintLayers = delRecord
+                            p.HasSseTints = True
+                        End If
                     End If
                 Else
                     p.FaceTintLayers.Clear()
-                    Dim src = If(baseline IsNot Nothing AndAlso baseline.HasFaceTintLayers, baseline.FaceTintLayers,
-                                 If(raw Is Nothing, Nothing, raw.FaceTintLayers))
+                    ' If/Else y no un ternario: las dos ramas traen listas de tipos distintos y el ternario
+                    ' compila igual, pero revienta al evaluarlo.
+                    Dim src As List(Of LooksmenuLoader.CapaDeTintePreset) = Nothing
+                    If baseline IsNot Nothing AndAlso baseline.HasFaceTintLayers Then
+                        src = baseline.FaceTintLayers
+                    ElseIf raw IsNot Nothing Then
+                        src = LooksmenuLoader.CapasDeTinteDelRecord(raw.Record)
+                    End If
                     If src IsNot Nothing Then
                         For Each tl In src
                             p.FaceTintLayers.Add(LooksmenuLoader.CloneFaceTintLayer(tl))
@@ -262,28 +272,29 @@ Public Module PresetCategoryFilter
                         p.SseNama = If(baseline.SseNama Is Nothing, SseNam9MorphMap.DefaultNamaVector(), DirectCast(baseline.SseNama.Clone(), UInteger()))
                         p.HasSseMorphs = True
                     Else
+                        Dim rawNam9 = If(raw Is Nothing, Nothing, raw.Record.DeslizadoresDeCara())
+                        Dim rawNama = If(raw Is Nothing, Nothing, raw.Record.PartesDeCara())
                         Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
                         For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
-                            If raw IsNot Nothing AndAlso raw.Nam9Raw IsNot Nothing AndAlso raw.Nam9Raw.Length >= (i + 1) * 4 Then
-                                Dim v = BitConverter.ToSingle(raw.Nam9Raw, i * 4)
+                            If rawNam9 IsNot Nothing AndAlso i < rawNam9.Length Then
+                                Dim v = rawNam9(i)
                                 If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0.0F
                                 nam9(i) = v
                             End If
                         Next
                         Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
                         For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
-                            ' ⛔ El centinela "sin tipo asignado" viaja INTACTO — misma ley y mismo motivo que en
+                            ' El centinela "sin tipo asignado" viaja INTACTO — misma ley y mismo motivo que en
                             ' MainForm.BuildPresetFromState; colapsarlo a 0 convierte "sin tipo" en "tipo 0" y le
                             ' cambia la cara al NPC. Los dos sitios tienen que decir lo mismo.
-                            nama(f) = If(raw IsNot Nothing AndAlso raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4,
-                                         BitConverter.ToUInt32(raw.NamaRaw, f * 4),
-                                         SseNam9MorphMap.NamaUnset)
+                            nama(f) = If(rawNama IsNot Nothing AndAlso f < rawNama.Length,
+                                         rawNama(f), SseNam9MorphMap.NamaUnset)
                         Next
                         p.SseNam9 = nam9
                         p.SseNama = nama
-                        p.HasSseMorphs = (raw IsNot Nothing AndAlso (raw.Nam9Raw IsNot Nothing OrElse raw.NamaRaw IsNot Nothing))
+                        p.HasSseMorphs = (rawNam9 IsNot Nothing OrElse rawNama IsNot Nothing)
                     End If
-                    ' ⛔ El slot 18 (VampireMorph) es parte de ESTA categoría y también tiene que revertirse.
+                    ' El slot 18 (VampireMorph) es parte de ESTA categoría y también tiene que revertirse.
                     ' `BuildFiltered` arranca clonando el preset ORIGEN y `ClonePreset` copia SseVampireMorph, así
                     ' que sin esta línea un Load/Paste con "Face vertex morphs" DESTILDADO dejaba el VampireMorph
                     ' del origen sobre un target al que se le preservó todo el resto de la cara — y de ahí viajaba
@@ -291,11 +302,11 @@ Public Module PresetCategoryFilter
                     ' 0..17 y preserva el 18 del raw.)
                     p.SseVampireMorph = If(baseline IsNot Nothing AndAlso baseline.SseVampireMorph.HasValue,
                                            baseline.SseVampireMorph,
-                                           SseNam9MorphMap.VampireMorphFromNam9Raw(If(raw Is Nothing, Nothing, raw.Nam9Raw)))
+                                           SseNam9MorphMap.VampireMorphDe(If(raw Is Nothing, Nothing, raw.Record.DeslizadoresDeCara())))
                 Else
                     p.ChargenFaceMorphs.Clear()
                     Dim src = If(baseline IsNot Nothing AndAlso baseline.HasChargenFaceMorphs, baseline.ChargenFaceMorphs,
-                                 If(raw Is Nothing, Nothing, raw.MorphValues))
+                                 If(raw Is Nothing, Nothing, raw.Record.MorfosDeCara()))
                     If src IsNot Nothing Then
                         For Each kv In src
                             p.ChargenFaceMorphs(kv.Key) = kv.Value
@@ -319,10 +330,15 @@ Public Module PresetCategoryFilter
                     Next
                     p.FacialMorphIntensity = baseline.FacialMorphIntensity
                 ElseIf raw IsNot Nothing Then
-                    For Each fm In raw.FaceMorphs
-                        p.FaceBoneRegions(fm.Index) = fm.Values.ToArray()
-                    Next
-                    p.FacialMorphIntensity = raw.FacialMorphIntensity
+                    Dim rawFo4 = TryCast(raw.Record, Canon.NpcFO4)
+                    If rawFo4 IsNot Nothing Then
+                        For Each fm In rawFo4.FaceMorphs
+                            p.FaceBoneRegions(fm.FaceMorphIndex) = New Single() {
+                                fm.ValuesPositionX, fm.ValuesPositionY, fm.ValuesPositionZ,
+                                fm.ValuesRotationX, fm.ValuesRotationY, fm.ValuesRotationZ, fm.ValuesScale}
+                        Next
+                    End If
+                    p.FacialMorphIntensity = raw.Record.IntensidadDeMorfoFacial()
                 End If
                 p.HasFaceBoneRegions = True
 
@@ -336,7 +352,7 @@ Public Module PresetCategoryFilter
                 If baseline IsNot Nothing AndAlso baseline.IsCharGenFacePreset.HasValue Then
                     p.IsCharGenFacePreset = baseline.IsCharGenFacePreset.Value
                 ElseIf raw IsNot Nothing Then
-                    p.IsCharGenFacePreset = ((raw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+                    p.IsCharGenFacePreset = ((raw.Record.ConfigurationFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
                 Else
                     p.IsCharGenFacePreset = Nothing
                 End If
@@ -386,17 +402,16 @@ Public Module PresetCategoryFilter
         Return c
     End Function
 
-    ''' <summary>Deep-copy the SSE flat tint subrecord list (TINI/TINC/TINV/TIAS), cloning each byte array.</summary>
-    Public Function CloneSseTintRaw(src As List(Of NPC_RawSubrecord)) As List(Of NPC_RawSubrecord)
+    ''' <summary>Copia independiente de las capas de tinte de Skyrim de un preset. Nothing entra,
+    ''' Nothing sale.</summary>
+    Public Function CloneSseTintLayers(src As List(Of LooksmenuLoader.CapaDeTinteSsePreset)) As List(Of LooksmenuLoader.CapaDeTinteSsePreset)
         If src Is Nothing Then Return Nothing
-        Dim c As New List(Of NPC_RawSubrecord)(src.Count)
+        Dim c As New List(Of LooksmenuLoader.CapaDeTinteSsePreset)(src.Count)
         For Each sr In src
             If sr Is Nothing Then Continue For
-            c.Add(New NPC_RawSubrecord With {
-                .Sig = sr.Sig,
-                .Data = If(sr.Data Is Nothing, Nothing, CType(sr.Data.Clone(), Byte())),
-                .IsFormId = sr.IsFormId
-            })
+            c.Add(New LooksmenuLoader.CapaDeTinteSsePreset With {
+                .Indice = sr.Indice, .Rojo = sr.Rojo, .Verde = sr.Verde, .Azul = sr.Azul,
+                .Alfa = sr.Alfa, .Cobertura = sr.Cobertura, .Preseleccion = sr.Preseleccion})
         Next
         Return c
     End Function

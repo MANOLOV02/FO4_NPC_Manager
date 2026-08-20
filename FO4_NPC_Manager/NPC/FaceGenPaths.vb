@@ -1,5 +1,5 @@
-﻿''' <summary>⭐ LAS RUTAS DEL FACEGEN, ESCRITAS UNA VEZ.
-''' <para>⛔ Estaban armadas A MANO en 16 sitios repartidos entre <c>FaceGenBuilder</c> (el que ESCRIBE),
+﻿''' <summary>LAS RUTAS DEL FACEGEN, ESCRITAS UNA VEZ.
+''' <para>Estaban armadas A MANO en 16 sitios repartidos entre <c>FaceGenBuilder</c> (el que ESCRIBE),
 ''' <c>NpcFaceGenPacker</c> (el que ARCHIVA), <c>NpcFaceTintResolver</c> y <c>FaceTextureRepointer</c> (el
 ''' que APUNTA el NIF). <c>FaceGenBuilder.ResolveFaceGenPath</c> se declaraba el hogar de la ley y lo
 ''' esquivaban todos, incluido el propio archivo.</para>
@@ -7,7 +7,7 @@
 ''' cambiar la carpeta en el bake y no en el packer ⇒ el NPC se hornea y no entra al archive; no tocar el
 ''' repointer ⇒ el NIF apunta a un archivo que no existe y la cara sale marrón. Tres sitios que TIENEN que
 ''' moverse juntos y nada los ataba.</para>
-''' <para>⛔ La extensión del NIF va en MAYÚSCULAS (<c>.NIF</c>) porque es lo que escribe el CK, y el
+''' <para>La extensión del NIF va en MAYÚSCULAS (<c>.NIF</c>) porque es lo que escribe el CK, y el
 ''' resolver de lectura devuelve <c>.nif</c>. En Windows da igual (FS insensible a mayúsculas) pero eran
 ''' dos convenciones conviviendo sin que ninguna lo dijera; acá quedan las dos, nombradas.</para></summary>
 Friend Module FaceGenPaths
@@ -18,7 +18,7 @@ Friend Module FaceGenPaths
     Friend Const CanalDiffuse As String = "FaceDiffuse"
     Friend Const CanalNormal As String = "FaceNormal"
     Friend Const CanalGeom As String = "FaceGeom"
-    ''' <summary>⛔ FO4 escribe las texturas de cara (_d/_msn/_s) bajo
+    ''' <summary>FO4 escribe las texturas de cara (_d/_msn/_s) bajo
     ''' <c>Textures\Actors\Character\FaceCustomization\</c>, que NO cuelga de FaceGenData — ese es el
     ''' árbol de SSE. Son dos raíces distintas, y por eso este canal necesita su propia función.</summary>
     Friend Const CanalCustomization As String = "FaceCustomization"
@@ -52,7 +52,7 @@ Friend Module FaceGenPaths
 
     ''' <summary>Carpeta relativa de las texturas de cara de FO4, con la barra final.
     ''' <c>Textures\Actors\Character\FaceCustomization\&lt;plugin&gt;\</c>
-    ''' <para>⛔ Raíz DISTINTA a <see cref="TexturaDir"/>: FaceCustomization no cuelga de FaceGenData. Eso
+    ''' <para>Raíz DISTINTA a <see cref="TexturaDir"/>: FaceCustomization no cuelga de FaceGenData. Eso
     ''' fue lo que me hizo buscar las texturas horneadas en la carpeta equivocada y concluir que el bake no
     ''' escribía ninguna.</para></summary>
     Friend Function CustomizacionDir(originPlugin As String) As String

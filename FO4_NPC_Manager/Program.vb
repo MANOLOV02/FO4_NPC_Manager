@@ -62,7 +62,7 @@ Module Program
         End Try
     End Sub
 
-    ''' <summary>⛔ ACÁ NO SE TOCA NADA DE <c>FO4_Base_Library</c> NI DE NINGÚN DLL PROPIO, Y EL ARRANQUE REAL
+    ''' <summary>ACÁ NO SE TOCA NADA DE <c>FO4_Base_Library</c> NI DE NINGÚN DLL PROPIO, Y EL ARRANQUE REAL
     ''' VIVE EN <see cref="RealMain"/>. El JIT resuelve las referencias de TODO el cuerpo de un método antes de
     ''' ejecutar su primera línea: con una llamada a la librería acá, un DLL faltante o en cuarentena mata el
     ''' proceso ANTES de que el Try quede instalado — mudo, con <c>0xE0434352</c> y un Event ID 1000 sin stack.
@@ -141,7 +141,7 @@ Module Program
             Return
         End If
 
-        ' ⛔ SE FUE `--filter-selftest` (2026-08-08). El gate del parser del buscador vive ahora en
+        ' SE FUE `--filter-selftest` (2026-08-08). El gate del parser del buscador vive ahora en
         ' Tools/NpcFilterGate: es un parser de STRINGS, o sea que da lo mismo en toda máquina, y no tenía
         ' por qué viajar dentro del exe que se distribuye (233 líneas + un flag en el --help). Sigue siendo
         ' obligatorio: lo que prueba —que una query SIN prefijos `facet:` sale VERBATIM del parser— no lo
@@ -180,7 +180,7 @@ Module Program
         ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled queda en False y todos los
         ' Logger.Log/LogLazy retornan early sin allocar — y, mas importante, TODOS los bloques
         ' `If Logger.Enabled Then ...` de diagnostico (censos por malla, histogramas, dumps por vertice)
-        ' no corren. ⭐ DOBLE CANDADO: ademas de este `#If DEBUG`, el propio setter de Logger.Enabled
+        ' no corren. DOBLE CANDADO: ademas de este `#If DEBUG`, el propio setter de Logger.Enabled
         ' DESCARTA cualquier True en Release (ver Logger.vb), asi que aunque alguien agregue un
         ' `Logger.Enabled = True` suelto en un camino de release, no prende nada.
 #If DEBUG Then
@@ -188,16 +188,18 @@ Module Program
         Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))
 #End If
 
-        ' Plugin text encoding MUST be configured BEFORE any plugin is loaded — mirror of xEdit's
-        ' order: xeInit configures wbEncodingTrans (from sLanguage) before TwbFile loads. The
-        ' preflight below loads + scans all plugins; even though FULL/EDID parsing is lazy, doing
-        ' this here guarantees every decode (eager or lazy, preflight or later) uses the correct
-        ' encoding from the start. Process model = xEdit: configure → load all → edit.
+        ' El encoding de texto del plugin se DEBE configurar ANTES de cargar cualquier plugin: el
+        ' encoding (derivado de sLanguage) tiene que estar listo antes de que se lea cualquier
+        ' dato de texto. El preflight de abajo carga y escanea todos los plugins; aunque el
+        ' parseo de FULL/EDID es diferido, configurar esto acá garantiza que toda decodificación
+        ' (inmediata o diferida, en preflight o después) use el encoding correcto desde el
+        ' arranque. Orden del proceso: configurar → cargar todo → editar.
         PluginEncodingSettings.InitializeForGame(Config_App.Current.Game)
         PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
         ' OverridePluginEncoding.ini (optional, appdir): user escape hatch for cases where the
         ' game language and the plugin encoding diverge — canonical case is Korean FO4
-        ' (sLanguage=en + fan-translated UTF-8 plugins). File-based mirror of xEdit's -cp-trans.
+        ' (sLanguage=en + fan-translated UTF-8 plugins), resuelto acá vía archivo en vez de
+        ' un flag de línea de comandos.
         PluginEncodingSettings.ApplyOverrideIni(AppDomain.CurrentDomain.BaseDirectory)
 
         Using preflight As New Preflight_Form()
@@ -269,11 +271,11 @@ Module Program
     End Sub
 
     ''' <summary>Chequea el componente nativo de texturas y ABORTA el modo si no coincide. True = seguir.
-    ''' <para>⛔ SOLO LOS MODOS QUE ESCRIBEN ARCHIVOS. La GUI NO pasa por acá a proposito: con el wrapper
+    ''' <para>SOLO LOS MODOS QUE ESCRIBEN ARCHIVOS. La GUI NO pasa por acá a proposito: con el wrapper
     ''' roto la app sigue sirviendo para navegar el arbol y editar ESP, y el preview muestra el problema a
     ''' la vista — abortar ahi convierte una instalacion degradada en una app muerta. Un bake, en cambio,
     ''' deja DDS equivocados en disco sin que nadie los mire, y eso es peor que fallar.</para>
-    ''' <para>⛔ NO usa <c>CrashReport.Report</c>: su guard <c>_reported</c> es de por vida y gastarlo acá
+    ''' <para>NO usa <c>CrashReport.Report</c>: su guard <c>_reported</c> es de por vida y gastarlo acá
     ''' dejaria muda cualquier caida posterior de la sesion. Esto no es una caida, es un chequeo.</para>
     ''' <para><paramref name="porConsola"/> False = el modo tiene ventana (<c>--bake-all</c> sin
     ''' <c>--windowless</c>): ahi un <c>Console.Error</c> no lo ve nadie, y al reves un MessageBox modal en
@@ -343,7 +345,8 @@ Module Program
     ''' <summary>Headless classification diagnostic. For each game, runs the REAL
     ''' <see cref="NpcMeshCollector.ClassifyShapeCategory"/> over one-bit slot masks (and a realistic
     ''' multi-slot cuirass) so the FO4-vs-SSE slot-semantic mismatch is observable without a render.
-    ''' Expected SSE (xEdit): 30=Head,31=Hair,32=Body,33=Hands,34=Forearms,37=Feet,41=LongHair,42=Circlet.</summary>
+    ''' Nombres de slot esperados en SSE: 30=Head,31=Hair,32=Body,33=Hands,34=Forearms,37=Feet,
+    ''' 41=LongHair,42=Circlet.</summary>
     Private Sub RunSlotDiag()
         EnsureConsole()
         Config_App.LoadConfig()

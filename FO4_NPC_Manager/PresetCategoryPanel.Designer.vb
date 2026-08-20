@@ -222,7 +222,7 @@ Partial Class PresetCategoryPanel
         CheckBoxBodyScale.Name = "CheckBoxBodyScale"
         CheckBoxBodyScale.Size = New Size(360, 18)
         CheckBoxBodyScale.TabIndex = 3
-        ' ⛔ DECÍA "Body scale" y ahora la categoría lleva TAMBIÉN posición y rotación. Acá importa más que en el
+        ' DECÍA "Body scale" y ahora la categoría lleva TAMBIÉN posición y rotación. Acá importa más que en el
         ' otro rótulo: es la tilde con la que el usuario elige qué tomar del preset, así que destildarla perdía más
         ' de lo que el nombre prometía.
         CheckBoxBodyScale.Text = "Bone edits  (size, position, rotation)"

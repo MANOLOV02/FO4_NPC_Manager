@@ -12,7 +12,7 @@ Public Class EditorFormBase
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 

@@ -1,57 +1,42 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.Linq
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
-''' <summary>Modal sub-editor for a SINGLE Object Template (OBTS) combination of an ARMO — opened from the
-''' ARMO Editor's "Object Template" tab (Add / Duplicate / double-click a row). Mirror of
-''' <see cref="MswpSubEditor_Form"/>: Designer-built UI, working buffers edited in place, deep-copy at the
-''' borders so a Cancel never mutates the caller's list.
+''' <summary>Sub-editor modal de UNA combinación del Object Template (OBTS). Se abre desde la pestaña
+''' "Object Template" del editor de ARMO y de la del editor de NPC_ (Add / Duplicate / doble clic en una fila).
 '''
-''' Edits the combination's scalar fields (DisplayName, IsDefault, IsEditorOnly, ParentCombinationIndex,
-''' the four level bytes) plus three list sections: Keywords (KYWD FormIDs), Includes (OMOD references with
-''' Attach Point Index + Optional/DontUseAll flags) and Properties (direct 24-byte OMOD property overrides,
-''' <see cref="OMOD_Property"/>). On OK it produces a fresh <see cref="ARMO_Combination"/> (deep-copied via
-''' <see cref="ArmoDraft.CloneCombinations"/>) exposed through <see cref="ResultCombination"/>; the caller
-''' reads it only when DialogResult = OK.
+''' Edita los campos sueltos (nombre, Default, Editor Only, Parent Combination Index, los cuatro bytes de
+''' nivel) y las tres listas: Keywords (KYWD), Includes (referencias a OMOD con su Attach Point Index y las
+''' banderas Optional/DontUseAll) y Properties.
 '''
-''' Value model faithfulness: an OMOD_Property's <c>Value1</c> is stored as the raw 4-byte value reinterpreted
-''' as a Single (matching the parser <see cref="CraftingRecordParsers.ParseObjectModProperty"/> and the writer
-''' <c>WriteObtsProperty</c>). For FormID-typed properties (<see cref="OMOD_ValueType.FormIDInt"/> /
-''' <see cref="OMOD_ValueType.FormIDFloat"/>) the FormID lives in <c>Value1FormID</c> and Value1 mirrors its
-''' bits; for FloatType Value1 is the float directly; for the integer buckets Value1 holds the Int32 bits. The
-''' editor keeps all three in sync so both the round-trip parser check and the new-record writer agree.</summary>
+''' <para>La combinación que recibe es la de TRABAJO: una copia independiente que el que llama arma sobre su
+''' propio record antes de abrir el diálogo. Por eso se edita en el lugar y no hay nada que devolver —
+''' cancelar deja la copia sin usar. Las tres listas se rehacen enteras al aceptar, así el orden y las bajas
+''' quedan como los dejó el usuario.</para></summary>
 Public Class ObtsCombinationEditor_Form
 
     Private ReadOnly _mainForm As MainForm
 
-    ' Working buffers (the editor's source of truth). Flushed from the grids/list on demand and copied
-    ' out into ResultCombination on OK. Never aliased to the caller's combination (deep-copied in the ctor).
+    ' La combinación de trabajo y las listas que el usuario reordena encima de ella. Los elementos de las
+    ' dos listas son vistas sobre la propia combinación de trabajo: lo que el diálogo ordena y da de baja
+    ' vive acá, y al aceptar se vuelca de una vez.
+    Private ReadOnly _combo As Canon.IBloque_Combinations
     Private ReadOnly _keywords As New List(Of UInteger)
-    Private ReadOnly _includes As New List(Of ARMO_CombinationInclude)
-    Private ReadOnly _properties As New List(Of OMOD_Property)
-
-    ''' <summary>The edited combination, valid only after <c>DialogResult.OK</c>. A fresh deep-copy — the caller
-    ''' owns it outright.</summary>
-    Public ReadOnly Property ResultCombination As ARMO_Combination
-        Get
-            Return _result
-        End Get
-    End Property
-    Private _result As ARMO_Combination
+    Private ReadOnly _includes As New List(Of Canon.IBloque_Includes)
+    Private ReadOnly _properties As New List(Of Canon.IBloque_Properties4)
 
     ''' <param name="mainForm">Owner — supplies the PluginManager for the FormID pickers and display-name lookups.</param>
-    ''' <param name="combo">The combination to edit. DEEP-COPIED in (never aliased); a null combo starts empty.</param>
-    Public Sub New(mainForm As MainForm, combo As ARMO_Combination)
+    ''' <param name="combo">La combinación DE TRABAJO, que el que llama ya creó como copia aparte.</param>
+    Public Sub New(mainForm As MainForm, combo As Canon.IBloque_Combinations)
         InitializeComponent()
         _mainForm = mainForm
+        _combo = combo
 
         BuildIncludesGridColumns()
         BuildPropertiesGridColumns()
 
-        ' Deep-copy the incoming combination into the working buffers so Cancel leaves the caller's list intact.
-        Dim src = If(combo, New ARMO_Combination())
-        Dim copy = ArmoDraft.CloneCombinations(New List(Of ARMO_Combination) From {src})(0)
-        LoadCombinationIntoPanels(copy)
+        LoadCombinationIntoPanels()
 
         ' Keywords.
         AddHandler ButtonAddKeyword.Click, AddressOf OnAddKeyword
@@ -89,8 +74,8 @@ Public Class ObtsCombinationEditor_Form
 
     ''' <summary>Properties grid = pure READ-ONLY summary; the row is edited in the modal
     ''' <see cref="ObtsPropertyEditor_Form"/>. ValueType shows its enum name, Value1 its ValueType-aware display.
-    ''' FunctionType / PropertyIndex are raw numbers (no named enum in the model — the xEdit name tables aren't
-    ''' ported). No editable columns → no reentrant cell edits.</summary>
+    ''' FunctionType / PropertyIndex are raw numbers (no named enum ported into the model).
+    ''' No editable columns → no reentrant cell edits.</summary>
     Private Sub BuildPropertiesGridColumns()
         GridProperties.AutoGenerateColumns = False
         GridProperties.Columns.Clear()
@@ -111,34 +96,29 @@ Public Class ObtsCombinationEditor_Form
     ' Combination → panels
     ' =====================================================================
 
-    Private Sub LoadCombinationIntoPanels(c As ARMO_Combination)
-        TextBoxName.Text = c.DisplayName
-        CheckIsDefault.Checked = c.IsDefault
-        CheckIsEditorOnly.Checked = c.IsEditorOnly
-        NumParent.Value = ClampDec(c.ParentCombinationIndex, NumParent)
-        NumLevelMin.Value = ClampDec(c.LevelMin, NumLevelMin)
-        NumLevelMax.Value = ClampDec(c.LevelMax, NumLevelMax)
-        NumMinLevelForRanks.Value = ClampDec(c.MinLevelForRanks, NumMinLevelForRanks)
-        NumAltLevelsPerTier.Value = ClampDec(c.AltLevelsPerTier, NumAltLevelsPerTier)
+    Private Sub LoadCombinationIntoPanels()
+        If _combo Is Nothing Then Return
+        TextBoxName.Text = _combo.CombinationName
+        CheckIsDefault.Checked = _combo.ObjectModTemplateItemDefault
+        CheckIsEditorOnly.Checked = _combo.CombinationEditorOnly
+        NumParent.Value = ClampDec(_combo.ObjectModTemplateItemParentCombinationIndex, NumParent)
+        NumLevelMin.Value = ClampDec(_combo.ObjectModTemplateItemLevelMin, NumLevelMin)
+        NumLevelMax.Value = ClampDec(_combo.ObjectModTemplateItemLevelMax, NumLevelMax)
+        NumMinLevelForRanks.Value = ClampDec(_combo.ObjectModTemplateItemMinLevelForRanks, NumMinLevelForRanks)
+        NumAltLevelsPerTier.Value = ClampDec(_combo.ObjectModTemplateItemAltLevelsPerTier, NumAltLevelsPerTier)
 
         _keywords.Clear()
-        _keywords.AddRange(c.Keywords)
+        For Each kw In _combo.Keywords
+            _keywords.Add(kw.Keyword)
+        Next
         RefreshKeywordsList()
 
         _includes.Clear()
-        For Each inc In c.Includes
-            _includes.Add(New ARMO_CombinationInclude With {
-                .ModFormID = inc.ModFormID, .AttachPointIndex = inc.AttachPointIndex,
-                .IsOptional = inc.IsOptional, .DontUseAll = inc.DontUseAll})
-        Next
+        _includes.AddRange(_combo.Includes)
         RefreshIncludesGrid()
 
         _properties.Clear()
-        For Each p In c.Properties
-            _properties.Add(New OMOD_Property With {
-                .ValueType = p.ValueType, .FunctionType = p.FunctionType, .PropertyIndex = p.PropertyIndex,
-                .Value1 = p.Value1, .Value1FormID = p.Value1FormID, .Value2 = p.Value2, .StepValue = p.StepValue})
-        Next
+        _properties.AddRange(_combo.Properties)
         RefreshPropertiesGrid()
     End Sub
 
@@ -189,18 +169,22 @@ Public Class ObtsCombinationEditor_Form
         Dim selIdx = If(GridIncludes.CurrentRow IsNot Nothing, GridIncludes.CurrentRow.Index, -1)
         GridIncludes.Rows.Clear()
         For Each inc In _includes
-            GridIncludes.Rows.Add($"{DisplayFor(inc.ModFormID)} [0x{inc.ModFormID:X8}]",
-                                  inc.AttachPointIndex.ToString(CultureInfo.InvariantCulture),
-                                  BoolText(inc.IsOptional), BoolText(inc.DontUseAll))
+            GridIncludes.Rows.Add($"{DisplayFor(inc.IncludeMod)} [0x{inc.IncludeMod:X8}]",
+                                  inc.IncludeAttachPointIndex.ToString(CultureInfo.InvariantCulture),
+                                  BoolText(inc.IncludeOptional), BoolText(inc.IncludeDonTUseAll))
         Next
         SelectGridRow(GridIncludes, selIdx)
     End Sub
 
-    ''' <summary>Add → open the modal on a fresh include; on OK append the returned (deep-copied) result.</summary>
+    ''' <summary>Agregar: el Include vacío se crea en la combinación de trabajo y se lo edita ahí. Si el
+    ''' usuario cancela no entra a la lista, y al aceptar el diálogo grande la combinación se rehace desde la
+    ''' lista, así que el nodo que quedó suelto se va con la reescritura.</summary>
     Private Sub OnAddInclude(sender As Object, e As EventArgs)
-        Using dlg As New ObtsIncludeEditor_Form(_mainForm, New ARMO_CombinationInclude())
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultInclude IsNot Nothing Then
-                _includes.Add(dlg.ResultInclude)
+        Dim nuevo = _combo.AgregarIncludeDeCombinacion()
+        If nuevo Is Nothing Then Return
+        Using dlg As New ObtsIncludeEditor_Form(_mainForm, nuevo)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                _includes.Add(nuevo)
                 RefreshIncludesGrid()
             End If
         End Using
@@ -220,10 +204,7 @@ Public Class ObtsCombinationEditor_Form
     Private Sub EditIncludeAt(i As Integer)
         If i < 0 OrElse i >= _includes.Count Then Return
         Using dlg As New ObtsIncludeEditor_Form(_mainForm, _includes(i))
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultInclude IsNot Nothing Then
-                _includes(i) = dlg.ResultInclude
-                RefreshIncludesGrid()
-            End If
+            If dlg.ShowDialog(Me) = DialogResult.OK Then RefreshIncludesGrid()
         End Using
     End Sub
 
@@ -262,7 +243,8 @@ Public Class ObtsCombinationEditor_Form
     Private Sub RefreshPropertiesGrid()
         Dim selIdx = If(GridProperties.CurrentRow IsNot Nothing, GridProperties.CurrentRow.Index, -1)
         GridProperties.Rows.Clear()
-        For Each p In _properties
+        For Each vista In _properties
+            Dim p = vista.LeerPropiedad()
             GridProperties.Rows.Add(p.ValueType.ToString(),
                                     p.FunctionType.ToString(CultureInfo.InvariantCulture),
                                     p.PropertyIndex.ToString(CultureInfo.InvariantCulture),
@@ -273,11 +255,15 @@ Public Class ObtsCombinationEditor_Form
         SelectGridRow(GridProperties, selIdx)
     End Sub
 
-    ''' <summary>Add → open the modal on a fresh IntType property; on OK append the returned copy.</summary>
+    ''' <summary>Agregar: el diálogo de una propiedad trabaja con el valor plano; lo que devuelve se escribe
+    ''' en una Property nueva de la combinación de trabajo, por la rama de la union que le corresponde.</summary>
     Private Sub OnAddProp(sender As Object, e As EventArgs)
         Using dlg As New ObtsPropertyEditor_Form(_mainForm, New OMOD_Property With {.ValueType = OMOD_ValueType.IntType})
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultProperty IsNot Nothing Then
-                _properties.Add(dlg.ResultProperty)
+                Dim nueva = _combo.AgregarPropiedadDeCombinacion()
+                If nueva Is Nothing Then Return
+                nueva.EscribirPropiedad(dlg.ResultProperty)
+                _properties.Add(nueva)
                 RefreshPropertiesGrid()
             End If
         End Using
@@ -299,9 +285,9 @@ Public Class ObtsCombinationEditor_Form
     ''' existing FormID property's Value1FormID is shown as-is — never re-resolved or overwritten on open.</summary>
     Private Sub EditPropAt(i As Integer)
         If i < 0 OrElse i >= _properties.Count Then Return
-        Using dlg As New ObtsPropertyEditor_Form(_mainForm, _properties(i))
+        Using dlg As New ObtsPropertyEditor_Form(_mainForm, _properties(i).LeerPropiedad())
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultProperty IsNot Nothing Then
-                _properties(i) = dlg.ResultProperty
+                _properties(i).EscribirPropiedad(dlg.ResultProperty)
                 RefreshPropertiesGrid()
             End If
         End Using
@@ -335,7 +321,7 @@ Public Class ObtsCombinationEditor_Form
         End Select
     End Function
 
-    ''' <summary>Value2 shown per its ValueType (xEdit <c>wbOMODDataPropertyValue2Decider</c>): float for
+    ''' <summary>Value2 shown per its ValueType: float for
     ''' Float/FormIDFloat, the Int32 reinterpretation of the raw bits for Int/FormIDInt/Bool, "(unused)" for
     ''' String/Enum. Mirror of <see cref="ObtsPropertyEditor_Form"/>'s RenderValue2 — Value2 is NOT always a float
     ''' (showing an int's bits as a float gives a garbage denormal like 7.16E-43).</summary>
@@ -351,27 +337,26 @@ Public Class ObtsCombinationEditor_Form
     End Function
 
     ' =====================================================================
-    ' OK — build the result combination (deep-copied out)
+    ' Aceptar — volcar lo editado a la combinación de trabajo
     ' =====================================================================
 
     Private Sub OnOk(sender As Object, e As EventArgs)
-        ' No grid flush needed — the grids are read-only; the working buffers are already authoritative.
-        Dim built As New ARMO_Combination With {
-            .DisplayName = TextBoxName.Text.Trim(),
-            .IsDefault = CheckIsDefault.Checked,
-            .IsEditorOnly = CheckIsEditorOnly.Checked,
-            .ParentCombinationIndex = CInt(NumParent.Value),
-            .LevelMin = CByte(NumLevelMin.Value),
-            .LevelMax = CByte(NumLevelMax.Value),
-            .MinLevelForRanks = CByte(NumMinLevelForRanks.Value),
-            .AltLevelsPerTier = CByte(NumAltLevelsPerTier.Value)
-        }
-        built.Keywords.AddRange(_keywords)
-        built.Includes.AddRange(_includes)
-        built.Properties.AddRange(_properties)
+        If _combo Is Nothing Then Return
+        ' Las grillas son de sólo lectura: lo que muestran ya está en la combinación de trabajo o en las
+        ' listas de acá, así que no hay nada que vaciar antes.
+        _combo.CombinationName = TextBoxName.Text.Trim()
+        _combo.ObjectModTemplateItemDefault = CheckIsDefault.Checked
+        _combo.CombinationEditorOnly = CheckIsEditorOnly.Checked
+        _combo.ObjectModTemplateItemParentCombinationIndex = CShort(NumParent.Value)
+        _combo.ObjectModTemplateItemLevelMin = CByte(NumLevelMin.Value)
+        _combo.ObjectModTemplateItemLevelMax = CByte(NumLevelMax.Value)
+        _combo.ObjectModTemplateItemMinLevelForRanks = CByte(NumMinLevelForRanks.Value)
+        _combo.ObjectModTemplateItemAltLevelsPerTier = CByte(NumAltLevelsPerTier.Value)
 
-        ' Deep-copy out so the returned combination never aliases the working buffers (single source of truth).
-        _result = ArmoDraft.CloneCombinations(New List(Of ARMO_Combination) From {built})(0)
+        _combo.ReemplazarKeywordsDeCombinacion(_keywords)
+        _combo.ReemplazarIncludesDeCombinacion(_includes)
+        _combo.ReemplazarPropiedadesDeCombinacion(_properties)
+
         DialogResult = DialogResult.OK
         Close()
     End Sub

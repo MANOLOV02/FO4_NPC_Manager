@@ -21,7 +21,7 @@ Imports FO4_Base_Library
 '''
 ''' <para><b>Bootstrap.</b> <see cref="Run"/> replays the preflight's own order (config → encoding →
 ''' plugins → archives → sidecars), because that order is load-bearing: plugin text encoding must be
-''' configured BEFORE any plugin is parsed (xEdit's "configure → load → edit"). Every step that the
+''' configured BEFORE any plugin is parsed ("configure → load → edit"). Every step that the
 ''' preflight validates interactively is validated here as a hard failure instead.</para></summary>
 Friend Module BakeAllRunner
 
@@ -158,9 +158,9 @@ Friend Module BakeAllRunner
             ' derive from Logger.Enabled by default, which a Debug build turns on — pin the GL one off
             ' explicitly so a Debug build doesn't try to MakeCurrent a context that doesn't exist.
             '
-            ' ⭐⭐ EXCEPCION OPT-IN: FGBAKE_GPU_PARITY=1 levanta un contexto GL propio y corre TAMBIEN el
+            ' EXCEPCION OPT-IN: FGBAKE_GPU_PARITY=1 levanta un contexto GL propio y corre TAMBIEN el
             ' compositor GPU, para poder MEDIR la paridad CPU-vs-GPU (ver mas abajo, "CONTEXTO GL").
-            ' ⛔ POR QUE HACE FALTA: con needGl=False el compositor GL —el que usa el RENDER— no se ejecuta
+            ' POR QUE HACE FALTA: con needGl=False el compositor GL —el que usa el RENDER— no se ejecuta
             ' NI UNA VEZ en todo el barrido. Toda la byte-parity historica del bake es CIEGA a el, y por eso
             ' un cambio en el camino compartido pudo romper el render sin que ninguna prueba lo detectara.
             gpuParity = (If(Environment.GetEnvironmentVariable("FGBAKE_GPU_PARITY"), "").Trim() = "1")
@@ -196,9 +196,9 @@ Friend Module BakeAllRunner
             End If
 
             ' ---------------------------------------------------------------------------------
-            ' 2. Plugin text encoding — BEFORE any plugin is parsed (xEdit order). Includes the
-            '    OverridePluginEncoding.ini escape hatch, which the GUI applies and --bake-geom
-            '    historically forgot.
+            ' 2. Plugin text encoding — BEFORE any plugin is parsed, same order as the preflight.
+            '    Includes the OverridePluginEncoding.ini escape hatch, which the GUI applies and
+            '    --bake-geom historically forgot.
             ' ---------------------------------------------------------------------------------
             PluginEncodingSettings.InitializeForGame(game)
             PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
@@ -287,7 +287,7 @@ Friend Module BakeAllRunner
             ' from Plugins.txt. The .ccc lists all Creation Club content that EXISTS, not what is installed,
             ' so on a normal setup most of it has no file in Data\ and LoadAllPlugins skips it. That is
             ' expected, not an error — report it as information so the count doesn't read as data loss.
-            ' ⛔ Los excluidos por master faltante se reportan APARTE y se descuentan de la cuenta de arriba:
+            ' Los excluidos por master faltante se reportan APARTE y se descuentan de la cuenta de arriba:
             ' meterlos en el mismo saco los presentaría como "Creation Club no instalado", que es una causa
             ' distinta y benigna. Un plugin que el usuario tiene activo y NO se cargó tiene que decirse con
             ' su nombre y su razón.
@@ -338,7 +338,7 @@ Friend Module BakeAllRunner
                                                        loadedPlugins:=effectiveLoadList).GetAwaiter().GetResult()
             log("  → archives mounted")
 
-            ' ⛔⛔ LOS CATÁLOGOS DE SESIÓN, QUE ANTES SÓLO POBLABA LA GUI. `RaceCompatCatalog` y
+            ' LOS CATÁLOGOS DE SESIÓN, QUE ANTES SÓLO POBLABA LA GUI. `RaceCompatCatalog` y
             ' `SliderCatalog` se construían dentro de `MainForm.EnsureAssetDictionaryAsync`, y este runner
             ' nunca ejecuta MainForm: en Skyrim el barrido corría con `RaceCompatCatalog = Nothing` ⇒
             ' `IsHeadPartValidForRace` daba False para todo el pelo vanilla en razas COtR y el bake
@@ -361,7 +361,7 @@ Friend Module BakeAllRunner
             Dim lmTemplates = LmSkinTemplateLoader.BuildCache(dataPath, pm)
             log($"LM skins:    {lmTemplates.Count} skin template(s)")
 
-            ' ⛔ ACÁ, antes del Parallel.ForEach de más abajo. El registro de LUTs de pelo es perezoso, y si
+            ' ACÁ, antes del Parallel.ForEach de más abajo. El registro de LUTs de pelo es perezoso, y si
             ' lo despierta el fan-out lo despiertan N hilos a la vez: el primero hace el IO mientras los
             ' demás bloquean, y el resultado del lote pasa a depender del scheduling. Cargarlo en serie acá
             ' deja el camino perezoso como red y el bake determinista.
@@ -381,7 +381,7 @@ Friend Module BakeAllRunner
                 End Function
             Dim overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data) =
                 Function(raw As NPC_Data, fid As UInteger) NpcRecordOverlay.ApplyPresetOverlayToNpcData(
-                    raw, fid, appliedPresets, pm, resolveLmSkin, AddressOf ctx.ParseRaceCached)
+                    raw, fid, appliedPresets, pm, resolveLmSkin, AddressOf ctx.ParseRaceCanonCached)
             Dim materialResolver As New NpcMaterialResolver(ctx, overlayResolver, appliedPresets)
 
             ' ---------------------------------------------------------------------------------
@@ -408,9 +408,9 @@ Friend Module BakeAllRunner
             For Each rec In allNpcRecords
                 If espTarget <> "" AndAlso Not String.Equals(rec.SourcePluginName, espTarget, StringComparison.OrdinalIgnoreCase) Then Continue For
                 Try
-                    Dim npc = RecordParsers.ParseNPC(rec, If(rec.SourcePluginName <> "", rec.SourcePluginName, "Unknown"), pm)
+                    Dim npc = RecordParsers.ParseNPC(rec, pm)
                     If npc Is Nothing Then Continue For
-                    targets.Add((npc.FormID, npc.ToString(), npc.RaceFormID, npc.IsFemale))
+                    targets.Add((npc.FormID, npc.ToString(), npc.Record.Race, npc.Record.ConfigurationFlagsFemale))
                 Catch ex As Exception
                     ' Un record que no parsea no se hornea. El comentario viejo decia "la GUI tambien se los
                     ' traga": ya no. La GUI los cuenta, los nombra y saca un aviso que dice literalmente que
@@ -426,7 +426,7 @@ Friend Module BakeAllRunner
                 log($"    First: {parseFirstFailure}")
             End If
 
-            ' ⛔ FGBAKE_GROUP_BY_RACE SE ELIMINO (decision del usuario). Agrupaba por (raza,sexo) y evictaba el
+            ' FGBAKE_GROUP_BY_RACE SE ELIMINO (decision del usuario). Agrupaba por (raza,sexo) y evictaba el
             ' cache en cada borde para acotar memoria. Es INCOMPATIBLE con el loop paralelo: la evicción hacía
             ' `EndBatchDecodeCache`, que pone el diccionario en Nothing mientras otros hilos lo estan usando.
             ' Lo que acota la memoria ahora es el TECHO (ResolveDecodeCacheBudgetFromEnvironment), que no
@@ -453,7 +453,7 @@ Friend Module BakeAllRunner
             '    decode cache and FaceGenBuilder's shared-neutral scratch both assume one bake at a
             '    time. BeginBatchDecodeCache makes every source DDS decode ONCE for the whole run.
             ' ---------------------------------------------------------------------------------
-            ' ⛔ CONTADORES COMPARTIDOS: el loop es PARALELO, asi que se tocan con Interlocked y las listas
+            ' CONTADORES COMPARTIDOS: el loop es PARALELO, asi que se tocan con Interlocked y las listas
             ' bajo lock. Un `baked += 1` desde N hilos pierde incrementos en silencio.
             Dim baked As Integer = 0, skipped As Integer = 0, failed As Integer = 0
             Dim failures As New List(Of String)
@@ -471,8 +471,8 @@ Friend Module BakeAllRunner
             ' el barrido de NIF del CLI ya usa (FO4_FaceTint_CLI: SkipDdsEncode + SkipPixelCompose), donde
             ' está documentado que ninguno cambia lo que el bake escribe en el NIF — validado por byte-diff.
             ' El slot del NIF se escribe igual porque su path es determinista, no depende del encode.
-            ' ⛔ Deja los DDS SIN escribir: sirve para comparar NIF contra NIF, NO para mirar píxeles.
-            ' ⛔ SE GUARDAN PARA DEVOLVERLOS EN EL Finally. Son `Shared` de la librería y se prendían sin
+            ' Deja los DDS SIN escribir: sirve para comparar NIF contra NIF, NO para mirar píxeles.
+            ' SE GUARDAN PARA DEVOLVERLOS EN EL Finally. Son `Shared` de la librería y se prendían sin
             ' restaurar nunca. `Run` no es sólo consola: `BakeAllProgress_Form` lo corre con `Await
             ' Task.Run(...)` desde la GUI, así que con la env var puesta un "Bake All" dejaba los dos flags
             ' en True EL RESTO DE LA SESIÓN — y `SkipPixelCompose` hace que el compose devuelva un buffer
@@ -491,14 +491,14 @@ Friend Module BakeAllRunner
             ' Desde que se elimino la agrupacion por (raza,sexo), el techo es el UNICO mecanismo que acota el
             ' conjunto vivo — y tiene que serlo, porque con el loop paralelo no hay ningun punto del barrido
             ' en el que sea seguro tirar el cache entero.
-            ' ⛔ CORREGIDO: este comentario decia que el default "se DERIVA DE LA RAM (25 % acotado a
+            ' CORREGIDO: este comentario decia que el default "se DERIVA DE LA RAM (25 % acotado a
             ' [512 MB, 4 GB])". Eso YA NO ES ASI y hace rato: la derivacion se saco a proposito y el
             ' argumento esta escrito en ResolveDecodeCacheBudgetFromEnvironment (un techo inventado que
             ' fuerza re-decodes cuesta tiempo invisible). El default HOY es SIN TECHO, opt-in por env var.
             '   env ausente -> SIN techo
             '   env = "0"   -> SIN techo (explicito; sirve de baseline para medir)
             '   env > 0     -> ese valor en MB (reproducible entre maquinas, para comparar corridas)
-            ' ⭐ La derivacion vive en FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment, UNA sola
+            ' La derivacion vive en FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment, UNA sola
             ' vez: duplicada en dos archivos los numeros se habrian separado en silencio.
             ' El techo cubre los DOS niveles del cache —nivel 1 DecodedTex (bytes crudos) y nivel 2 Single()
             ' ya resampleado, 4 B por elemento— y por eso alcanza tambien al camino de SSE, que desde el
@@ -513,20 +513,20 @@ Friend Module BakeAllRunner
             ' en su ctor sin parametros, y `NpcRenderHost` se construye sobre uno — es el MISMO patron que usan
             ' EditFace/EditBody/ArmaEditor/ArmoEditor. Un GLControl necesita un HANDLE de ventana, no una bomba
             ' de mensajes: alcanza con crear un Form y realizar el handle SIN mostrarlo.
-            ' ⭐ AFINIDAD DE HILO: un contexto GL vive atado a UN hilo. El loop de abajo es un `For` SINCRONICO,
+            ' AFINIDAD DE HILO: un contexto GL vive atado a UN hilo. El loop de abajo es un `For` SINCRONICO,
             ' asi que el contexto que se hace current acá sigue siendo el current en cada BuildCharGen —
             ' PERO solo mientras `Run` no se llame desde un hilo distinto del que crea la ventana.
-            ' ⛔ CUIDADO: `--bake-all` SIN `--windowless` muestra la ventana de progreso, y ese camino invoca
+            ' CUIDADO: `--bake-all` SIN `--windowless` muestra la ventana de progreso, y ese camino invoca
             ' `Await Task.Run(Function() BakeAllRunner.Run(...))` (BakeAllProgress_Form) ⇒ TODO esto correria en
             ' un hilo del ThreadPool (MTA, sin bomba de mensajes). Crear ventanas WinForms y hacer
             ' wglMakeCurrent ahi NO esta verificado. Por eso GPU PARITY exige --windowless (chequeo abajo).
-            ' ⭐ Sin `Application.Run` no hay pump, asi que el RenderTimer del control NUNCA dispara: no se cuela
+            ' Sin `Application.Run` no hay pump, asi que el RenderTimer del control NUNCA dispara: no se cuela
             ' ni un render espurio. Se para igual, explicitamente, para no depender de esa propiedad.
-            ' ⛔ COSTO: el bake pasa a hacer el compose DOS VECES (CPU + GPU) ⇒ es para MUESTRAS
+            ' COSTO: el bake pasa a hacer el compose DOS VECES (CPU + GPU) ⇒ es para MUESTRAS
             ' (combinar con FGBAKE_LIMIT), no para el corpus entero, y sus TIEMPOS no son comparables contra un
             ' baseline CPU-only.
             If gpuParity AndAlso Not opt.Windowless Then
-                ' ⛔ ABORTA en vez de intentarlo: el camino con ventana corre este Run dentro de
+                ' ABORTA en vez de intentarlo: el camino con ventana corre este Run dentro de
                 ' `Await Task.Run(...)` (BakeAllProgress_Form), o sea en un hilo del ThreadPool sin STA ni
                 ' bomba de mensajes. Crear el GLControl ahi puede fallar — o peor, "funcionar" y devolver
                 ' readbacks vacios, que es exactamente la medicion fabricada que este instrumento existe para
@@ -542,7 +542,7 @@ Friend Module BakeAllRunner
                                                           .FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedToolWindow,
                                                           .ShowInTaskbar = False, .StartPosition = System.Windows.Forms.FormStartPosition.Manual,
                                                           .Location = New Drawing.Point(-4000, -4000)}
-                    ' ⛔ WinForms NO esta inicializado en --windowless (ese camino nunca llama a
+                    ' WinForms NO esta inicializado en --windowless (ese camino nunca llama a
                     ' Application.EnableVisualStyles ni a Application.Run — ver Program.HeadlessBakeAll). El
                     ' GLControl de OpenTK crea su contexto en OnHandleCreated y necesita el entorno armado; sin
                     ' esto tira "Failed to create GLControl ... before its containing form has been fully
@@ -554,15 +554,15 @@ Friend Module BakeAllRunner
                     Catch
                         ' Ya inicializado (el camino con ventana ya paso por aca): no es un error.
                     End Try
-                    ' ⭐ SE MUESTRA DE VERDAD, pero FUERA DE PANTALLA (-4000,-4000) y sin barra de tareas.
-                    ' ⛔ POR QUE NO "oculto": el contexto GL se ata al HWND y el compositor dibuja a FBOs, asi que
+                    ' SE MUESTRA DE VERDAD, pero FUERA DE PANTALLA (-4000,-4000) y sin barra de tareas.
+                    ' POR QUE NO "oculto": el contexto GL se ata al HWND y el compositor dibuja a FBOs, asi que
                     ' EN TEORIA alcanza con realizar el handle. Pero eso depende del driver, y el modo de fallo
                     ' es el peor posible: el contexto se crea "bien" y el readback vuelve en CERO — que no se
                     ' distingue de "el compose dio negro". Una ventana WS_VISIBLE fuera de pantalla es el camino
                     ' probado y no le cuesta nada al usuario. Igual NO se confia en esto: el auto-test de abajo
                     ' es el que decide.
                     '
-                    ' ⛔⛔ EL ORDEN DE ESTAS LINEAS ES LOAD-BEARING (medido, con stack): el Form se muestra y se
+                    ' EL ORDEN DE ESTAS LINEAS ES LOAD-BEARING (medido, con stack): el Form se muestra y se
                     ' realiza ANTES de crear y colgar el PreviewControl. Al reves fallaba asi:
                     '   Controls.Add -> layout -> Control.OnSizeChanged -> PreviewControl.OnResize ->
                     '   ApplyResize -> EnsureContextCurrent -> GLControl.MakeCurrent -> EnsureCreated -> THROW
@@ -592,7 +592,7 @@ Friend Module BakeAllRunner
                     glCtl.RenderTimer?.Stop()   ' no queremos renders del control; el compose dibuja a FBOs
                     glCtl.MakeCurrent()
                     glHost = New NpcRenderHost(glCtl)
-                    ' ⛔⛔ AUTO-TEST OBLIGATORIO. Sube un patron conocido, lo pasa por el MISMO pase del
+                    ' AUTO-TEST OBLIGATORIO. Sube un patron conocido, lo pasa por el MISMO pase del
                     ' compositor y verifica el readback. Sin esto, un contexto que no dibuja produciria 200 NPCs
                     ' de "paridad" fabricada. Es la regla del arnes: una condicion anomala ABORTA, no se degrada.
                     Dim selfTest = FaceGenBuilder.GlSelfTest(glHost)
@@ -607,7 +607,7 @@ Friend Module BakeAllRunner
                     log($"GPU PARITY: GL context created and VERIFIED (handle 0x{h.ToInt64():X}/0x{h2.ToInt64():X}; draw+readback self-test OK).")
                     log("            The bake now runs CPU **and** GPU and compares them in memory, before the BCn encode.")
                     log("            Use with FGBAKE_LIMIT: it doubles the compose work.")
-                    ' ⛔ AVISO OBLIGATORIO: con el GPU encendido, BakeFaceTextures escribe TAMBIEN <id>_*_2b.dds
+                    ' AVISO OBLIGATORIO: con el GPU encendido, BakeFaceTextures escribe TAMBIEN <id>_*_2b.dds
                     ' (la salida GPU) al lado de cada canal ⇒ TRIPLICA los archivos en el arbol de juego. Es la
                     ' misma trampa ya registrada para --ssecomparebatch ("escribe sueltos: apartar entre
                     ' corridas"): esos archivos quedan en Data y una corrida posterior los puede leer como si
@@ -616,7 +616,7 @@ Friend Module BakeAllRunner
                     log("              next to each channel — 3 extra files per NPC in the game tree. Move them")
                     log("              aside before any run that reads the bake output back.")
                 Catch ex As Exception
-                    ' ⛔ NO se degrada a CPU-only en silencio: la corrida se pidio para medir paridad y sin GL no
+                    ' NO se degrada a CPU-only en silencio: la corrida se pidio para medir paridad y sin GL no
                     ' mide NADA. Abortar es la unica respuesta honesta (regla del arnes: una condicion anomala
                     ' aborta o se marca, jamas cae a un default).
                     log($"FATAL: FGBAKE_GPU_PARITY=1 but the GL context could not be created: {ex.GetType().Name}: {ex.Message}")
@@ -628,13 +628,13 @@ Friend Module BakeAllRunner
                 End Try
             End If
 
-            ' ⭐⭐ GATE SIMD, UNA VEZ Y ACA — antes del loop, no adentro.
-            ' ⛔ Adentro NO alcanza con que el Lazy sea thread-safe: CUATRO de los self-tests corren
+            ' GATE SIMD, UNA VEZ Y ACA — antes del loop, no adentro.
+            ' Adentro NO alcanza con que el Lazy sea thread-safe: CUATRO de los self-tests corren
             ' Parallel.ForEach por dentro, asi que el primer hilo se queda con la publicacion mientras los
             ' demas esperan (stall de arranque). Corriendolo aca, cuando el loop arranca ya esta resuelto.
             FaceGenBuilder.EnsureSimdParityGate()
 
-            ' ⭐ FGBAKE_LIMIT se aplica RECORTANDO la lista, no con un Exit For. Con el loop paralelo "los
+            ' FGBAKE_LIMIT se aplica RECORTANDO la lista, no con un Exit For. Con el loop paralelo "los
             ' primeros N procesados" deja de estar definido: N hilos terminan en orden arbitrario. Recortando,
             ' la muestra vuelve a ser EXACTAMENTE los N primeros del orden determinista de `targets`.
             If sampleLimit > 0 AndAlso sampleLimit < targets.Count Then
@@ -642,23 +642,23 @@ Friend Module BakeAllRunner
                 log($"SAMPLE: FGBAKE_LIMIT={sampleLimit} — the target list was trimmed to the first {targets.Count} NPC(s).")
             End If
 
-            ' ⭐⭐ CUANTOS NPCs A LA VEZ = LOS CORES DE LA MAQUINA. Derivado en runtime, sin constante propia:
+            ' CUANTOS NPCs A LA VEZ = LOS CORES DE LA MAQUINA. Derivado en runtime, sin constante propia:
             ' la app se distribuye y cualquier numero calibrado a un equipo es basura en otro.
-            ' ⛔ ACA HUBO UN `\ 4` Y ESTABA MAL. El argumento era "el compose interno ya satura, un NPC por
+            ' ACA HUBO UN `\ 4` Y ESTABA MAL. El argumento era "el compose interno ya satura, un NPC por
             ' core solo agrega contencion". Eso vale para FO4, donde el compose es el 91 % del wall — NO para
             ' SSE, donde es el 18,9 % y la maquina queda ociosa. MEDIDO sobre el corpus SSE entero (4460 NPCs,
             ' 12 cores): N=1 5:16 · N=3 (lo que daba el \4) 3:46 · N=8 3:27 · N=12 2:55 = x1,81. El `\ 4`
             ' dejaba el 35 % de la ganancia sin tomar, y el usuario lo vio como "CPU al 40 %".
-            ' ⚠️ La curva ya esta APLANANDO y se sabe por que: `NifWrite` y `other` se inflan ~x7 con 8 hilos
+            ' La curva ya esta APLANANDO y se sabe por que: `NifWrite` y `other` se inflan ~x7 con 8 hilos
             ' mientras `Textures` (el compose, que si escala) apenas x1,6 ⇒ el techo no es CPU, es I/O y
             ' contencion en esas dos fases. Subir N mas alla de los cores gastaria energia sin ganar wall:
             ' lo que falta atacar son esas fases, no este numero.
-            ' ⛔ SIN CONSTANTES PROPIAS. Todo lo de abajo sale de la MAQUINA que corre o del RUNTIME; no hay un
+            ' SIN CONSTANTES PROPIAS. Todo lo de abajo sale de la MAQUINA que corre o del RUNTIME; no hay un
             ' solo numero calibrado sobre un equipo concreto. La app se distribuye como mod: el que la corre
             ' puede tener 4 cores y 8 GB o 24 y 64, con vanilla o con 300 mods de texturas 4K, y ninguno de
             ' esos casos se puede predecir desde acá.
             Dim hardCap As Integer = Math.Max(1, Environment.ProcessorCount)
-            ' N FIJO sólo si alguien lo pide explícitamente. ⛔ El override APAGA el controlador: si no, dos
+            ' N FIJO sólo si alguien lo pide explícitamente. El override APAGA el controlador: si no, dos
             ' corridas nunca serían comparables y se pierde la capacidad de hacer un A/B (que es como se
             ' probó que el paralelismo no mueve bytes).
             Dim fixedDop As Integer = 0
@@ -668,14 +668,14 @@ Friend Module BakeAllRunner
                 If fixedDop <> envThreads Then
                     log($"Parallelism: FGBAKE_NPC_THREADS={envThreads} clamped to {fixedDop} (allowed range 1..32)")
                 Else
-                    ' ⛔ NO dice "adaptive controller OFF" a secas: lo que esta apagado es el TREPE. La guarda
+                    ' NO dice "adaptive controller OFF" a secas: lo que esta apagado es el TREPE. La guarda
                     ' de memoria corre igual y puede bajar por debajo de este numero (y despues volver). Si el
                     ' log promete un N fijo y el barrido corre con otro, un A/B contra este arnes compara dos
                     ' cosas distintas creyendo que compara una — ver 63-arnes-de-medicion-wm.
                     log($"Parallelism: FIXED at {fixedDop} NPC(s) (FGBAKE_NPC_THREADS) — no climb; the memory guard can still lower and restore it")
                 End If
             End If
-            ' ⛔ CON PARIDAD GPU NO SE PARALELIZA, y se DICE. El contexto GL vive atado a UN hilo y
+            ' CON PARIDAD GPU NO SE PARALELIZA, y se DICE. El contexto GL vive atado a UN hilo y
             ' FaceGenBuilder hace EnsureContextCurrent por NPC: con N hilos el contexto deja de ser el current
             ' del hilo que compone y la medicion de paridad seria basura. Degradar en silencio seria peor.
             If gpuParity Then
@@ -683,7 +683,7 @@ Friend Module BakeAllRunner
                 log("Parallelism: FORCED TO 1 because FGBAKE_GPU_PARITY=1 — the GL context is per-thread.")
             End If
 
-            ' ⛔ DIAGNOSTICO: Logger.Enabled es False en Release, asi que gatear SOLO por el dejaba tambien
+            ' DIAGNOSTICO: Logger.Enabled es False en Release, asi que gatear SOLO por el dejaba tambien
             ' sin numeros al arnes de medicion, que corre Release. `FGBAKE_STATS=1` los reactiva —
             ' misma convencion que FGBAKE_LIMIT / FGBAKE_GPU_PARITY / FGBAKE_DECODE_CACHE_MB.
             Dim wantStats As Boolean = Logger.Enabled OrElse
@@ -693,7 +693,7 @@ Friend Module BakeAllRunner
             Dim peakPermits As Integer = If(fixedDop > 0, fixedDop, 1)
 
 
-            ' ⛔ LOS DOS INTERRUPTORES SE PRENDEN PEGADO AL Try QUE LOS DEVUELVE. Estaban ~215 líneas más
+            ' LOS DOS INTERRUPTORES SE PRENDEN PEGADO AL Try QUE LOS DEVUELVE. Estaban ~215 líneas más
             ' arriba, y entre medio se crea el CONTEXTO GL (con FGBAKE_GPU_PARITY=1), se enumeran los targets
             ' y se hidratan los overlays: cualquier excepción ahí salía sin restaurar y dejaba
             ' `SkipPixelCompose = True` para el resto de la sesión de la GUI ⇒ todo compose posterior devuelve
@@ -703,7 +703,7 @@ Friend Module BakeAllRunner
             Dim prevSkipDds = FaceGenBuilder.SkipDdsEncode
             Dim prevSkipCompose = FaceTintCpuCompositor.SkipPixelCompose
 
-            ' ⛔ EL SETEO VA ADENTRO DEL Try. Quedó AFUERA cinco líneas, y su `log("SAMPLE: ...")`
+            ' EL SETEO VA ADENTRO DEL Try. Quedó AFUERA cinco líneas, y su `log("SAMPLE: ...")`
             ' corría con los dos flags YA PRENDIDOS: si ese log tiraba —o si tiraba
             ' `BeginBatchDecodeCacheConMotivo`— el Finally no corría y `SkipPixelCompose` quedaba en True
             ' para el resto de la sesión de la GUI ⇒ todo compose posterior devuelve un buffer NEGRO.
@@ -716,17 +716,17 @@ Friend Module BakeAllRunner
                     log("SAMPLE: FGBAKE_SKIP_DDS=1 — image work skipped (NIF-only sweep); DDS are NOT written.")
                 End If
 
-                ' ⛔ EL Begin VA PEGADO AL Try QUE LO CIERRA. Al mover el bloque de FGBAKE_SKIP_DDS quedo
+                ' EL Begin VA PEGADO AL Try QUE LO CIERRA. Al mover el bloque de FGBAKE_SKIP_DDS quedo
                 ' EN EL MEDIO, con dos `log()` entre la apertura del lote y el Try: `log` lo provee el
                 ' llamador (la consola o el form de progreso) y ninguno declara ser thread-safe ni
                 ' resistente a un form cerrandose. Si uno tiraba, `EndBatchDecodeCache` no corria y el lote
                 ' quedaba abierto con sus texturas 4K por el resto de la sesion de la GUI — el mismo patron
                 ' que este arreglo perseguia, reintroducido por el arreglo.
                 Dim budgetReason = FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
-                log(budgetReason)   ' ⛔ DENTRO del Try: `log` es del llamador y puede tirar.
+                log(budgetReason)   ' DENTRO del Try: `log` es del llamador y puede tirar.
                 Dim done As Integer = 0
 
-                ' ⛔ `log` y `progress` los provee el CALLER (la consola, o el form de progreso de la GUI) y
+                ' `log` y `progress` los provee el CALLER (la consola, o el form de progreso de la GUI) y
                 ' NINGUNO declara ser thread-safe. Con N hilos se serializan: al lado de hornear un NPC cuestan
                 ' nada, y asi no dependemos de una garantia que el sink nunca dio.
                 Dim logSync = Sub(s As String)
@@ -735,7 +735,7 @@ Friend Module BakeAllRunner
                                   End SyncLock
                               End Sub
                 ' ═══════════════════════════════════════════════════════════════════════════════════════
-                ' ⭐⭐ CONCURRENCIA ADAPTATIVA — el N lo DESCUBRE la corrida, no lo fija una constante.
+                ' CONCURRENCIA ADAPTATIVA — el N lo DESCUBRE la corrida, no lo fija una constante.
                 ' ═══════════════════════════════════════════════════════════════════════════════════════
                 ' POR QUE no una formula: el cuello NO es CPU. Medido sobre el corpus SSE entero: al pasar de
                 ' 1 a 8 NPCs en vuelo, `Textures` (el compose) crece x1,6 pero `NifWrite` y `other` crecen
@@ -743,7 +743,7 @@ Friend Module BakeAllRunner
                 ' que es justo lo que ProcessorCount no sabe. Y con mods de texturas 4K cada NPC pesa otra
                 ' cosa, asi que tampoco se puede tabular por juego.
                 '
-                ' ⛔ LICENCIA PARA VARIARLO EN CALIENTE: esta MEDIDO que el orden no mueve la salida — dos
+                ' LICENCIA PARA VARIARLO EN CALIENTE: esta MEDIDO que el orden no mueve la salida — dos
                 ' corridas paralelas con N distinto (8 vs 12) dieron 0 bytes de diferencia sobre 8920
                 ' archivos y 6.235.526.000 bytes de pixel. Sin ese resultado esto no seria aceptable.
                 '
@@ -758,14 +758,14 @@ Friend Module BakeAllRunner
                 ' presion de memoria. Quedarse corto cuesta minutos; pasarse cuesta un OutOfMemory a la mitad
                 ' de un barrido de una hora, con NPCs a medio escribir.
                 ' El ajuste ocurre SOLO en el borde de NPC, nunca dentro de un compose.
-                ' ⛔ NO MEDIR THROUGHPUT. Se probó y dio 6:18 contra 3:58 del N fijo — 59 % PEOR, con
+                ' NO MEDIR THROUGHPUT. Se probó y dio 6:18 contra 3:58 del N fijo — 59 % PEOR, con
                 ' trayectoria `1 → 2 → 3 → 2(peak)`. El throughput por-NPC es una señal sucia: mezcla CPU,
                 ' esperas de I/O, warm-up (caché frío/JIT) y sobre todo la varianza entre NPCs (uno de 2
                 ' shapes contra uno de 8, y 2088 que se saltean). Con pocas muestras el ruido gana y el
                 ' hill-climbing toma el primer bajón por el óptimo. Promediarlo exigiria fijar CUANTAS
                 ' muestras = la constante arbitraria que se queria evitar.
                 '
-                ' ⭐ LA SEÑAL CORRECTA ES EL RECURSO: ¿el worker que agregué TRABAJA o ESPERA?
+                ' LA SEÑAL CORRECTA ES EL RECURSO: ¿el worker que agregué TRABAJA o ESPERA?
                 '     cpuBusy = Δ TotalProcessorTime / (Δ wall × ProcessorCount)   ∈ [0,1]
                 ' Es el cociente de dos ACUMULADORES, no un conteo de eventos: estable en ventana corta, sin
                 ' necesidad de promediar N muestras. Ahí desaparece la constante.
@@ -783,7 +783,7 @@ Friend Module BakeAllRunner
                 Dim ctl As New Object()
                 Dim lvlDone As Integer = 0
                 Dim climbing As Boolean = (fixedDop = 0 AndAlso hardCap > 1)
-                ' ⛔ EL NIVEL AL QUE HAY QUE VOLVER cuando la presion de memoria se va. Sin esto la guarda de
+                ' EL NIVEL AL QUE HAY QUE VOLVER cuando la presion de memoria se va. Sin esto la guarda de
                 ' abajo es un TRINQUETE: resta un permiso por cada NPC terminado bajo presion y no devuelve
                 ' ninguno nunca. `MemoryLoadBytes` es una señal DE MAQUINA, no del proceso (el umbral del GC
                 ' ronda el 90 % de la RAM fisica), asi que alcanza con que el usuario abra el navegador o
@@ -801,7 +801,7 @@ Friend Module BakeAllRunner
                 Dim releaseAndTune =
                     Sub()
                         SyncLock ctl
-                            ' ⛔⛔ LA GUARDA DE MEMORIA VA PRIMERO Y CORRE SIEMPRE.
+                            ' LA GUARDA DE MEMORIA VA PRIMERO Y CORRE SIEMPRE.
                             ' Estaba DESPUES del `If Not climbing Then Return`, y ella misma ponia
                             ' `climbing = False` al bajar. O sea: bajaba de N a N-1 UNA sola vez y a partir
                             ' de ahi toda llamada salia por el early-return y no volvia a mirar la memoria
@@ -818,7 +818,7 @@ Friend Module BakeAllRunner
                             Dim presion = mi.HighMemoryLoadThresholdBytes > 0 AndAlso
                                           mi.MemoryLoadBytes >= mi.HighMemoryLoadThresholdBytes
                             If presion Then
-                                ' ⛔ SE DESCUENTA UNO, NO SE PONE EN CERO. Ponerlo en cero hacia que en una
+                                ' SE DESCUENTA UNO, NO SE PONE EN CERO. Ponerlo en cero hacia que en una
                                 ' maquina donde la presion es casi PERMANENTE —los 8 GB que son el caso de uso
                                 ' declarado, con el umbral del GC rondando el 90 % de la RAM fisica— el
                                 ' contador no llegara nunca al techo y el barrido se quedara en serie para
@@ -830,7 +830,7 @@ Friend Module BakeAllRunner
                                     traj.Add($"{permits}(mem)")
                                     Return                  ' NO se devuelve el permiso ⇒ baja la concurrencia
                                 End If
-                                ' ⛔⛔ CON permits = 1 NO SE PUEDE BAJAR, PERO TAMPOCO SE TREPA.
+                                ' CON permits = 1 NO SE PUEDE BAJAR, PERO TAMPOCO SE TREPA.
                                 ' Antes esto caia al camino normal y, si `climbing` seguia en True (DOP
                                 ' adaptativo que nunca llego a bajar porque nunca pudo), terminaba en
                                 ' `permits += 1` + `sem.Release(2)`: SUBIENDO la concurrencia con la maquina
@@ -841,12 +841,12 @@ Friend Module BakeAllRunner
                                 sem.Release()
                                 Return
                             ElseIf permits < nivelObjetivo Then
-                                ' ⛔ EL UMBRAL ES EL NIVEL ACTUAL, NO EL OBJETIVO. Con `nivelObjetivo` volver
+                                ' EL UMBRAL ES EL NIVEL ACTUAL, NO EL OBJETIVO. Con `nivelObjetivo` volver
                                 ' de 1 a N costaba N·(N−1) NPC limpios SEGUIDOS —240 con hardCap 16— porque el
                                 ' contador se reinicia despues de cada +1. Con el nivel actual el costo total
                                 ' es N·(N+1)/2 y, sobre todo, el PRIMER escalon cuesta 1: se sale de la serie
                                 ' apenas la presion afloja, que es cuando importa.
-                                ' ⚠️ NO ESTA MEDIDO. Es aritmetica sobre el peor caso, no un barrido: la
+                                ' NO ESTA MEDIDO. Es aritmetica sobre el peor caso, no un barrido: la
                                 ' recuperacion necesita una maquina que entre y salga de presion, y este equipo
                                 ' no la reproduce. Ver 10-stack-arnes-de-medicion antes de tocar el ritmo.
                                 limpiosSeguidos += 1
@@ -854,7 +854,7 @@ Friend Module BakeAllRunner
                                     permits += 1
                                     limpiosSeguidos = 0
                                     traj.Add($"{permits}(mem+)")
-                                    ' ⛔ INVARIANTE, hoy se cumple por accidente: acá se hace UN Release y
+                                    ' INVARIANTE, hoy se cumple por accidente: acá se hace UN Release y
                                     ' abajo el camino `Not climbing` hace el otro ⇒ 2 en total, que es lo
                                     ' que corresponde a `permits + 1`. Eso vale SÓLO porque `climbing`
                                     ' está garantizado en False (el único decremento de `permits` siempre
@@ -902,7 +902,7 @@ Friend Module BakeAllRunner
                         End SyncLock
                     End Sub
 
-                ' ⛔⛔ CON PARIDAD GPU EL DOP REAL TIENE QUE SER 1 — y hasta acá NO LO ERA. El `fixedDop = 1`
+                ' CON PARIDAD GPU EL DOP REAL TIENE QUE SER 1 — y hasta acá NO LO ERA. El `fixedDop = 1`
                 ' de arriba alimentaba SOLO al controlador de permisos; este ParallelOptions seguía recibiendo
                 ' `hardCap`, así que Parallel.ForEach despachaba el cuerpo en hilos del ThreadPool mientras el
                 ' contexto GL vive atado al hilo STA que lo creó (ver "CONTEXTO GL", cuyo comentario todavía
@@ -911,7 +911,7 @@ Friend Module BakeAllRunner
                 ' MEDIDO 2026-08-01: crash en `GL.GenTexture()` al NPC 7/40 con FGBAKE_GPU_PARITY=1.
                 ' El log ya imprimía "Parallelism: FORCED TO 1": decía la verdad del CONTROLADOR y una mentira
                 ' del DESPACHO. Con DOP=1 el cuerpo corre en el hilo LLAMADOR, que es el dueño del contexto.
-                ' ⭐ Esto es lo que dejaba MUERTO al único instrumento que ve el compositor GL: el barrido
+                ' Esto es lo que dejaba MUERTO al único instrumento que ve el compositor GL: el barrido
                 ' normal corre con parity=0 (ciego al GLSL) y el modo que sí lo mira crasheaba.
                 Dim dop As Integer = If(gpuParity, 1, hardCap)
                 Dim popt As New System.Threading.Tasks.ParallelOptions With {.MaxDegreeOfParallelism = dop}
@@ -925,7 +925,7 @@ Friend Module BakeAllRunner
                     End If
                     sem.Wait()          ' ⇦ la concurrencia real la gobierna el controlador, no MaxDegreeOfParallelism
                     Try
-                    ' ⛔⛔ EL CONTADOR CUENTA NPCs TERMINADOS, NO ARRANCADOS. Estaba incrementandose ACA
+                    ' EL CONTADOR CUENTA NPCs TERMINADOS, NO ARRANCADOS. Estaba incrementandose ACA
                     ' —antes de hornear— y eso daba dos defectos a la vez: con N NPCs en vuelo la barra
                     ' saltaba a N sin que terminara ninguno, y el ORDEN en que los hilos reportaban no era el
                     ' de sus numeros, asi que la barra RETROCEDIA (57 → 56). Windows usa ese valor para la
@@ -969,7 +969,7 @@ Friend Module BakeAllRunner
                             logSync($"{head} — skip: {r.Summary}")
                         ElseIf r.Success Then
                             Threading.Interlocked.Increment(baked)
-                            ' ⛔ AGUJERO DE OBSERVABILIDAD (medido): un NPC cuyo bake de TEXTURAS falla igual
+                            ' AGUJERO DE OBSERVABILIDAD (medido): un NPC cuyo bake de TEXTURAS falla igual
                             ' devuelve Success=True (el NIF se escribio), asi que el batch lo contaba como
                             ' "baked" y NO decia una palabra. Concretamente: una corrida SSE reporto
                             ' "4460 baked / 0 failed" habiendo escrito CERO facetint .dds — el fallo estaba en
@@ -999,30 +999,30 @@ Friend Module BakeAllRunner
                         End SyncLock
                         logSync($"0x{t.Fid:X8} {t.Name} — FAIL (reporting): {ex.GetType().Name}: {ex.Message}")
                     End Try
-                    ' PhaseAdd es Interlocked por dentro (verificado) ⇒ seguro con N hilos. ⚠️ Pero ojo al
+                    ' PhaseAdd es Interlocked por dentro (verificado) ⇒ seguro con N hilos. Pero ojo al
                     ' LEERLO: con el loop paralelo el TOTAL acumulado deja de aproximar el wall clock, que es
                     ' justamente lo que probaba que el loop era serial. Por eso el resumen imprime los dos.
                     FaceGenBuilder.PhaseAdd(FaceGenBuilder.BakePhase.Total, tNpc)
                     Finally
-                        ' ⛔ EN Finally: si BuildCharGen tira, el permiso TIENE que volver igual o el barrido
+                        ' EN Finally: si BuildCharGen tira, el permiso TIENE que volver igual o el barrido
                         ' se queda sin concurrencia de a poco hasta trabarse del todo.
                         releaseAndTune()
                     End Try
                  End Sub)
             Finally
-                ' ⛔ LOS FLAGS PRIMERO. Son dos asignaciones que no pueden tirar, asi que si algo de abajo
+                ' LOS FLAGS PRIMERO. Son dos asignaciones que no pueden tirar, asi que si algo de abajo
                 ' revienta igual quedan restaurados. `SkipPixelCompose = True` colgado deja todo compose
                 ' posterior de la sesion de la GUI devolviendo un buffer NEGRO. Nada de lo que sigue en este
                 ' Finally los lee.
                 FaceGenBuilder.SkipDdsEncode = prevSkipDds
                 FaceTintCpuCompositor.SkipPixelCompose = prevSkipCompose
-                ' ⛔ BLOQUE DE DIAGNOSTICO, GATEADO. A un usuario que hornea su load order no le sirve NADA de
+                ' BLOQUE DE DIAGNOSTICO, GATEADO. A un usuario que hornea su load order no le sirve NADA de
                 ' esto: hits/misses de cache, bytes por nivel y contadores del izado son para MEDIR, no para
                 ' operar. Va todo bajo Logger.Enabled (= FaceGenBuilder.DebugMode), que es lo que prenden el
                 ' arnes y las corridas de medicion, y queda fuera de una corrida normal.
-                ' ⛔ Las llamadas a *Stats() tambien van adentro del If: son lecturas Interlocked baratas, pero
+                ' Las llamadas a *Stats() tambien van adentro del If: son lecturas Interlocked baratas, pero
                 ' la regla del proyecto es gatear el CALCULO, no solo el log.
-                ' ⛔⛔ EL DIAGNOSTICO VA EN SU PROPIO Try. Son CUATRO `log(...)` con el sink del llamador,
+                ' EL DIAGNOSTICO VA EN SU PROPIO Try. Son CUATRO `log(...)` con el sink del llamador,
                 ' que este archivo declara no confiable: si uno tira, el Finally se corta ahi, se saltea
                 ' `EndBatchDecodeCache` y el teardown GL de abajo, y la excepcion ademas REEMPLAZA a la
                 ' original. Los flags ya quedaron restaurados arriba, al tope del Finally, justamente para
@@ -1033,18 +1033,18 @@ Friend Module BakeAllRunner
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
                 log($"Decode cache TOTAL (both levels, one shared cap): {cst.Bytes \ (1024L * 1024L)} MB retained at the end, " &
                     $"{cst.Rejected} entries rejected by the cap")
-                ' ⭐ DESGLOSE POR NIVEL. Los dos niveles guardan cosas DISTINTAS (nivel 1 = textura decodificada,
+                ' DESGLOSE POR NIVEL. Los dos niveles guardan cosas DISTINTAS (nivel 1 = textura decodificada,
                 ' 1 B por elemento; nivel 2 = buffer ya resampleado a w×h, 4 B por elemento) y comparten UN techo.
                 ' Sin hits/misses y bytes de los DOS no se puede contestar si el nivel 2 paga su 4x: el total solo
                 ' dice cuanto pesa el conjunto. Este es el dato que decide si conviene tocar el storage.
                 Dim dst = FaceTintCpuCompositor.DecodeCacheStats()
                 log($"  level 1 (decoded DDS, 1 B/elem): {dst.Hits} hits / {dst.Misses} misses, " &
                     $"{dst.Bytes \ (1024L * 1024L)} MB, {dst.Rejected} rejected")
-                ' ⭐ El NIVEL 2 con su contador de RESAMPLES. No es cosmético: dice si esta corrida ejercitó o no
+                ' El NIVEL 2 con su contador de RESAMPLES. No es cosmético: dice si esta corrida ejercitó o no
                 ' la ley del bilineal. Con `resampled=0` el corpus salió TODO por el atajo de identidad, y
                 ' entonces un A/B en 0 bytes NO dice nada sobre un cambio en esa ley — el gate de eso es el
                 ' self-test `bilinear`. Sin este número, eso es una suposición y no un dato.
-                ' ⭐ IZADO DEL RESAMPLE. Con 0 texturas izadas, esta corrida NO ejercito ese camino y un
+                ' IZADO DEL RESAMPLE. Con 0 texturas izadas, esta corrida NO ejercito ese camino y un
                 ' A/B de bytes en 0 no dice nada sobre el — igual que el `resampled` del nivel 2.
                 Dim hst = FaceTintCpuCompositor.HoistStats()
                 log($"  resample HOIST: {hst.Textures} texture(s) materialized to SoA planes, {hst.Pixels} px" &
@@ -1053,7 +1053,7 @@ Friend Module BakeAllRunner
                 log($"  level 2 (resampled to w×h, 4 B/elem): {ust.Hits} hits / {ust.Misses} misses, " &
                     $"{ust.Bytes \ (1024L * 1024L)} MB, {ust.Rejected} rejected — {ust.Resampled} of the misses went " &
                     $"through the BILINEAR (the rest hit the identity shortcut: source already at the accumulator size)")
-                ' ⛔ Los hits/misses/rechazos son ACUMULADOS de toda la corrida; los MB son los del cache vivo
+                ' Los hits/misses/rechazos son ACUMULADOS de toda la corrida; los MB son los del cache vivo
                 ' al cerrar.
                 End If   ' wantStats — fin del bloque de diagnostico
                 Catch exStats As Exception
@@ -1061,10 +1061,10 @@ Friend Module BakeAllRunner
                     Dim ms = exStats.Message
                     Logger.LogLazy(Function() $"[BAKE] el bloque de estadisticas fallo: {ms}")
                 End Try
-                ' ⛔ `End` CON SU PROPIO Try, no el de estadisticas: su Catch dice "el bloque de estadisticas
+                ' `End` CON SU PROPIO Try, no el de estadisticas: su Catch dice "el bloque de estadisticas
                 ' fallo", que seria mentira. Y si tira sin red se saltea el teardown GL de abajo, que este
                 ' mismo archivo justifica con "este exe con --windowless a veces NO SALE al terminar".
-                ' ⛔ El ORDEN es obligatorio: `EndBatchDecodeCache` pone los dos caches en Nothing y los
+                ' El ORDEN es obligatorio: `EndBatchDecodeCache` pone los dos caches en Nothing y los
                 ' vacia, y las estadisticas de arriba reportan los MB del cache VIVO — despues del End
                 ' darian todas cero.
                 Try
@@ -1075,7 +1075,7 @@ Friend Module BakeAllRunner
                 End Try
                 ' Teardown del contexto GL. Se libera el cache de texturas ANTES de destruir el contexto (si no,
                 ' se filtran los handles GL que el cache tiene vivos — contrato de FaceTintTextureCache).
-                ' ⛔ Ademas: este exe con --windowless a veces NO SALE al terminar. Un Form vivo empeora eso, asi
+                ' Ademas: este exe con --windowless a veces NO SALE al terminar. Un Form vivo empeora eso, asi
                 ' que se destruye SIEMPRE, incluso si el loop murio por excepcion.
                 If glHost IsNot Nothing OrElse glCtl IsNot Nothing OrElse glForm IsNot Nothing Then
                     Try : glHost?.TintGpuCache?.Clear() : Catch : End Try
@@ -1096,12 +1096,12 @@ Friend Module BakeAllRunner
             If cancelled Then log($"CANCELLED — {targets.Count - processed} NPC(s) not processed.")
             log($"Done in {sw.Elapsed:hh\:mm\:ss} — {baked} baked / {skipped} skipped / {failed} failed (of {targets.Count}).")
             log("")
-            ' ⛔⛔ COMO LEER EL PhaseReport CON EL LOOP PARALELO. Su `TOTAL` es la suma del tiempo POR NPC, o
+            ' COMO LEER EL PhaseReport CON EL LOOP PARALELO. Su `TOTAL` es la suma del tiempo POR NPC, o
             ' sea trabajo de CPU acumulado; con N hilos ya NO aproxima el wall clock. Antes coincidian, y esa
             ' coincidencia era justamente la evidencia de que el loop era serial. El cociente TOTAL/wall son
             ' los hilos EFECTIVOS. Todo esto es para MEDIR: el PhaseReport entero va gateado.
             If wantStats Then
-                ' ⭐ La TRAYECTORIA, no solo el valor final: si un usuario reporta que el bake se le arrastro,
+                ' La TRAYECTORIA, no solo el valor final: si un usuario reporta que el bake se le arrastro,
                 ' esto dice si el controlador se quedo en 1, si trepo y freno por memoria, o si toco el techo.
                 ' Sin la trayectoria ese reporte no es diagnosticable.
                 log($"Wall clock: {sw.Elapsed.TotalSeconds:F1} s · concurrency {If(fixedDop > 0, $"FIXED {fixedDop}", $"adaptive, peak {peakPermits} of {hardCap}: " & String.Join(" → ", traj))}")
@@ -1109,7 +1109,7 @@ Friend Module BakeAllRunner
                 log(FaceGenBuilder.PhaseReport())
             End If
             ' Paridad CPU-vs-GPU: SOLO en corridas de MEDICION.
-            ' ⛔ Antes se imprimia SIEMPRE. El motivo declarado era bueno —que nadie leyera un barrido CPU-only
+            ' Antes se imprimia SIEMPRE. El motivo declarado era bueno —que nadie leyera un barrido CPU-only
             ' como si hubiera validado el compositor del render— pero la conclusion era la equivocada: en un
             ' bake de PRODUCCION nadie pidio medir paridad, asi que escupir dos bloques de "NOT MEASURED — this
             ' run says NOTHING about the GPU path" es ruido de diagnostico en la cara del usuario. Y encima
@@ -1117,7 +1117,7 @@ Friend Module BakeAllRunner
             ' El aviso hace falta donde el malentendido es POSIBLE: cuando alguien esta midiendo. Eso es
             ' `gpuParity` (pidio el instrumento ⇒ se le reporta el resultado, medido o no) o `wantStats`
             ' (FGBAKE_STATS=1 / Logger encendido ⇒ pidio diagnostico). Sin ninguno de los dos, silencio.
-            ' ⛔ NO alcanzaba con gatear por `Logger.Enabled`: el arnes corre en RELEASE, donde Logger esta duro
+            ' NO alcanzaba con gatear por `Logger.Enabled`: el arnes corre en RELEASE, donde Logger esta duro
             ' en False (Logger.Enabled = value AndAlso AllowInReleaseBuilds, y ninguna app lo prende) — por eso
             ' existe `wantStats`, que es la valvula pensada justamente para eso.
             If gpuParity OrElse wantStats Then

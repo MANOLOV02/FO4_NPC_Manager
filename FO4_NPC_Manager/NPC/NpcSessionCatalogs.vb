@@ -1,5 +1,5 @@
-﻿''' <summary>⭐ LOS CATÁLOGOS DE SESIÓN, EN UN SOLO LUGAR AL QUE ENTRAN LOS TRES ENTRY POINTS.
-''' <para>⛔ ESTABAN DENTRO DE <c>MainForm.EnsureAssetDictionaryAsync</c>, o sea que sólo existían si el
+﻿''' <summary>LOS CATÁLOGOS DE SESIÓN, EN UN SOLO LUGAR AL QUE ENTRAN LOS TRES ENTRY POINTS.
+''' <para>ESTABAN DENTRO DE <c>MainForm.EnsureAssetDictionaryAsync</c>, o sea que sólo existían si el
 ''' usuario abría la GUI. <c>BakeAllRunner</c> y <c>FO4_FaceTint_CLI</c> nunca ejecutan <c>MainForm</c>,
 ''' así que en una sesión de Skyrim el bake headless corría con <c>RaceCompatCatalog = Nothing</c> ⇒
 ''' <c>IsHeadPartValidForRace</c> devolvía False para todo el pelo vanilla en razas COtR y
@@ -8,7 +8,7 @@
 ''' <c>RaceCompatCatalog</c> alrededor de un diagnóstico puntual, pero su camino principal no lo poblaba.</para>
 ''' <para>Los dos catálogos son FUNCIÓN PURA de los plugins cargados —no dependen de nada de la UI— así
 ''' que no hay motivo para que vivan en un formulario. Idempotentes: si ya están, no se recargan.</para>
-''' <para>⚠️ Lo que NO entra acá y no es divergencia: <c>NpcRecordOverlay.EffectiveRaceResolver</c>. Ese
+''' <para>Lo que NO entra acá y no es divergencia: <c>NpcRecordOverlay.EffectiveRaceResolver</c>. Ese
 ''' resuelve la raza pisada por el editor de NPC, que existe sólo en memoria de la GUI; que el CLI lo deje
 ''' en Nothing es correcto y está documentado en <c>MainForm_Load</c>.</para></summary>
 ''' <para>Es <c>Public</c> y no <c>Friend</c> porque el consumidor está en OTRO ensamblado:
@@ -53,7 +53,7 @@ Public Module NpcSessionCatalogs
         ' piezas del propio mod. Se reconstruye la inserción (QUST VMAD + el script compilado del mod) y se
         ' le pasa al filtro del catálogo. Se detecta POR FORMA (cualquier QUST que cargue un
         ' GenericRaceController), nunca por nombre de mod.
-        ' ⚠️ Decia "se rearma en cada carga" y era FALSO: la guarda `Is Nothing` lo construye UNA vez por
+        ' Decia "se rearma en cada carga" y era FALSO: la guarda `Is Nothing` lo construye UNA vez por
         ' proceso, y abajo se sueltan los QUST, asi que ni siquiera habria con que reconstruirlo. No es un
         ' defecto: NPC Manager carga el load order UNA VEZ por juego y no lo recarga en caliente — un mod
         ' agregado o sacado se refleja al reabrir, que es el ciclo real. Los caminos headless arrancan
@@ -66,7 +66,7 @@ Public Module NpcSessionCatalogs
             End Try
         End If
 
-        ' ⛔⛔ ESTOS DOS SE HABÍAN PERDIDO AL MOVER EL BLOQUE. Vivían en el mismo tramo de
+        ' ESTOS DOS SE HABÍAN PERDIDO AL MOVER EL BLOQUE. Vivían en el mismo tramo de
         ' `MainForm.EnsureAssetDictionaryAsync` que se extrajo acá, y en la extracción quedaron afuera: no los
         ' poblaba NADIE en toda la app (el único `.Current =` que sobrevivía era el de una probe de Tools\).
         ' No rompe la compilación ni tira, porque los tres lectores ya toleraban Nothing —era el estado del
@@ -106,10 +106,10 @@ Public Module NpcSessionCatalogs
         ' QUST se carga SÓLO para alimentar el catálogo de arriba (el VMAD de las quests que llevan
         ' GenericRaceController) y nada más en la app resuelve una quest. Son records pesados, así que se
         ' sueltan apenas se consumen en vez de dejar miles residentes por una lectura única. FO4 ni siquiera
-        ' construye el catálogo, así que ahí también los libera. ⚠ Una feature futura que necesite QUST en
+        ' construye el catálogo, así que ahí también los libera. Una feature futura que necesite QUST en
         ' runtime (stages, aliases, propiedades de script) tiene que BORRAR esta llamada, no agregar un
         ' segundo pase de carga — los records ya están parseados al cargar.
-        ' ⛔ INCONDICIONAL, y por eso vive acá: los TRES entry points cargan QUST (está en
+        ' INCONDICIONAL, y por eso vive acá: los TRES entry points cargan QUST (está en
         ' SIGS_NPC_RENDERING, que es el filtro del CLI, y los otros dos cargan sin filtro) y ninguno de los
         ' tres resuelve una quest para otra cosa. Gatearlo por llamador sería volver a tener una decisión
         ' que cada entry point toma por su cuenta — que es exactamente el defecto que este módulo arregla.

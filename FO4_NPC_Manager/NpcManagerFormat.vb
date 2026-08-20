@@ -9,6 +9,7 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Pure stateless formatting / label helpers extracted from MainForm (no instance state,
 ''' no UI, no MainForm fields). Real separate class — NOT a partial of MainForm. Part of slimming
@@ -20,7 +21,7 @@ Friend NotInheritable Class NpcManagerFormat
     Public Shared Function DescribeNpc(npc As NPC_Data) As String
         If npc Is Nothing Then Return "<unknown NPC>"
         If npc.EditorID <> "" Then Return npc.EditorID
-        If npc.FullName <> "" Then Return npc.FullName
+        If npc.Record.Name <> "" Then Return npc.Record.Name
         Return npc.FormID.ToString("X8")
     End Function
 
@@ -93,10 +94,10 @@ Friend NotInheritable Class NpcManagerFormat
     End Function
 
     ' ========================================================================
-    ' NPC_ record-details labels. Enum names and flag bits are transcribed from the xEdit
-    ' definitions (wbDefinitionsCommon/TES5/FO4), which is the authoritative schema for both
-    ' games. Where the two engines disagree the formatter takes the game and branches — the
-    ' NPC_ record layout is NOT shared (see NPC_AcbsData / NPC_SsePlayerSkills).
+    ' NPC_ record-details labels. Enum names and flag bits are transcribed from the game's own
+    ' record schema, which is the authoritative source for both games. Where the two engines
+    ' disagree the formatter takes the game and branches — the NPC_ record layout is NOT shared
+    ' (ver NPC_AcbsData y el DNAM de Skyrim del record).
     ' ========================================================================
 
     ''' <summary>ACBS Flags (u32). Bits 0x01..0x80, 0x800, 0x4000, 0x10000, 0x40000..0x100000,
@@ -147,12 +148,12 @@ Friend NotInheritable Class NpcManagerFormat
     ''' <summary>ACBS +6 (FO4) / +8 (SSE) is a union: a fixed Level, or — when the PC Level Mult
     ''' flag (0x80) is set — a multiplier stored ×1000. Reading it as a flat level for a
     ''' PC-levelled actor shows "Level: 1000" instead of "1.00x".</summary>
-    Public Shared Function FormatAcbsLevel(acbs As NPC_AcbsData) As String
-        If acbs Is Nothing Then Return "(none)"
-        If (acbs.Flags And &H80UI) <> 0UI Then
-            Return $"PC Level Mult: {acbs.LevelOrLevelMult / 1000.0F:F2}x  (calc {acbs.CalcMinLevel}..{acbs.CalcMaxLevel})"
-        End If
-        Return $"Level: {acbs.LevelOrLevelMult}  (calc {acbs.CalcMinLevel}..{acbs.CalcMaxLevel})"
+    Public Shared Function FormatAcbsLevel(npc As Canon.INpc) As String
+        If npc Is Nothing Then Return "(none)"
+        Dim nivel = npc.NivelDeConfiguracion()
+        Dim rango = $"(calc {npc.ConfigurationCalcMinLevel}..{npc.ConfigurationCalcMaxLevel})"
+        If npc.ConfigurationFlagsPCLevelMult Then Return $"PC Level Mult: {nivel / 1000.0F:F2}x  {rango}"
+        Return $"Level: {nivel}  {rango}"
     End Function
 
     Private Shared Function EnumName(names As String(), value As Integer) As String
@@ -192,14 +193,15 @@ Friend NotInheritable Class NpcManagerFormat
     End Function
 
     ''' <summary>NPC_.NAM9 slider order — SSE only. This IS the byte layout (slider i = float at +4i),
-    ''' so the order is schema, not presentation. The "Farward" spellings are xEdit's own.</summary>
+    ''' so the order is schema, not presentation. The "Farward" spellings are preserved as-is
+    ''' (not a typo in this code).</summary>
     Public Shared ReadOnly SseFaceMorphSliderNames As String() = {
         "Nose Long/Short", "Nose Up/Down", "Jaw Up/Down", "Jaw Narrow/Wide", "Jaw Farward/Back",
         "Cheeks Up/Down", "Cheeks Farward/Back", "Eyes Up/Down", "Eyes In/Out", "Brows Up/Down",
         "Brows In/Out", "Brows Farward/Back", "Lips Up/Down", "Lips In/Out", "Chin Narrow/Wide",
         "Chin Up/Down", "Chin Underbite/Overbite", "Eyes Farward/Back", "VampireMorph"}
 
-    ''' <summary>NPC_.NAMA fields — SSE only. Index 1 is unnamed in the xEdit definition.</summary>
+    ''' <summary>NPC_.NAMA fields — SSE only. Index 1 is unnamed in the schema.</summary>
     Public Shared ReadOnly SseFacePartNames As String() = {"Nose", "Unknown", "Eyes", "Mouth"}
 
     Public Shared Function FormatSlotMask(mask As UInteger) As String

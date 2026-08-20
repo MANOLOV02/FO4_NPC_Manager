@@ -1,41 +1,49 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
-''' <summary>Modal editor for a SINGLE <see cref="NPC_InventoryItem"/> (CNTO Item FormID + s32 Count) of an
-''' NPC's inventory list, opened from the NPC Editor's "Inventory" tab (Add/Edit button / double-click a row).
+''' <summary>Modal editor for los dos campos de UNA entrada CNTO (Item FormID + s32 Count) de la lista de
+''' inventario de un NPC, abierto desde la pestaña "Inventory" del editor de NPC (botón Add/Edit / doble
+''' clic en una fila).
 '''
-''' A working copy is edited in place and copied out into <see cref="ResultEntry"/> on OK; a Cancel never
-''' mutates the caller's entry (mirror of <see cref="ArmoDamageResistEditor_Form"/>). The Item picker is a
-''' FormIdPicker over the common inventory-item signatures. The optional COED ownership block is preserved
-''' verbatim from the source entry (this editor edits only Item + Count).</summary>
+''' Entran y salen los dos VALORES, no una entrada: la entrada es un nodo del record y la escribe el que
+''' llama, recién con OK. Por eso el bloque COED opcional queda intacto — este formulario edita nada más
+''' Item y Count. El picker de item es un FormIdPicker sobre las signatures usuales de inventario.</summary>
 Public Class NpcInventoryEntryEditor_Form
 
-    ''' <summary>Common signatures an NPC inventory CNTO entry may reference (per xEdit wbFormIDCk on
-    ''' Item = wbInventoryItem's list). Not exhaustive — "Show all" is not offered — but covers the vanilla
-    ''' item classes an author is likely to add. LVLI lets a leveled item list be added directly.</summary>
+    ''' <summary>Common signatures an NPC inventory CNTO entry may reference (per the schema's
+    ''' allowed-record list for the Item field). Not exhaustive — "Show all" is not offered —
+    ''' but covers the vanilla item classes an author is likely to add. LVLI lets a leveled
+    ''' item list be added directly.</summary>
     Private Shared ReadOnly ItemSignatures As String() =
         {"ARMO", "WEAP", "AMMO", "ALCH", "MISC", "BOOK", "KEYM", "NOTE", "INGR", "OMOD", "LVLI"}
 
     Private ReadOnly _mainForm As MainForm
-    Private ReadOnly _source As NPC_InventoryItem
     Private _itemFormID As UInteger
 
-    ''' <summary>The edited inventory entry, valid only after <c>DialogResult.OK</c>. A fresh copy — caller owns it.</summary>
-    Public ReadOnly Property ResultEntry As NPC_InventoryItem
+    ''' <summary>El item elegido, válido sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultFormID As UInteger
         Get
-            Return _result
+            Return _resultFormID
         End Get
     End Property
-    Private _result As NPC_InventoryItem
+    Private _resultFormID As UInteger
+
+    ''' <summary>La cantidad elegida, válida sólo tras <c>DialogResult.OK</c>.</summary>
+    Public ReadOnly Property ResultCount As Integer
+        Get
+            Return _resultCount
+        End Get
+    End Property
+    Private _resultCount As Integer
 
     ''' <param name="mainForm">Owner — supplies the PluginManager for the item picker + display names.</param>
-    ''' <param name="entry">The inventory entry to edit. Copied in (never aliased); Nothing starts empty.</param>
-    Public Sub New(mainForm As MainForm, entry As NPC_InventoryItem)
+    ''' <param name="itemFormID">El item con el que arranca el formulario (0 = ninguno).</param>
+    ''' <param name="count">La cantidad con la que arranca el formulario.</param>
+    Public Sub New(mainForm As MainForm, itemFormID As UInteger, count As Integer)
         InitializeComponent()
         _mainForm = mainForm
 
-        _source = If(entry, New NPC_InventoryItem())
-        _itemFormID = _source.ItemFormID
-        NumCount.Value = ClampDec(CDec(_source.Count), NumCount)
+        _itemFormID = itemFormID
+        NumCount.Value = ClampDec(CDec(count), NumCount)
         RenderItem()
 
         AddHandler ButtonPickItem.Click, AddressOf OnPickItem
@@ -66,15 +74,8 @@ Public Class NpcInventoryEntryEditor_Form
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        ' Preserve the optional COED ownership block verbatim from the source — this editor edits Item + Count only.
-        _result = New NPC_InventoryItem With {
-            .ItemFormID = _itemFormID,
-            .Count = CInt(NumCount.Value),
-            .HasCoed = _source.HasCoed,
-            .CoedOwnerFormID = _source.CoedOwnerFormID,
-            .CoedOwnerExtra = _source.CoedOwnerExtra,
-            .CoedExtraIsFormID = _source.CoedExtraIsFormID,
-            .CoedItemCondition = _source.CoedItemCondition}
+        _resultFormID = _itemFormID
+        _resultCount = CInt(NumCount.Value)
         DialogResult = DialogResult.OK
         Close()
     End Sub

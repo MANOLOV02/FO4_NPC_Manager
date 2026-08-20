@@ -26,8 +26,8 @@ Friend NotInheritable Class PoseMath
 
     ''' <summary>Active body-weight clamp model, read per-bone in BuildBodyWeightPose. Set to
     ''' ClampBoth: honors the documented "Range clamps the weight delta" intent AND keeps the final
-    ''' bone scale inside [1+Min, 1+Max] regardless of weight/MRSV direction (see RecordParsers.vb
-    ''' RACE_BoneData docs). NOTE: chosen default pending CK confirmation on opposite-direction
+    ''' bone scale inside [1+Min, 1+Max] regardless of weight/MRSV direction (el modificador de
+    ''' rango del RACE). NOTE: chosen default pending CK confirmation on opposite-direction
     ''' bones (e.g. ShoulderFat). The other models stay in the enum so this can be changed in the
     ''' future by editing this one line — no re-plumbing. (The diagnostic ComboBox that exposed all
     ''' four models was removed once ClampBoth was selected.)</summary>
@@ -172,7 +172,7 @@ Friend NotInheritable Class PoseMath
     ''' <c>NpcMorphPoseResolver.ApplyNeckNnamCompensation</c>.
     ''' Requires SkeletonDictionary populated (ResolveMrsvRegion walks bone.Parent chain).</summary>
     Public Shared Function BuildBodyWeightPose(wt As Single, wm As Single, wf As Single,
-                                                 genderBlock As RACE_BoneDataGender,
+                                                 genderBlock As Canon.RaceFO4_BoneScaleData,
                                                  mrsvValues As List(Of Single),
                                                  armaDeltas As Dictionary(Of String, System.Numerics.Vector3),
                                                  skeleton As SkeletonInstance,
@@ -192,21 +192,28 @@ Friend NotInheritable Class PoseMath
         ' Diagnostic buffer: per-bone rows for the [BW-CLAMP-DIAG] summary at the end. Captures
         ' the Layer-1 raw weight scale (SyRaw/SzRaw), the Range Modifier bounds (Min/Max Y/Z),
         ' the final emitted scale and the MRSV/ARMA contributions — enough for the log to show
-        ' whether the weight DELTA overshoots the Range clamp the parser documents
-        ' (RecordParsers.vb:955-959), per bone.
+        ' whether the weight DELTA overshoots el clamp del modificador de rango, per bone.
         Dim diag As New List(Of (Name As String, HasWS As Boolean, HasRange As Boolean, SyRaw As Single, SzRaw As Single, MinY As Single, MaxY As Single, MinZ As Single, MaxZ As Single, Region As Integer, Slider As Single, SyFinal As Single, SzFinal As Single, ArmaDY As Single, ArmaDZ As Single, RestY As Single, RestZ As Single))
 
         ' Build the bone set as union(RACE.BoneData, ARMA.BoneScaleDeltas). ARMA may cover
         ' bones that RACE doesn't list for this gender (outfit-specific bones) — we still
         ' apply their delta on top of the identity RACE scale.
-        Dim boneLookup As New Dictionary(Of String, RACE_BoneData)(StringComparer.OrdinalIgnoreCase)
-        For Each b In genderBlock.Bones
-            boneLookup(b.BoneName) = b
-        Next
+        ' El record trae las DOS secciones por separado -escala por peso y modificador de rango- y
+        ' un hueso puede estar en una, en la otra o en las dos. Se indexan aparte y el conjunto de
+        ' huesos es la union de ambas, en el orden en que el record las declara.
+        Dim escalaPorHueso As New Dictionary(Of String, Canon.RaceFO4_BoneWeightScales)(StringComparer.OrdinalIgnoreCase)
+        Dim rangoPorHueso As New Dictionary(Of String, Canon.RaceFO4_BoneRangeModifiers)(StringComparer.OrdinalIgnoreCase)
         Dim allBoneNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        For Each b In genderBlock.Bones
-            allBoneNames.Add(b.BoneName)
-        Next
+        If genderBlock IsNot Nothing Then
+            For Each w In genderBlock.BoneWeightScales
+                escalaPorHueso(w.BoneWeightScaleSetName) = w
+                allBoneNames.Add(w.BoneWeightScaleSetName)
+            Next
+            For Each r In genderBlock.BoneRangeModifiers
+                rangoPorHueso(r.BoneRangeModifierName) = r
+                allBoneNames.Add(r.BoneRangeModifierName)
+            Next
+        End If
         If armaDeltas IsNot Nothing Then
             For Each kv In armaDeltas
                 allBoneNames.Add(kv.Key)
@@ -256,8 +263,10 @@ Friend NotInheritable Class PoseMath
             ' Captures snapshots after each layer + computes the three ARMA hypotheses in
             ' parallel without recompiling, so the user can A/B them against in-game screenshots.
             ' All logs use InvariantCulture so float decimals use '.' regardless of OS locale.
-            Dim bone As RACE_BoneData = Nothing
-            boneLookup.TryGetValue(boneName, bone)
+            Dim escala As Canon.RaceFO4_BoneWeightScales = Nothing
+            escalaPorHueso.TryGetValue(boneName, escala)
+            Dim rango As Canon.RaceFO4_BoneRangeModifiers = Nothing
+            rangoPorHueso.TryGetValue(boneName, rango)
 
             ' --- Layer 0: identity ---
             Dim sx As Single = 1.0F, sy As Single = 1.0F, sz As Single = 1.0F
@@ -267,46 +276,45 @@ Friend NotInheritable Class PoseMath
             ' Parser reads all 9 (RecordParsers.vb:1216-1226). Previously only Y/Z were consumed
             ' here; X was silently discarded. Fixed 2026-04-19 per audit — ignored X caused the
             ' systematic X-dominant residual vs CK FaceGen bake at shared neck bones.
-            If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasWeightScale Then
-                sx = bone.ThinX * wt + bone.MuscularX * wm + bone.FatX * wf
-                sy = bone.ThinY * wt + bone.MuscularY * wm + bone.FatY * wf
-                sz = bone.ThinZ * wt + bone.MuscularZ * wm + bone.FatZ * wf
+            If weightLayersEnabled AndAlso escala IsNot Nothing Then
+                sx = escala.ThinX * wt + escala.MuscularX * wm + escala.FatX * wf
+                sy = escala.ThinY * wt + escala.MuscularY * wm + escala.FatY * wf
+                sz = escala.ThinZ * wt + escala.MuscularZ * wm + escala.FatZ * wf
                 ' Corrección de centralidad del engine (RE 0x664850): tira hacia identidad por (mean-1)*K.
-                sx -= ((bone.ThinX + bone.MuscularX + bone.FatX) / 3.0F - 1.0F) * weightK
-                sy -= ((bone.ThinY + bone.MuscularY + bone.FatY) / 3.0F - 1.0F) * weightK
-                sz -= ((bone.ThinZ + bone.MuscularZ + bone.FatZ) / 3.0F - 1.0F) * weightK
+                sx -= ((escala.ThinX + escala.MuscularX + escala.FatX) / 3.0F - 1.0F) * weightK
+                sy -= ((escala.ThinY + escala.MuscularY + escala.FatY) / 3.0F - 1.0F) * weightK
+                sz -= ((escala.ThinZ + escala.MuscularZ + escala.FatZ) / 3.0F - 1.0F) * weightK
             End If
             Dim sxR As Single = sx, syR As Single = sy, szR As Single = sz   ' snapshot post-RACE
 
             ' --- Clamp model (diagnostic): clamp the WEIGHT delta to the Range Modifier [Min,Max]
             ' BEFORE MRSV (Y/Z only — Range has no X). syR keeps the raw value for [BW-CLAMP-DIAG].
             If (clampModel = BodyWeightClampModel.ClampWeightL1 OrElse clampModel = BodyWeightClampModel.ClampBoth) _
-               AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier Then
-                sy = Math.Min(Math.Max(sy, 1.0F + bone.MinY), 1.0F + bone.MaxY)
-                sz = Math.Min(Math.Max(sz, 1.0F + bone.MinZ), 1.0F + bone.MaxZ)
+               AndAlso rango IsNot Nothing Then
+                sy = Math.Min(Math.Max(sy, 1.0F + rango.RangeMinY), 1.0F + rango.RangeMaxY)
+                sz = Math.Min(Math.Max(sz, 1.0F + rango.RangeMinZ), 1.0F + rango.RangeMaxZ)
             End If
 
             ' --- Layer 2 (NNAM) REMOVIDA de acá: el neck-fat se emite aparte en BuildMergedNpcPose,
             ' gateado por Apply Body Weight e independiente de MWGT/sculpt. ---
 
             ' --- Layer 3: MRSV (Range Modifier) — interpretación H-MRSV-2 (canal interpolado) ---
-            ' BSMS RangeModifier spec has only Min/Max Y and Z (no X) — per
-            ' wbDefinitionsFO4.pas:5929. MRSV does NOT contribute to X.
+            ' BSMS RangeModifier spec has only Min/Max Y and Z (no X). MRSV does NOT contribute to X.
             ' Hipótesis alternativa H-MRSV-1 (clamp puro) NO implementada — discriminar via
             ' screenshot in-game con NPC que tenga MWGT con sy_raw > 1+MaxY (RACE pide más que MaxY).
             Dim region As Integer = -1
             Dim slider As Single = 0.0F
             Dim mrsvApplied As Boolean = False
-            If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier AndAlso mrsvValues IsNot Nothing AndAlso mrsvValues.Count >= 5 Then
+            If weightLayersEnabled AndAlso rango IsNot Nothing AndAlso mrsvValues IsNot Nothing AndAlso mrsvValues.Count >= 5 Then
                 region = ResolveMrsvRegion(skelBone)
                 If region >= 0 AndAlso region < mrsvValues.Count Then
                     slider = mrsvValues(region)
                     If slider >= 0 Then
-                        sy += slider * bone.MaxY
-                        sz += slider * bone.MaxZ
+                        sy += slider * rango.RangeMaxY
+                        sz += slider * rango.RangeMaxZ
                     Else
-                        sy += (-slider) * bone.MinY
-                        sz += (-slider) * bone.MinZ
+                        sy += (-slider) * rango.RangeMinY
+                        sz += (-slider) * rango.RangeMinZ
                     End If
                     mrsvApplied = True
                 End If
@@ -315,9 +323,9 @@ Friend NotInheritable Class PoseMath
             ' --- Clamp model (diagnostic): clamp the TOTAL weight+MRSV delta to [Min,Max] (Y/Z)
             ' AFTER MRSV, BEFORE ARMA. ARMA sculpt (Layer 4) then ADDS its delta to the clamped value.
             If (clampModel = BodyWeightClampModel.ClampFinal OrElse clampModel = BodyWeightClampModel.ClampBoth) _
-               AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier Then
-                sy = Math.Min(Math.Max(sy, 1.0F + bone.MinY), 1.0F + bone.MaxY)
-                sz = Math.Min(Math.Max(sz, 1.0F + bone.MinZ), 1.0F + bone.MaxZ)
+               AndAlso rango IsNot Nothing Then
+                sy = Math.Min(Math.Max(sy, 1.0F + rango.RangeMinY), 1.0F + rango.RangeMaxY)
+                sz = Math.Min(Math.Max(sz, 1.0F + rango.RangeMinZ), 1.0F + rango.RangeMaxZ)
             End If
             Dim sxM As Single = sx, syM As Single = sy, szM As Single = sz   ' snapshot post-MRSV (= input a ARMA)
 
@@ -335,7 +343,7 @@ Friend NotInheritable Class PoseMath
             ' Fallout4.esm lo trae deliberado en antebrazos (BoS underarmor X=+0.20; Raider
             ' X=-0.19)". El dato EXISTE, pero que exista en el record no implica que se use: el
             ' motor no lo lee. Autoría en el ESM ≠ consumo en el motor.
-            ' ⚠ RESERVA (no probado desde el binario): el consumidor final del array +0x50 NO se
+            ' RESERVA (no probado desde el binario): el consumidor final del array +0x50 NO se
             ' ubicó estáticamente, así que no está demostrado que este array sea el que alimenta el
             ' render. Lo que SÍ está demostrado es cómo se CONSTRUYE. A/B en juego propuesto para
             ' cerrarlo empíricamente: outfits 00134293 y 000AF0E1 (los que traen DeltaX no nulo).
@@ -360,13 +368,13 @@ Friend NotInheritable Class PoseMath
             End If
 
             diag.Add((boneName,
-                      If(bone IsNot Nothing, bone.HasWeightScale, False),
-                      If(bone IsNot Nothing, bone.HasRangeModifier, False),
+                      escala IsNot Nothing,
+                      rango IsNot Nothing,
                       syR, szR,
-                      If(bone IsNot Nothing, bone.MinY, 0.0F),
-                      If(bone IsNot Nothing, bone.MaxY, 0.0F),
-                      If(bone IsNot Nothing, bone.MinZ, 0.0F),
-                      If(bone IsNot Nothing, bone.MaxZ, 0.0F),
+                      If(rango Is Nothing, 0.0F, rango.RangeMinY),
+                      If(rango Is Nothing, 0.0F, rango.RangeMaxY),
+                      If(rango Is Nothing, 0.0F, rango.RangeMinZ),
+                      If(rango Is Nothing, 0.0F, rango.RangeMaxZ),
                       region, slider, sy, sz, armaDY, armaDZ, restY, restZ))
 
             pose.Transforms(boneName) = New PoseTransformData With {

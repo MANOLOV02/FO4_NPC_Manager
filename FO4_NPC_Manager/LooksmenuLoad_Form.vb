@@ -82,7 +82,7 @@ Public Class LooksmenuLoad_Form
     ' Race-compatibility filter inputs (optional — Nothing means race info wasn't supplied
     ' and the checkbox stays disabled because we can't compute compatibility).
     Private ReadOnly _raceFormID As UInteger
-    Private ReadOnly _race As RACE_Data
+    Private ReadOnly _race As Canon.IRace
     Private ReadOnly _raceDisplayName As String = ""
     Private ReadOnly _raceDefaults As HashSet(Of UInteger)
     ' FLST cache reused across IsHdptValidForRace calls so each FLST is parsed once per session.
@@ -123,7 +123,7 @@ Public Class LooksmenuLoad_Form
                    raceDisplayName As String,
                    npcHasBodyTri As Boolean,
                    Optional raceFormID As UInteger = 0UI,
-                   Optional race As RACE_Data = Nothing,
+                   Optional race As Canon.IRace = Nothing,
                    Optional raceDefaultHeadPartFormIDs As IEnumerable(Of UInteger) = Nothing,
                    Optional isSse As Boolean = False,
                    Optional ssePresetsDir As String = Nothing,
@@ -169,7 +169,7 @@ Public Class LooksmenuLoad_Form
         AddHandler CategoryPanel.OptionsChanged, AddressOf OnCategoriesChanged
 
         ' Race-compatibility checkbox: only meaningful when caller supplied race data. Without
-        ' RACE_Data we can't validate tints, and without raceFormID we can't validate HDPTs —
+        ' race data we can't validate tints, and without raceFormID we can't validate HDPTs —
         ' so disable + uncheck rather than pretending to filter.
         If _raceFormID = 0UI OrElse _race Is Nothing Then
             CheckBoxRaceCompatible.Enabled = False
@@ -369,13 +369,13 @@ Public Class LooksmenuLoad_Form
 
         ' The file path was dropped from this line: the list already shows the preset name and the full path is
         ' in the report header, so all this line has to carry is the verdict — which the button then expands.
-        ' ⛔⛔ ESTO GATEABA EL CARTEL CON `audit.Count`, QUE INCLUYE LAS NOTE. `MissingCount`/`HasMissing` existen
+        ' ESTO GATEABA EL CARTEL CON `audit.Count`, QUE INCLUYE LAS NOTE. `MissingCount`/`HasMissing` existen
         ' justo para esta distinción y no se usaban acá. Con la nota nueva de huesos —que dispara en casi todo preset
         ' SSE— un preset PERFECTAMENTE compatible mostraba un "Incompatibility found" ámbar, mientras el cuerpo del
         ' reporte, a un clic, decía "0 findings that will NOT reach the NPC, 1 note". El usuario le cree al cartel y
         ' se saltea un preset bueno. Tres estados, no dos.
         Dim audit = GetAudit(preset)
-        ' ⛔ SE DESHABILITABA CUANDO NO HABÍA HALLAZGOS. Con el rótulo viejo ("Show incompatible") tenía sentido; con
+        ' SE DESHABILITABA CUANDO NO HABÍA HALLAZGOS. Con el rótulo viejo ("Show incompatible") tenía sentido; con
         ' "What this preset does..." un botón gris significa "no podés preguntar qué hace". Y el reporte ya sabe
         ' manejar el caso vacío ("No missing or incompatible content found for this NPC.").
         ButtonShowIncompatible.Enabled = True
@@ -431,7 +431,7 @@ Public Class LooksmenuLoad_Form
         If item Is Nothing Then Return
         Dim text = PresetCompatibilityReport.BuildText(GetAudit(item.Preset))
 
-        ' ⛔ EL TÍTULO DECÍA "Incompatible / missing content" Y ESO DESHACÍA EL CARTEL: el usuario lee "Fully
+        ' EL TÍTULO DECÍA "Incompatible / missing content" Y ESO DESHACÍA EL CARTEL: el usuario lee "Fully
         ' compatible", abre el reporte, y la ventana lo recibe con un título que dice lo contrario. La falsa alarma no
         ' se eliminaba, se movía un clic más adentro.
         ' El modal en sí ya no se arma acá: era el MISMO formulario que el preview de "Regenerate morphs" de

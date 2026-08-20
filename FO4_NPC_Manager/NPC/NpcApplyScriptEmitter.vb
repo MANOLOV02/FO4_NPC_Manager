@@ -73,7 +73,7 @@ Public Module NpcApplyScriptEmitter
     ''' <para>â›” Emitirlos EXIGE que el script barra los nodos <c>Face [Ovl]</c>, y los dos cambios van juntos:
     ''' todo entra con persist=true (co-save), asi que un overlay aplicado con el toggle OFF sobrevive en esa
     ''' partida y sin barrerlo quedaria aplicado DOS veces. Emitir sin barrer es PEOR que no emitir.</para></summary>
-    ''' <remarks>⛔ SÓLO aplica al pool NORMAL de la cara. El pool MAGIC (<c>Face [SOvl{n}]</c>) queda FUERA de este
+    ''' <remarks>SÓLO aplica al pool NORMAL de la cara. El pool MAGIC (<c>Face [SOvl{n}]</c>) queda FUERA de este
     ''' gate: no se hornea en ningún caso, así que el script es su único dueño. Ver <see cref="IsSpellNode"/>.</remarks>
     Friend Function SkipFaceOverlays(game As Config_App.Game_Enum) As Boolean
         If game <> Config_App.Game_Enum.Skyrim Then Return False   ' FO4: el script es su única vía ⇒ se emiten siempre
@@ -229,7 +229,7 @@ Public Module NpcApplyScriptEmitter
     ''' Returns True when a script was written (the caller uses that to decide whether to install the .pex).</summary>
     ''' <param name="ownBodyMorphs">True ⇒ el script es el DUEÑO de los body morphs de BodySlide: los emite y
     ''' además barre los suyos antes de aplicar. False ⇒ los entrega el par BodyGen .ini y el script no toca
-    ''' morphs en absoluto. ⛔ NO es un simple "no emitir": viaja al `.psc` como <c>MorphsOwned</c> porque en
+    ''' morphs en absoluto. NO es un simple "no emitir": viaja al `.psc` como <c>MorphsOwned</c> porque en
     ''' FO4 nuestro barrido usa el keyword <c>None</c>, que es EL MISMO SLOT que escribe BodyGen — sin el flag,
     ''' con el modo .ini activo el barrido borraría lo que BodyGen acaba de aplicar, o no, según quién corra
     ''' primero (el orden entre el evento de f4ee y el OnLoad de Papyrus no está garantizado).</param>
@@ -246,19 +246,18 @@ Public Module NpcApplyScriptEmitter
 
         Dim spec As NpcVmadBuilder.VmadScriptSpec = Nothing
         If enabled Then
-            ' ACBS bit 0 = Female (identical in both games — verified against TES5Edit ACBS 'Flags').
-            Dim isFemale = (npcSpec.AcbsFlags And 1UI) <> 0UI
+            ' ACBS bit 0 = Female (identical in both games — verificado contra los datos
+            ' del juego).
+            Dim isFemale = (npcSpec.Record.ConfigurationFlags And 1UI) <> 0UI
             spec = BuildSpec(preset, game, isFemale, generation, salt, ownBodyMorphs, warnings)
         End If
 
-        ' TRUE NO-OP for the common case: nothing to write AND nothing of ours to strip. Leave the VMAD
-        ' object untouched — npcSpec may still BE the shared raw parse (ApplyPresetOverlayToNpcData
-        ' returns it unchanged when the NPC has no preset), so replacing .Vmad here would mutate the
-        ' cached record for a no-change save. Also keeps vanilla output byte-identical.
-        Dim hadOurs = NpcVmadBuilder.HasAppScript(npcSpec.Vmad)
+        ' TRUE NO-OP para el caso comun: no hay nada que escribir Y no hay nada nuestro que sacar. El VMAD
+        ' del record no se toca, asi que la salida de un NPC vanilla queda byte a byte igual.
+        Dim hadOurs = NpcVmadBuilder.HasAppScript(npcSpec.Record)
         If spec Is Nothing AndAlso Not hadOurs Then Return False
 
-        ' ⛔ CLEANUP SCRIPT. The user cleared every option on an NPC we had previously scripted. Simply
+        ' CLEANUP SCRIPT. The user cleared every option on an NPC we had previously scripted. Simply
         ' dropping the script would be WRONG: the overrides we pushed went into the co-save with
         ' persist=true, so the engine keeps re-applying them on every load, and with no script left nothing
         ' ever removes them — the tattoo would be welded to that actor forever. So we keep the script, with
@@ -268,13 +267,13 @@ Public Module NpcApplyScriptEmitter
         ' Unchecking "Emit apply-script" (enabled = False) is the deliberate exception: the user asked for
         ' the script GONE, so we strip it, and whatever is already in a running save stays there.
         If spec Is Nothing AndAlso enabled AndAlso hadOurs Then
-            Dim isFemaleCleanup = (npcSpec.AcbsFlags And 1UI) <> 0UI
+            Dim isFemaleCleanup = (npcSpec.Record.ConfigurationFlags And 1UI) <> 0UI
             spec = BuildCleanupSpec(game, isFemaleCleanup, generation, salt, ownBodyMorphs, warnings)
         End If
 
-        ' UpsertScript(Nothing) removes ours and keeps the rest; it returns Nothing when nothing is left,
-        ' which makes EmitVmad drop the VMAD subrecord (correct — the record had no scripts of its own).
-        ' ⛔ EL BORRADO POR PREFIJO SE ACOTA A LO NUESTRO. UpsertScript borra TODO lo que empieza con el
+        ' UpsertScript(Nothing) saca el nuestro y deja el resto; si no queda ninguno saca el subrecord VMAD
+        ' entero (correcto: el record no tenia scripts propios).
+        ' EL BORRADO POR PREFIJO SE ACOTA A LO NUESTRO. UpsertScript borra TODO lo que empieza con el
         ' prefijo que se le pasa. Con el nombre por plugin, usar el prefijo generico NPCM_Manolov_ le
         ' borraria a OTRO AUTOR su script de este mismo record. Por eso van dos pasadas:
         '   1) limpiar el nombre LEGADO (el de antes del esquema por plugin), por prefijo EXACTO;
@@ -283,8 +282,8 @@ Public Module NpcApplyScriptEmitter
         ' lib: asi el nombre legado NPCM_Manolov_ApplySSE no es prefijo de ningun nombre nuevo.
         Dim ourName = ScriptNameFor(game, pluginFileName)
         If spec IsNot Nothing Then spec.Name = ourName
-        npcSpec.Vmad = NpcVmadBuilder.UpsertScript(npcSpec.Vmad, Nothing, game, LegacyScriptFor(game))
-        npcSpec.Vmad = NpcVmadBuilder.UpsertScript(npcSpec.Vmad, spec, game, ourName)
+        NpcVmadBuilder.UpsertScript(npcSpec.Record, Nothing, game, LegacyScriptFor(game))
+        NpcVmadBuilder.UpsertScript(npcSpec.Record, spec, game, ourName)
         Return spec IsNot Nothing
     End Function
 
@@ -395,12 +394,12 @@ Public Module NpcApplyScriptEmitter
             For Each ov In preset.SseBodyOverlays
                 If ov Is Nothing OrElse String.IsNullOrEmpty(ov.NodeName) Then Continue For
                 ' La cara es del bake sólo cuando el bake la pliega; si no, va por acá. Ver SkipFaceOverlays.
-                ' ⭐ EXCEPCIÓN QUE NO ES UNA EXCEPCIÓN: el pool MAGIC de la cara (Face [SOvl{n}]) no lo pliega el
+                ' EXCEPCIÓN QUE NO ES UNA EXCEPCIÓN: el pool MAGIC de la cara (Face [SOvl{n}]) no lo pliega el
                 ' bake NUNCA — no es una elección del toggle, es la ley del mecanismo (IsFoldableFaceOverlay).
                 ' Gatearlo por `skipFace` lo dejaba SIN DUEÑO con el toggle prendido (que es el default): no se
                 ' horneaba y tampoco se emitía ⇒ desaparecía. Ver IsSpellNode.
                 If skipFace AndAlso IsFaceNode(ov.NodeName) AndAlso Not IsSpellNode(ov.NodeName) Then Continue For
-                ' ⛔⛔ ACÁ SE DESCARTABAN LOS OVERLAYS MAGIC CON ÍNDICE ≥ 8, y era una PÉRDIDA SILENCIOSA de algo
+                ' ACÁ SE DESCARTABAN LOS OVERLAYS MAGIC CON ÍNDICE ≥ 8, y era una PÉRDIDA SILENCIOSA de algo
                 ' que el usuario había autorado. Se fue junto con el techo, y la premisa que lo sostenía era falsa:
                 ' el `.psc` afirmaba —en tres lugares— que Papyrus no expone el contador del pool magic, y sí lo
                 ' expone (`NiOverride.GetNumSpell{Body,Hand,Feet,Face}Overlays`, PapyrusNiOverride.cpp:1844-1853,
@@ -410,7 +409,7 @@ Public Module NpcApplyScriptEmitter
                 ' Nothing to override on this node → don't emit an empty entry.
                 If String.IsNullOrEmpty(ov.DiffusePath) AndAlso String.IsNullOrEmpty(ov.NormalPath) AndAlso
                    Not ov.HasTint AndAlso Not ov.HasAlpha Then Continue For
-                ' ⛔ EL TOPE SE APLICA EN LA FUENTE, no recortando los arrays después: así los 7 arrays
+                ' EL TOPE SE APLICA EN LA FUENTE, no recortando los arrays después: así los 7 arrays
                 ' paralelos quedan alineados POR CONSTRUCCIÓN y el índice i sigue significando "overlay i".
                 If ovNode.Count >= MaxArrayElements Then ovDropped += 1 : Continue For
 
@@ -436,10 +435,10 @@ Public Module NpcApplyScriptEmitter
                    Not sk.HasTint Then Continue For
                 If skSlot.Count >= MaxArrayElements Then skDropped += 1 : Continue For
 
-                ' ⛔ REINTERPRET the bits, do NOT convert. SlotMask is a UInteger and comes from the .jslot
+                ' REINTERPRET the bits, do NOT convert. SlotMask is a UInteger and comes from the .jslot
                 ' untruncated (RaceMenuJslot.vb ~:531). Skyrim biped slot 61 = bit 31 = &H80000000 = 2147483648,
-                ' which is > Int32.MaxValue — and VB's integer overflow checks are ON (see the notes in
-                ' NpcVmadBuilder/NpcVmadScanner), so CInt() would THROW and take the whole save down. The bit
+                ' which is > Int32.MaxValue — and VB's integer overflow checks are ON, so CInt() would THROW
+                ' and take the whole save down. The bit
                 ' pattern is what skee wants; the sign of the Int32 is irrelevant to it.
                 skSlot.Add(BitConverter.ToInt32(BitConverter.GetBytes(sk.SlotMask), 0))
                 skDiff.Add(If(sk.DiffusePath, ""))
@@ -459,9 +458,9 @@ Public Module NpcApplyScriptEmitter
         ' vive en ndRotM(k)(i)), no un array plano de 9xN. Se mantiene así porque el .psc los consume como
         ' nueve arrays y porque con un array por elemento el índice i significa "nodo i" en TODAS las arrays
         ' del grupo — la misma invariante que sostiene overlays, skin y morphs.
-        ' ⛔ NO son ángulos de Euler: skee acepta 3 (euler) o 9 (matriz cruda), y con 9 los copia tal cual a
+        ' NO son ángulos de Euler: skee acepta 3 (euler) o 9 (matriz cruda), y con 9 los copia tal cual a
         ' la misma NiMatrix33 que después empaqueta al .jslot. Le devolvemos su propia secuencia de floats, y
-        ' ⛔ La arma `RaceMenuJslot.RotationRowMajor`, que es el ÚNICO dueño de la elección "matriz cruda vs
+        ' La arma `RaceMenuJslot.RotationRowMajor`, que es el ÚNICO dueño de la elección "matriz cruda vs
         ' rearmar desde axis-angle" — y hasta 2026-08-10 no lo era: esta línea afirmaba la no-divergencia
         ' mientras el ESP rearmaba siempre y el .jslot prefería el crudo, o sea que 180° y reflexiones se
         ' perdían SÓLO por acá. Ver el doc de esa función.
@@ -477,7 +476,7 @@ Public Module NpcApplyScriptEmitter
             For Each nt In preset.SseNodeTransforms
                 If nt Is Nothing OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
                 If Not (nt.HasScale OrElse nt.HasPosition OrElse nt.HasRotation) Then Continue For
-                ' ⛔ ESTE ES EL ÚNICO ARRAY GENUINAMENTE ILIMITADO del payload: los overlays los acota el motor
+                ' ESTE ES EL ÚNICO ARRAY GENUINAMENTE ILIMITADO del payload: los overlays los acota el motor
                 ' (GetNumBodyOverlays/Hand/Feet ≈ 6/3/3) y el skin los 32 slots biped, pero acá el usuario puede
                 ' escalar CUALQUIER hueso y un esqueleto tiene 100+. Sin este tope se emitirían 17 arrays
                 ' paralelos de más de 128 elementos.
@@ -500,18 +499,18 @@ Public Module NpcApplyScriptEmitter
                     ndRotM(k).Add(If(rot IsNot Nothing, rot(k), 0.0F))
                 Next
 
-                ' ⛔⛔ SIEMPRE -1 = "no tocar": el scaleMode por nodo es INERTE en skee. La composición lo busca con
+                ' SIEMPRE -1 = "no tocar": el scaleMode por nodo es INERTE en skee. La composición lo busca con
                 ' un OverrideVariant default, o sea (33,-1) (NiTransformInterface.cpp:667-670), y TODOS los caminos lo
                 ' almacenan en (33,0) (:1047 y :1000/:1083/:1135) ⇒ el find nunca matchea y el motor usa
                 ' `g_scaleMode`, el `[General] iScaleMode` del jugador (main.cpp:144/797).
                 ' Mandarlo era una nativa por nodo que no cambia nada. La versión anterior de este comentario decía
                 ' que mandar 0 "fijaba la única lectura correcta": era falso, y encima se contradecía sola al mandar
                 ' -1 para los nodos sin escala.
-                ' ⚠️ El residuo (un jugador con iScaleMode≠0 compone distinto) NO tiene arreglo desde acá: la key que
+                ' El residuo (un jugador con iScaleMode≠0 compone distinto) NO tiene arreglo desde acá: la key que
                 ' serviría es justo la que el motor no lee. Queda dicho, no disimulado.
                 ndScaleMode.Add(-1)
 
-                ' ⭐⭐ LOS NOMBRES A NEUTRALIZAR, como pares PLANOS (nodo, nombre).
+                ' LOS NOMBRES A NEUTRALIZAR, como pares PLANOS (nodo, nombre).
                 '
                 ' POR QUE HACE FALTA: nuestro aporte lleva el valor EFECTIVO del hueso (el decode compuso los
                 ' aportes del preset). Si esos mismos aportes están además en el co-save del jugador —pasa cuando un
@@ -519,9 +518,9 @@ Public Module NpcApplyScriptEmitter
                 ' suyos con nuestro total y el hueso sale al doble. Escribirles IDENTIDAD COMPLETA los vuelve
                 ' inertes sin borrar nada de nadie.
                 '
-                ' ⛔ POR QUE PLANOS Y NO UNA LISTA POR NODO: Papyrus no tiene arrays irregulares. Dos arrays
+                ' POR QUE PLANOS Y NO UNA LISTA POR NODO: Papyrus no tiene arrays irregulares. Dos arrays
                 ' paralelos ENTRE SÍ (no con NodeName) es la única forma; el script las recorre de a pares.
-                ' ⛔ Y POR QUE POR NOMBRE Y NO BARRIENDO: así se toca exactamente lo que nuestro valor ya
+                ' Y POR QUE POR NOMBRE Y NO BARRIENDO: así se toca exactamente lo que nuestro valor ya
                 ' representa. Un barrido a ciegas se llevaba `internal` —el lift de los tacos altos, donde componer
                 ' ES correcto— y el aporte de un mod que nunca vimos, y eso no tiene vuelta atrás. El filtro de qué
                 ' nombre es neutralizable vive en RaceMenuJslot.IsNeutralizableLayerName, no acá.
@@ -546,7 +545,7 @@ Public Module NpcApplyScriptEmitter
         Dim mNames As New List(Of String), mValues As New List(Of Single)
         If ownBodyMorphs Then BuildMorphArrays(preset, Config_App.Game_Enum.Skyrim, mNames, mValues, warnings)
 
-        ' ⛔ mNames CUENTA para "¿hay algo que aplicar?". Sin esto, un NPC cuyo ÚNICO dato son los body
+        ' mNames CUENTA para "¿hay algo que aplicar?". Sin esto, un NPC cuyo ÚNICO dato son los body
         ' morphs no recibiría script y sus sliders no llegarían por ninguna vía (el .ini ya no se emite).
         If Not allowEmpty AndAlso ovNode.Count = 0 AndAlso skSlot.Count = 0 AndAlso ndName.Count = 0 AndAlso mNames.Count = 0 Then Return Nothing
 
@@ -554,7 +553,7 @@ Public Module NpcApplyScriptEmitter
         Dim P = spec.Properties
         P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation, salt), isFemale))
         P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation, salt), 0))   ' placeholder — StampVersion overwrites it with the payload hash
-        ' ⭐ Verbose: el script traza SOLO cuando la app esta diagnosticando. Logger.Enabled ya es la senal
+        ' Verbose: el script traza SOLO cuando la app esta diagnosticando. Logger.Enabled ya es la senal
         ' establecida de "estoy debuggeando" (es la que decide si se escribe fo4lib.log) y es Debug-only, asi
         ' que no hace falta un control nuevo. Lo que se ahorra con false NO son lineas de log: es la
         ' CONCATENACION de cada traza (bytecode de Papyrus, corre siempre) y sobre todo LAS NATIVAS DE SONDA
@@ -626,7 +625,7 @@ Public Module NpcApplyScriptEmitter
                 prio.Add(e.Priority)
                 ' Tint / offsetUV / scaleUV are Nothing when the preset didn't carry them — mirror f4ee's
                 ' OWN defaults, which are NOT symmetric:
-                '   tint  → (0,0,0,0)   ⛔ NOT white. f4ee treats the tint as absent only when it is exactly
+                ' tint → (0,0,0,0) NOT white. f4ee treats the tint as absent only when it is exactly
                 '                       zero: OverlayData ctor (OverlayInterface.h:76-79), preset loader with
                 '                       no "tint" member (CharGenInterface.cpp:587-597), and UpdateFlags()
                 '                       which sets kHasTintColor iff tint != 0 (OverlayInterface.h:97-100).
@@ -653,14 +652,14 @@ Public Module NpcApplyScriptEmitter
         Dim mNames As New List(Of String), mValues As New List(Of Single)
         If ownBodyMorphs Then BuildMorphArrays(preset, Config_App.Game_Enum.Fallout4, mNames, mValues, warnings)
 
-        ' ⛔ mNames CUENTA para "¿hay algo que aplicar?" — mismo motivo que en SSE.
+        ' mNames CUENTA para "¿hay algo que aplicar?" — mismo motivo que en SSE.
         If Not allowEmpty AndAlso tpl.Count = 0 AndAlso skin = "" AndAlso mNames.Count = 0 Then Return Nothing
 
         Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = LegacyScriptFo4}
         Dim P = spec.Properties
         P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation, salt), isFemale))
         P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation, salt), 0))   ' placeholder — StampVersion overwrites it with the payload hash
-        ' ⭐ Verbose: el script traza SOLO cuando la app esta diagnosticando. Logger.Enabled ya es la senal
+        ' Verbose: el script traza SOLO cuando la app esta diagnosticando. Logger.Enabled ya es la senal
         ' establecida de "estoy debuggeando" (es la que decide si se escribe fo4lib.log) y es Debug-only, asi
         ' que no hace falta un control nuevo. Lo que se ahorra con false NO son lineas de log: es la
         ' CONCATENACION de cada traza (bytecode de Papyrus, corre siempre) y sobre todo LAS NATIVAS DE SONDA
@@ -739,7 +738,7 @@ Public Module NpcApplyScriptEmitter
     ''' silencio cualquier property que no conozca: el script correria, no aplicaria nada y no reportaria nada,
     ''' que es el peor modo de falla posible.
     ''' <para>Nothing si falta el recurso, o sea si la app se compilo sin correr el paso de Papyrus.</para>
-    ''' <para>⛔ Sale SANEADO por <see cref="PexPatcher.SanitizeHeader"/>: el compilador de Papyrus estampa en
+    ''' <para>Sale SANEADO por <see cref="PexPatcher.SanitizeHeader"/>: el compilador de Papyrus estampa en
     ''' el header la ruta absoluta del <c>.psc</c>, el usuario y el nombre de la maquina que compilo, y este es
     ''' el unico punto por el que pasan TODOS los <c>.pex</c> que la app publica. Ver
     ''' 00-reglas-sin-datos-personales.</para></summary>

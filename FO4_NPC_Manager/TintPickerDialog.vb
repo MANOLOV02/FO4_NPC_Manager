@@ -17,11 +17,11 @@
 ''' user-paintable layers are Palette options (LipColor, CheekColor, Eyeliner, etc.) which
 ''' carry their own TTET[0] mask plus a TemplateColors palette.
 '''
-''' Output: <see cref="SelectedOption"/> = the chosen RACE_TintTemplateOption, or Nothing on Cancel.
+''' Output: <see cref="SelectedOption"/> = the chosen OpcionDeTinteEfectiva, or Nothing on Cancel.
 ''' </summary>
 Partial Public Class TintPickerDialog
 
-    Public Property SelectedOption As RACE_TintTemplateOption
+    Public Property SelectedOption As OpcionDeTinteEfectiva
 
     ''' <summary>Every (option, ListViewItem) pair built in the constructor. The TextBoxFilter
     ''' TextChanged handler clears + repopulates <see cref="TintList"/> from this snapshot,
@@ -29,7 +29,7 @@ Partial Public Class TintPickerDialog
     ''' (case-insensitive). Empty filter shows all.</summary>
     Private ReadOnly _allRows As New List(Of ListViewItem)
 
-    Public Sub New(groups As List(Of RACE_TintTemplateGroup), excludeIndices As ICollection(Of UShort))
+    Public Sub New(groups As List(Of GrupoDeTinteEfectivo), excludeIndices As ICollection(Of UShort))
         InitializeComponent()
         Dim exclude = If(excludeIndices, CType(New HashSet(Of UShort)(), ICollection(Of UShort)))
         ' Mask entries filtered out: they are spatial-region declarations consumed by the
@@ -39,7 +39,7 @@ Partial Public Class TintPickerDialog
         ' over-saturate the compositor with no way to disambiguate them in the detail panel).
         For Each grp In groups
             For Each opt In grp.Options
-                If opt.EntryType = RACE_TintEntryType.Mask Then Continue For
+                If opt.EntryType = ClaseDeTinte.Mask Then Continue For
                 If exclude.Contains(opt.Index) Then Continue For
                 Dim row As New ListViewItem(If(grp.GroupName, ""))
                 row.SubItems.Add(If(opt.Name, ""))
@@ -63,7 +63,7 @@ Partial Public Class TintPickerDialog
             DialogResult = DialogResult.None
             Return
         End If
-        SelectedOption = TryCast(TintList.SelectedItems(0).Tag, RACE_TintTemplateOption)
+        SelectedOption = TryCast(TintList.SelectedItems(0).Tag, OpcionDeTinteEfectiva)
         DialogResult = DialogResult.OK
         Close()
     End Sub

@@ -4,7 +4,7 @@ Partial Class NpcFilterAdvanced_Form
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 
@@ -132,7 +132,7 @@ Partial Class NpcFilterAdvanced_Form
         PanelRoot.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         PanelRoot.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         PanelRoot.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        ' ⚠ The LAST row is AutoSize too. A Percent-100 last row eats whatever the fixed ClientSize
+        ' The LAST row is AutoSize too. A Percent-100 last row eats whatever the fixed ClientSize
         ' left over — which was negative here, so the button row got clipped.
         PanelRoot.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         PanelRoot.Size = New Size(680, 470)

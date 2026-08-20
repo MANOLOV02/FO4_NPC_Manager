@@ -5,7 +5,7 @@ Partial Class TextReport_Form
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 
@@ -35,7 +35,7 @@ Partial Class TextReport_Form
         TextBoxReport.Dock = DockStyle.Fill
         TextBoxReport.Font = New Font(FontFamily.GenericMonospace, 8.5F)
         TextBoxReport.Location = New Point(0, 0)
-        ' ⛔ SIN ESTO EL REPORTE SE CORTA EN SILENCIO: el MaxLength por default de un TextBox son 32767
+        ' SIN ESTO EL REPORTE SE CORTA EN SILENCIO: el MaxLength por default de un TextBox son 32767
         ' caracteres y se aplica tambien a la asignacion POR CODIGO, sin ninguna senal de que corto. Uno
         ' de los dos modales que este formulario reemplaza NO tenia este fix; ahora lo tienen los dos.
         TextBoxReport.MaxLength = Integer.MaxValue
@@ -53,7 +53,7 @@ Partial Class TextReport_Form
         '
         ' PanelButtons
         '
-        ' ⭐ ORDEN DE Controls.Add MEDIDO, no supuesto (Tools\DesignerCostProbe, Q1): con Dock=Right el
+        ' ORDEN DE Controls.Add MEDIDO, no supuesto (Tools\DesignerCostProbe, Q1): con Dock=Right el
         ' borde derecho se lo lleva el ULTIMO agregado, y un boton oculto NO deja hueco. Con este unico
         ' orden [Apply, Close, Copy] salen las DOS disposiciones que tenian los modales originales:
         '   Copy oculto      -> [Apply][Close]  (Close a la derecha)   = el informe de "Regenerate morphs"
@@ -105,7 +105,7 @@ Partial Class TextReport_Form
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonClose
         ClientSize = New Size(860, 620)
-        ' ⭐ El de Dock=Fill va PRIMERO para quedar al frente del z-order: el motor de layout resuelve los
+        ' El de Dock=Fill va PRIMERO para quedar al frente del z-order: el motor de layout resuelve los
         ' hijos desde el ultimo indice hacia el primero, asi que el Bottom se ubica antes y el Fill se
         ' queda con lo que sobra. El modal original conseguia lo mismo con un BringToFront() extra.
         Controls.Add(TextBoxReport)

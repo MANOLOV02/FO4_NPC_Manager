@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>A per-field OVERRIDE of the scalar / list subrecords of a single NPC_ record, authored in the
 ''' NPC Editor and applied at Save time. The counterpart to the LooksMenu overlay (<see cref="LooksmenuLoader.
@@ -36,11 +36,12 @@ Public Class NpcRecordOverride
     Public Property SpeedMultiplier As UShort? = Nothing    ' ACBS Speed Multiplier (u16 @+14) — SSE-only
     Public Property HealthOffset As Short? = Nothing        ' ACBS Health Offset (s16 @+20)  — SSE-only
 
-    ''' <summary>DNAM Player Skills (SSE-only, 52-byte block). Nothing = not overridden; a set value REPLACES
-    ''' the whole struct (the editor seeds it from the record, so untouched fields keep their value — including
-    ''' the two verbatim wbUnused runs). FO4's DNAM is an unrelated Calculated-Stats struct the app never edits
-    ''' (the engine recomputes it), so there is no FO4 counterpart here.</summary>
-    Public Property SsePlayerSkills As NPC_SsePlayerSkills = Nothing
+    ''' <summary>El record cuyo DNAM es la edición de Stats (sólo Skyrim). Nothing = sin override; puesto,
+    ''' su DNAM REEMPLAZA entero el del destino — el editor lo siembra del record de origen, así que los
+    ''' campos que nadie tocó llegan tal cual, los dos tramos de relleno sin usar incluidos. El DNAM de
+    ''' Fallout 4 es un bloque de estadísticas calculadas que la app no edita (lo recalcula el motor), así
+    ''' que no hay contraparte.</summary>
+    Public Property SsePlayerSkills As Canon.NpcSSE = Nothing
     Public Property RaceFormID As UInteger? = Nothing       ' RNAM
     Public Property VoiceFormID As UInteger? = Nothing      ' VTCK
     Public Property ClassFormID As UInteger? = Nothing      ' CNAM
@@ -56,15 +57,17 @@ Public Class NpcRecordOverride
     ''' Skyrim.esm carry one), so the SSE editor path leaves this Nothing and the writer emits nothing.</summary>
     Public Property HeightMax As Single? = Nothing          ' NAM4
 
-    ' --- Lists (Nothing = not overridden; a set list REPLACES the source list in full). ---
+    ' --- Listas (Nothing = sin override; una lista puesta REEMPLAZA entera la del record de origen).
+    ' Las entradas SON las del record: nodos de un clon que el editor deja vivo mientras el override
+    ' exista, no copias con otro nombre. Aplicar el override es volcarlas en el record de destino. ---
     Public Property Keywords As List(Of UInteger) = Nothing                        ' KWDA
     Public Property AttachParentSlots As List(Of UInteger) = Nothing               ' APPR (attach-point KYWD)
-    Public Property Factions As List(Of NPC_FactionEntry) = Nothing                ' SNAM
-    Public Property Inventory As List(Of NPC_InventoryItem) = Nothing              ' CNTO/COED
-    Public Property Perks As List(Of NPC_PerkEntry) = Nothing                      ' PRKR (+PRKZ count)
+    Public Property Factions As List(Of Canon.INpc_Factions) = Nothing             ' SNAM
+    Public Property Inventory As List(Of Canon.INpc_Items) = Nothing               ' CNTO/COED
+    Public Property Perks As List(Of Canon.INpc_Perks) = Nothing                   ' PRKR (+PRKZ count)
     Public Property ActorEffects As List(Of UInteger) = Nothing                    ' SPLO (+SPCT count) → SPEL
-    Public Property Properties As List(Of NPC_PropertyEntry) = Nothing             ' PRPS → AVIF + float
-    Public Property ObjectTemplateCombinations As List(Of NPC_ObjectTemplateCombination) = Nothing  ' OBTE/OBTS
+    Public Property Properties As List(Of Canon.NpcFO4_Properties2) = Nothing      ' PRPS → AVIF + float
+    Public Property ObjectTemplateCombinations As List(Of Canon.IBloque_Combinations) = Nothing  ' OBTE/OBTS
 
     ''' <summary>True once the user edited a Traits-category field (Race / Voice / Object Template). Drives the
     ''' template-flag hook (MakeCategoryOwn / clear Use-Traits) at apply time so the edit isn't overwritten by

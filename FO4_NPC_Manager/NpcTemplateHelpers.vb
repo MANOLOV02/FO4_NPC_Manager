@@ -9,6 +9,7 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Pure stateless NPC template-flag helpers extracted from MainForm (no instance state,
 ''' no UI). Real separate class (NOT a partial). See 61-perf-mainform-split.</summary>
@@ -16,9 +17,10 @@ Friend NotInheritable Class NpcTemplateHelpers
     Private Sub New()
     End Sub
 
-    ' Conservative ACBS flag/category mappings documented by xEdit's FNV actor-template field callbacks
-    ' (wbDefinitionsFNV.pas:6959-6966). The matching fields keep the same meaning in FO4/SSE, but this is not
-    ' a claim that every other surfaced ACBS bit is non-inherited: those bits remain unclassified until measured.
+    ' Conservative ACBS flag/category mappings, based on the historical FNV actor-template field
+    ' categorization. The matching fields keep the same meaning in FO4/SSE, but this is not
+    ' a claim that every other surfaced ACBS bit is non-inherited: those bits remain
+    ' unclassified until measured.
     Friend Const TraitsAcbsFlagsMask As UInteger = &H1UI
     Friend Const BaseDataAcbsFlagsMask As UInteger = &HAUI
     Friend Const StatsAcbsFlagsMask As UInteger = &H90UI
@@ -30,12 +32,10 @@ Friend NotInheritable Class NpcTemplateHelpers
     End Function
 
     Public Shared Function ResolveTemplateSourceFormID(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
-        Dim specificFormID As UInteger = 0UI
-        If npc.TemplateActorFormIDs.TryGetValue(category, specificFormID) AndAlso specificFormID <> 0UI Then
-            Return specificFormID
-        End If
+        Dim specificFormID = npc.Record.ActorDePlantilla(category)
+        If specificFormID <> 0UI Then Return specificFormID
 
-        Return npc.TemplateFormID
+        Return npc.Record.Plantilla()
     End Function
 
     ''' <summary>The DISTINCT leaf NPC_ FormIDs an LVLN can yield, recursing into nested LVLNs. Weights,
@@ -62,27 +62,41 @@ Friend NotInheritable Class NpcTemplateHelpers
         Dim rec = pluginManager.GetRecord(lvlnFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "LVLN" Then Return
         ' Tolerante: lo consume el editor y el apply del Save; un LVLN roto no puede reventar ahi.
-        Dim lvln = RecordParsers.TryParseLVLN(rec, pluginManager)
+        Dim lvln = TryAbrirLvlnTolerante(rec, pluginManager)
         If lvln Is Nothing Then Return
-        For Each entry In lvln.Entries
-            If entry.FormID = 0UI Then Continue For
-            Dim entryRec = pluginManager.GetRecord(entry.FormID)
+        For Each entry In lvln.LeveledListEntries
+            If entry.LeveledListEntryNPC = 0UI Then Continue For
+            Dim entryRec = pluginManager.GetRecord(entry.LeveledListEntryNPC)
             If entryRec Is Nothing Then Continue For
             Select Case entryRec.Header.Signature
                 Case "NPC_"
-                    If seenLeaves.Add(entry.FormID) Then leaves.Add(entry.FormID)
+                    If seenLeaves.Add(entry.LeveledListEntryNPC) Then leaves.Add(entry.LeveledListEntryNPC)
                 Case "LVLN"
-                    CollectLvlnLeavesRecursive(entry.FormID, pluginManager, leaves, seenLeaves, seenLists)
+                    CollectLvlnLeavesRecursive(entry.LeveledListEntryNPC, pluginManager, leaves, seenLeaves, seenLists)
             End Select
         Next
     End Sub
 
+    ''' <summary>Envoltorio TOLERANTE de Canon.CanonRecords.Lvln: reemplaza a RecordParsers.TryParseLVLN
+    ''' para los caminos de lectura/display (ver el comentario original en RecordParsers.vb sobre por
+    ''' que la tolerancia va centralizada en un solo lugar y no repetida Try por Try en cada llamador).
+    ''' Publico porque MainForm/NpcStateResolver/NpcOverrideSaver comparten el mismo contrato.</summary>
+    Public Shared Function TryAbrirLvlnTolerante(rec As PluginRecord, pluginManager As PluginManager) As Canon.ILvln
+        Try
+            Return Canon.CanonRecords.Lvln(rec, pluginManager)
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[LVLN] {rec.SourcePluginName}:{rec.Header.FormID:X8} no parsea " &
+                                      $"({ex.GetType().Name}: {ex.Message}); se saltea.")
+            Return Nothing
+        End Try
+    End Function
+
     ''' <summary>True if this NPC inherits its visual appearance (Traits or ModelAnimation) from any template.
     ''' Such NPCs are generic — their look is defined by the template chain, not by themselves.</summary>
     Public Shared Function NpcInheritsVisualAppearance(npc As NPC_Data) As Boolean
-        If npc Is Nothing OrElse npc.TemplateFlags = 0US Then Return False
-        Return HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits) OrElse
-               HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.ModelAnimation)
+        If npc Is Nothing OrElse npc.Record.ConfigurationTemplateFlags = 0US Then Return False
+        Return HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) OrElse
+               HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.ModelAnimation)
     End Function
 
 End Class

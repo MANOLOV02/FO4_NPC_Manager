@@ -72,7 +72,7 @@ Public NotInheritable Class SceneNifExporter
     ''' <para>El <c>Sync</c> generado invoca <c>BeforeSync</c>/<c>AfterSync</c> por su cuenta, o sea que
     ''' el round-trip pasa por los mismos hooks que un guardado real. Refs y strings viajan como
     ''' ÍNDICES del header y el bloque ya vive en este mismo NIF, así que siguen siendo válidos.</para>
-    ''' <para>⛔ Lo único que el índice NO trae es el TEXTO del string: el guardado rearma la tabla del
+    ''' <para>Lo único que el índice NO trae es el TEXTO del string: el guardado rearma la tabla del
     ''' header desde los textos resueltos, así que sin copiarlos los shapes salen SIN NOMBRE (medido:
     ''' <c>Header.strings</c> 12 → 7). Se copian por posición sobre <c>INiObject.StringRefs</c>, que
     ''' también enumera el generador.</para>
@@ -112,12 +112,12 @@ Public NotInheritable Class SceneNifExporter
     ''' <para>(2) OCLUSION POR SEGMENTO/PARTICION: el cuerpo/armor tapado por otra prenda. NO toca
     ''' <c>VertexMask</c> — el render la aplica FILTRANDO EL INDEX BUFFER en <c>EnsureZapIndexBuffer</c>
     ''' (Render.vb:2689+). Un vértice se cae si ningún triángulo VIVO lo referencia.</para>
-    ''' <para>⭐ El set NO se recalcula acá: se LEE el que el render usó para dibujar
+    ''' <para>El set NO se recalcula acá: se LEE el que el render usó para dibujar
     ''' (<c>mesh.HiddenTriangles</c>). Recalcularlo sería reproducir el criterio (toggle
     ''' DrawHiddenSegments + rama FO4-por-segmento / SSE-por-partición + máscaras), y dos copias del
     ''' criterio se desincronizan en cuanto alguien toque el render. Está indexado por índice de
     ''' triángulo del shape = el MISMO orden que <c>liveGeom.Indices</c>.</para>
-    ''' <para>⛔ ESTÁ EXTRAÍDA A PROPÓSITO: la consumen el export (para compactar) Y
+    ''' <para>ESTÁ EXTRAÍDA A PROPÓSITO: la consumen el export (para compactar) Y
     ''' <see cref="MeasureBakedBounds"/> (para que el diálogo muestre el bbox que el export va a
     ''' producir). Con dos copias, el número que ve el usuario y el que se escribe divergen en cuanto
     ''' alguien toque una sola.</para>
@@ -208,7 +208,7 @@ Public NotInheritable Class SceneNifExporter
     ''' evaluar, shapes enteramente ocluidos, y por vértice la máscara de
     ''' <see cref="ComputeVertexDropMask"/>. Las posiciones salen del MISMO transform world-pose
     ''' (<c>PerVertexSkinMatrix</c>) que usa el bake.</para>
-    ''' <para>⚠️ Un shape que el export falle DESPUÉS de esto (clone fallido, partición irremapeable) sí
+    ''' <para>Un shape que el export falle DESPUÉS de esto (clone fallido, partición irremapeable) sí
     ''' cuenta acá y no allá. Es un residuo conocido y acotado: cuando pasa, el export ya le muestra al
     ''' usuario el cuadro de shapes fallidos.</para>
     ''' </summary>
@@ -270,7 +270,7 @@ Public NotInheritable Class SceneNifExporter
     ''' 0,994 (mediana 0,769), con 6 archivos que directamente lo dejaron en (0,0,0). Pero el cluster de
     ''' bípedos erguidos —que es lo que este exporter produce— cae en 0,78..0,95, y 0,85 los reproduce
     ''' dentro de ±10 % (raider −3,5 %, super mutante −1,2 %, synths +1,9 %, protectron +2,6 %).</para>
-    ''' <para>⚠️ En un NPC NO erguido (cuadrúpedo, mirelurk, stingwing) el punto más alto es el lomo o las
+    ''' <para>En un NPC NO erguido (cuadrúpedo, mirelurk, stingwing) el punto más alto es el lomo o las
     ''' alas y no la cabeza, y esta fracción se va hasta 51 % de error. No hay regla geométrica que lo
     ''' resuelva: dónde está la cabeza no está en el bounding box. Ese caso se corrige a mano sobre el NIF.</para></summary>
     Private Const LoadScreenZoomHeightFraction As Single = 0.85F
@@ -285,9 +285,9 @@ Public NotInheritable Class SceneNifExporter
     ''' <summary>
     ''' Cuelga el locator <c>LoadingMenuZoomTarget</c> de la raíz del NIF destino, en el centro XY del
     ''' modelo y a <see cref="LoadScreenZoomHeightFraction"/> de su alto.
-    ''' <para>⛔ TIENE que ir DESPUÉS del <c>RemoveUnreferencedBlocks</c> del exporter, igual que el
+    ''' <para>TIENE que ir DESPUÉS del <c>RemoveUnreferencedBlocks</c> del exporter, igual que el
     ''' reparent de <c>FaceGenBuilder</c>: así el índice que devuelve <c>AddBlock</c> es el final.</para>
-    ''' <para>⛔ Y TIENE que quedar referenciado desde <c>root.Children</c>, no basta con
+    ''' <para>Y TIENE que quedar referenciado desde <c>root.Children</c>, no basta con
     ''' <c>AddBlock</c>. <c>NifFile.Save</c> corre con los defaults de <c>NifFileSaveOptions</c>
     ''' (<c>RemoveUnreferencedBlocks=True</c>, <c>SortBlocks=True</c>): un bloque suelto lo borra el
     ''' primero, y para el segundo <c>GetParentNode</c> daría Nothing y lo trataría como un SEGUNDO nodo
@@ -301,7 +301,7 @@ Public NotInheritable Class SceneNifExporter
         Dim root = nif.GetRootNode()
         If root Is Nothing OrElse root.Children Is Nothing Then Return False
 
-        ' ⛔ El cruce de ejes es REAL, no un descuido: Transform_Class.EulerXYZToMatrix33 toma
+        ' El cruce de ejes es REAL, no un descuido: Transform_Class.EulerXYZToMatrix33 toma
         ' (yaw=Z, pitch=Y, roll=X) en ese orden, mientras que el placement guarda grados POR EJE porque
         ' es como están etiquetados los campos del diálogo. Con rotación cero da la identidad exacta,
         ' que es lo que traen los 63 loadscreens vanilla.
@@ -368,15 +368,15 @@ Public NotInheritable Class SceneNifExporter
                                   Optional facePlan As FaceTexturePlan = Nothing) As ExportResult
         ' Sin opciones = el comportamiento histórico de esta función: unskinned, sin tocar texturas.
         Dim opts = If(options, New SceneExportOptions() With {.Skinned = False, .RepointFaceTextures = False})
-        ' ⛔ La versión del NIF destino es GAME-AWARE. Estuvo clavada en NiVersion.GetFO4()
+        ' La versión del NIF destino es GAME-AWARE. Estuvo clavada en NiVersion.GetFO4()
         ' (stream 130) y en modo Skyrim eso NO era sólo un header equivocado: los shapes SSE
         ' (stream 100) clonados a un destino stream 130 se serializan con las leyes de FO4 y el
         ' vertex data NO se emite. MEDIDO con Tools\SceneNifExportVersionProbe sobre los fixtures
         ' de nifly (TestNifFile_Skinned_SE / _FO4), clonando + strip skin + Save_As_Manolo:
-        '   src SSE  → dest FO4 : 1.965 bytes, reload verts=0   tris=68   ⛔ malla vacía
-        '   src SSE  → dest SSE : 9.515 bytes, reload verts=136 tris=68   ✅
-        '   src FO4  → dest FO4 : 7.671 bytes, reload verts=136 tris=68   ✅ (control)
-        '   src FO4  → dest SSE : 2.093 bytes, reload verts=0   tris=68   ⛔ el daño en espejo
+        ' src SSE → dest FO4 : 1.965 bytes, reload verts=0 tris=68 malla vacía
+        ' src SSE → dest SSE : 9.515 bytes, reload verts=136 tris=68
+        ' src FO4 → dest FO4 : 7.671 bytes, reload verts=136 tris=68 (control)
+        ' src FO4 → dest SSE : 2.093 bytes, reload verts=0 tris=68 el daño en espejo
         ' El daño es simétrico ⇒ la causa es el MISMATCH de versión, no el juego en sí. De ahí
         ' también la guarda por shape de más abajo.
         Dim destVersion As NiVersion = TargetVersionForCurrentGame()
@@ -457,7 +457,7 @@ Public NotInheritable Class SceneNifExporter
                 '     VertexMask — el render la aplica FILTRANDO EL INDEX BUFFER en
                 '     EnsureZapIndexBuffer (Render.vb:2689+). Este export miraba SOLO (1), así que los
                 '     triángulos ocluidos —invisibles en pantalla— salían igual en el NIF.
-                ' ⭐ El set NO se recalcula acá: se LEE el que el render usó para dibujar
+                ' El set NO se recalcula acá: se LEE el que el render usó para dibujar
                 ' (mesh.HiddenTriangles). Recalcularlo sería reproducir el criterio (toggle
                 ' DrawHiddenSegments + rama FO4-por-segmento / SSE-por-partición + máscaras), y dos
                 ' copias del criterio se desincronizan en cuanto alguien toque el render. Está
@@ -542,7 +542,7 @@ Public NotInheritable Class SceneNifExporter
                         ' liveGeom.Normals/Tangents/Bitangents estan en Single; el transform sigue en
                         ' Double (ADbl es exacta) y recien se redondea al armar el Vector3 de salida.
                         If hasN Then
-                            ' ⛔ `nm4` YA es la matriz de normales (Create_Normal_Matrix). TransformNormal la
+                            ' `nm4` YA es la matriz de normales (Create_Normal_Matrix). TransformNormal la
                             ' invertia otra vez por dentro y la normal terminaba transformada por la matriz
                             ' CRUDA. Ver SkinningHelper.PorMatriz3x3 para la medicion (36,44 grados con shear).
                             Dim nrm = Vector3d.Normalize(SkinningHelper.PorMatriz3x3(RecalcTBN.ADbl(liveGeom.Normals(i)), nm4))
@@ -587,7 +587,7 @@ Public NotInheritable Class SceneNifExporter
                 Dim cloneRenderable As New NifRenderableShape(destNif, clonedINiShape, destIdx)
                 Dim cloneAdapter = cloneRenderable.Geometry
 
-                ' ⛔ ResizeVertices NO conserva nada: reemplaza la lista empaquetada por BSVertexData
+                ' ResizeVertices NO conserva nada: reemplaza la lista empaquetada por BSVertexData
                 ' NUEVOS en cero (BSTriShapeGeometry.vb:330-338), y este export sólo reescribe
                 ' posiciones/normales/tangentes/bitangentes. MEDIDO con Tools\SceneNifExportVersionProbe
                 ' sobre los fixtures de nifly, resize a n-1 + SetVertexPositions, en los DOS juegos:
@@ -598,13 +598,13 @@ Public NotInheritable Class SceneNifExporter
                 ' y se reescriben compactados por el mismo oldToNew. (Los pesos de skin no se reponen
                 ' a propósito: este export es unskinned y más abajo tira el skin entero.)
                 ' Snapshot de TODOS los atributos por vértice, por el camino de la librería.
-                ' ⛔ ANTES de cualquier escritura: ResizeVertices (que ApplyShapeGeometry llama
+                ' ANTES de cualquier escritura: ResizeVertices (que ApplyShapeGeometry llama
                 ' adentro) reemplaza el vertex data por structs en CERO, así que todo campo que no
                 ' se reescriba queda destruido — medido: UVs (1,0000, 0,5000) → (0,0000, 0,0000) y
                 ' pesos de suma 136,00 → 0,00.
                 Dim arrays = SkinningHelper.SnapshotSeparateArrays(cloneAdapter)
 
-                ' ⛔ LA ESCRITURA NO SE HACE ACÁ. Este export tenía su propio camino a mano (setters
+                ' LA ESCRITURA NO SE HACE ACÁ. Este export tenía su propio camino a mano (setters
                 ' sueltos + SetTriangles) en vez del canónico de la librería, y esa copia paralela ya
                 ' se comió tres defectos: UVs destruidas, pesos destruidos y la partición de skin
                 ' desincronizada. Ahora se arma el paquete completo y se publica de una sola vez con
@@ -627,7 +627,7 @@ Public NotInheritable Class SceneNifExporter
                     If idxArr Is Nothing Then
                         triCheckOk = False
                     ElseIf nSurv > MaxUShortIndexableVerts Then
-                        ' ⛔ NiflySharp.Structs.Triangle almacena V1/V2/V3 como UShort, así que sólo puede
+                        ' NiflySharp.Structs.Triangle almacena V1/V2/V3 como UShort, así que sólo puede
                         ' direccionar índices 0..65535 (⇒ como mucho 65536 vértices). Con nSurv por encima
                         ' de eso, el CUShort(na/nb/nc) de abajo TRUNCA en silencio (wraparound) y produce
                         ' una malla destrozada. No hay camino de índices de 32 bits en este formato/adapter,
@@ -753,7 +753,7 @@ Public NotInheritable Class SceneNifExporter
                     ' `skinPart.SetVertexData(bsTriShape.VertexDataSSE)`), así que las posiciones
                     ' nuevas ya se ven desde la partición — medido en el export: delta 0,000 entre
                     ' ambas copias sin haberla regenerado.
-                    ' ⛔ ACÁ NO SE TOCA EL SKIN. Un FaceGeom bakeado por esta misma app —que funciona
+                    ' ACÁ NO SE TOCA EL SKIN. Un FaceGeom bakeado por esta misma app —que funciona
                     ' en el juego— tiene shapes con vértices en WORLD y skinToBone = inv(boneWorld)
                     ' (cabeza, pelo) CONVIVIENDO con shapes en espacio LOCAL y skinToBone identidad
                     ' (pestañas, boca, ojos, cejas). Las dos formas son válidas y dependen de cómo
@@ -783,7 +783,7 @@ Public NotInheritable Class SceneNifExporter
                     clonedINiShape.IsSkinned = False
                     clonedINiShape.SkinInstanceRef?.Clear()
 
-                    ' ⛔ UN BSDynamicTriShape SIN SKIN NO EXISTE EN VANILLA, y en esa combinación las
+                    ' UN BSDynamicTriShape SIN SKIN NO EXISTE EN VANILLA, y en esa combinación las
                     ' posiciones no quedan alcanzables por ningún lector estándar:
                     '   · el atributo Vertex viene APAGADO — igual que en el FaceGeom del CK, porque el
                     '     motor lee la posición del array dinámico y tenerla además en el estático
@@ -817,7 +817,7 @@ Public NotInheritable Class SceneNifExporter
                 End If
 
                 ' ── EL FLAG 'Skinned' DEL SHADER TIENE QUE COINCIDIR CON EL SKIN REAL DEL SHAPE ──
-                ' ⛔ El shader lleva su PROPIO bit Skinned (bit 1 de ShaderPropertyFlags1), INDEPENDIENTE
+                ' El shader lleva su PROPIO bit Skinned (bit 1 de ShaderPropertyFlags1), INDEPENDIENTE
                 ' del atributo de vértice (IsSkinned) y del SkinInstanceRef. La rama unskinned de arriba
                 ' limpia esos dos y NO tocaba éste, así que el shape salía sin datos de skin pero con el
                 ' shader diciéndole al motor que los bindee. FO4 lo carga y CRASHEA AL ESCRITORIO.
@@ -843,7 +843,7 @@ Public NotInheritable Class SceneNifExporter
                 ' Repunte de la cara. Va DESPUÉS de toda la escritura de geometría porque sólo toca el
                 ' shader + el BSShaderTextureSet; el gate por shader-type vive adentro (no todo head part
                 ' califica).
-                ' ⭐ Se le pasa el material que el RENDER ya resolvió para este shape (cadena TXST/FTST +
+                ' Se le pasa el material que el RENDER ya resolvió para este shape (cadena TXST/FTST +
                 ' MNAM-BGSM + tints + palette). Sin él, el repunte de abajo es INERTE en FO4: el shape sigue
                 ' nombrando su .bgsm y al aplicarlo el motor reemplaza el texture set entero. No hay que
                 ' re-resolver nada — el preview ya lo hizo para dibujar este mismo shape.
@@ -855,13 +855,13 @@ Public NotInheritable Class SceneNifExporter
                 ' Material resuelto al shader. Va DESPUÉS del repunte porque en FO4 los dos escriben el
                 ' MISMO shader inline y el repunte ya transcribe el de la cara; el writer descarta la cara
                 ' por su cuenta (gate Facegen), así que ningún shape pasa dos veces por la transcripción.
-                ' ⭐ En FO4 alcanza a TODA shape, no sólo a la piel: sin cortar el link al .bgsm el motor
+                ' En FO4 alcanza a TODA shape, no sólo a la piel: sin cortar el link al .bgsm el motor
                 ' reemplaza el material entero y el color del NPC no llega al juego (era el caso del PELO).
                 ' En SSE sigue siendo sólo el color de las shapes de piel. Ver ShapeMaterialTranscriber.
-                ' ⭐ Se lee la MaterialData de la mesh, no el ShapeMaterial pelado: es la que tiene el
+                ' Se lee la MaterialData de la mesh, no el ShapeMaterial pelado: es la que tiene el
                 ' "ya está" del tono horneado (SkinToneBaked), o sea exactamente lo que el render miró para
                 ' decidir si tintaba este shape.
-                ' ⚠️ Las capas de OVERLAY (tatuajes) NO pasan por acá y NO se exportan, en ninguno de los dos
+                ' Las capas de OVERLAY (tatuajes) NO pasan por acá y NO se exportan, en ninguno de los dos
                 ' juegos: no son geometría sino un pase de material extra sobre el MISMO VAO
                 ' (Render.RenderOverlayLayer), con una MaterialData transitoria que no vive en model.meshes.
                 ' Lo que se exporta es el shape BASE, y el tono que se le escribe es el de su piel — correcto.
@@ -918,7 +918,7 @@ Public NotInheritable Class SceneNifExporter
             Else
                 ' El diálogo manda lo que el usuario tuvo a la vista. Sin eso (caller headless) se arma
                 ' el default con la MISMA función con la que el diálogo arma el suyo.
-                ' ⚠️ En un export SKINNED ese bbox sigue siendo el del modelo POSADO (es lo que mide
+                ' En un export SKINNED ese bbox sigue siendo el del modelo POSADO (es lo que mide
                 ' MeasureBakedBounds), mientras que los vértices que se escriben quedan en su espacio de
                 ' bind. La posición default es entonces aproximada; el usuario la corrige en el diálogo.
                 Dim placement = opts.LoadScreenNodePlacement

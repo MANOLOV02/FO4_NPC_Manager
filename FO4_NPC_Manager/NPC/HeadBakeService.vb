@@ -1,6 +1,7 @@
 ﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' "FaceGeom en memoria": entrega, como <b>geometría BASE pre-skin</b> del shape PLANO, las mismas
@@ -58,7 +59,7 @@ Public Class HeadBakeService
     End Class
 
     Private ReadOnly _entries As New Dictionary(Of INiShape, Entry)()
-    ''' <summary>Contexto del bake + firma vigentes. ⛔ MUTABLES y bajo <see cref="_gate"/> a propósito:
+    ''' <summary>Contexto del bake + firma vigentes. MUTABLES y bajo <see cref="_gate"/> a propósito:
     ''' los toggles se conmutan por caminos que NO reconstruyen el servicio (los seis handlers granulares
     ''' llaman a <c>BuildCompositeMorphResolver</c> + <c>MarkDirty(Morphs)</c>, no a <c>BuildRenderPlan</c>).
     ''' Si la firma quedara congelada en el constructor, destildar "vertex morphs" no re-hornearía y —peor—
@@ -101,7 +102,7 @@ Public Class HeadBakeService
 
     ''' <summary>Firma de TODO lo que el bake consume. Si algo de esto cambia hay que re-hornear; si no,
     ''' el refresh sale por el camino corto.
-    ''' <para>⛔ Los TRES toggles entran a propósito, y cada uno por una razón medida:</para>
+    ''' <para>Los TRES toggles entran a propósito, y cada uno por una razón medida:</para>
     ''' <list type="bullet">
     ''' <item><description><b>ApplyBoneMorphs</b> (= FMRS en FO4): antes la pose FMRS se aplicaba al
     ''' esqueleto y el checkbox la sacaba de ahí. Ahora la deformación vive en las posiciones horneadas
@@ -116,7 +117,7 @@ Public Class HeadBakeService
     ''' <para>ApplySculpt NO entra: el bake nunca incluyó el sculpt de ARMA (decisión medida — el
     ''' FaceGeom se hornea una vez por NPC y no puede depender del outfit), y en el render sigue
     ''' entrando por escala de hueso, ahora sobre el rig plano, que es lo que hace el juego.</para>
-    ''' <para>⛔ <b>LISTA COMPLETA, auditada contra el código (2026-07-22), no contra la memoria.</b> El bake
+    ''' <para><b>LISTA COMPLETA, auditada contra el código (2026-07-22), no contra la memoria.</b> El bake
     ''' FO4 lee de <c>NpcData</c> EXACTAMENTE: <c>RaceFormID</c>, <c>IsFemale</c>, <c>MorphValues</c>,
     ''' <c>FaceMorphs</c>, <c>FacialMorphIntensity</c>, <c>BodyMorphRegionValues</c>,
     ''' <c>Weight{Thin,Muscular,Fat}</c> (grep sobre <c>BuildBakeState</c> + <c>FaceBonePoseBuilder</c> +
@@ -134,38 +135,36 @@ Public Class HeadBakeService
             sb.Append("|bw=").Append(If(toggles.ApplyBodyWeight, "1", "0"))
         End If
         If npcData IsNot Nothing Then
-            sb.Append("|sex=").Append(If(npcData.IsFemale, "F", "M"))
+            sb.Append("|sex=").Append(If(npcData.Record.ConfigurationFlagsFemale, "F", "M"))
             ' FMIN (FacialMorphIntensity): multiplicador lineal de la pose FMRS — lo lee el bake en
-            ' FaceBonePoseBuilder. ⚠️ Va en la firma o el slider de FMIN quedaría muerto en el head-bake.
-            sb.Append("|fmin=").Append(Fmt(npcData.FacialMorphIntensity))
+            ' FaceBonePoseBuilder. Va en la firma o el slider de FMIN quedaría muerto en el head-bake.
+            sb.Append("|fmin=").Append(Fmt(npcData.Record.IntensidadDeMorfoFacial()))
             ' MWGT + MRSV (body-weight)
-            sb.Append("|w=").Append(FmtN(npcData.WeightThin)).Append(",").
-               Append(FmtN(npcData.WeightMuscular)).Append(",").Append(FmtN(npcData.WeightFat))
-            If npcData.BodyMorphRegionValues IsNot Nothing Then
-                sb.Append("|mrsv=")
-                For Each v In npcData.BodyMorphRegionValues : sb.Append(Fmt(v)).Append(",") : Next
-            End If
+            sb.Append("|w=").Append(FmtN(npcData.Record.PesoDelCuerpo(0))).Append(",").
+               Append(FmtN(npcData.Record.PesoDelCuerpo(1))).Append(",").Append(FmtN(npcData.Record.PesoDelCuerpo(2)))
+            sb.Append("|mrsv=")
+            For Each v In npcData.Record.ValoresDeRegionCorporal() : sb.Append(Fmt(v)).Append(",") : Next
             ' Morphs de chargen (sliders) — orden estable por key.
-            If npcData.MorphValues IsNot Nothing Then
-                sb.Append("|mv=")
-                For Each kv In npcData.MorphValues.OrderBy(Function(k) k.Key)
-                    sb.Append(kv.Key.ToString("X8")).Append(":").Append(Fmt(kv.Value)).Append(",")
-                Next
-            End If
-            ' FMRS (bone-region morphs). ⛔ Index + Values explícito, NO f.ToString(): NPC_FaceMorphData
-            ' no sobreescribe ToString ⇒ devolvería el nombre del tipo y la firma quedaría CONSTANTE,
-            ' con lo que mover un slider de FMRS no re-hornearía nunca (bug silencioso).
-            If npcData.FaceMorphs IsNot Nothing Then
-                sb.Append("|fm=").Append(npcData.FaceMorphs.Count).Append(":")
-                For Each f In npcData.FaceMorphs
-                    If f Is Nothing Then Continue For
-                    sb.Append(f.Index.ToString("X8")).Append("=")
-                    If f.Values IsNot Nothing Then
-                        For Each v In f.Values : sb.Append(Fmt(v)).Append(" ") : Next
-                    End If
-                    sb.Append(",")
-                Next
-            End If
+            sb.Append("|mv=")
+            For Each kv In npcData.Record.MorfosDeCara().OrderBy(Function(k) k.Key)
+                sb.Append(kv.Key.ToString("X8")).Append(":").Append(Fmt(kv.Value)).Append(",")
+            Next
+            ' FMRS (bone-region morphs). Los valores van UNO POR UNO y no por el ToString del elemento:
+            ' la vista del record no lo sobreescribe, asi que devolveria el nombre del tipo y la firma
+            ' quedaria CONSTANTE, con lo que mover un slider de FMRS no re-hornearia nunca.
+            Dim npcFo4 = TryCast(npcData.Record, Canon.NpcFO4)
+            Dim morfosDeRegion As IReadOnlyList(Of Canon.NpcFO4_FaceMorphs) =
+                If(npcFo4 Is Nothing, Array.Empty(Of Canon.NpcFO4_FaceMorphs)(), npcFo4.FaceMorphs)
+            sb.Append("|fm=").Append(morfosDeRegion.Count).Append(":")
+            For Each f In morfosDeRegion
+                If f Is Nothing Then Continue For
+                sb.Append(f.FaceMorphIndex.ToString("X8")).Append("=")
+                sb.Append(Fmt(f.ValuesPositionX)).Append(" ").Append(Fmt(f.ValuesPositionY)).Append(" ").
+                   Append(Fmt(f.ValuesPositionZ)).Append(" ").Append(Fmt(f.ValuesRotationX)).Append(" ").
+                   Append(Fmt(f.ValuesRotationY)).Append(" ").Append(Fmt(f.ValuesRotationZ)).Append(" ").
+                   Append(Fmt(f.ValuesScale)).Append(" ")
+                sb.Append(",")
+            Next
         End If
         Return sb.ToString()
     End Function

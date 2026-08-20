@@ -9,6 +9,7 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Build per-bucket NPC state (traits/inventory/model) + resolve body weights. Extracted from MainForm (pure stateless, no instance state, no UI). Real separate
 ''' class (NOT a partial). See 61-perf-mainform-split.</summary>
@@ -31,7 +32,7 @@ Friend NotInheritable Class NpcStateFactory
     ''' RACE defaults are read per-gender. If RACE doesn't carry the field (record &lt; v109),
     ''' fallback is 0.
     ''' Logs the raw → resolved transition when any substitution happened, for audit.</summary>
-    Public Shared Function ResolveBodyWeights(traits As MainForm.TraitsState, race As RACE_Data, isFemale As Boolean) As (Thin As Single, Muscular As Single, Fat As Single)
+    Public Shared Function ResolveBodyWeights(traits As MainForm.TraitsState, race As Canon.IRace, isFemale As Boolean) As (Thin As Single, Muscular As Single, Fat As Single)
         Dim rawT = traits.WeightThin
         Dim rawM = traits.WeightMuscular
         Dim rawF = traits.WeightFat
@@ -60,9 +61,9 @@ Friend NotInheritable Class NpcStateFactory
                     resT = a : resM = b : resF = Math.Max(0.0F, 1.0F - a - b)
                 End If
             Case 2
-                Dim raceT = If(isFemale, race.FemaleDefaultWeightThin, race.MaleDefaultWeightThin).GetValueOrDefault(0.0F)
-                Dim raceM = If(isFemale, race.FemaleDefaultWeightMuscular, race.MaleDefaultWeightMuscular).GetValueOrDefault(0.0F)
-                Dim raceF = If(isFemale, race.FemaleDefaultWeightFat, race.MaleDefaultWeightFat).GetValueOrDefault(0.0F)
+                Dim raceT = DefaultWeight(race, isFemale, DefaultWeightAxis.Thin)
+                Dim raceM = DefaultWeight(race, isFemale, DefaultWeightAxis.Muscular)
+                Dim raceF = DefaultWeight(race, isFemale, DefaultWeightAxis.Fat)
                 resT = If(rawT, raceT)
                 resM = If(rawM, raceM)
                 resF = If(rawF, raceF)
@@ -71,9 +72,9 @@ Friend NotInheritable Class NpcStateFactory
                     resT /= sum : resM /= sum : resF /= sum
                 End If
             Case Else  ' 3
-                resT = If(isFemale, race.FemaleDefaultWeightThin, race.MaleDefaultWeightThin).GetValueOrDefault(0.0F)
-                resM = If(isFemale, race.FemaleDefaultWeightMuscular, race.MaleDefaultWeightMuscular).GetValueOrDefault(0.0F)
-                resF = If(isFemale, race.FemaleDefaultWeightFat, race.MaleDefaultWeightFat).GetValueOrDefault(0.0F)
+                resT = DefaultWeight(race, isFemale, DefaultWeightAxis.Thin)
+                resM = DefaultWeight(race, isFemale, DefaultWeightAxis.Muscular)
+                resF = DefaultWeight(race, isFemale, DefaultWeightAxis.Fat)
         End Select
 
         If defaultCount > 0 Then
@@ -83,40 +84,69 @@ Friend NotInheritable Class NpcStateFactory
         Return (resT, resM, resF)
     End Function
 
+    Private Enum DefaultWeightAxis
+        Thin
+        Muscular
+        Fat
+    End Enum
+
+    ''' <summary>RACE.{Male|Female}DefaultWeight{Thin|Muscular|Fat}: exclusivo de Fallout 4 (el DATA de
+    ''' Skyrim no declara esos floats — el parser viejo tampoco los llenaba nunca para Skyrim, así que
+    ''' 0 acá reproduce el mismo comportamiento).</summary>
+    Private Shared Function DefaultWeight(race As Canon.IRace, isFemale As Boolean, axis As DefaultWeightAxis) As Single
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
+        If raceFo4 Is Nothing Then Return 0.0F
+        Select Case axis
+            Case DefaultWeightAxis.Thin
+                If isFemale Then
+                    Return If(raceFo4.FemaleDefaultWeightThinPresente, raceFo4.FemaleDefaultWeightThin, 0.0F)
+                End If
+                Return If(raceFo4.MaleDefaultWeightThinPresente, raceFo4.MaleDefaultWeightThin, 0.0F)
+            Case DefaultWeightAxis.Muscular
+                If isFemale Then
+                    Return If(raceFo4.FemaleDefaultWeightMuscularPresente, raceFo4.FemaleDefaultWeightMuscular, 0.0F)
+                End If
+                Return If(raceFo4.MaleDefaultWeightMuscularPresente, raceFo4.MaleDefaultWeightMuscular, 0.0F)
+            Case Else ' Fat
+                If isFemale Then
+                    Return If(raceFo4.FemaleDefaultWeightFatPresente, raceFo4.FemaleDefaultWeightFat, 0.0F)
+                End If
+                Return If(raceFo4.MaleDefaultWeightFatPresente, raceFo4.MaleDefaultWeightFat, 0.0F)
+        End Select
+    End Function
+
     Public Shared Function CreateOwnTraitsState(npc As NPC_Data) As MainForm.TraitsState
         ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM
         ' now seeded here so they ride the Traits chain walk.
         Dim state As New MainForm.TraitsState With {
             .SourceFormID = npc.FormID,
-            .IsFemale = npc.IsFemale,
-            .RaceFormID = npc.RaceFormID,
-            .SkinFormID = npc.SkinFormID,
-            .WeightThin = npc.WeightThin,
-            .WeightMuscular = npc.WeightMuscular,
-            .WeightFat = npc.WeightFat,
-            .HeadTextureFormID = npc.HeadTextureFormID,
-            .HairColorFormID = npc.HairColorFormID,
-            .FacialHairColorFormID = npc.FacialHairColorFormID,
-            .HasTextureLighting = npc.HasTextureLighting,
-            .TextureLightingColor = npc.TextureLightingColor
+            .IsFemale = npc.Record.ConfigurationFlagsFemale,
+            .RaceFormID = npc.Record.Race,
+            .SkinFormID = npc.Record.Skin,
+            .WeightThin = npc.Record.PesoDelCuerpo(0),
+            .WeightMuscular = npc.Record.PesoDelCuerpo(1),
+            .WeightFat = npc.Record.PesoDelCuerpo(2),
+            .HeadTextureFormID = npc.Record.HeadTexture,
+            .HairColorFormID = npc.Record.HairColor,
+            .FacialHairColorFormID = npc.Record.ColorDeBarba(),
+            .HasTextureLighting = npc.Record.TextureLightingRedPresente,
+            .TextureLightingColor = npc.Record.ColorDeIluminacionDeTextura()
         }
-        state.HeadPartFormIDs.AddRange(npc.HeadPartFormIDs)
+        state.HeadPartFormIDs.AddRange(npc.Record.PartesDeCabeza())
         ' [TEST: TPLT-traits-bucket] OBTE/OBTS rides the Traits walk (measured: inherited via Use Traits,
         ' never Use Model/Animation — see TraitsState). Own OBTS for a non-inheriting NPC; the chain walk
         ' replaces it with the template source's when Use Traits is set (e.g. Mr Gutsy rank variants).
-        state.ObjectTemplateOMODFormIDs.AddRange(npc.ObjectTemplateOMODFormIDs)
-        state.ObjectTemplateCombinations.AddRange(npc.ObjectTemplateCombinations)
-        state.HasObjectTemplate = npc.HasObjectTemplate
-        If npc.AttachParentSlotFormIDs IsNot Nothing Then
-            state.AttachParentSlotFormIDs.AddRange(npc.AttachParentSlotFormIDs)
-        End If
+        state.ObjectTemplateOMODFormIDs.AddRange(npc.Record.OmodsDeLaPrimeraCombinacion())
+        state.ObjectTemplateCombinations.AddRange(npc.Record.CombinacionesDelNpc())
+        state.HasObjectTemplate = npc.Record.TieneCombinaciones()
+        state.AttachParentSlotFormIDs.AddRange(npc.Record.RanurasDeEnganche())
         Return state
     End Function
 
     Public Shared Function CreateOwnInventoryState(npc As NPC_Data) As MainForm.InventoryState
         Return New MainForm.InventoryState With {
-            .DefaultOutfitFormID = npc.DefaultOutfitFormID,
-            .SleepOutfitFormID = npc.SleepOutfitFormID
+            .DefaultOutfitFormID = npc.Record.DefaultOutfit,
+            .SleepOutfitFormID = npc.Record.SleepingOutfit
         }
     End Function
 

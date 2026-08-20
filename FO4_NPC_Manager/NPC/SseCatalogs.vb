@@ -34,7 +34,7 @@ Friend Module SseCatalogs
     ''' <summary>Desplazamiento del pool MAGIC dentro de los arrays de contadores: <c>counts(SpellSlotBase + zona)</c>.</summary>
     Private Const SpellSlotBase As Integer = 4
 
-    ''' <summary>⛔ GEMELO DE <c>OVL_SWEEP_MAX</c> EN <c>NPCM_Manolov_ApplySSE.psc</c>. Hasta dónde el
+    ''' <summary>GEMELO DE <c>OVL_SWEEP_MAX</c> EN <c>NPCM_Manolov_ApplySSE.psc</c>. Hasta dónde el
     ''' apply-script saca de la partida del jugador un overlay cuyo nodo skee nunca instancia.
     ''' <para>Es el TOPE DEL MOTOR: skee clampea todo contador de overlay a <c>0x7F</c> (main.cpp:810-828) y los
     ''' crea con <c>for (i = 0; i &lt; count; i++)</c> (OverlayInterface.cpp:659-689), así que <c>[Ovl126]</c> es
@@ -97,7 +97,7 @@ Friend Module SseCatalogs
 
     ''' <summary>Lo mismo para el pool MAGIC: cuántos <c>[SOvl{n}]</c> instancia el MOTOR en esta zona
     ''' (<c>iSpellOverlays</c>, default 1 — main.cpp:124-127/775-781).
-    ''' <para>⛔ ES EL NÚMERO DEL MOTOR, SIN CLAMPEAR — igual que <see cref="OverlayCount"/> para el pool normal,
+    ''' <para>ES EL NÚMERO DEL MOTOR, SIN CLAMPEAR — igual que <see cref="OverlayCount"/> para el pool normal,
     ''' y es el ÚNICO límite del pool magic. Estuvo clampeado a un techo propio de la app (8) y eso hacía que la app
     ''' AFIRMARA UN HECHO FALSO sobre el juego: con <c>iSpellOverlays=20</c> los reportes decían "los 8 slots que
     ''' RaceMenu crea". Ese techo se fue (ver el bloque donde vivía la constante): el apply-script pregunta el
@@ -107,10 +107,10 @@ Friend Module SseCatalogs
         Return _overlayCounts(SpellSlotBase + CInt(zone))
     End Function
 
-    ' ⛔ ACÁ VIVÍA `SpellOverlayAuthorLimit(zone) = Math.Min(SpellOverlayCount(zone), SpellOverlayClearCeiling)`.
+    ' ACÁ VIVÍA `SpellOverlayAuthorLimit(zone) = Math.Min(SpellOverlayCount(zone), SpellOverlayClearCeiling)`.
     ' BORRADO por DOS razones, y la segunda es la que importa:
     '   1. No tenía NI UN llamador de producto (sólo el gate y el README lo nombraban): superficie que existe para
-    '      el test y viaja igual en el binario que se distribuye — lo mismo que el ⛔ de ResolveOverlayCounts
+    ' el test y viaja igual en el binario que se distribuye — lo mismo que el de ResolveOverlayCounts
     '      prohíbe 100 líneas más abajo.
     '   2. Su DEFINICIÓN estaba mal para lo único que decía gobernar. Con `iSpellOverlays=1`, el mínimo da 1 y la
     '      app se habría negado a autorar `[SOvl1]`. Y hoy la pregunta ni existe: el único límite del pool magic
@@ -122,15 +122,15 @@ Friend Module SseCatalogs
         Return If(isSpell, SpellOverlayCount(zone), OverlayCount(zone))
     End Function
 
-    ' ⛔ ACÁ VIVÍA `SpellPoolFullNotice(zone)`, el texto de la NEGATIVA a autorar en el pool magic.
+    ' ACÁ VIVÍA `SpellPoolFullNotice(zone)`, el texto de la NEGATIVA a autorar en el pool magic.
     ' Se fue con la negativa: el pool magic ahora AVISA y deja seguir, igual que el normal, así que el único
     ' texto es `OverlayLimitNotice(..., isSpell:=True)` — que además es mejor, porque manda a la key que de
     ' verdad gobierna el nodo (`iSpellOverlays`, o `bEnableFaceOverlays` cuando ése es el que manda).
     ' Lo único suyo que valía —"o usá un overlay normal"— quedó plegado en ese aviso.
-    ' ⛔ Y si se hubiera dejado, habría quedado sin NI UN llamador de producto: superficie que sólo usa el
-    ' gate y viaja igual en el binario que se distribuye, que es lo que prohíbe el ⛔ de ResolveOverlayCounts.
+    ' Y si se hubiera dejado, habría quedado sin NI UN llamador de producto: superficie que sólo usa el
+    ' gate y viaja igual en el binario que se distribuye, que es lo que prohíbe el de ResolveOverlayCounts.
 
-    ''' <summary>Which file the counts actually came from, for the warning text. ⛔ It is the whole point of the
+    ''' <summary>Which file the counts actually came from, for the warning text. It is the whole point of the
     ''' message: "I raised iNumOverlays and nothing changed" is almost always a DIFFERENT copy of the ini (a mod
     ''' manager's virtual Data, another install), and naming the path we read settles it without guessing.</summary>
     Friend Function OverlayCountSource() As String
@@ -138,18 +138,18 @@ Friend Module SseCatalogs
         Return _overlaySource
     End Function
 
-    ''' <summary>⛔ The counts are re-read whenever an ini's timestamp/size changes. They used to be read ONCE per
+    ''' <summary>The counts are re-read whenever an ini's timestamp/size changes. They used to be read ONCE per
     ''' process, so editing skee64.ini while the app was open changed nothing and the editor still told the user to
     ''' "reopen the editor" — which re-entered the same cached value. A stat of two files per Add click is free.</summary>
     Private Sub EnsureOverlayCounts()
         SyncLock _lock
-            ' ⛔ EL STAMP SE SACA DENTRO DEL LOCK. Afuera, entre el stat y la lectura hay una ventana: si el ini
+            ' EL STAMP SE SACA DENTRO DEL LOCK. Afuera, entre el stat y la lectura hay una ventana: si el ini
             ' se reemplaza ahí en el medio y después vuelve con su mtime y su largo originales (swap de perfil de
             ' un mod manager, robocopy /COPY:DT, extraer un 7z — todos preservan mtime), el cache se quedaba con
             ' los números del intruso bajo el stamp del archivo bueno, y ya no relee nunca.
             Dim stamp = OverlayIniStamp()
             If _overlayCounts IsNot Nothing AndAlso String.Equals(_overlayStamp, stamp, StringComparison.Ordinal) Then Return
-            ' ⛔⛔ SE MERGEAN LOS STRINGS CRUDOS, NO LOS NÚMEROS. skee no parsea por archivo: junta el VALOR
+            ' SE MERGEAN LOS STRINGS CRUDOS, NO LOS NÚMEROS. skee no parsea por archivo: junta el VALOR
             ' TEXTUAL de la key —base, y encima el custom si trae algo (main.cpp:258-282, "Only take custom if
             ' we have it")— y recién ahí corre UN sscanf sobre el resultado. La diferencia se ve con
             ' base `iNumOverlays=6` + custom `iNumOverlays=hola`: skee se queda con "hola", el sscanf falla, y
@@ -183,7 +183,7 @@ Friend Module SseCatalogs
                 _overlaySource = $"no skee64.ini in {folder} — RaceMenu's built-in defaults"
             End If
             _overlayCounts = counts
-            ' ⛔⛔ UNA LECTURA FALLIDA NO SE CACHEA. El stamp sale de FileInfo (Exists/mtime/Length), que son
+            ' UNA LECTURA FALLIDA NO SE CACHEA. El stamp sale de FileInfo (Exists/mtime/Length), que son
             ' consultas de METADATO: funcionan igual sobre un archivo abierto con FileShare.None. O sea que sólo
             ' falla el ReadLines — y guardar el stamp igual dejaba los defaults pegados PARA TODA LA SESIÓN bajo
             ' un stamp válido que nunca vuelve a cambiar. Es el mismo bug que vino a arreglar todo esto ("reabrí
@@ -225,7 +225,7 @@ Friend Module SseCatalogs
 
     ''' <summary>True la PRIMERA vez, para toda la sesión. El overlay de más es legal (ver
     ''' <see cref="OverlayCount"/>), así que el aviso es información y repetirlo en cada Add sería un estorbo.
-    ''' <para>⛔ UNA SOLA CLASE, Y ESO ES CONSECUENCIA DEL BARRIDO COMPLETO. Mientras el script barría hasta un
+    ''' <para>UNA SOLA CLASE, Y ESO ES CONSECUENCIA DEL BARRIDO COMPLETO. Mientras el script barría hasta un
     ''' techo bajo existía un segundo aviso —"una partida que lo tome ya no lo suelta"— que NO podía compartir
     ''' disparo con el benigno. Subiendo <c>OVL_SWEEP_MAX</c> al tope del motor esa categoría dejó de existir:
     ''' todo lo autorable se puede deshacer, así que vuelve a haber un solo mensaje.</para></summary>
@@ -234,7 +234,7 @@ Friend Module SseCatalogs
     End Function
 
     ''' <summary>Un one-shot POR POOL.
-    ''' <para>⛔ ERA UNO SOLO PARA LOS DOS, y eso lo volvía peor que inútil: los dos mensajes NO dicen lo mismo (uno
+    ''' <para>ERA UNO SOLO PARA LOS DOS, y eso lo volvía peor que inútil: los dos mensajes NO dicen lo mismo (uno
     ''' manda a subir <c>iNumOverlays</c>; el del pool magic explica <c>iSpellOverlays</c> y por qué la app ofrece
     ''' menos slots de los que el ini declara). Con un one-shot compartido, el primero que se disparara se comía el
     ''' aviso del otro — o sea que el usuario que ya vio el del pool normal NUNCA se enteraba de lo del magic, que es
@@ -248,10 +248,10 @@ Friend Module SseCatalogs
     ''' número — que es la mitad del diagnóstico cuando alguien dice "subí iNumOverlays y no cambió nada".</summary>
     Friend Function OverlayLimitNotice(zone As OverlayZone, index As Integer, limit As Integer,
                                        Optional isSpell As Boolean = False) As String
-        ' ⛔ LA KEY A LA QUE SE MANDA AL USUARIO DEPENDE DE POR QUÉ EL CONTADOR ES EL QUE ES: con
+        ' LA KEY A LA QUE SE MANDA AL USUARIO DEPENDE DE POR QUÉ EL CONTADOR ES EL QUE ES: con
         ' bEnableFaceOverlays=0, subir iNumOverlays no hace absolutamente nada — y decirle que lo suba es
         ' recrear el bug que originó todo esto (sube la key, no pasa nada, la app repite el mismo cartel).
-        ' ⛔ Y DEPENDE DEL POOL: el magic tiene su PROPIA key (iSpellOverlays). Mandar a subir iNumOverlays por un
+        ' Y DEPENDE DEL POOL: el magic tiene su PROPIA key (iSpellOverlays). Mandar a subir iNumOverlays por un
         ' [SOvl] es el mismo modo de falla — la key que se sube no es la que gobierna el nodo.
         Dim tag = If(isSpell, "SOvl", "Ovl")
         Dim keyName = If(isSpell, "iSpellOverlays", "iNumOverlays")
@@ -260,11 +260,11 @@ Friend Module SseCatalogs
         Dim because = If(byFlag, $"because [Features] bEnableFaceOverlays=0 turns face overlays off entirely — both pools — whatever {keyName} says",
                                  $"per {keyName} in skee64.ini")
         Dim toRaise = If(byFlag, "bEnableFaceOverlays is set back to 1", $"{keyName} is raised")
-        ' ⛔ ACÁ NO VA NINGUNA SALVEDAD SOBRE UN TECHO DE LA APP, porque ya no hay ninguno: `limit` es el contador
+        ' ACÁ NO VA NINGUNA SALVEDAD SOBRE UN TECHO DE LA APP, porque ya no hay ninguno: `limit` es el contador
         ' DEL MOTOR y es el único límite del pool magic. Mientras el aviso mezclaba dos números decía tres cosas
         ' falsas a la vez: que el motor crea 8 (crea los que diga el ini),
         ' que "no pinta nada" (pintaba), y que se arregla subiendo la key (no cambiaba nada).
-        ' ⛔ DECÍA "in-game they start switched off" y eso era una INFERENCIA presentada como hecho. MEDIDO sobre
+        ' DECÍA "in-game they start switched off" y eso era una INFERENCIA presentada como hecho. MEDIDO sobre
         ' `*_magicoverlay.nif` (parseo del bloque, 2026-08-10): el controller es
         ' BSEffectShaderPropertyFloatController con typeOfControlledVariable=5 (=Alpha), target = el
         ' BSLightingShaderProperty, flags 0x4A = ACTIVE + CYCLE_REVERSE, frequency 8, keys (t=0,v=0)→(t=10,v=1)
@@ -293,7 +293,7 @@ Friend Module SseCatalogs
     ''' <c>iNumOverlays</c> de cada zona, índice 4 = <c>[Features] bEnableFaceOverlays</c>, índices 5-8 = el
     ''' <c>iSpellOverlays</c> de cada zona (el pool MAGIC). <c>""</c> = ausente, que es lo que devuelve
     ''' <c>GetPrivateProfileString</c> cuando la key no está.
-    ''' <para>⛔ El flag de la cara se queda en el índice 4 y los nuevos van DESPUÉS a propósito: así el layout
+    ''' <para>El flag de la cara se queda en el índice 4 y los nuevos van DESPUÉS a propósito: así el layout
     ''' viejo (0-4) no se corre ni un lugar y ningún lector existente cambia de significado.</para></summary>
     Private Const RawFaceFlagSlot As Integer = 4
     ''' <summary>Primer índice del <c>iSpellOverlays</c> crudo: <c>RawSpellSlotBase + zona</c>.</summary>
@@ -306,7 +306,7 @@ Friend Module SseCatalogs
     ''' <summary>Mergea UN archivo sobre <paramref name="raw"/> con la regla de skee: el valor de este archivo
     ''' pisa al anterior SÓLO si trae algo (<c>if (resultLen &gt; 0)</c>, main.cpp:276). Como el orden de llamada
     ''' es base y después custom, eso da "custom gana si no está vacío".
-    ''' <para>⛔ TODO O NADA. La fuente es perezosa: si tira a mitad (VFS de un mod manager, Data en red, ACL) las
+    ''' <para>TODO O NADA. La fuente es perezosa: si tira a mitad (VFS de un mod manager, Data en red, ACL) las
     ''' keys ya vistas quedarían aplicadas y el resto no — ni un ini ni el otro. Se junta en un array aparte y se
     ''' mergea recién cuando la enumeración terminó bien.</para></summary>
     ''' <param name="lines">La fuente de líneas, NO un path — <c>File.ReadLines</c> va tirando del
@@ -324,7 +324,7 @@ Friend Module SseCatalogs
     ''' <c>[Overlays/*] iNumOverlays</c> y <c>[Features] bEnableFaceOverlays</c>. Deliberately not a general INI
     ''' parser — sólo hacen falta esos NUEVE valores, y SIN parsear: el número sale después, de una sola pasada
     ''' sobre el string ya mergeado, que es como lo hace skee.
-    ''' <para>⚠️ Sin modelar: <c>GetPrivateProfileString</c> saca las comillas de <c>"6"</c>. Acá un valor
+    ''' <para>Sin modelar: <c>GetPrivateProfileString</c> saca las comillas de <c>"6"</c>. Acá un valor
     ''' entrecomillado no parsea y la zona queda en su default. Nadie entrecomilla un entero en skee64.ini.</para>
     ''' <para>(Eran CINCO hasta que se modeló el pool magic; ahora son nueve — <c>iSpellOverlays</c> por zona.
     ''' Ver <see cref="RawSpellSlotBase"/>.)</para>
@@ -333,7 +333,7 @@ Friend Module SseCatalogs
         Dim values = NewRawOverlayValues()
         Dim seen(values.Length - 1) As Boolean
         Dim section As String = ""
-        ' ⛔ GetPrivateProfileString entra a la PRIMERA sección con ese nombre y no sale de ahí: si el archivo
+        ' GetPrivateProfileString entra a la PRIMERA sección con ese nombre y no sale de ahí: si el archivo
         ' repite `[Overlays/Body]` más abajo, lo de la segunda NO EXISTE para el motor. Importa porque es
         ' exactamente cómo la gente edita estos archivos — pegan el bloque que dice la descripción del mod al
         ' final, dejando el original arriba. Sin esto la app leía el de abajo (20) y el motor el de arriba (6):
@@ -344,13 +344,13 @@ Friend Module SseCatalogs
             Dim line = rawLine.Trim()
             If line.Length = 0 OrElse line.StartsWith(";") Then Continue For
             If line.StartsWith("[") Then
-                ' ⛔ EL HEADER TERMINA EN EL PRIMER "]", NO AL FINAL DE LA LÍNEA. Win32 acepta
+                ' EL HEADER TERMINA EN EL PRIMER "]", NO AL FINAL DE LA LÍNEA. Win32 acepta
                 ' `[Overlays/Body] ; six slots` como sección y tira el resto. Exigiendo EndsWith("]"), esa línea
                 ' NO abría sección — y entonces el `iNumOverlays=6` de abajo se le atribuía a la sección que
                 ' seguía abierta, o sea a OTRA ZONA. No era una lectura perdida: era una inventada (la app
                 ' ofrecía Hands [Ovl0..5] donde skee crea 3). Comentar al lado del header es de las formas más
                 ' comunes de editar estos archivos a mano.
-                ' ⛔ Y una línea que EMPIEZA con "[" es header aunque NUNCA cierre: Win32 toma el nombre hasta
+                ' Y una línea que EMPIEZA con "[" es header aunque NUNCA cierre: Win32 toma el nombre hasta
                 ' el primer "]" o hasta el fin de línea. Descartándola (el `If close > 0` que había acá), un
                 ' `[Overlays/Body` sin cerrar no abría sección y su iNumOverlays se le atribuía a la anterior —
                 ' otra vez un número INVENTADO en la zona equivocada. Un "[" pelado da nombre "", que es
@@ -391,7 +391,7 @@ Friend Module SseCatalogs
     ''' <summary>Del string mergeado al número, en el orden de skee: <c>sscanf("%u")</c> → clamp a 0x7F
     ''' (main.cpp:810-828) → y al final el cero de la cara por <c>bEnableFaceOverlays</c> (main.cpp:833-836).
     ''' Una key ausente o que no parsea deja el default hardcodeado (el <c>res = false</c> que no asigna).
-    ''' <para>⛔ NO agregar una sobrecarga sin el <c>ByRef</c> "para que el gate quede más lindo": la que
+    ''' <para>NO agregar una sobrecarga sin el <c>ByRef</c> "para que el gate quede más lindo": la que
     ''' había no tenía UN SOLO llamador de producto, o sea superficie que existe únicamente para el test y que
     ''' igual viaja en el binario que se distribuye. El gate declara su propio local. Ver
     ''' 00-reglas-self-tests-no-van-en-el-binario.</para></summary>
@@ -405,15 +405,15 @@ Friend Module SseCatalogs
             If ScanUInt32Like(raw(RawSpellSlotBase + z), n) Then counts(SpellSlotBase + z) = CInt(Math.Min(n, CUInt(&H7F)))
         Next
         ' g_enableFaceOverlays: default true (main.cpp:139); el bool de skee también sale por "%u" y vale
-        ' `tmp > 0` (main.cpp:313-326). ⛔ El cero va DESPUÉS del clamp y sólo sobre la cara: sin esto la app
+        ' `tmp > 0` (main.cpp:313-326). El cero va DESPUÉS del clamp y sólo sobre la cara: sin esto la app
         ' ofrecía slots de cara que el motor no instancia — decía que sí y no pintaba nada.
-        ' ⛔ Y CERO EN LOS DOS POOLS DE LA CARA: el flag apaga `g_numFaceOverlays` **y**
+        ' Y CERO EN LOS DOS POOLS DE LA CARA: el flag apaga `g_numFaceOverlays` **y**
         ' `g_numSpellFaceOverlays` (main.cpp:833-836), no sólo el primero. Decía "no se modela
         ' g_numSpellFaceOverlays porque la app nunca autora [SOvl]" — ahora los autora, así que se modela.
         If ScanUInt32Like(raw(RawFaceFlagSlot), n) AndAlso n = 0UI Then
             counts(CInt(OverlayZone.Face)) = 0
             counts(SpellSlotBase + CInt(OverlayZone.Face)) = 0
-            ' ⛔ EL MOTIVO VIAJA CON EL NÚMERO. Sin esto el mensaje decía "0 slots, per iNumOverlays" y mandaba a
+            ' EL MOTIVO VIAJA CON EL NÚMERO. Sin esto el mensaje decía "0 slots, per iNumOverlays" y mandaba a
             ' subir una key que el archivo ya tiene en 6: el usuario la sube, no cambia nada, y la app le vuelve
             ' a decir lo mismo. Es el mismo modo de falla que originó todo esto, recreado por su propio arreglo.
             faceDisabledByFlag = True
@@ -427,7 +427,7 @@ Friend Module SseCatalogs
     ''' a leer ni un dígito, que es el <c>res = false</c> de skee (deja el valor anterior).
     ''' <para>El signo NIEGA EN UNSIGNED (7.22.1.4 §3), que es de donde sale el 4294967292 de un <c>-4</c> — y
     ''' de ahí el clamp lo deja en 127, no en 0.</para>
-    ''' <para>⛔ EN OVERFLOW <c>strtoul</c> SATURA en <c>ULONG_MAX</c> (errno ERANGE), no envuelve. Envolver en
+    ''' <para>EN OVERFLOW <c>strtoul</c> SATURA en <c>ULONG_MAX</c> (errno ERANGE), no envuelve. Envolver en
     ''' 2^32 —como hacía esto— daba <c>iNumOverlays=4294967296</c> → 0 donde el motor da 127.</para></summary>
     Private Function ScanUInt32Like(s As String, ByRef result As UInteger) As Boolean
         result = 0UI
@@ -456,7 +456,7 @@ Friend Module SseCatalogs
             result = UInteger.MaxValue
             Return True
         End If
-        ' ⛔ `0UL - acc` DESBORDA: VB chequea overflow por default y `0-4` en ULong tira OverflowException —
+        ' `0UL - acc` DESBORDA: VB chequea overflow por default y `0-4` en ULong tira OverflowException —
         ' que acá subía como "ini presente pero ilegible" y se comía el archivo entero. El complemento a 2^32
         ' se calcula restando DESDE 2^32, que nunca baja de 1 porque acc ya está enmascarado a 32 bits.
         If negate Then acc = (&H100000000UL - acc) And &HFFFFFFFFUL
@@ -480,7 +480,7 @@ Friend Module SseCatalogs
 
     ''' <summary>Zone of an existing overlay node name, or Nothing when the node is not one of ours (cualquier otro
     ''' nodo de NiOverride — transform, texture-set de armadura — se round-trip-ea verbatim y no se edita).
-    ''' <para>⭐ CUBRE LOS DOS POOLS: <c>[Ovl{n}]</c> y <c>[SOvl{n}]</c>. Antes reclamaba sólo el primero, porque la
+    ''' <para>CUBRE LOS DOS POOLS: <c>[Ovl{n}]</c> y <c>[SOvl{n}]</c>. Antes reclamaba sólo el primero, porque la
     ''' app no autoraba el magic; ahora sí, y el editor los muestra y los edita. Qué POOL es lo dice
     ''' <see cref="IsSpellNode"/> — esta función responde SÓLO la geometría (zona), que es lo que el ruteo de shapes
     ''' y el filtrado de listas necesitan.</para></summary>
@@ -494,7 +494,7 @@ Friend Module SseCatalogs
     End Function
 
     ''' <summary>El primer índice LIBRE de un pool concreto (zona × normal/magic) dentro de una lista de overlays.
-    ''' <para>⛔ FILTRA POR POOL, no sólo por zona: los dos pools tienen numeración INDEPENDIENTE en el motor
+    ''' <para>FILTRA POR POOL, no sólo por zona: los dos pools tienen numeración INDEPENDIENTE en el motor
     ''' (<c>Body [Ovl0]</c> y <c>Body [SOvl0]</c> son dos nodos distintos que conviven). Contar los índices usados de
     ''' la zona sin mirar el pool desperdiciaba slots del pool normal por cada magic autorado — y al revés.</para>
     ''' <para>Existe acá y no en cada editor porque lo necesitan los dos (cuerpo y cara) y el Add y la conversión
@@ -525,7 +525,7 @@ Friend Module SseCatalogs
     End Function
 
     ''' <summary>Index parsed out of <c>… [Ovl{n}]</c> o <c>… [SOvl{n}]</c>, or -1.
-    ''' <para>⛔ ERA UN SEGUNDO PARSER, Y TENÍA EL MISMO DEFECTO QUE EL PRIMERO: buscaba el literal <c>"[Ovl"</c>
+    ''' <para>ERA UN SEGUNDO PARSER, Y TENÍA EL MISMO DEFECTO QUE EL PRIMERO: buscaba el literal <c>"[Ovl"</c>
     ''' (que no matchea <c>"[SOvl"</c>) y encima cortaba con <c>open + 4</c>, asumiendo el largo del tag. Para un
     ''' nodo magic devolvía −1, y de ahí salían dos overlays magic autorados en el MISMO nodo (el "primer slot
     ''' libre" siempre daba 0). Ahora delega en la ÚNICA implementación, la de la librería, que es la que también
@@ -685,11 +685,11 @@ Friend Module SseCatalogs
     ''' <summary>Colour for a missing-texture row — the same red the tint tab uses for a missing mask.</summary>
     Friend ReadOnly MissingTextureColor As System.Drawing.Color = System.Drawing.Color.FromArgb(200, 40, 40)
 
-    ''' <summary>El nodo del slider "Height". ⭐ Tiene nombre propio porque es el ÚNICO nodo del catálogo sobre
+    ''' <summary>El nodo del slider "Height". Tiene nombre propio porque es el ÚNICO nodo del catálogo sobre
     ''' el que el motor compone algo suyo: skee le suma el lift de los tacos altos (<c>HH_OFFSET</c> sintetiza
     ''' <c>[{"name":"NPC","pos":[0,0,offset]}]</c> bajo su key <c>internal</c>).
     ''' <para>Un solo consumidor hoy: el aviso del editor —el jugador que sube la altura y le pone botas ve al NPC
-    ''' más alto en el juego que en el preview, y eso es CORRECTO—. ⛔ El doc anterior afirmaba un SEGUNDO
+    ''' más alto en el juego que en el preview, y eso es CORRECTO—. El doc anterior afirmaba un SEGUNDO
     ''' consumidor que no existe ("la exclusión de <c>internal</c> de la neutralización"): esa exclusión compara
     ''' contra el literal <c>"internal"</c>, no contra este nombre, y vive en <c>RaceMenuJslot</c>, o sea en otra
     ''' assembly, donde un <c>Friend Const</c> de acá no llega. El literal NO estaba duplicado; lo que estaba mal

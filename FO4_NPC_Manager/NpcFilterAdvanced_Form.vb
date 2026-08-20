@@ -30,7 +30,7 @@ Public Class NpcFilterAdvanced_Form
     ''' then.</summary>
     Private Sub FitToContent()
         PanelRoot.PerformLayout()
-        ' ⛔ PreferredSize is NOT enough on its own: the laid-out children can end BELOW it (a Dock=Fill
+        ' PreferredSize is NOT enough on its own: the laid-out children can end BELOW it (a Dock=Fill
         ' child in an AutoSize row measures short — measured 388 vs a preferred 383, i.e. 5 px of button
         ' hanging outside). So take the deepest actual bottom as well and size to whichever is larger.
         Dim lowest As Integer = 0
@@ -52,7 +52,7 @@ Public Class NpcFilterAdvanced_Form
     ''' fields, then FitToContent) on the REAL Designer layout and reports where the lowest control
     ''' ends up, so "the buttons are sliced in half" becomes something a build can catch instead of
     ''' something the user has to notice. Never shows the window.
-    ''' <para>⛔ SÍ, ES UN MÉTODO QUE SÓLO USA EL GATE, y se queda: lo que se mide es el layout del Designer
+    ''' <para>SÍ, ES UN MÉTODO QUE SÓLO USA EL GATE, y se queda: lo que se mide es el layout del Designer
     ''' REAL a la fuente/DPI/idioma de quien corre, y eso no se puede medir sin tocar este form. Es `Friend`
     ''' (no `Public`), sólo LEE y no cambia ni un comportamiento del diálogo. La línea que no se cruza es la
     ''' de <c>LoadOrderActivator._testGameDirOverride</c>: una RAMA de producción que se comporta distinto

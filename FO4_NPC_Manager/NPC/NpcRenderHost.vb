@@ -37,21 +37,21 @@ Friend Class NpcRenderHost
     ''' reassigned. Disposed by the owning Form, not by this class.</summary>
     Public ReadOnly Property PreviewCtl As PreviewControl
 
-    ''' <summary>⭐ ¿Este preview dibuja los overlays del pool MAGIC (<c>… [SOvl{n}]</c>)?
+    ''' <summary>¿Este preview dibuja los overlays del pool MAGIC (<c>… [SOvl{n}]</c>)?
     ''' <para>Default <b>False</b>, y ese default es una decisión de producto sobre un hecho MEDIDO: la plantilla del
     ''' pool magic (<c>*_magicoverlay.nif</c>) trae un <c>BSEffectShaderPropertyFloatController</c> con
     ''' <c>typeOfControlledVariable=5</c> (=<b>Alpha</b>), apuntando al <c>BSLightingShaderProperty</c>, con flags
     ''' <c>0x4A</c> = ACTIVE + CYCLE_REVERSE, frequency 8 y keys <c>(t=0,v=0)→(t=10,v=1)</c> lineales ⇒ <b>la opacidad
     ''' la anima el motor, pulsando 0↔1</b>. O sea que NO EXISTE un cuadro que sea "cómo se ve": el preview principal
     ''' es el retrato del NPC, y un efecto en curso no es parte de su identidad.
-    ''' <para>⛔ La versión anterior de esta nota decía "arranca apagado", que era una INFERENCIA sobre las keys
+    ''' <para>La versión anterior de esta nota decía "arranca apagado", que era una INFERENCIA sobre las keys
     ''' presentada como medición — y encima nuestro propio apply-script escribe <c>KEY_ALPHA</c> con persist=true, así
     ''' que "apagado" no era ni siquiera lo que dejamos escrito. El dato real es que ese valor lo pisa el controller
     ''' mientras corre.</para></para>
     ''' <para>Los hosts de los EDITORES la ponen en True: ahí el trabajo es autorar esa capa, así que hay que verla —
     ''' en el PICO de su ciclo, que es el cuadro útil para el autor. El checkbox del editor conmuta esto y
     ''' re-renderiza.</para>
-    ''' <para>⛔ Vive en el HOST y no en el Config global: dos previews del MISMO NPC tienen que poder discrepar (el
+    ''' <para>Vive en el HOST y no en el Config global: dos previews del MISMO NPC tienen que poder discrepar (el
     ''' principal no, el del editor sí) y eso es exactamente lo que un flag global no puede representar. Por eso el
     ''' resolver recibe el host que está renderizando, no <c>_hostProvider()</c>.</para>
     ''' <para>El bake NO consulta esto: no hay bake de spell overlays (nunca se pliegan; viajan por el
@@ -126,7 +126,7 @@ Friend Class NpcRenderHost
     ''' otherwise allocate-and-delete every call.</summary>
     Public Property TintGpuCache As New FaceTintTextureCache()
 
-    ''' <summary>⭐ ESPEJO CPU EXACTO de <see cref="TintGpuCache"/>: decodes de DDS (source D/N/S de la cara +
+    ''' <summary>ESPEJO CPU EXACTO de <see cref="TintGpuCache"/>: decodes de DDS (source D/N/S de la cara +
     ''' cada capa de tint + cada mascara de region-swap) reusados entre composes, con la MISMA vida per-NPC
     ''' que el cache GL (lo limpia <c>ClearFaceTintCaches</c> al cambiar de NPC raiz y este Dispose).
     ''' <para><b>Por que existe.</b> Con el flag de camara en CPU el render compone la cara por
@@ -137,7 +137,7 @@ Friend Class NpcRenderHost
     ''' lento que el bake — el bake batch SI amortiza sus decodes (<c>BeginBatchDecodeCache</c>).</para>
     ''' <para>No puede cambiar un byte de la salida: lo que guarda es funcion PURA de (bytes del DDS, tamaño
     ''' destino) — es exactamente lo que devuelve <c>DecodeDds</c>. Sin cache se recalcula el MISMO valor.</para>
-    ''' ⛔ ConcurrentDictionary por el mismo motivo que <c>BatchDecodeCache</c>: durante un bake batch la bomba
+    ''' ConcurrentDictionary por el mismo motivo que <c>BatchDecodeCache</c>: durante un bake batch la bomba
     ''' de mensajes sigue viva y un WM_PAINT puede entrar al render (hilo UI) mientras el bake corre en el
     ''' ThreadPool. Son caches distintos, pero el patron de acceso concurrente es el mismo.</summary>
     Public Property TintCpuDecodeCache As New System.Collections.Concurrent.ConcurrentDictionary(Of String, FaceTintCpuCompositor.DecodedTex)(StringComparer.OrdinalIgnoreCase)
@@ -319,8 +319,8 @@ Friend Class NpcRenderHost
                 ' — sólo 4 de los 7 ARMO con slot-60-solo son Pipboys de verdad.
                 Dim isPipboyDevice As Boolean = False
                 LastRenderData.ShapeIsPipboyDevice.TryGetValue(sh, isPipboyDevice)
-                ' Y el slot que se strippea sale de RACE.DATA 'Pipboy Biped Object'
-                ' (wbDefinitionsFO4.pas:11538) — es dato POR RAZA, no la constante 60. Si la raza no declara
+                ' Y el slot que se strippea sale de RACE.DATA 'Pipboy Biped Object' — es dato POR
+                ' RAZA, no la constante 60. Si la raza no declara
                 ' ninguno (mask 0) no hay slot de Pipboy que strippear y la máscara pasa cruda.
                 Dim pipMask As UInteger = LastRenderData.PipboySlotMask
                 groupSlots(gid) = If(isPipboyDevice OrElse pipMask = 0UI, own, own And (Not pipMask))
@@ -563,7 +563,7 @@ Friend Class NpcRenderHost
         If LastSculptByArma IsNot Nothing Then LastSculptByArma.Clear()
         If PristineDiffusePixels IsNot Nothing Then PristineDiffusePixels.Clear()
 
-        ' ⛔⛔ HACER CURRENT EL CONTEXTO PROPIO ANTES DE BORRAR UN SOLO HANDLE GL.
+        ' HACER CURRENT EL CONTEXTO PROPIO ANTES DE BORRAR UN SOLO HANDLE GL.
         '
         ' Abajo decía que "el llamador ya tiene current el contexto dueño" y lo trataba como precondición
         ' del ciclo de vida. NINGÚN llamador lo garantiza: `EditFace_Form` invoca `_editorHost.Dispose()`
@@ -574,14 +574,14 @@ Friend Class NpcRenderHost
         ' Si el usuario cierra el editor justo después, estos `DeleteTexture`/`DeleteProgram` se disparan
         ' contra el contexto del MainForm y borran ids que allá pertenecen a texturas VIVAS: el preview
         ' principal pierde texturas sin ningún error, y el editor filtra las suyas de verdad.
-        ' ⛔ El comentario de EditFace_Form habla de "the shared GL context", pero `PreviewControl.New`
+        ' El comentario de EditFace_Form habla de "the shared GL context", pero `PreviewControl.New`
         ' construye el `GLControlSettings` SIN `SharedContext`: los contextos son independientes. La
         ' premisa de la que colgaba la precondición es falsa.
         '
         ' `EnsureContextCurrent` no hace `MakeCurrent` si ya lo está, así que en el camino sano no cuesta.
         Dim contextoListo As Boolean = False
         Try
-            ' ⛔ SE USA EL RETORNO, no se asume. Antes esto ponia `contextoListo = True` por el solo hecho
+            ' SE USA EL RETORNO, no se asume. Antes esto ponia `contextoListo = True` por el solo hecho
             ' de llamar: si `MakeCurrent` fallaba (control dispuesto entre el chequeo y la llamada, driver
             ' caido) se borraban handles creyendo que el contexto era el propio.
             If PreviewCtl IsNot Nothing Then contextoListo = PreviewCtl.EnsureContextCurrent()
@@ -620,7 +620,7 @@ Friend Class NpcRenderHost
 
         ' Libera los handles GL del compositor (program/VAO/VBO/FBO/texturas). El contexto propio ya se
         ' hizo current arriba; si no se pudo, no se borra nada (ver el bloque de arriba).
-        ' ⛔ Y SE SUELTA LA REFERENCIA PASE LO QUE PASE. Gatear TODO por `contextoListo` dejaba el
+        ' Y SE SUELTA LA REFERENCIA PASE LO QUE PASE. Gatear TODO por `contextoListo` dejaba el
         ' `CompositorState` entero colgando del host cuando el contexto ya no estaba: sus handles GL se van
         ' con el contexto igual, pero lo ADMINISTRADO que tenga adentro no lo suelta nadie.
         Try

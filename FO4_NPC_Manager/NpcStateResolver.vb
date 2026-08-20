@@ -17,7 +17,7 @@ Friend NotInheritable Class NpcStateResolver
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _materialResolver As NpcMaterialResolver
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
-    Private ReadOnly _lvlnDataCache As Dictionary(Of UInteger, LVLN_Data)
+    Private ReadOnly _lvlnDataCache As Dictionary(Of UInteger, Canon.ILvln)
     Private ReadOnly _genderFilter As Func(Of MainForm.GenderFilterMode)
     Private ReadOnly _resolveLmSkinTemplate As Func(Of String, LmSkinTemplate)
     Private Shared ReadOnly _rng As New Random()
@@ -28,7 +28,7 @@ Friend NotInheritable Class NpcStateResolver
 
     Public Sub New(ctx As NpcRenderContext, materialResolver As NpcMaterialResolver,
                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                   lvlnDataCache As Dictionary(Of UInteger, LVLN_Data),
+                   lvlnDataCache As Dictionary(Of UInteger, Canon.ILvln),
                    genderFilter As Func(Of MainForm.GenderFilterMode),
                    resolveLmSkinTemplate As Func(Of String, LmSkinTemplate))
         _ctx = ctx
@@ -70,7 +70,7 @@ Friend NotInheritable Class NpcStateResolver
             .HasTextureLighting = traits.HasTextureLighting,
             .TextureLightingColor = traits.TextureLightingColor,
             .TraitsSourceFormID = traits.SourceFormID,
-            .HeadDiffuseAlphaTest = (npc.Game = Config_App.Game_Enum.Fallout4) AndAlso (npc.AcbsFlags And &H1000000UI) <> 0UI
+            .HeadDiffuseAlphaTest = (npc.Game = Config_App.Game_Enum.Fallout4) AndAlso (npc.Record.ConfigurationFlags And &H1000000UI) <> 0UI
         }
 
         state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
@@ -111,7 +111,7 @@ Friend NotInheritable Class NpcStateResolver
             traits.WeightFat = Nothing
         End If
 
-        ApplyRaceFallbacks(state, traits, _ctx.PluginManager, AddressOf _ctx.ParseRaceCached)
+        ApplyRaceFallbacks(state, traits, _ctx.PluginManager, AddressOf _ctx.ParseRaceCanonCached)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
         ' Apply per-NPC LooksMenu overlay (if any) AFTER the template chain + race fallbacks ran.
@@ -154,7 +154,7 @@ Friend NotInheritable Class NpcStateResolver
                 If state.SkinFormID = 0UI Then
                     Dim raceRec2 = _ctx.PluginManager.GetRecord(state.RaceFormID)
                     If raceRec2 IsNot Nothing AndAlso raceRec2.Header.Signature = "RACE" Then
-                        state.SkinFormID = _ctx.ParseRaceCached(raceRec2).SkinFormID
+                        state.SkinFormID = _ctx.ParseRaceCanonCached(raceRec2).Skin
                     End If
                 End If
             End If
@@ -170,14 +170,14 @@ Friend NotInheritable Class NpcStateResolver
             '   • FO4 → la vía es la plantilla LM (bundle f4ee) = el bloque de abajo. `SseHeadTextureFormIDOverride`
             '     queda en Nothing (LooksmenuLoader lo puebla sólo desde `.jslot`), así que esta rama no corre.
             '   • SSE → RaceMenu no tiene plantillas de piel; la vía es ésta.
-            ' ⛔ NO se agrega un gate `If isSse` a propósito: el shadow del BAKE tampoco lo tiene, y gatear un
+            ' NO se agrega un gate `If isSse` a propósito: el shadow del BAKE tampoco lo tiene, y gatear un
             ' solo lado volvería a abrir la divergencia render/bake que este mismo fix cierra.
             '
             ' TRI-ESTADO (espejo exacto de NpcRecordOverlay :192-205, que es el camino del BAKE):
             '   Nothing → no participa, se conserva lo que dejó ApplyRaceFallbacks.
             '   <> 0    → override explícito.
             '   = 0     → clear explícito (ver el bloque de abajo, que NO es simétrico y por eso está comentado).
-            ' ⛔ El gate es `.HasValue`, NO `<> 0UI`: sobre un nullable esa comparación da Boolean? y colapsa
+            ' El gate es `.HasValue`, NO `<> 0UI`: sobre un nullable esa comparación da Boolean? y colapsa
             ' Nothing con 0 — o sea, deja el clear indistinguible de "sin override", que es el bug original.
             If overlayPreset.SseHeadTextureFormIDOverride.HasValue Then
                 Dim ovFtst As UInteger = overlayPreset.SseHeadTextureFormIDOverride.Value
@@ -197,9 +197,9 @@ Friend NotInheritable Class NpcStateResolver
                     ' Es EXACTAMENTE el mismo movimiento, por la misma causa de orden, que el clear de skin de
                     ' :152-160 (Some(0) → re-sustituir RACE.WNAM).
                     '
-                    ' ⛔ Se resuelve CONTRA LA RAZA, no con un 0 hardcodeado, y el CLEAR SÓLO SACA EL PRIMER ESCALÓN.
+                    ' Se resuelve CONTRA LA RAZA, no con un 0 hardcodeado, y el CLEAR SÓLO SACA EL PRIMER ESCALÓN.
                     ' La precedencia que aplica acá es la de SSE — `FTST > DFT[sexo propio] > HDPT.TNAM`,
-                    ' NpcMaterialResolver :458. ⚠️ NO decir "RE de ambos binarios": bajo FO4 lo IMPLEMENTADO es
+                    ' NpcMaterialResolver :458. NO decir "RE de ambos binarios": bajo FO4 lo IMPLEMENTADO es
                     ' `FTST > TNAM > DFTM (si TNAM=0)` (:488), y la lectura DFT>TNAM que sugiere el RE del CK está
                     ' marcada ahí mismo como SIN MEDIR y no aplicada. Lo único RE-verificado en ambos binarios es
                     ' que el DFT no cruza de género (ver el bloque de ApplyRaceFallbacks), que es otra cosa.
@@ -208,15 +208,21 @@ Friend NotInheritable Class NpcStateResolver
                     '     SÍ arma capa aux (:468, rama `RACE.DFTM(Face-aux)`, que existe también en SSE).
                     '   • RACE sin DFT (el caso de las razas custom tipo UBE) → queda 0, no hay capa aux,
                     '     isFaceTextureSource=False y el HDPT.TNAM se aplica COMPLETO, incluido TX03=_sk.
-                    ' ⚠️ NO decir "en SSE los RACE no traen DFT": `RecordParsers.ParseRACE` parsea DFTM/DFTF SIN
-                    ' gate de juego (Case "DFTM"/"DFTF"), y hay casos SSE medidos que los traen (ver el ManakinRace
-                    ' de NpcMaterialResolver). El comportamiento correcto sale de respetar la ley, no de suponer 0.
+                    ' NO decir "en SSE los RACE no traen DFT": el campo DFTM/DFTF lo declaran los DOS juegos
+                    ' (mismo campo, subrecord propio de cada uno), y hay casos SSE medidos que los traen (ver el
+                    ' ManakinRace de NpcMaterialResolver). El comportamiento correcto sale de respetar la ley, no
+                    ' de suponer 0.
                     Dim raceRecFtst = _ctx.PluginManager.GetRecord(state.RaceFormID)
                     If raceRecFtst IsNot Nothing AndAlso raceRecFtst.Header.Signature = "RACE" Then
-                        Dim raceFtst = _ctx.ParseRaceCached(raceRecFtst)
-                        state.HeadTextureFormID = If(state.IsFemale,
-                                                     raceFtst.FemaleDefaultFaceTextureFormID,
-                                                     raceFtst.MaleDefaultFaceTextureFormID)
+                        Dim raceFtst = _ctx.ParseRaceCanonCached(raceRecFtst)
+                        ' DFTM/DFTF: cada juego lo declara con su propio nombre generado.
+                        Dim raceFtstFo4 = TryCast(raceFtst, Canon.RaceFO4)
+                        Dim raceFtstSse = TryCast(raceFtst, Canon.RaceSSE)
+                        If raceFtstFo4 IsNot Nothing Then
+                            state.HeadTextureFormID = If(state.IsFemale, raceFtstFo4.FemaleDefaultFaceTexture, raceFtstFo4.MaleDefaultFaceTexture)
+                        ElseIf raceFtstSse IsNot Nothing Then
+                            state.HeadTextureFormID = If(state.IsFemale, raceFtstSse.FemaleHeadDataDefaultFaceTextureFemale, raceFtstSse.MaleHeadDataDefaultFaceTextureMale)
+                        End If
                     End If
                 End If
             End If
@@ -228,7 +234,7 @@ Friend NotInheritable Class NpcStateResolver
                     Dim genderIdx As Integer = If(state.IsFemale, 1, 0)
                     If tpl.FaceTxstFormID(genderIdx) <> 0UI Then
                         state.HeadTextureFormID = tpl.FaceTxstFormID(genderIdx)
-                        ' ⛔ Explicit VIAJA CON el valor: es lo que declara "este face TXST es del ACTOR, no el
+                        ' Explicit VIAJA CON el valor: es lo que declara "este face TXST es del ACTOR, no el
                         ' default de la raza", y de eso depende que ResolveTextureSet le gane al HDPT.TNAM
                         ' (:584). Esta línea corre DESPUÉS de ApplyRaceFallbacks —que ya fijó Explicit desde el
                         ' FTST crudo—, así que sin actualizarlo el par queda incoherente: HeadTextureFormID =
@@ -291,7 +297,7 @@ Friend NotInheritable Class NpcStateResolver
         Return state
     End Function
 
-    ''' <summary>Clon del state base. ⛔ Es un clon MANUAL campo por campo: un campo nuevo de
+    ''' <summary>Clon del state base. Es un clon MANUAL campo por campo: un campo nuevo de
     ''' <see cref="MainForm.NPCVisualState"/> que no se agregue acá se pierde SILENCIOSAMENTE en TODO render —
     ''' este clon es el que arma el state final de cada render (MainForm:5298, para sumarle el outfit), así que
     ''' lo que no se copie no llega al resolver de materiales por más bien que lo haya resuelto
@@ -350,10 +356,10 @@ Friend NotInheritable Class NpcStateResolver
         Return clone
     End Function
 
-    ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCached). Falls back to a
-    ''' direct <c>RecordParsers.ParseRACE</c> when Nothing — keeps the offline bake path pure.</param>
+    ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCanonCached). Falls back to a
+    ''' direct <c>Canon.CanonRecords.Race</c> when Nothing — keeps the offline bake path pure.</param>
     Friend Shared Sub ApplyRaceFallbacks(state As MainForm.NPCVisualState, traits As MainForm.TraitsState, pluginManager As PluginManager,
-                                         Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing)
+                                         Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing)
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
 
         Dim raceRec = pluginManager.GetRecord(state.RaceFormID)
@@ -365,7 +371,9 @@ Friend NotInheritable Class NpcStateResolver
             Return
         End If
 
-        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
+        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, pluginManager))
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
+        Dim raceSse = TryCast(race, Canon.RaceSSE)
 
         ' Materialize NPC.MWGT into final 3 floats. Substitution rule lives in ResolveBodyWeights.
         ' Done before the head/skin fallbacks so callers reading state.WeightX downstream always
@@ -376,7 +384,7 @@ Friend NotInheritable Class NpcStateResolver
         state.WeightFat = resolvedWeights.Fat
 
         If state.SkinFormID = 0UI Then
-            state.SkinFormID = race.SkinFormID
+            state.SkinFormID = race.Skin
         End If
 
         ' FTST PROPIO del NPC (0 si no tiene), capturado ANTES del fallback DFTM de abajo. Acá
@@ -384,34 +392,56 @@ Friend NotInheritable Class NpcStateResolver
         ' Lo usa ResolveTextureSet para la precedencia FTST > HDPT.TNAM > DFTM (sin esto no se distingue FTST de DFTM).
         state.ExplicitHeadTextureFormID = state.HeadTextureFormID
 
+        ' Head Part\HEAD y DFTM/DFTF: cada juego los declara con su propia colección (RaceFO4.Male/
+        ' FemaleHeadParts + Male/FemaleDefaultFaceTexture; RaceSSE.HeadParts/HeadParts2 +
+        ' MaleHeadDataDefaultFaceTextureMale/FemaleHeadDataDefaultFaceTextureFemale).
         ' DFTM/DFTF: SOLO el género propio — el motor NO cruza al otro género (RE 2026-07-16,
         ' AMBOS binarios byte-verificados): SSE runtime RegenerateHead 0x14042BEDB y FO4 CK
         ' resolver 0x140ED4244 hacen UNA sola lectura race.faceRelatedData[GetSex(npc)]
         ' (SSE race+0x4A8+sex*8 → frd+0xA0; FO4 CK race+0xBA8+sex*8 → frd+0x10); si es null
         ' caen a HDPT.TNAM, jamás al DFT del otro sexo. El fallback cruzado que había acá
         ' pintaba SkinHeadFemaleNord (DFTF) en el maniquí masculino de ManakinRace (sin DFTM).
+        Dim maleHeadParts As IEnumerable(Of UInteger) = New List(Of UInteger)
+        Dim femaleHeadParts As IEnumerable(Of UInteger) = New List(Of UInteger)
+        Dim maleDefaultFaceTexture As UInteger = 0UI
+        Dim femaleDefaultFaceTexture As UInteger = 0UI
+        If raceFo4 IsNot Nothing Then
+            maleHeadParts = raceFo4.MaleHeadParts.Select(Function(h) h.HeadPartHead)
+            femaleHeadParts = raceFo4.FemaleHeadParts.Select(Function(h) h.HeadPartHead)
+            maleDefaultFaceTexture = raceFo4.MaleDefaultFaceTexture
+            femaleDefaultFaceTexture = raceFo4.FemaleDefaultFaceTexture
+        ElseIf raceSse IsNot Nothing Then
+            maleHeadParts = raceSse.HeadParts.Select(Function(h) h.HeadPartHead)
+            femaleHeadParts = raceSse.HeadParts2.Select(Function(h) h.HeadPartHead)
+            maleDefaultFaceTexture = raceSse.MaleHeadDataDefaultFaceTextureMale
+            femaleDefaultFaceTexture = raceSse.FemaleHeadDataDefaultFaceTextureFemale
+        End If
+
         If state.HeadPartFormIDs.Count = 0 Then
             If state.IsFemale Then
-                state.HeadPartFormIDs.AddRange(race.FemaleHeadPartFormIDs)
-                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = race.FemaleDefaultFaceTextureFormID
+                state.HeadPartFormIDs.AddRange(femaleHeadParts)
+                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = femaleDefaultFaceTexture
             Else
-                state.HeadPartFormIDs.AddRange(race.MaleHeadPartFormIDs)
-                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = race.MaleDefaultFaceTextureFormID
+                state.HeadPartFormIDs.AddRange(maleHeadParts)
+                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = maleDefaultFaceTexture
             End If
         ElseIf state.HeadTextureFormID = 0UI Then
-            state.HeadTextureFormID = If(state.IsFemale, race.FemaleDefaultFaceTextureFormID, race.MaleDefaultFaceTextureFormID)
+            state.HeadTextureFormID = If(state.IsFemale, femaleDefaultFaceTexture, maleDefaultFaceTexture)
         End If
 
         ' HairColor fallback: when NPC.HCLF is absent (and the template chain didn't supply one
         ' either — Model/Animation traits already collapsed by ResolveModelAnimationStateFromNPC),
         ' the engine reads RACE.HCLF[gender] (Default Hair Colors). Mirror that here. Each gender
-        ' slot can be NULL per wbFormIDCk([NULL, CLFM]) at wbDefinitionsFO4.pas:11575.
+        ' slot can be NULL per the schema's allowed-value list for the field (NULL or CLFM).
         ' NOTA: el cross-gender fallback de acá NO está verificado contra el motor (el análogo de
         ' DefaultFaceTexture se RE-verificó 2026-07-16 y NO cruza género — ver arriba); se conserva
         ' pendiente de su propio RE porque nadie midió un síntoma en su contra.
         If state.HairColorFormID = 0UI Then
-            Dim ownGender = If(state.IsFemale, race.FemaleDefaultHairColorFormID, race.MaleDefaultHairColorFormID)
-            Dim otherGender = If(state.IsFemale, race.MaleDefaultHairColorFormID, race.FemaleDefaultHairColorFormID)
+            Dim hclf = race.DefaultHairColors
+            Dim maleHcl As UInteger = If(hclf.Count > 0, hclf(0).DefaultHairColor, 0UI)
+            Dim femaleHcl As UInteger = If(hclf.Count > 1, hclf(1).DefaultHairColor, 0UI)
+            Dim ownGender = If(state.IsFemale, femaleHcl, maleHcl)
+            Dim otherGender = If(state.IsFemale, maleHcl, femaleHcl)
             state.HairColorFormID = If(ownGender <> 0UI, ownGender, otherGender)
         End If
     End Sub
@@ -422,10 +452,12 @@ Friend NotInheritable Class NpcStateResolver
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return ""
 
-        Dim race = _ctx.ParseRaceCached(raceRec)
-        Dim skeletonPath = If(state.IsFemale, race.FemaleSkeletonPath, race.MaleSkeletonPath)
+        Dim race = _ctx.ParseRaceCanonCached(raceRec)
+        Dim maleSkel = If(race.MaleSkeletalModelPresente, race.MaleSkeletalModel, "")
+        Dim femaleSkel = If(race.FemaleSkeletalModelPresente, race.FemaleSkeletalModel, "")
+        Dim skeletonPath = If(state.IsFemale, femaleSkel, maleSkel)
         If String.IsNullOrWhiteSpace(skeletonPath) Then
-            skeletonPath = If(race.MaleSkeletonPath <> "", race.MaleSkeletonPath, race.FemaleSkeletonPath)
+            skeletonPath = If(maleSkel <> "", maleSkel, femaleSkel)
         End If
 
         Dim dictionaryKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(skeletonPath)
@@ -440,9 +472,9 @@ Friend NotInheritable Class NpcStateResolver
         Dim own = NpcStateFactory.CreateOwnTraitsState(npc)
         If visited.Contains(formID) Then Return own
 
-        Dim acbsOppGender As Boolean = (npc.AcbsFlags And &H80000UI) <> 0UI
+        Dim acbsOppGender As Boolean = (npc.Record.ConfigurationFlags And &H80000UI) <> 0UI
 
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits) Then
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then
             Return own
         End If
 
@@ -465,7 +497,7 @@ Friend NotInheritable Class NpcStateResolver
 
         Dim own = NpcStateFactory.CreateOwnInventoryState(npc)
         If visited.Contains(formID) Then Return own
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Inventory) Then Return own
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Inventory) Then Return own
 
         visited.Add(formID)
         Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Inventory)
@@ -549,17 +581,17 @@ Friend NotInheritable Class NpcStateResolver
         If lvlnFormID = 0UI OrElse visited.Contains(lvlnFormID) Then Return 0UI
         visited.Add(lvlnFormID)
 
-        Dim lvln As LVLN_Data = Nothing
+        Dim lvln As Canon.ILvln = Nothing
         If Not _lvlnDataCache.TryGetValue(lvlnFormID, lvln) Then
             Dim lvlnRec = GetRecordMemoized(lvlnFormID, recordMemo)
             If lvlnRec Is Nothing OrElse lvlnRec.Header.Signature <> "LVLN" Then Return 0UI
-            ' ⛔ Este fallback re-parsea un record que la caché puede haber salteado A PROPÓSITO: el barrido de
+            ' Este fallback re-parsea un record que la caché puede haber salteado A PROPÓSITO: el barrido de
             ' arranque excluye los LVLN que no parsean (y lo reporta). Sin el Try, un LVLN roto que un template
             ' referencie volvía a lanzar acá — o sea en tiempo de RESOLUCIÓN DE ESTADO, con el usuario mirando
             ' un NPC. Sin lista no hay leaf que elegir: se devuelve 0, que es lo mismo que una lista vacía.
-            lvln = RecordParsers.TryParseLVLN(lvlnRec, _ctx.PluginManager)
-            ' ⛔ El FALLO también se cachea. Sin esto, un LVLN roto que un template referencie se re-parsea
-            ' —con su Throw + Catch + log adentro de TryParseLVLN— en CADA resolución de estado, o sea en cada
+            lvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(lvlnRec, _ctx.PluginManager)
+            ' El FALLO también se cachea. Sin esto, un LVLN roto que un template referencie se re-parsea
+            ' —con su Throw + Catch + log adentro de TryAbrirLvlnTolerante— en CADA resolución de estado, o sea en cada
             ' selección de NPC que lo toque, para un resultado que ya se sabe constante. Es seguro porque
             ' `_lvlnDataCache` se vacía en el rebuild de clasificación (MainForm:4163), que es justo lo que
             ' corre cuando se recargan los plugins: si el LVLN se arregla en disco, la caché ya no existe.
@@ -570,22 +602,22 @@ Friend NotInheritable Class NpcStateResolver
         ' Build weighted list of leaf NPC FormIDs: each entry contributes Count copies
         Dim weightedLeaves As New List(Of UInteger)()
 
-        For Each entry In lvln.Entries
-            If entry.FormID = 0UI Then Continue For
-            Dim entryRec = GetRecordMemoized(entry.FormID, recordMemo)
+        For Each entry In lvln.LeveledListEntries
+            If entry.LeveledListEntryNPC = 0UI Then Continue For
+            Dim entryRec = GetRecordMemoized(entry.LeveledListEntryNPC, recordMemo)
             If entryRec Is Nothing Then Continue For
 
-            Dim weight = Math.Max(CInt(entry.Count), 1)
+            Dim weight = Math.Max(CInt(entry.LeveledListEntryCount), 1)
 
             Select Case entryRec.Header.Signature
                 Case "NPC_"
                     For i = 0 To weight - 1
-                        weightedLeaves.Add(entry.FormID)
+                        weightedLeaves.Add(entry.LeveledListEntryNPC)
                     Next
                 Case "LVLN"
                     ' Recurse into nested LVLN: pick from sub-list, weighted by this entry's Count
                     For i = 0 To weight - 1
-                        Dim subPick = PickWeightedRandomFromLVLN(entry.FormID, New HashSet(Of UInteger)(visited), recordMemo)
+                        Dim subPick = PickWeightedRandomFromLVLN(entry.LeveledListEntryNPC, New HashSet(Of UInteger)(visited), recordMemo)
                         If subPick <> 0UI Then weightedLeaves.Add(subPick)
                     Next
             End Select
@@ -599,12 +631,16 @@ Friend NotInheritable Class NpcStateResolver
             Dim filtered = weightedLeaves.Where(Function(fid)
                                                     Dim npc As NPC_Data = Nothing
                                                     If _ctx.NpcCache.TryGetValue(fid, npc) Then
-                                                        Return If(genderFilter = MainForm.GenderFilterMode.Female, npc.IsFemale, Not npc.IsFemale)
+                                                        Return If(genderFilter = MainForm.GenderFilterMode.Female, npc.Record.ConfigurationFlagsFemale, Not npc.Record.ConfigurationFlagsFemale)
                                                     End If
                                                     Dim npcRec = GetRecordMemoized(fid, recordMemo)
                                                     If npcRec Is Nothing OrElse npcRec.Header.Signature <> "NPC_" Then Return True
-                                                    Dim parsed = RecordParsers.ParseNPC(npcRec, "", _ctx.PluginManager)
-                                                    Return If(genderFilter = MainForm.GenderFilterMode.Female, parsed.IsFemale, Not parsed.IsFemale)
+                                                    ' Vista canónica en vez del parse completo: acá sólo hace falta el espejo de
+                                                    ' género de ACBS, no las otras ~70 subrecords que ParseNPC decodifica.
+                                                    Dim canonNpc = Canon.CanonRecords.Npc(npcRec, _ctx.PluginManager)
+                                                    If canonNpc Is Nothing Then Return True
+                                                    Dim esFemale = canonNpc.ConfigurationFlagsFemale
+                                                    Return If(genderFilter = MainForm.GenderFilterMode.Female, esFemale, Not esFemale)
                                                 End Function).ToList()
             If filtered.Count > 0 Then weightedLeaves = filtered
         End If

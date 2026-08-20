@@ -57,7 +57,7 @@ Public Class ArmoAddonEditor_Form
     End Sub
 
     ''' <summary>Game-gate the addon entry: under SKYRIM an ARMO's Armature is a plain RArray of MODL FormIDs —
-    ''' there is NO INDX (wbDefinitionsTES5.pas:4400), and <c>SaveNpcEspWriter.EmitArmoModels</c> never writes one.
+    ''' there is NO INDX, and <c>SaveNpcEspWriter.EmitArmoModels</c> never writes one.
     ''' So the Addon Index field is hidden, exactly like the Addons grid's INDX column
     ''' (<see cref="ArmoEditor_Form.ConfigureForGame"/>): a field the Skyrim serializer never reads must not be on
     ''' screen, or a value typed there reads as applied when it is silently dropped. The addon entry keeps carrying
@@ -114,7 +114,8 @@ Public Class ArmoAddonEditor_Form
     ''' <summary>ARMA picker — race-filtered (+ ARMA drafts), same contract as ArmoEditor's "Add ARMA".</summary>
     Private Sub OnPickArma(sender As Object, e As EventArgs)
         Dim drafts = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
-            .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMA"}).ToList()
+            .FormID = d.FormID, .EditorID = d.Record.EditorID,
+            .DisplayName = d.Record.EditorID, .Signature = "ARMA"}).ToList()
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMA"},
                                            "Select Armor Addon (ARMA)", _armaFormID, allowNull:=False,
                                            extraDraftEntries:=drafts,

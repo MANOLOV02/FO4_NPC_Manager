@@ -1,5 +1,5 @@
 ﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
-' Modal editor for a SINGLE NPC_FactionEntry (FACT FormID + s8 Rank) of an NPC's SNAM faction list —
+' Modal editor for the FACT FormID + s8 Rank of ONE SNAM faction entry of an NPC —
 ' mirror of ArmoDamageResistEditor_Form so the "Factions" grid stays pure read-only.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class NpcFactionEntryEditor_Form
@@ -7,7 +7,7 @@ Partial Class NpcFactionEntryEditor_Form
     ' e IconsLarge (24x24): los iconos viven UNA sola vez, en el resx de ese formulario base.
     ' El formulario base NO tiene controles y no fija Size/Text/Icon/AutoScale, asi que heredar de
     ' el no cambia el aspecto de nada. Ver el remarks de IconFormBase.vb.
-    ' ⛔ Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
+    ' Los iconos se eligen SIEMPRE por ImageKey, nunca por ImageIndex: el orden del ImageList
     ' compartido se corre solo con agregar un PNG a Resources\Icons.
     Inherits FO4_Base_Library.IconFormBase
 

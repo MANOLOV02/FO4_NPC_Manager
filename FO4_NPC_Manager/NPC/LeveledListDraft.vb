@@ -1,84 +1,88 @@
-''' <summary>A leveled item list (LVLI) being authored in the Edit Outfit editor — an in-memory draft
-''' that lives in MainForm (process scope) until persisted via the Save dialog, at which point the writer
-''' emits it as a real LVLI in the output plugin. Mirrors <see cref="OutfitDraft"/> but for the LVLI record
-''' type so an outfit can reference a user-built leveled slot (and LVLIs can nest other LVLIs).
+Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
+
+''' <summary>Una lista por nivel que se está armando y todavía no se guardó.
 '''
-''' Record layout it maps to (wbDefinitionsFO4.pas LVLI):
-'''   LVLD Chance None (u8) · LVLM Max Count (u8) · LVLF Flags (u8) · LLCT Count (u8) · N×LVLO entries.
-''' Each LVLO entry = Level(u16) + pad(u16) + Reference(u32) + Count(u16) + ChanceNone(u8) + pad(u8) = 12B
-''' (verified against RecordParsers.ParseLeveledEntry). The Reference is an ARMO or another LVLI.
+''' <para>El borrador NO copia el record: LO ES. <see cref="Record"/> es el árbol de campos, y
+''' editarlo es editar lo que se va a guardar. Antes esta clase repetía los campos del record y
+''' había que acordarse de volcarlos al abrir el editor y al guardar.</para>
 '''
-''' New drafts get a PROVISIONAL FormID (high byte 0xFF, shared sentinel scheme with <see cref="OutfitDraft"/>;
-''' allocated from MainForm's single draft-FormID counter so OTFT and LVLI drafts never collide). The writer
-''' rewrites it to (selfMasterIndex &lt;&lt; 24 | objectIndex) on save and remaps every reference to it.</summary>
+''' <para>Deja que un atuendo referencie una ranura por nivel armada por el usuario, y que una lista
+''' contenga otras listas. Lo único que agrega sobre el record son los datos de AUTORÍA.</para>
+'''
+''' <para>Un borrador nuevo arranca con un identificador provisional (byte alto 0xFF, el mismo
+''' esquema que <see cref="OutfitDraft"/>, y sale del mismo contador para que no choquen). Al
+''' guardar se le asigna el real y se reapuntan todas las referencias.</para></summary>
 Public Class LeveledListDraft
 
-    ''' <summary>Working EditorID prefix (type segment): <c>npcm_LVLI_&lt;name&gt;</c>. At save the destination
-    ''' plugin name is injected (NpcOverrideSaver.ApplyEspNamespaceToEditorId) → final
-    ''' <c>npcm_&lt;ESPNAME&gt;_LVLI_&lt;name&gt;</c>, identifiable + per-plugin namespaced in xEdit.</summary>
+    ''' <summary>Prefijo del identificador de editor. Al guardar se le inyecta el nombre del archivo
+    ''' destino, para que sea reconocible y no choque entre plugins.</summary>
     Public Const EditorIdPrefix As String = "npcm_LVLI_"
 
+    ''' <summary>El record que se está editando. Todo lo que el usuario cambia va acá.</summary>
+    Public Property Record As Canon.ILvli
+
+    ''' <summary>Nuevo: identificador provisional. Edición: el real del record original.</summary>
     Public Property FormID As UInteger
-    Public Property EditorID As String = ""
 
-    ''' <summary>LVLD — whole-list chance the list yields nothing (0-100). Default 0.</summary>
-    Public Property ChanceNone As Byte = 0
-    ''' <summary>LVLM — Max Count (0 = unlimited). Default 0.</summary>
-    Public Property MaxCount As Byte = 0
-
-    ''' <summary>LVLF 0x01 — Calculate from all levels &lt;= player's level.</summary>
-    Public Property CalcAllLevels As Boolean = False
-    ''' <summary>LVLF 0x02 — Calculate for each item in count.</summary>
-    Public Property CalcEachInCount As Boolean = False
-    ''' <summary>LVLF 0x04 — Use All (include every entry instead of rolling one).</summary>
-    Public Property UseAll As Boolean = False
-
-    ''' <summary>LVLO entries — each references an ARMO or another LVLI, with per-entry level/count/chance.</summary>
-    Public ReadOnly Property Entries As New List(Of LeveledEntry)
-
-    ''' <summary>True = OVERRIDE an existing LVLI (keep its EditorID + real GLOBAL FormID). False = brand-new LVLI.
-    ''' Mirrors <see cref="OutfitDraft.IsOverride"/>/<see cref="ArmoDraft.IsOverride"/>: an override draft's
-    ''' <see cref="FormID"/> is the load-order record's real FormID; the saver preserves it from the target plugin in
-    ''' Phase 2a and the Phase 2d draft REPLACES that preserved copy (edited entries win). A NEW draft carries a
-    ''' provisional 0xFF sentinel and the writer assigns the real self-index FormID at save.</summary>
+    ''' <summary>True = edita una lista existente y conserva su identificador real. False = una
+    ''' nueva, con identificador provisional hasta que se guarde.</summary>
     Public Property IsOverride As Boolean = False
 
+    ''' <summary>Todavía no se escribió nunca.</summary>
     Public Property IsNew As Boolean = True
+
+    ''' <summary>Ya se escribió antes y se volvió a editar.</summary>
     Public Property IsModified As Boolean = False
 
-    ''' <summary>Either flag set → "Save new outfits" must (re)write it. Both cleared after save.</summary>
+    ''' <summary>Cualquiera de las dos obliga a (re)escribirla al guardar.</summary>
     Public ReadOnly Property IsDirty As Boolean
         Get
             Return IsNew OrElse IsModified
         End Get
     End Property
 
-    ''' <summary>Pack the three LVLF flag bits into the on-disk byte.</summary>
-    Public Function FlagsByte() As Byte
-        Dim b As Integer = 0
-        If CalcAllLevels Then b = b Or &H1
-        If CalcEachInCount Then b = b Or &H2
-        If UseAll Then b = b Or &H4
-        Return CByte(b)
+    '==============================================================================================
+    ' Creación
+    '==============================================================================================
+
+    ''' <summary>Una lista nueva, vacía.</summary>
+    Public Shared Function Nuevo(formID As UInteger, game As Canon.WbGame) As LeveledListDraft
+        Return New LeveledListDraft With {.Record = Canon.CanonRecords.LvliNuevo(game),
+                                          .FormID = formID, .IsOverride = False, .IsNew = True}
     End Function
+
+    ''' <summary>Una edición de una lista que ya existe. Se trabaja sobre una COPIA: cancelar el
+    ''' editor tiene que dejar el original como estaba.</summary>
+    Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As LeveledListDraft
+        Dim abierto = Canon.CanonRecords.Lvli(rec, plugins)
+        If abierto Is Nothing Then Return Nothing
+        Return New LeveledListDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,
+                                          .IsOverride = True, .IsNew = False}
+    End Function
+
+    '==============================================================================================
+    ' Copiar y comparar
+    '==============================================================================================
 
     Public Function Clone() As LeveledListDraft
-        Dim c As New LeveledListDraft With {
-            .FormID = FormID, .EditorID = EditorID, .ChanceNone = ChanceNone, .MaxCount = MaxCount,
-            .CalcAllLevels = CalcAllLevels, .CalcEachInCount = CalcEachInCount, .UseAll = UseAll,
-            .IsOverride = IsOverride, .IsNew = IsNew, .IsModified = IsModified
+        Return New LeveledListDraft With {
+            .Record = If(Record Is Nothing, Nothing, Record.Copia()),
+            .FormID = FormID,
+            .IsOverride = IsOverride,
+            .IsNew = IsNew,
+            .IsModified = IsModified
         }
-        For Each e In Entries
-            c.Entries.Add(New LeveledEntry With {.RefFormID = e.RefFormID, .Level = e.Level, .Count = e.Count, .ChanceNone = e.ChanceNone})
-        Next
-        Return c
     End Function
 
-    ''' <summary>One LVLO entry: a reference (ARMO or LVLI) with its level / count / chance-none.</summary>
-    Public Class LeveledEntry
-        Public RefFormID As UInteger
-        Public Level As UShort = 1
-        Public Count As UShort = 1
-        Public ChanceNone As Byte = 0
-    End Class
+    ''' <summary>Mismo contenido que <paramref name="o"/>, sin mirar identidad ni estado.
+    ''' <para>Se compara por los bytes que produciría cada uno. Comparar campo por campo obliga a
+    ''' acordarse de todos, y el que se olvida es justo el que después aparece como "editado" sin que
+    ''' nadie lo haya tocado.</para></summary>
+    Public Function ContentEquals(o As LeveledListDraft) As Boolean
+        If o Is Nothing Then Return False
+        If Record Is Nothing OrElse o.Record Is Nothing Then Return Record Is o.Record
+        Return Record.MismoContenido(o.Record)
+    End Function
+
 End Class

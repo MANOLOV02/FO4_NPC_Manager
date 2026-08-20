@@ -3,6 +3,7 @@ Imports System.Globalization
 Imports System.IO
 Imports System.Linq
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Standalone editor to author a single Armor Addon (ARMA) record — its models, biped slots,
 ''' race/skin/material-swap and per-bone sculpt. ARMA-centric (the ARMO that equips it comes in a later
@@ -147,7 +148,7 @@ Public Class ArmaEditor_Form
 
         _previewDebounce = New Timer() With {.Interval = 400}
 
-        ' Top bar — explicit intent actions (xEdit model: New / New-from-template copy / Override / Edit draft).
+        ' Top bar — explicit intent actions: New / New-from-template copy / Override / Edit draft.
         AddHandler ButtonNewBlank.Click, AddressOf OnActionNewBlank
         AddHandler ButtonNewFromTemplate.Click, AddressOf OnActionNewFromTemplate
         AddHandler ButtonOverrideExisting.Click, AddressOf OnActionOverrideExisting
@@ -204,9 +205,10 @@ Public Class ArmaEditor_Form
             _editingExistingDraft = True   ' continuing to edit one of the user's registered drafts
             LoadDraftIntoPanels()
         Else
-            _draft = New ArmaDraft With {.FormID = _mainForm.AllocateDraftFormID(),
-                                         .EditorID = ArmaDraft.EditorIdPrefix & "new",
-                                         .RaceFormID = _raceFormID, .IsNew = True}
+            _draft = ArmaDraft.Nuevo(_mainForm.AllocateDraftFormID(),
+                                     Canon.CanonBridge.SessionGame())
+            _draft.Record.EditorID = ArmaDraft.EditorIdPrefix & "new"
+            _draft.Record.Race = _raceFormID
             LoadDraftIntoPanels()
             ' Optional pre-load of a real ARMA template — defaults to OVERRIDE (edit the existing ARMA; your
             ' plugin replaces it), the usual intent when editing an existing addon. Use the in-editor
@@ -238,8 +240,7 @@ Public Class ArmaEditor_Form
     '''   • Sculpt tab (BSMP/BSMB/BSMS bone-scale) — FO4-only.
     '''   • Flags tab (No-Underarmor-Scaling, Has-Sculpt-Data) — FO4-only ARMA header flags. Skyrim's ARMA has no
     '''     named header flags, so its source flags are preserved verbatim.
-    '''   • The whole MO2F/MO3F model-flags rows — those subrecords do not exist in Skyrim's ARMA
-    '''     (wbDefinitionsTES5.pas:4409-4446).
+    '''   • The MO2F/MO3F model-flags rows — those subrecords do not exist in Skyrim's ARMA.
     '''   • The MO2S/MO3S/MO4S/MO5S material-swap pickers — in Skyrim those subrecords are Alternate-Textures
     '''     arrays, not an MSWP FormID (Skyrim has no MSWP record at all). They round-trip verbatim and are
     '''     never authored here.
@@ -276,7 +277,7 @@ Public Class ArmaEditor_Form
         "LArm_ForeArm1_skin", "RArm_ForeArm1_skin", "ShoulderFat_skin"}
 
     ' =====================================================================
-    ' Explicit intent actions (xEdit model) + status banner
+    ' Explicit intent actions + status banner
     ' =====================================================================
 
     ''' <summary>The real ARMA FormID/EditorID an Override / New-from-template copy descends from — the SOURCE
@@ -290,12 +291,12 @@ Public Class ArmaEditor_Form
     Private _editingExistingDraft As Boolean = False
 
     ''' <summary>"New (blank)" → a fresh empty New-record draft (new draft FormID, npcm_ prefix, IsNew=True,
-    ''' IsOverride=False), seeded with the preview race. xEdit's "new record" from scratch.</summary>
+    ''' IsOverride=False), seeded with the preview race. A brand-new record built from scratch.</summary>
     Private Sub OnActionNewBlank(sender As Object, e As EventArgs)
         RevertOrDiscardCurrentDraft()
-        _draft = New ArmaDraft With {.FormID = _mainForm.AllocateDraftFormID(),
-                                     .EditorID = ArmaDraft.EditorIdPrefix & "new",
-                                     .RaceFormID = _raceFormID, .IsNew = True}
+        _draft = ArmaDraft.Nuevo(_mainForm.AllocateDraftFormID(), Canon.CanonBridge.SessionGame())
+        _draft.Record.EditorID = ArmaDraft.EditorIdPrefix & "new"
+        _draft.Record.Race = _raceFormID
         _templateRealFormID = 0UI
         _templateRealEditorID = ""
         _editingExistingDraft = False
@@ -306,7 +307,7 @@ Public Class ArmaEditor_Form
     End Sub
 
     ''' <summary>"New from template…" → pick a REAL ARMA and COPY it into a NEW record (fresh draft FormID,
-    ''' IsOverride=False) — xEdit "copy as new record into". Race-filtered like the old Template picker.</summary>
+    ''' IsOverride=False). Race-filtered like the old Template picker.</summary>
     Private Sub OnActionNewFromTemplate(sender As Object, e As EventArgs)
         Dim fid = PickRealArma("Copy ARMA into a NEW record")
         If fid = 0UI Then Return
@@ -318,7 +319,7 @@ Public Class ArmaEditor_Form
     End Sub
 
     ''' <summary>"Override existing…" → pick a REAL ARMA and edit it as an OVERRIDE (keep its global FormID +
-    ''' EditorID, IsOverride=True) — xEdit "copy as override into"; your plugin replaces that record on Save.</summary>
+    ''' EditorID, IsOverride=True); your plugin replaces that record on Save.</summary>
     Private Sub OnActionOverrideExisting(sender As Object, e As EventArgs)
         Dim fid = PickRealArma("Override an existing ARMA")
         If fid = 0UI Then Return
@@ -334,7 +335,8 @@ Public Class ArmaEditor_Form
     Private Sub OnActionEditDraft(sender As Object, e As EventArgs)
         ' List the user's unsaved ARMA drafts AND their already-SAVED authored ARMA records (EDID npcm_).
         Dim entries = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
-            .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMA"}).ToList()
+            .FormID = d.FormID, .EditorID = d.Record.EditorID,
+            .DisplayName = d.Record.EditorID, .Signature = "ARMA"}).ToList()
         Dim draftFids As New HashSet(Of UInteger)(entries.Select(Function(x) x.FormID))
         For Each r In _mainForm.GetAuthoredRecords("ARMA")
             If draftFids.Contains(r.FormID) Then Continue For
@@ -384,7 +386,8 @@ Public Class ArmaEditor_Form
             If Not d.IsNew Then
                 ' OVERRIDE draft → REVERT (discard my edits; the original record wins). Allowed even when it's the
                 ' one currently open — we reload the pristine original so the editor stays in a valid state.
-                If MessageBox.Show(Me, $"Revert '{d.EditorID}' to the original record? Your edits to this draft will be discarded.",
+                If MessageBox.Show(Me, $"Revert '{d.Record.EditorID}' to the original record? " &
+                                   "Your edits to this draft will be discarded.",
                                    "Revert to original", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return False
                 _mainForm.UnregisterArmaDraft(fid)
                 ' Dropping the in-memory draft is NOT enough: if this override was ALREADY SAVED into the plugin, the
@@ -409,7 +412,7 @@ Public Class ArmaEditor_Form
                                 "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return False
             End If
-            If MessageBox.Show(Me, $"Delete draft '{d.EditorID}'? This cannot be undone.",
+            If MessageBox.Show(Me, $"Delete draft '{d.Record.EditorID}'? This cannot be undone.",
                                "Delete draft", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
             _mainForm.UnregisterArmaDraft(fid)
             Return True
@@ -461,7 +464,7 @@ Public Class ArmaEditor_Form
         If copy Is Nothing Then Return False
         _draft = copy
         _templateRealFormID = fid
-        _templateRealEditorID = copy.EditorID
+        _templateRealEditorID = copy.Record.EditorID
         _editingExistingDraft = False
         LoadDraftIntoPanels()
         SnapshotCurrentDraft()
@@ -478,7 +481,7 @@ Public Class ArmaEditor_Form
         ' The name box holds only the <name> for a NEW draft (the prefix is fixed) — show the composed base
         ' EDID in the banner so it reads as the actual record identity, not just the bare name.
         Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
-        If edid.Length = 0 Then edid = If(_draft.EditorID, "")
+        If edid.Length = 0 Then edid = If(_draft.Record.EditorID, "")
         If _editingExistingDraft Then
             LabelStatusBanner.Text = $"Editing draft — {edid} ({If(_draft.IsOverride, "override", "new")})"
         ElseIf _draft.IsOverride Then
@@ -508,9 +511,11 @@ Public Class ArmaEditor_Form
     Private Sub RefreshEditorIdField()
         If _draft Is Nothing Then Return
         If _draft.IsNew Then
-            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, _draft.EditorID)
+            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview,
+                                       _edidPrefix, _draft.Record.EditorID)
         Else
-            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview, _draft.EditorID)
+            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview,
+                                            _draft.Record.EditorID)
         End If
     End Sub
 
@@ -531,51 +536,121 @@ Public Class ArmaEditor_Form
     Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean) As ArmaDraft
         Dim a = _mainForm.GetParsedArmaForEditor(fid)
         If a Is Nothing Then Return Nothing
-        Dim d As New ArmaDraft With {
-            .FormID = If(asOverride, fid, _mainForm.AllocateDraftFormID()),
-            .EditorID = If(Not String.IsNullOrEmpty(a.EditorID), a.EditorID, ArmaDraft.EditorIdPrefix & fid.ToString("X8")),
-            .SlotMask = a.SlotMask,
-            .RaceFormID = a.RaceFormID,
-            .FootstepSetFormID = a.FootstepSetFormID,
-            .MalePriority = ClampByte(a.MalePriority),
-            .FemalePriority = ClampByte(a.FemalePriority),
-            .MaleWeightSliderFlags = a.MaleWeightSliderFlags,
-            .FemaleWeightSliderFlags = a.FemaleWeightSliderFlags,
-            .DetectionSoundValue = a.DetectionSoundValue,
-            .WeaponAdjust = a.WeaponAdjust,
-            .MaleMeshPath = a.MaleMeshPath,
-            .FemaleMeshPath = a.FemaleMeshPath,
-            .MaleFPMeshPath = a.MaleFPMeshPath,
-            .FemaleFPMeshPath = a.FemaleFPMeshPath,
-            .MaleModelFlags = a.MaleModelFlags,
-            .FemaleModelFlags = a.FemaleModelFlags,
-            .MaleFPModelFlags = a.MaleFPModelFlags,
-            .FemaleFPModelFlags = a.FemaleFPModelFlags,
-            .MaleColorRemapIndex = a.MaleColorRemapIndex,
-            .FemaleColorRemapIndex = a.FemaleColorRemapIndex,
-            .MaleSkinTextureFormID = a.MaleSkinTextureFormID,
-            .FemaleSkinTextureFormID = a.FemaleSkinTextureFormID,
-            .MaleSkinTextureSwapListFormID = a.MaleSkinTextureSwapListFormID,
-            .FemaleSkinTextureSwapListFormID = a.FemaleSkinTextureSwapListFormID,
-            .MaleMaterialSwapFormID = a.MaleMaterialSwapFormID,
-            .FemaleMaterialSwapFormID = a.FemaleMaterialSwapFormID,
-            .MaleFPMaterialSwapFormID = a.MaleFPMaterialSwapFormID,
-            .FemaleFPMaterialSwapFormID = a.FemaleFPMaterialSwapFormID,
-            .ArtObjectFormID = a.ArtObjectFormID,
-            .NoUnderarmorScaling = a.NoUnderarmorScaling,
-            .HasSculptData = a.HasSculptData,
-            .HiRes1stPersonOnly = a.HiRes1stPersonOnly,
-            .IsOverride = asOverride, .IsNew = Not asOverride, .IsModified = False
-        }
-        d.AdditionalRaces.AddRange(a.AdditionalRaces)
-        For Each g In a.BoneScaleData
-            Dim cg As New ARMA_BoneScaleGender With {.Gender = g.Gender}
-            For Each b In g.Bones
-                cg.Bones.Add(New ARMA_BoneScaleDelta With {.BoneName = b.BoneName, .DeltaX = b.DeltaX, .DeltaY = b.DeltaY, .DeltaZ = b.DeltaZ})
-            Next
-            d.BoneScaleData.Add(cg)
+        Dim d = ArmaDraft.Nuevo(If(asOverride, fid, _mainForm.AllocateDraftFormID()),
+                               Canon.CanonBridge.SessionGame())
+        Dim rec = d.Record
+        rec.EditorID = If(Not String.IsNullOrEmpty(a.EditorID), a.EditorID,
+                          ArmaDraft.EditorIdPrefix & fid.ToString("X8"))
+        rec.BipedBodyTemplateFirstPersonFlags = a.SlotMaskDe()
+        rec.Race = a.Race
+        rec.FootstepSound = a.FootstepSound
+        rec.DataMalePriority = ClampByte(a.DataMalePriority)
+        rec.DataFemalePriority = ClampByte(a.DataFemalePriority)
+        rec.DataWeightSliderMale = a.DataWeightSliderMale
+        rec.DataWeightSliderFemale = a.DataWeightSliderFemale
+        rec.DataDetectionSoundValue = a.DataDetectionSoundValue
+        rec.DataWeaponAdjust = a.DataWeaponAdjust
+        rec.MaleModelFilename = a.MaleModelFilename
+        rec.FemaleModelFilename = a.FemaleModelFilename
+        rec.MaleModelFilename2 = a.MaleModelFilename2
+        rec.FemaleModelFilename2 = a.FemaleModelFilename2
+        rec.MaleSkinTexture = a.MaleSkinTexture
+        rec.FemaleSkinTexture = a.FemaleSkinTexture
+        rec.MaleSkinTextureSwapList = a.MaleSkinTextureSwapList
+        rec.FemaleSkinTextureSwapList = a.FemaleSkinTextureSwapList
+        rec.ArtObject = a.ArtObject
+        ' MO2F/MO3F, MO2C/MO3C, MO2S..MO5S y el sculpt sólo existen en el ARMA de Fallout 4 — en
+        ' Skyrim esos subrecords no están en el formato, así que no hay adónde escribirlos.
+        Dim aFo4 = TryCast(a, Canon.ArmaFO4)
+        Dim fo4 = TryCast(rec, Canon.ArmaFO4)
+        If aFo4 IsNot Nothing AndAlso fo4 IsNot Nothing Then
+            fo4.MaleFlags = aFo4.MaleFlags
+            fo4.FemaleFlags = aFo4.FemaleFlags
+            fo4.MaleFlags2 = aFo4.MaleFlags2
+            fo4.FemaleFlags2 = aFo4.FemaleFlags2
+            If aFo4.MaleColorRemappingIndexPresente Then
+                fo4.MaleColorRemappingIndex = aFo4.MaleColorRemappingIndex
+            End If
+            If aFo4.FemaleColorRemappingIndexPresente Then
+                fo4.FemaleColorRemappingIndex = aFo4.FemaleColorRemappingIndex
+            End If
+            fo4.MaleMaterialSwap = aFo4.MaleMaterialSwap
+            fo4.FemaleMaterialSwap = aFo4.FemaleMaterialSwap
+            fo4.MaleMaterialSwap2 = aFo4.MaleMaterialSwap2
+            fo4.FemaleMaterialSwap2 = aFo4.FemaleMaterialSwap2
+            WriteBoneScaleDataIntoRecord(fo4, ReadAllBoneScaleFromRecord(aFo4))
+            ' La cabecera no sale del árbol de campos, pero viaja en el contexto del record, así
+            ' que un override sí puede heredar estas tres banderas de la fuente.
+            fo4.NoUnderarmorScaling = aFo4.NoUnderarmorScaling
+            fo4.HasSculptData = aFo4.HasSculptData
+            fo4.HiRes1stPersonOnly = aFo4.HiRes1stPersonOnly
+        End If
+        d.IsOverride = asOverride
+        d.IsNew = Not asOverride
+        d.IsModified = False
+        For Each r In a.AdditionalRaces
+            Dim e = rec.AgregarAdditionalRaces()
+            If e IsNot Nothing Then e.Race = r.Race
         Next
         Return d
+    End Function
+
+    ''' <summary>Vuelca el sculpt (BSMP/BSMB/BSMS) del parser viejo al Sculpt Data del record nuevo.
+    ''' FO4-only: llamar sólo con un <see cref="Canon.ArmaFO4"/> ya confirmado.</summary>
+    Friend Shared Sub WriteBoneScaleDataIntoRecord(fo4 As Canon.ArmaFO4,
+                                                   source As List(Of ARMA_BoneScaleGender))
+        If source Is Nothing Then Return
+        For Each g In source
+            If g.Bones Is Nothing OrElse g.Bones.Count = 0 Then Continue For
+            Dim sculpt = fo4.AgregarSculptData()
+            If sculpt Is Nothing Then Continue For
+            sculpt.BoneScaleModifierSetTargetGender = g.Gender
+            For Each b In g.Bones
+                Dim bone = sculpt.AgregarBoneScaleModifiers()
+                If bone Is Nothing Then Continue For
+                bone.BoneScaleModifierBoneName = b.BoneName
+                bone.BoneScaleDeltaX = b.DeltaX
+                bone.BoneScaleDeltaY = b.DeltaY
+                bone.BoneScaleDeltaZ = b.DeltaZ
+            Next
+        Next
+    End Sub
+
+    ''' <summary>Lee el Sculpt Data de un gender puntual de vuelta al formato viejo (BSMP/BSMB/BSMS)
+    ''' que consume <see cref="SclpFile"/>. FO4-only; Nothing en Skyrim o sin bloque
+    ''' para ese gender.</summary>
+    Friend Shared Function ReadBoneScaleGenderFromRecord(fo4 As Canon.ArmaFO4,
+                                                         gender As UInteger) As ARMA_BoneScaleGender
+        If fo4 Is Nothing Then Return Nothing
+        For Each sculpt In fo4.SculptData
+            If sculpt.BoneScaleModifierSetTargetGender <> gender Then Continue For
+            Dim block As New ARMA_BoneScaleGender With {.Gender = gender}
+            For Each b In sculpt.BoneScaleModifiers
+                block.Bones.Add(New ARMA_BoneScaleDelta With {
+                    .BoneName = b.BoneScaleModifierBoneName, .DeltaX = b.BoneScaleDeltaX,
+                    .DeltaY = b.BoneScaleDeltaY, .DeltaZ = b.BoneScaleDeltaZ})
+            Next
+            Return block
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Lee TODO el Sculpt Data de vuelta al formato viejo, un bloque por gender presente en el
+    ''' record (sin asumir sólo 0/1: un mod puede declarar cualquier valor). FO4-only; lista vacía en
+    ''' Skyrim o sin sculpt. Inverso de <see cref="WriteBoneScaleDataIntoRecord"/>.</summary>
+    Friend Shared Function ReadAllBoneScaleFromRecord(fo4 As Canon.ArmaFO4) As List(Of ARMA_BoneScaleGender)
+        Dim result As New List(Of ARMA_BoneScaleGender)
+        If fo4 Is Nothing Then Return result
+        For Each sculpt In fo4.SculptData
+            Dim block As New ARMA_BoneScaleGender With {.Gender = sculpt.BoneScaleModifierSetTargetGender}
+            For Each b In sculpt.BoneScaleModifiers
+                block.Bones.Add(New ARMA_BoneScaleDelta With {
+                    .BoneName = b.BoneScaleModifierBoneName, .DeltaX = b.BoneScaleDeltaX,
+                    .DeltaY = b.BoneScaleDeltaY, .DeltaZ = b.BoneScaleDeltaZ})
+            Next
+            result.Add(block)
+        Next
+        Return result
     End Function
 
     Private Shared Function ClampByte(v As Integer) As Byte
@@ -592,38 +667,44 @@ Public Class ArmaEditor_Form
         _loading = True
         Try
             RefreshEditorIdField()
+            Dim rec = _draft.Record
+            Dim fo4 = TryCast(rec, Canon.ArmaFO4)
 
             ' Models.
-            TextBoxMod2.Text = _draft.MaleMeshPath
-            TextBoxMod3.Text = _draft.FemaleMeshPath
-            TextBoxMod4.Text = _draft.MaleFPMeshPath
-            TextBoxMod5.Text = _draft.FemaleFPMeshPath
-            CheckMo2fFaceBones.Checked = (_draft.MaleModelFlags And &H1) <> 0
-            CheckMo2f1stPerson.Checked = (_draft.MaleModelFlags And &H2) <> 0
-            CheckMo3fFaceBones.Checked = (_draft.FemaleModelFlags And &H1) <> 0
-            CheckMo3f1stPerson.Checked = (_draft.FemaleModelFlags And &H2) <> 0
+            TextBoxMod2.Text = rec.MaleModelFilename
+            TextBoxMod3.Text = rec.FemaleModelFilename
+            TextBoxMod4.Text = rec.MaleModelFilename2
+            TextBoxMod5.Text = rec.FemaleModelFilename2
+            ' MO2F/MO3F (model flags) sólo existen en Fallout 4.
+            Dim maleFlags = If(fo4 IsNot Nothing, fo4.MaleFlags, CByte(0))
+            Dim femaleFlags = If(fo4 IsNot Nothing, fo4.FemaleFlags, CByte(0))
+            CheckMo2fFaceBones.Checked = (maleFlags And &H1) <> 0
+            CheckMo2f1stPerson.Checked = (maleFlags And &H2) <> 0
+            CheckMo3fFaceBones.Checked = (femaleFlags And &H1) <> 0
+            CheckMo3f1stPerson.Checked = (femaleFlags And &H2) <> 0
 
             ' Slots.
-            SetSlotChecks(_draft.SlotMask)
+            SetSlotChecks(rec.BipedBodyTemplateFirstPersonFlags)
 
             ' Skin & material.
-            SetFidText(TextBoxRace, _draft.RaceFormID)
-            SetFidText(TextBoxSndd, _draft.FootstepSetFormID)
-            SetFidText(TextBoxNam0, _draft.MaleSkinTextureFormID)
-            SetFidText(TextBoxNam1, _draft.FemaleSkinTextureFormID)
-            SetFidText(TextBoxNam2, _draft.MaleSkinTextureSwapListFormID)
-            SetFidText(TextBoxNam3, _draft.FemaleSkinTextureSwapListFormID)
-            SetFidText(TextBoxMo2s, _draft.MaleMaterialSwapFormID)
-            SetFidText(TextBoxMo3s, _draft.FemaleMaterialSwapFormID)
-            SetFidText(TextBoxMo4s, _draft.MaleFPMaterialSwapFormID)
-            SetFidText(TextBoxMo5s, _draft.FemaleFPMaterialSwapFormID)
-            SetFidText(TextBoxOnam, _draft.ArtObjectFormID)
-            NumMalePrio.Value = ClampDec(CDec(_draft.MalePriority), NumMalePrio)
-            NumFemalePrio.Value = ClampDec(CDec(_draft.FemalePriority), NumFemalePrio)
-            NumDetectionSound.Value = ClampDec(CDec(_draft.DetectionSoundValue), NumDetectionSound)
-            NumWeaponAdjust.Value = ClampDec(CDec(_draft.WeaponAdjust), NumWeaponAdjust)
-            CheckMaleWeight.Checked = (_draft.MaleWeightSliderFlags And &H2) <> 0
-            CheckFemaleWeight.Checked = (_draft.FemaleWeightSliderFlags And &H2) <> 0
+            SetFidText(TextBoxRace, rec.Race)
+            SetFidText(TextBoxSndd, rec.FootstepSound)
+            SetFidText(TextBoxNam0, rec.MaleSkinTexture)
+            SetFidText(TextBoxNam1, rec.FemaleSkinTexture)
+            SetFidText(TextBoxNam2, rec.MaleSkinTextureSwapList)
+            SetFidText(TextBoxNam3, rec.FemaleSkinTextureSwapList)
+            ' MO2S..MO5S (swap de material) sólo existen en Fallout 4 — Skyrim no tiene MSWP.
+            SetFidText(TextBoxMo2s, If(fo4 IsNot Nothing, fo4.MaleMaterialSwap, 0UI))
+            SetFidText(TextBoxMo3s, If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap, 0UI))
+            SetFidText(TextBoxMo4s, If(fo4 IsNot Nothing, fo4.MaleMaterialSwap2, 0UI))
+            SetFidText(TextBoxMo5s, If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap2, 0UI))
+            SetFidText(TextBoxOnam, rec.ArtObject)
+            NumMalePrio.Value = ClampDec(CDec(rec.DataMalePriority), NumMalePrio)
+            NumFemalePrio.Value = ClampDec(CDec(rec.DataFemalePriority), NumFemalePrio)
+            NumDetectionSound.Value = ClampDec(CDec(rec.DataDetectionSoundValue), NumDetectionSound)
+            NumWeaponAdjust.Value = ClampDec(CDec(rec.DataWeaponAdjust), NumWeaponAdjust)
+            CheckMaleWeight.Checked = (rec.DataWeightSliderMale And &H2) <> 0
+            CheckFemaleWeight.Checked = (rec.DataWeightSliderFemale And &H2) <> 0
             RefreshAddRacesList()
 
             ' Sculpt: expand BSMS deltas → absolute per-gender working sets.
@@ -632,18 +713,20 @@ Public Class ArmaEditor_Form
             _sculptShownGender = If(RadioSculptFemale.Checked, 1UI, 0UI)
             LoadSculptGrid(_sculptShownGender)
 
-            ' Flags.
-            CheckNoUnderarmorScaling.Checked = _draft.NoUnderarmorScaling
-            CheckHasSculptData.Checked = _draft.HasSculptData
+            ' Flags. FO4-only, ver CommitPanelsToDraft para la escritura.
+            CheckNoUnderarmorScaling.Checked = (fo4 IsNot Nothing AndAlso fo4.NoUnderarmorScaling)
+            CheckHasSculptData.Checked = (fo4 IsNot Nothing AndAlso fo4.HasSculptData)
         Finally
             _loading = False
         End Try
         UpdatePreviewScopeGating()
     End Sub
 
-    ''' <summary>Absolute sculpt rows for a gender, from the draft's BSMS delta block (delta + 1.0).</summary>
+    ''' <summary>Absolute sculpt rows for a gender, from the draft's BSMS delta block (delta + 1.0).
+    ''' FO4-only.</summary>
     Private Function AbsRowsForGender(gender As UInteger) As List(Of SclpFile.SclpBoneAbsolute)
-        Dim block = _draft.BoneScaleData.FirstOrDefault(Function(g) g.Gender = gender)
+        Dim fo4 = TryCast(_draft.Record, Canon.ArmaFO4)
+        Dim block = ReadBoneScaleGenderFromRecord(fo4, gender)
         If block Is Nothing Then Return New List(Of SclpFile.SclpBoneAbsolute)
         Return SclpFile.FromGenderBlock(block)
     End Function
@@ -712,63 +795,85 @@ Public Class ArmaEditor_Form
             End If
             ' For New: the EditorID must be free (unless unchanged on this draft). For Override the original
             ' EDID is kept; a changed one is allowed but warned.
+            Dim currentEdid = _draft.Record.EditorID
             If _draft.IsOverride Then
                 If Not String.Equals(edid, _templateRealEditorID, StringComparison.OrdinalIgnoreCase) _
-                   AndAlso Not String.Equals(edid, _draft.EditorID, StringComparison.OrdinalIgnoreCase) Then
+                   AndAlso Not String.Equals(edid, currentEdid,
+                                             StringComparison.OrdinalIgnoreCase) Then
                     If MessageBox.Show(Me, "Changing the EditorID of an override record is unusual. Keep this change?",
                                        "Apply", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
                         Return False
                     End If
                 End If
-            ElseIf Not String.Equals(edid, _draft.EditorID, StringComparison.OrdinalIgnoreCase) _
+            ElseIf Not String.Equals(edid, currentEdid, StringComparison.OrdinalIgnoreCase) _
                    AndAlso Not _mainForm.IsRecordEditorIdAvailable(edid) Then
                 MessageBox.Show(Me, $"EditorID '{edid}' is already in use. Choose another.", "Apply",
                                 MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return False
             End If
         End If
-        _draft.EditorID = edid
+        Dim rec = _draft.Record
+        rec.EditorID = edid
+        Dim fo4 = TryCast(rec, Canon.ArmaFO4)
 
         ' Models.
-        _draft.MaleMeshPath = TextBoxMod2.Text.Trim()
-        _draft.FemaleMeshPath = TextBoxMod3.Text.Trim()
-        _draft.MaleFPMeshPath = TextBoxMod4.Text.Trim()
-        _draft.FemaleFPMeshPath = TextBoxMod5.Text.Trim()
-        _draft.MaleModelFlags = BuildModelFlags(CheckMo2fFaceBones.Checked, CheckMo2f1stPerson.Checked)
-        _draft.FemaleModelFlags = BuildModelFlags(CheckMo3fFaceBones.Checked, CheckMo3f1stPerson.Checked)
+        rec.MaleModelFilename = TextBoxMod2.Text.Trim()
+        rec.FemaleModelFilename = TextBoxMod3.Text.Trim()
+        rec.MaleModelFilename2 = TextBoxMod4.Text.Trim()
+        rec.FemaleModelFilename2 = TextBoxMod5.Text.Trim()
+        ' MO2F/MO3F, MO2S..MO5S y el sculpt sólo existen en Fallout 4 — en Skyrim esos controles
+        ' están ocultos (ConfigureForGame) y no hay adónde escribirlos.
+        If fo4 IsNot Nothing Then
+            fo4.MaleFlags = BuildModelFlags(CheckMo2fFaceBones.Checked, CheckMo2f1stPerson.Checked)
+            fo4.FemaleFlags = BuildModelFlags(CheckMo3fFaceBones.Checked,
+                                              CheckMo3f1stPerson.Checked)
+        End If
 
         ' Slots.
-        _draft.SlotMask = ReadSlotChecks()
+        rec.BipedBodyTemplateFirstPersonFlags = ReadSlotChecks()
 
         ' Skin & material.
-        _draft.RaceFormID = GetFid(TextBoxRace)
-        _draft.FootstepSetFormID = GetFid(TextBoxSndd)
-        _draft.MaleSkinTextureFormID = GetFid(TextBoxNam0)
-        _draft.FemaleSkinTextureFormID = GetFid(TextBoxNam1)
-        _draft.MaleSkinTextureSwapListFormID = GetFid(TextBoxNam2)
-        _draft.FemaleSkinTextureSwapListFormID = GetFid(TextBoxNam3)
-        _draft.MaleMaterialSwapFormID = GetFid(TextBoxMo2s)
-        _draft.FemaleMaterialSwapFormID = GetFid(TextBoxMo3s)
-        _draft.MaleFPMaterialSwapFormID = GetFid(TextBoxMo4s)
-        _draft.FemaleFPMaterialSwapFormID = GetFid(TextBoxMo5s)
-        _draft.ArtObjectFormID = GetFid(TextBoxOnam)
-        _draft.MalePriority = CByte(NumMalePrio.Value)
-        _draft.FemalePriority = CByte(NumFemalePrio.Value)
-        _draft.DetectionSoundValue = CByte(NumDetectionSound.Value)
-        _draft.WeaponAdjust = CSng(NumWeaponAdjust.Value)
-        _draft.MaleWeightSliderFlags = If(CheckMaleWeight.Checked, CByte(&H2), CByte(0))
-        _draft.FemaleWeightSliderFlags = If(CheckFemaleWeight.Checked, CByte(&H2), CByte(0))
+        rec.Race = GetFid(TextBoxRace)
+        rec.FootstepSound = GetFid(TextBoxSndd)
+        rec.MaleSkinTexture = GetFid(TextBoxNam0)
+        rec.FemaleSkinTexture = GetFid(TextBoxNam1)
+        rec.MaleSkinTextureSwapList = GetFid(TextBoxNam2)
+        rec.FemaleSkinTextureSwapList = GetFid(TextBoxNam3)
+        If fo4 IsNot Nothing Then
+            fo4.MaleMaterialSwap = GetFid(TextBoxMo2s)
+            fo4.FemaleMaterialSwap = GetFid(TextBoxMo3s)
+            fo4.MaleMaterialSwap2 = GetFid(TextBoxMo4s)
+            fo4.FemaleMaterialSwap2 = GetFid(TextBoxMo5s)
+        End If
+        rec.ArtObject = GetFid(TextBoxOnam)
+        rec.DataMalePriority = CByte(NumMalePrio.Value)
+        rec.DataFemalePriority = CByte(NumFemalePrio.Value)
+        rec.DataDetectionSoundValue = CByte(NumDetectionSound.Value)
+        rec.DataWeaponAdjust = CSng(NumWeaponAdjust.Value)
+        rec.DataWeightSliderMale = If(CheckMaleWeight.Checked, CByte(&H2), CByte(0))
+        rec.DataWeightSliderFemale = If(CheckFemaleWeight.Checked, CByte(&H2), CByte(0))
 
-        ' Sculpt: rebuild BoneScaleData from both gender working sets (skips identity rows).
-        _draft.BoneScaleData.Clear()
-        For Each gender As UInteger In {0UI, 1UI}
-            Dim block = SclpFile.ToGenderBlock(_sculptByGender(gender), gender)
-            If block.Bones.Count > 0 Then _draft.BoneScaleData.Add(block)
-        Next
+        ' Sculpt: rebuild Sculpt Data from both gender working sets (skips identity rows). FO4-only.
+        If fo4 IsNot Nothing Then
+            While fo4.SculptData.Count > 0
+                If Not fo4.QuitarSculptData(0) Then Exit While
+            End While
+            For Each gender As UInteger In {0UI, 1UI}
+                Dim block = SclpFile.ToGenderBlock(_sculptByGender(gender), gender)
+                If block.Bones.Count > 0 Then
+                    Dim oneBlock As New List(Of ARMA_BoneScaleGender) From {block}
+                    WriteBoneScaleDataIntoRecord(fo4, oneBlock)
+                End If
+            Next
+        End If
 
-        ' Flags. HasSculptData auto-set when there's bone data, otherwise honor the checkbox.
-        _draft.NoUnderarmorScaling = CheckNoUnderarmorScaling.Checked
-        _draft.HasSculptData = CheckHasSculptData.Checked OrElse _draft.BoneScaleData.Count > 0
+        ' Flags. La cabecera no sale del árbol de campos, pero viaja en el contexto del record —de
+        ' ahí la toma el grabado— así que escribirla acá sí es editar lo que se va a guardar.
+        ' HasSculptData se auto-prende cuando hay huesos de sculpt, si no honra el checkbox.
+        If fo4 IsNot Nothing Then
+            fo4.NoUnderarmorScaling = CheckNoUnderarmorScaling.Checked
+            fo4.HasSculptData = CheckHasSculptData.Checked OrElse fo4.SculptData.Count > 0
+        End If
 
         ' Dirty only on a REAL change. The preview commits the panels on every render, so setting IsModified
         ' unconditionally marked an untouched OVERRIDE dirty → the saver re-emitted an identical override. Compare
@@ -827,7 +932,7 @@ Public Class ArmaEditor_Form
         PickFidInto(target, {"MSWP"}, "Select material swap (MSWP)", allowNull:=True, includeMswpDrafts:=True)
     End Sub
 
-    ''' <summary>Open a FormIdPicker over <paramref name="sigs"/> (the xEdit wbFormIDCk allowed signatures for
+    ''' <summary>Open a FormIdPicker over <paramref name="sigs"/> (the allowed record signatures for
     ''' the field) seeded with the textbox's current FormID, and write the chosen FormID (or 0/NULL) back as a
     ''' "Name [0xFORMID]" display. MSWP fields additionally pass the in-memory MSWP drafts so an unsaved swap is
     ''' selectable.</summary>
@@ -847,12 +952,19 @@ Public Class ArmaEditor_Form
         End Using
     End Sub
 
+    ''' <summary>Los FormID de Additional Races, en orden — la lista generada es de vistas
+    ''' (una por MODL), no de UInteger sueltos.</summary>
+    Private Function AdditionalRaceFids() As List(Of UInteger)
+        Return _draft.Record.AdditionalRaces.Select(Function(x) x.Race).ToList()
+    End Function
+
     Private Sub OnAddRace(sender As Object, e As EventArgs)
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"RACE"},
                                            "Add additional race (MODL)", 0UI, allowNull:=False)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
-            If Not _draft.AdditionalRaces.Contains(dlg.SelectedFormID) Then
-                _draft.AdditionalRaces.Add(dlg.SelectedFormID)
+            If Not AdditionalRaceFids().Contains(dlg.SelectedFormID) Then
+                Dim e2 = _draft.Record.AgregarAdditionalRaces()
+                If e2 IsNot Nothing Then e2.Race = dlg.SelectedFormID
                 RefreshAddRacesList()
             End If
         End Using
@@ -861,7 +973,13 @@ Public Class ArmaEditor_Form
     Private Sub OnRemoveRace(sender As Object, e As EventArgs)
         If ListAddRaces.SelectedItems.Count = 0 Then Return
         Dim fid = CUInt(ListAddRaces.SelectedItems(0).Tag)
-        _draft.AdditionalRaces.Remove(fid)
+        Dim races = _draft.Record.AdditionalRaces
+        For i = 0 To races.Count - 1
+            If races(i).Race = fid Then
+                _draft.Record.QuitarAdditionalRaces(i)
+                Exit For
+            End If
+        Next
         RefreshAddRacesList()
     End Sub
 
@@ -869,7 +987,7 @@ Public Class ArmaEditor_Form
         ListAddRaces.BeginUpdate()
         Try
             ListAddRaces.Items.Clear()
-            For Each r In _draft.AdditionalRaces
+            For Each r In AdditionalRaceFids()
                 Dim row As New ListViewItem(DisplayFor(r))
                 row.Tag = r
                 ListAddRaces.Items.Add(row)
@@ -886,7 +1004,8 @@ Public Class ArmaEditor_Form
     ''' ARMO's RNAM and can differ). Same rule in FO4 and Skyrim; nothing here is game-gated. No preview NPC ⇒
     ''' race 0 ⇒ True (nothing to filter against).</summary>
     Private Function ArmaFitsPreviewRace() As Boolean
-        Return _mainForm.IsArmaRaceCompatible(GetFid(TextBoxRace), _draft.AdditionalRaces, _mainForm.GetCurrentPreviewRaceFormID())
+        Return _mainForm.IsArmaRaceCompatible(GetFid(TextBoxRace), AdditionalRaceFids(),
+                                              _mainForm.GetCurrentPreviewRaceFormID())
     End Function
 
     ''' <summary>Gate every preview control that composes the edited ARMA with the ACTOR on the race match.
@@ -964,7 +1083,7 @@ Public Class ArmaEditor_Form
     End Sub
 
     ''' <summary>Rebuild the slider rows in <see cref="SculptPanel"/> from the gender's absolute working set
-    ''' (mirrors EditBody's CreateBodySlideRows). One row per bone = [name | X | Y | Z | ✕].</summary>
+    ''' (mirrors EditBody's CreateBodySlideRows). One row per bone = [name | X | Y | Z |].</summary>
     Private Sub LoadSculptGrid(gender As UInteger)
         SculptPanel.SuspendLayout()
         Try
@@ -996,7 +1115,7 @@ Public Class ArmaEditor_Form
 
     ''' <summary>Build one bone slider row into <see cref="SculptPanel"/> and register it in
     ''' <see cref="_sculptRows"/>. Columns line up with the Designer header row (Bone 200 | X 100 | Y 100 |
-    ''' Z 100 | ✕ 30, each axis preceded by a tiny caption). Each slider is absolute (1.0 = unchanged) over
+    ''' Z 100 | 30, each axis preceded by a tiny caption). Each slider is absolute (1.0 = unchanged) over
     ''' 0.5..2.5; edits trigger the debounced preview.</summary>
     Private Sub AddSculptRow(boneName As String, x As Single, y As Single, z As Single)
         Dim row As New TableLayoutPanel With {
@@ -1016,7 +1135,7 @@ Public Class ArmaEditor_Form
         row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 30))
         row.RowStyles.Add(New RowStyle(SizeType.AutoSize))
 
-        ' Bone name is NOT user-editable — bones are added via the "Add bone" combo below and removed with ✕.
+        ' Bone name is NOT user-editable — bones are added via the "Add bone" combo below and removed with.
         ' Read-only avoids accidental typos into a bone name that would silently drop the row on save.
         Dim nameBox As New TextBox With {
             .Text = If(boneName, ""),
@@ -1106,7 +1225,7 @@ Public Class ArmaEditor_Form
         OnFieldEdited(Me, EventArgs.Empty)
     End Sub
 
-    ''' <summary>Remove a single bone row (its per-row ✕ button).</summary>
+    ''' <summary>Remove a single bone row (its per-row button).</summary>
     Private Sub RemoveSculptRow(entry As SculptRow)
         If entry Is Nothing Then Return
         SculptPanel.Controls.Remove(entry.Container)
@@ -1158,10 +1277,11 @@ Public Class ArmaEditor_Form
             Dim anyEstimated As Boolean = False
             Dim messages As New List(Of String)
             For g As UInteger = 0UI To 1UI
-                Dim uaRaw = If(g = 0UI, _draft.MaleMeshPath, _draft.FemaleMeshPath)
+                Dim uaRaw = If(g = 0UI, _draft.Record.MaleModelFilename,
+                                        _draft.Record.FemaleModelFilename)
                 If String.IsNullOrWhiteSpace(uaRaw) Then Continue For   ' this gender has no mesh of its own → leave as-is
 
-                Dim bodyPaths = ResolveNakedBodyMeshPaths(_draft.RaceFormID, g)
+                Dim bodyPaths = ResolveNakedBodyMeshPaths(_draft.Record.Race, g)
                 If bodyPaths Is Nothing OrElse bodyPaths.Count = 0 Then
                     messages.Add($"{If(g = 0UI, "Male", "Female")}: could not resolve the naked body.")
                     Continue For
@@ -1262,20 +1382,13 @@ Public Class ArmaEditor_Form
         Dim armo = _mainForm.GetParsedArmoForEditor(skinFid)
         If armo Is Nothing Then Return result
 
-        Dim armaFids As New List(Of UInteger)
-        If armo.ArmorAddons IsNot Nothing AndAlso armo.ArmorAddons.Count > 0 Then
-            For Each ent In armo.ArmorAddons
-                armaFids.Add(ent.ArmaFormID)
-            Next
-        ElseIf armo.ArmorAddonFormIDs IsNot Nothing Then
-            armaFids.AddRange(armo.ArmorAddonFormIDs)
-        End If
+        Dim armaFids = ArmoEditor_Form.ReadAddons(armo).Select(Function(ent) ent.ArmaFormID).ToList()
 
         Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         For Each fid In armaFids
             Dim arma = _mainForm.GetParsedArmaForEditor(fid)
             If arma Is Nothing Then Continue For
-            Dim mesh = If(requestedIsFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
+            Dim mesh = If(requestedIsFemale, arma.FemaleModelFilename, arma.MaleModelFilename)
             If String.IsNullOrWhiteSpace(mesh) Then Continue For
             If seen.Add(mesh) Then result.Add(mesh)
         Next
@@ -1290,8 +1403,8 @@ Public Class ArmaEditor_Form
         If pm Is Nothing Then Return 0UI
         Dim raceRec = pm.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return 0UI
-        Dim race = RecordParsers.ParseRACE(raceRec, pm)
-        Return If(race IsNot Nothing, race.SkinFormID, 0UI)
+        Dim race = Canon.CanonRecords.Race(raceRec, pm)
+        Return If(race IsNot Nothing, race.Skin, 0UI)
     End Function
 
     ' =====================================================================
@@ -1418,19 +1531,29 @@ Public Class ArmaEditor_Form
     ''' context (parent ARMO / outfit context), so a scope-mode switch that changes WHAT gets rendered
     ''' re-renders. <paramref name="throwawayItemFid"/> is 0 in the Full-Outfit-with-context path.</summary>
     Private Function BuildPreviewKey(previewOtftFid As UInteger, throwawayItemFid As UInteger) As String
+        Dim rec = _draft.Record
+        Dim fo4 = TryCast(rec, Canon.ArmaFO4)
+        Dim maleSwap = If(fo4 IsNot Nothing, fo4.MaleMaterialSwap, 0UI)
+        Dim femaleSwap = If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap, 0UI)
+        Dim maleFlags = If(fo4 IsNot Nothing, fo4.MaleFlags, CByte(0))
+        Dim femaleFlags = If(fo4 IsNot Nothing, fo4.FemaleFlags, CByte(0))
+        Dim noUnderarmorScaling = (fo4 IsNot Nothing AndAlso fo4.NoUnderarmorScaling)
         Return String.Join(":", {
             previewOtftFid.ToString("X8"), throwawayItemFid.ToString("X8"),
             _parentArmoFormID.ToString("X8"), _outfitContextFormID.ToString("X8"),
-            _draft.FormID.ToString("X8"), _draft.SlotMask.ToString("X8"),
-            _draft.MaleMeshPath, _draft.FemaleMeshPath,
-            _draft.RaceFormID.ToString("X8"),
-            _draft.MaleMaterialSwapFormID.ToString("X8"), _draft.FemaleMaterialSwapFormID.ToString("X8"),
-            _mainForm.GetMswpDraftSignature(_draft.MaleMaterialSwapFormID), _mainForm.GetMswpDraftSignature(_draft.FemaleMaterialSwapFormID),
-            _draft.MaleSkinTextureFormID.ToString("X8"), _draft.FemaleSkinTextureFormID.ToString("X8"),
-            _draft.MaleSkinTextureSwapListFormID.ToString("X8"), _draft.FemaleSkinTextureSwapListFormID.ToString("X8"),
-            _draft.MalePriority.ToString(CultureInfo.InvariantCulture), _draft.FemalePriority.ToString(CultureInfo.InvariantCulture),
-            _draft.MaleModelFlags.ToString(CultureInfo.InvariantCulture), _draft.FemaleModelFlags.ToString(CultureInfo.InvariantCulture),
-            If(_draft.NoUnderarmorScaling, "1", "0"),
+            _draft.FormID.ToString("X8"), rec.BipedBodyTemplateFirstPersonFlags.ToString("X8"),
+            rec.MaleModelFilename, rec.FemaleModelFilename,
+            rec.Race.ToString("X8"),
+            maleSwap.ToString("X8"), femaleSwap.ToString("X8"),
+            _mainForm.GetMswpDraftSignature(maleSwap), _mainForm.GetMswpDraftSignature(femaleSwap),
+            rec.MaleSkinTexture.ToString("X8"), rec.FemaleSkinTexture.ToString("X8"),
+            rec.MaleSkinTextureSwapList.ToString("X8"),
+            rec.FemaleSkinTextureSwapList.ToString("X8"),
+            rec.DataMalePriority.ToString(CultureInfo.InvariantCulture),
+            rec.DataFemalePriority.ToString(CultureInfo.InvariantCulture),
+            maleFlags.ToString(CultureInfo.InvariantCulture),
+            femaleFlags.ToString(CultureInfo.InvariantCulture),
+            If(noUnderarmorScaling, "1", "0"),
             If(_host IsNot Nothing AndAlso _host.OnlyOutfitCollect, "oc1", "oc0"),
             If(_host IsNot Nothing, "rb" & _host.RaceFilterBypassArmaFormID.ToString("X8"), "rb-"),
             If(_host IsNot Nothing AndAlso _host.PreviewGenderOverride.HasValue, "g" & _host.PreviewGenderOverride.Value.ToString(), "g-")})
@@ -1476,9 +1599,10 @@ Public Class ArmaEditor_Form
         _previewInProgress = True
         Try
             If Not fullOutfitWithContext Then
-                Dim otft As New OutfitDraft With {.FormID = OutfitDraft.PreviewDraftFormID,
-                                                  .EditorID = OutfitDraft.EditorIdPrefix & "(armapreview)"}
-                otft.ItemFormIDs.Add(throwawayItemFid)
+                Dim otft = OutfitDraft.Nuevo(OutfitDraft.PreviewDraftFormID,
+                                             Canon.CanonBridge.SessionGame())
+                otft.Record.EditorID = OutfitDraft.EditorIdPrefix & "(armapreview)"
+                otft.ReemplazarPrendas({throwawayItemFid})
                 _mainForm.RegisterOutfitDraft(otft)
                 _previewDraftRegistered = True
             End If
@@ -1497,10 +1621,24 @@ Public Class ArmaEditor_Form
     ''' <summary>(Re)register a throwaway ARMO draft (single addon INDX 0) that references the ARMA draft, so
     ''' the OTFT preview can render it. Returns the wrapper ARMO FormID.</summary>
     Private Function EnsureArmaPreviewWrapper(armaFid As UInteger) As UInteger
-        Dim wrapper As New ArmoDraft With {.FormID = PreviewArmoWrapperFormID,
-                                           .EditorID = ArmoDraft.EditorIdPrefix & "(armapreview)",
-                                           .RaceFormID = _draft.RaceFormID}
-        wrapper.ArmorAddons.Add(New ARMO_AddonEntry With {.AddonIndex = 0US, .ArmaFormID = armaFid})
+        Dim wrapper = ArmoDraft.Nuevo(PreviewArmoWrapperFormID, Canon.CanonBridge.SessionGame())
+        wrapper.Record.EditorID = ArmoDraft.EditorIdPrefix & "(armapreview)"
+        wrapper.Record.Race = _draft.Record.Race
+        ' El addon único, INDX 0 → esta ARMA. FO4 declara índice + referencia por separado; Skyrim,
+        ' un array de referencias sin índice explícito. No hay un campo compartido para
+        ' "agregar un addon".
+        Dim fo4W = TryCast(wrapper.Record, Canon.ArmoFO4)
+        Dim sseW = TryCast(wrapper.Record, Canon.ArmoSSE)
+        If fo4W IsNot Nothing Then
+            Dim m = fo4W.AgregarModels()
+            If m IsNot Nothing Then
+                m.ModelAddonIndex = 0US
+                m.ModelArmorAddon = armaFid
+            End If
+        ElseIf sseW IsNot Nothing Then
+            Dim m = sseW.AgregarArmature()
+            If m IsNot Nothing Then m.ModelFilename = armaFid
+        End If
         _mainForm.RegisterArmoDraft(wrapper)
         _previewArmaWrapperRegistered = True
         Return PreviewArmoWrapperFormID

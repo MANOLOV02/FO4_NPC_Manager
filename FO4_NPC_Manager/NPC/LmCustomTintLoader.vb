@@ -1,11 +1,12 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text.Json
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>
 ''' Loads LooksMenu CUSTOM face-tint templates from
 ''' <c>Data\F4SE\Plugins\F4EE\Tints\&lt;pluginFileName&gt;\categories.json</c> + <c>templates.json</c>
-''' and merges them into a parsed <see cref="RACE_Data"/>'s tint template groups, so tints an NPC
+''' and superimposes them on the ones the RACE declares, so tints an NPC
 ''' applies against a mod-added template (stored in the LM preset as a "Tints"/"TintOrder" index that
 ''' has no vanilla RACE option) resolve to real textures/colours and compose + bake like any other.
 '''
@@ -24,18 +25,24 @@ Imports FO4_Base_Library
 '''    physical tint order — which the compositor already honours via its PHYS-desc ordering. No new
 '''    ordering rule and no change to the vanilla ordering.
 '''
-''' Additive &amp; idempotent: with no <c>Tints\</c> files (or none matching a given race) EnsureMerged is
-''' a strict no-op over today's behaviour. Merges once per <see cref="RACE_Data"/> instance
-''' (guarded by <see cref="RACE_Data.CustomLmTintsMerged"/>); the disk scan runs once per session until
-''' <see cref="Invalidate"/> is called on a load-order reparse.
+''' Additive &amp; idempotent: with no <c>Tints\</c> files (or none matching a given race) Fusionar
+''' returns the base list untouched. La lista fusionada vive APARTE del record — el record nunca
+''' se muta — y se cachea por (EditorID, género) para no rearmarla en cada consulta; la caché se limpia
+''' junto con el índice de disco en <see cref="Invalidate"/> (load-order reparse).
+'''
+''' <para>Estas plantillas NO tienen record detrás: no hay dónde colgarlas en el árbol. Por eso lo que
+''' arma este cargador es el modelo del COMPOSITOR (<see cref="GrupoDeTinteEfectivo"/>), no un modelo del
+''' formato — el que declara el tipo es el que puede tener entradas que ningún ESP declara. La superposición
+''' es una OPERACIÓN: la mitad de fábrica sale del record por <c>TintesEfectivos.TintesDelRecord</c>, ésta
+''' sale del .json, y las dos terminan en el mismo modelo, marcadas por <c>EsDeLooksMenu</c>.</para>
 ''' </summary>
 Public Module LmCustomTintLoader
 
     ' Gender buckets. LooksMenu "Gender": 0=male, 1=female, 2=both (CharGenTint::ForeEachGender uses
     ' race->chargenData[gender]; FO4 chargenData[0]=male, [1]=female).
     Private Class GenderCustomTints
-        Public Groups As New List(Of RACE_TintTemplateGroup)
-        Public ByName As New Dictionary(Of String, RACE_TintTemplateGroup)(StringComparer.OrdinalIgnoreCase)
+        Public Groups As New List(Of GrupoDeTinteEfectivo)
+        Public ByName As New Dictionary(Of String, GrupoDeTinteEfectivo)(StringComparer.OrdinalIgnoreCase)
     End Class
 
     Private Class RaceCustomTints
@@ -66,52 +73,103 @@ Public Module LmCustomTintLoader
     Private _loaded As Boolean = False
     Private _index As Dictionary(Of String, RaceCustomTints) = Nothing   ' key = race EditorID
 
-    ''' <summary>Drop the cached disk scan so the next EnsureMerged re-reads Tints\. Call on a
-    ''' load-order reparse (when the RACE cache is also cleared).</summary>
+    ''' <summary>Resultado YA fusionado, cacheado por "EditorID|género". Reemplaza al latch de estado
+    ''' interno de antes: lo que se cachea ahora es el RESULTADO (una lista aparte),
+    ''' nunca una marca sobre el record — el record no se vuelve a tocar.</summary>
+    Private ReadOnly _cacheLock As New Object()
+    Private ReadOnly _cache As New Dictionary(Of String, List(Of GrupoDeTinteEfectivo))(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>Drop the cached disk scan AND the cache de listas fusionadas, así la próxima consulta
+    ''' vuelve a leer Tints\ y a rearmar. Call on a load-order reparse (when the RACE cache is also
+    ''' cleared).</summary>
     Public Sub Invalidate()
         SyncLock _lock
             _loaded = False
             _index = Nothing
         End SyncLock
+        SyncLock _cacheLock
+            _cache.Clear()
+        End SyncLock
     End Sub
 
-    ''' <summary>Idempotently append this race's LooksMenu custom tint templates into its tint groups.
-    ''' No-op when the race has no custom tints, when it was already merged, or when there are no
-    ''' Tints\ files on disk. Safe to call from multiple threads on the shared cached instance.
-    ''' App overload — resolves the Data\ path from the global <see cref="Config_App"/>.</summary>
-    Public Sub EnsureMerged(race As RACE_Data, pluginManager As PluginManager)
-        EnsureMerged(race, pluginManager, Config_App.Current?.DataPath)
-    End Sub
+    ''' <summary>Fusiona los grupos de tinte de esta raza+género (los que trae el record) con los tints
+    ''' custom de LooksMenu de esa misma raza+género. NO muta <paramref name="race"/>: devuelve una lista
+    ''' aparte, cacheada por (EditorID, género) para no rearmarla en cada consulta. Safe to call from
+    ''' multiple threads. App overload — resolves the Data\ path from the global
+    ''' <see cref="Config_App"/>.</summary>
+    Public Function Fusionar(race As Canon.IRace, isFemale As Boolean, pluginManager As PluginManager) As List(Of GrupoDeTinteEfectivo)
+        Return Fusionar(race, isFemale, pluginManager, Config_App.Current?.DataPath)
+    End Function
 
     ''' <summary>Explicit-<paramref name="dataPath"/> overload — used by the headless FO4_FaceTint_CLI,
     ''' which threads its own Data\ path (honouring the <c>--data</c> flag) instead of relying on the
     ''' app-only <see cref="Config_App"/> global, which the CLI does not populate the same way.</summary>
-    Public Sub EnsureMerged(race As RACE_Data, pluginManager As PluginManager, dataPath As String)
-        If race Is Nothing OrElse pluginManager Is Nothing Then Return
-        If race.CustomLmTintsMerged Then Return
+    Public Function Fusionar(race As Canon.IRace, isFemale As Boolean, pluginManager As PluginManager,
+                             dataPath As String) As List(Of GrupoDeTinteEfectivo)
+        If race Is Nothing Then Return New List(Of GrupoDeTinteEfectivo)
+        ' Tint Layers son exclusivos de Fallout 4 — Skyrim no los declara en RACE.
+        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
+        Dim baseGroups = raceFo4.TintesDelRecord(isFemale)
+        Return Fusionar(baseGroups, race.EditorID, isFemale, pluginManager, dataPath)
+    End Function
 
-        EnsureLoaded(pluginManager, dataPath)   ' guarded internally; does file IO OUTSIDE the per-race lock
+    ''' <summary>Versión de lista pelada: fusiona GRUPOS (los que trae el record, armados por
+    ''' <c>CanonInterpretacion.TintesDelRecord</c>) con los tints custom de LooksMenu de
+    ''' <paramref name="editorId"/>+género. App overload.</summary>
+    Public Function Fusionar(grupos As List(Of GrupoDeTinteEfectivo), editorId As String, isFemale As Boolean,
+                             pluginManager As PluginManager) As List(Of GrupoDeTinteEfectivo)
+        Return Fusionar(grupos, editorId, isFemale, pluginManager, Config_App.Current?.DataPath)
+    End Function
 
-        SyncLock race
-            If race.CustomLmTintsMerged Then Return
-            Dim rt As RaceCustomTints = Nothing
-            If _index IsNot Nothing AndAlso Not String.IsNullOrEmpty(race.EditorID) Then
-                _index.TryGetValue(race.EditorID, rt)
-            End If
-            If rt IsNot Nothing Then
-                MergeGender(race.FemaleTintTemplateGroups, rt.Female)
-                MergeGender(race.MaleTintTemplateGroups, rt.Male)
-            End If
-            race.CustomLmTintsMerged = True
+    ''' <summary>Fusiona <paramref name="grupos"/> (los que trae el record) con los tints custom de
+    ''' LooksMenu de <paramref name="editorId"/>+género y cachea el resultado por (editorId, género):
+    ''' la fusión corre una sola vez por raza, no en cada consulta. Sin plugin manager o sin EditorID no
+    ''' hay con qué buscar en el índice de disco — se devuelve <paramref name="grupos"/> tal cual.</summary>
+    Public Function Fusionar(grupos As List(Of GrupoDeTinteEfectivo), editorId As String, isFemale As Boolean,
+                             pluginManager As PluginManager, dataPath As String) As List(Of GrupoDeTinteEfectivo)
+        Dim baseGroups = If(grupos, New List(Of GrupoDeTinteEfectivo))
+        If pluginManager Is Nothing OrElse String.IsNullOrEmpty(editorId) Then Return baseGroups
+
+        Dim clave = editorId & "|" & isFemale.ToString()
+        SyncLock _cacheLock
+            Dim cacheado As List(Of GrupoDeTinteEfectivo) = Nothing
+            If _cache.TryGetValue(clave, cacheado) Then Return cacheado
         End SyncLock
-    End Sub
+
+        EnsureLoaded(pluginManager, dataPath)   ' guarded internally; does file IO OUTSIDE the cache lock
+
+        Dim rt As RaceCustomTints = Nothing
+        If _index IsNot Nothing Then _index.TryGetValue(editorId, rt)
+
+        Dim salida = ClonarGrupos(baseGroups)
+        If rt IsNot Nothing Then MergeGender(salida, If(isFemale, rt.Female, rt.Male))
+
+        SyncLock _cacheLock
+            _cache(clave) = salida
+        End SyncLock
+        Return salida
+    End Function
+
+    ''' <summary>Copia la lista y cada grupo (no las Options: MergeGender sólo AGREGA elementos, nunca
+    ''' edita uno existente, así que compartir las Options no es un problema). Evita que superponer dos
+    ''' veces la misma raza pise la lista base que salió del record.</summary>
+    Private Function ClonarGrupos(grupos As List(Of GrupoDeTinteEfectivo)) As List(Of GrupoDeTinteEfectivo)
+        Dim salida As New List(Of GrupoDeTinteEfectivo)
+        For Each g In grupos
+            Dim copia As New GrupoDeTinteEfectivo With {
+                .GroupName = g.GroupName, .CategoryIndex = g.CategoryIndex}
+            copia.Options.AddRange(g.Options)
+            salida.Add(copia)
+        Next
+        Return salida
+    End Function
 
     ''' <summary>Append custom groups into a gender's race group list. New categories are added as new
     ''' groups; options whose category name matches an existing (vanilla or already-added) group are
     ''' appended into it — mirroring the engine adding template Entries to an existing category vs
     ''' Pushing a new one (CharGenTint.cpp:236-371). Options whose Index already exists in the gender are
     ''' skipped (the engine treats a duplicate index as "modify existing"; we keep the vanilla one).</summary>
-    Private Sub MergeGender(raceGroups As List(Of RACE_TintTemplateGroup), custom As GenderCustomTints)
+    Private Sub MergeGender(raceGroups As List(Of GrupoDeTinteEfectivo), custom As GenderCustomTints)
         If custom Is Nothing OrElse custom.Groups.Count = 0 Then Return
 
         Dim existingIndices As New HashSet(Of UShort)
@@ -122,7 +180,7 @@ Public Module LmCustomTintLoader
         Next
 
         For Each cg In custom.Groups
-            Dim target As RACE_TintTemplateGroup = Nothing
+            Dim target As GrupoDeTinteEfectivo = Nothing
             If Not String.IsNullOrEmpty(cg.GroupName) Then
                 For Each g In raceGroups
                     If String.Equals(g.GroupName, cg.GroupName, StringComparison.OrdinalIgnoreCase) Then
@@ -267,10 +325,10 @@ Public Module LmCustomTintLoader
         End Try
     End Sub
 
-    Private Sub AddOptionToGender(g As GenderCustomTints, catName As String, opt As RACE_TintTemplateOption)
-        Dim grp As RACE_TintTemplateGroup = Nothing
+    Private Sub AddOptionToGender(g As GenderCustomTints, catName As String, opt As OpcionDeTinteEfectiva)
+        Dim grp As GrupoDeTinteEfectivo = Nothing
         If Not g.ByName.TryGetValue(catName, grp) Then
-            grp = New RACE_TintTemplateGroup With {.GroupName = catName, .IsCustomLm = True}
+            grp = New GrupoDeTinteEfectivo With {.GroupName = catName}
             g.ByName(catName) = grp
             g.Groups.Add(grp)
         End If
@@ -278,19 +336,20 @@ Public Module LmCustomTintLoader
         If Not grp.Options.Any(Function(o) o.Index = opt.Index) Then grp.Options.Add(CloneOption(opt))
     End Sub
 
-    ''' <summary>Build one RACE_TintTemplateOption from a template entry. Type drives which fields are
-    ''' read + the DeclaredEntryType override (so a Diffuse-only TextureSet is not mis-read as a Mask).
-    ''' Returns Nothing for a malformed entry (no Id, no usable texture).</summary>
-    Private Function BuildOption(entry As JsonElement, typeStr As String, pluginManager As PluginManager) As RACE_TintTemplateOption
+    ''' <summary>Arma una opción de tinte a partir de una entrada de templates.json. El "Type" decide qué
+    ''' campos se leen Y la CLASE de la opción: acá la clase la DECLARA el archivo, no se deduce de la
+    ''' estructura -que es lo único que distingue un TextureSet que sólo trae Diffuse de una Mask.
+    ''' Devuelve Nothing si la entrada está mal formada (sin Id, o sin una textura usable).</summary>
+    Private Function BuildOption(entry As JsonElement, typeStr As String, pluginManager As PluginManager) As OpcionDeTinteEfectiva
         Dim id As UInteger = 0UI
         If Not TryGetUInt(entry, "Id", id) Then Return Nothing
 
-        Dim opt As New RACE_TintTemplateOption With {
+        Dim opt As New OpcionDeTinteEfectiva With {
             .Index = CUShort(id And &HFFFFUI),
             .Name = GetStr(entry, "Name"),
             .Slot = ParseSlot(GetStr(entry, "Slot")),
             .Flags = ParseFlags(entry),
-            .IsCustomLm = True}
+            .EsDeLooksMenu = True}
 
         Dim blendStr = GetStr(entry, "BlendOp")
         If Not String.IsNullOrEmpty(blendStr) Then
@@ -305,13 +364,13 @@ Public Module LmCustomTintLoader
         End If
 
         If String.Equals(typeStr, "Palette", StringComparison.OrdinalIgnoreCase) Then
-            opt.DeclaredEntryType = RACE_TintEntryType.Palette
+            opt.EntryType = ClaseDeTinte.Palette
             Dim tex = GetStr(entry, "Texture")
             If Not String.IsNullOrEmpty(tex) Then opt.Textures.Add(tex)
             Dim colors As JsonElement
             If entry.TryGetProperty("Colors", colors) AndAlso colors.ValueKind = JsonValueKind.Array Then
                 For Each c In colors.EnumerateArray()
-                    Dim cd As New RACE_TintTemplateColor With {
+                    Dim cd As New ColorDeTinteEfectivo With {
                         .TemplateIndex = CUShort(GetUInt(c, "Id") And &HFFFFUI),
                         .Alpha = GetSingle(c, "Alpha"),
                         .ColorFormID = LooksmenuLoader.ResolveFormIdentifier(GetStr(c, "Form"), pluginManager)}
@@ -323,7 +382,7 @@ Public Module LmCustomTintLoader
             If opt.Textures.Count = 0 Then Return Nothing
 
         ElseIf String.Equals(typeStr, "TextureSet", StringComparison.OrdinalIgnoreCase) Then
-            opt.DeclaredEntryType = RACE_TintEntryType.TextureSet
+            opt.EntryType = ClaseDeTinte.TextureSet
             ' Diffuse always; Normal/Specular optional (many custom sets ship diffuse-only).
             Dim d = GetStr(entry, "Diffuse")
             If String.IsNullOrEmpty(d) Then Return Nothing
@@ -334,7 +393,7 @@ Public Module LmCustomTintLoader
 
         Else
             ' Mask (default): single grayscale texture tinted by the applied TEND colour.
-            opt.DeclaredEntryType = RACE_TintEntryType.Mask
+            opt.EntryType = ClaseDeTinte.Mask
             Dim tex = GetStr(entry, "Texture")
             If String.IsNullOrEmpty(tex) Then Return Nothing
             opt.Textures.Add(tex)
@@ -351,15 +410,15 @@ Public Module LmCustomTintLoader
         End While
     End Sub
 
-    Private Function CloneOption(o As RACE_TintTemplateOption) As RACE_TintTemplateOption
-        Dim c As New RACE_TintTemplateOption With {
+    Private Function CloneOption(o As OpcionDeTinteEfectiva) As OpcionDeTinteEfectiva
+        Dim c As New OpcionDeTinteEfectiva With {
             .Slot = o.Slot, .Index = o.Index, .Name = o.Name, .Flags = o.Flags,
             .BlendOperation = o.BlendOperation, .HasBlendOperation = o.HasBlendOperation,
             .DefaultValue = o.DefaultValue, .HasDefaultValue = o.HasDefaultValue,
-            .DeclaredEntryType = o.DeclaredEntryType, .IsCustomLm = o.IsCustomLm}
+            .EntryType = o.EntryType, .EsDeLooksMenu = o.EsDeLooksMenu}
         c.Textures.AddRange(o.Textures)
         For Each tc In o.TemplateColors
-            c.TemplateColors.Add(New RACE_TintTemplateColor With {
+            c.TemplateColors.Add(New ColorDeTinteEfectivo With {
                 .ColorFormID = tc.ColorFormID, .Alpha = tc.Alpha,
                 .TemplateIndex = tc.TemplateIndex, .BlendOperation = tc.BlendOperation})
         Next
