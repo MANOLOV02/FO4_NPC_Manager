@@ -1,4 +1,4 @@
-﻿Imports System.IO
+Imports System.IO
 Imports System.Linq
 Imports System.Text.Json
 Imports FO4_Base_Library
@@ -118,6 +118,7 @@ Module Program
         Public ShapeOrder As Boolean = False
         Public EngineSkinNorm As Boolean? = Nothing
         Public VanillaOnly As Boolean = False    ' --vanillaonly: con --buildfacegen, SALTEA NPCs cuyo record GANADOR no es vanilla/DLC (overridden por un mod) — para comparar fiel vs CK del BA2
+        Public NoCreationClub As Boolean = False   ' --nocc: con --vanillaonly, deja el corpus en base+DLC (sin Creation Club), que es lo unico reproducible entre maquinas
         Public Info As Boolean = False
         Public Tints As Boolean = False
         Public TtedScan As Boolean = False
@@ -398,7 +399,8 @@ Module Program
         ' del Plugins.txt. Afecta plugins Y archivos (FilesDictionary también llama a ReadActiveLoadOrder)
         ' ⇒ el bake sale 100% vanilla (records Y texturas), fiel al CK del BA2. Setear ANTES de cargar.
         If opt.VanillaOnly Then PluginManager.OfficialPluginsOnly = True
-        Console.WriteLine("[load] plugins..." & If(opt.VanillaOnly, " (ONLY official — vanilla/DLC/cc)", ""))
+        If opt.NoCreationClub Then PluginManager.ExcludeCreationClub = True
+        Console.WriteLine("[load] plugins..." & If(opt.VanillaOnly, If(opt.NoCreationClub, " (ONLY base game + DLC — NO Creation Club)", " (ONLY official — vanilla/DLC/cc)"), ""))
         Dim pm As New PluginManager()
         Dim loadList = PluginManager.ReadActiveLoadOrder()
         For Each esp In work.Select(Function(w) w.Esp).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -10492,6 +10494,7 @@ persist:
                 Case "--engineskinblend" : a.EngineSkinNorm = True : i += 1
                 Case "--noengineskinblend" : a.EngineSkinNorm = False : i += 1
                 Case "--vanillaonly" : a.VanillaOnly = True : i += 1
+                Case "--nocc" : a.NoCreationClub = True : i += 1
                 Case "--rankby" : a.RankBy = v.ToLowerInvariant() : i += 2
                 Case "--info" : a.Info = True : i += 1
                 Case "--tints" : a.Tints = True : i += 1
