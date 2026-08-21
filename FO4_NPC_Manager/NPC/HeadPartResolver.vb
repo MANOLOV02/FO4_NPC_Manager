@@ -42,33 +42,10 @@ Public Module HeadPartResolver
             Return safeNpcParts.ToList()
         End If
         Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, pluginManager))
-        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
-        Dim raceSse = TryCast(race, Canon.RaceSSE)
-        ' Las listas de cada género son de tipos DISTINTOS, así que elegirlas con un ternario deja el
-        ' resultado sin tipo común y la llamada que sigue se resuelve recién en ejecución — donde falla.
-        ' Se recorre cada una por separado, que además no depende de que el archivo importe nada.
-        Dim raceDefaults As New List(Of UInteger)
-        If raceFo4 IsNot Nothing Then
-            If isFemale Then
-                For Each h In raceFo4.FemaleHeadParts
-                    raceDefaults.Add(h.HeadPartHead)
-                Next
-            Else
-                For Each h In raceFo4.MaleHeadParts
-                    raceDefaults.Add(h.HeadPartHead)
-                Next
-            End If
-        ElseIf raceSse IsNot Nothing Then
-            If isFemale Then
-                For Each h In raceSse.HeadParts2
-                    raceDefaults.Add(h.HeadPartHead)
-                Next
-            Else
-                For Each h In raceSse.HeadParts
-                    raceDefaults.Add(h.HeadPartHead)
-                Next
-            End If
-        End If
+        ' La ley de "que head parts trae la raza para este genero" vive en UN solo lugar
+        ' (CanonInterpretacion.HeadPartsDe): contempla los dos juegos y sus nombres propios. Aca estaba
+        ' copiada a mano, asi que el dia que se corrija alla esta copia se queda vieja en silencio.
+        Dim raceDefaults = Canon.CanonInterpretacion.HeadPartsDe(race, isFemale)
 
         ' Build merged dict by PartType for main types (1..9).
         Dim mergedByType As New Dictionary(Of Integer, UInteger)

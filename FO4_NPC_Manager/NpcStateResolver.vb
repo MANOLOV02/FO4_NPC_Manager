@@ -401,21 +401,13 @@ Friend NotInheritable Class NpcStateResolver
         ' (SSE race+0x4A8+sex*8 → frd+0xA0; FO4 CK race+0xBA8+sex*8 → frd+0x10); si es null
         ' caen a HDPT.TNAM, jamás al DFT del otro sexo. El fallback cruzado que había acá
         ' pintaba SkinHeadFemaleNord (DFTF) en el maniquí masculino de ManakinRace (sin DFTM).
-        Dim maleHeadParts As IEnumerable(Of UInteger) = New List(Of UInteger)
-        Dim femaleHeadParts As IEnumerable(Of UInteger) = New List(Of UInteger)
-        Dim maleDefaultFaceTexture As UInteger = 0UI
-        Dim femaleDefaultFaceTexture As UInteger = 0UI
-        If raceFo4 IsNot Nothing Then
-            maleHeadParts = raceFo4.MaleHeadParts.Select(Function(h) h.HeadPartHead)
-            femaleHeadParts = raceFo4.FemaleHeadParts.Select(Function(h) h.HeadPartHead)
-            maleDefaultFaceTexture = raceFo4.MaleDefaultFaceTexture
-            femaleDefaultFaceTexture = raceFo4.FemaleDefaultFaceTexture
-        ElseIf raceSse IsNot Nothing Then
-            maleHeadParts = raceSse.HeadParts.Select(Function(h) h.HeadPartHead)
-            femaleHeadParts = raceSse.HeadParts2.Select(Function(h) h.HeadPartHead)
-            maleDefaultFaceTexture = raceSse.MaleHeadDataDefaultFaceTextureMale
-            femaleDefaultFaceTexture = raceSse.FemaleHeadDataDefaultFaceTextureFemale
-        End If
+        ' Las dos leyes -que head parts trae la raza y cual es su textura de cara por defecto- viven
+        ' cada una en UN solo lugar, que ya contempla los dos juegos con sus nombres propios. Aca
+        ' estaban copiadas a mano: corregir alla dejaba esta copia vieja sin que nadie se enterara.
+        Dim maleHeadParts As IEnumerable(Of UInteger) = Canon.CanonInterpretacion.HeadPartsDe(race, isFemale:=False)
+        Dim femaleHeadParts As IEnumerable(Of UInteger) = Canon.CanonInterpretacion.HeadPartsDe(race, isFemale:=True)
+        Dim maleDefaultFaceTexture = Canon.CanonInterpretacion.DefaultFaceTextureDe(race, isFemale:=False)
+        Dim femaleDefaultFaceTexture = Canon.CanonInterpretacion.DefaultFaceTextureDe(race, isFemale:=True)
 
         If state.HeadPartFormIDs.Count = 0 Then
             If state.IsFemale Then

@@ -173,8 +173,12 @@ Public Module FaceGenBuildPipeline
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
         Dim genderBlock As Canon.RaceFO4_BoneScaleData = Nothing
-        ' Bone Data es exclusivo de Fallout 4 — Skyrim no lo declara en RACE.
-        For Each bd In TryCast(state.Race, Canon.RaceFO4).BoneScaleData
+        ' Bone Data es exclusivo de Fallout 4 — Skyrim no lo declara en RACE. Sin raza de Fallout 4
+        ' no hay escala por peso que emitir, que es lo mismo que decia el lector viejo devolviendo
+        ' una lista vacia.
+        Dim razaFo4 = TryCast(state.Race, Canon.RaceFO4)
+        If razaFo4 Is Nothing Then Return Nothing
+        For Each bd In razaFo4.BoneScaleData
             If bd.BoneWeightScaleDataWeightScaleTargetGender = targetGender Then genderBlock = bd : Exit For
         Next
         If genderBlock Is Nothing Then Return Nothing
@@ -220,8 +224,12 @@ Public Module FaceGenBuildPipeline
         Dim raceRec = pluginManager.GetRecord(npcData.Record.Race)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
         Dim race = Canon.CanonRecords.Race(raceRec, pluginManager)
-        ' MorphValues/MorphPresets son exclusivos de Fallout 4 — Skyrim no los declara en RACE.
+        ' MorphValues/MorphPresets son exclusivos de Fallout 4 — Skyrim no los declara en RACE. Con
+        ' otra raza la lista queda VACIA, no nula: el modelo anterior la declaraba ya construida, asi
+        ' que un record sin esos subrecords daba una lista sin elementos.
         Dim raceFo4 = TryCast(race, Canon.RaceFO4)
+        Dim valoresDeMorfo As IReadOnlyList(Of Canon.RaceFO4_MorphValues) =
+            If(raceFo4 Is Nothing, New List(Of Canon.RaceFO4_MorphValues)(), raceFo4.MorphValues)
 
         Dim fmrsPose As Poses_class = Nothing
         If facialBoneRegions IsNot Nothing Then
@@ -238,7 +246,7 @@ Public Module FaceGenBuildPipeline
             .IsFemale = npcData.Record.ConfigurationFlagsFemale,
             .NpcData = npcData,
             .Race = race,
-            .RaceMorphValueDefs = raceFo4.MorphValues,
+            .RaceMorphValueDefs = valoresDeMorfo,
             .RaceMorphPresetDefs = raceFo4.ReadMorphPresetsFlat(npcData.Record.ConfigurationFlagsFemale),
             .FmrsPose = fmrsPose,
             .PluginManager = pluginManager

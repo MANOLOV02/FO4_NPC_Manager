@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ' ==========================================================================
@@ -101,10 +101,12 @@ Public NotInheritable Class SseChargenTypeCatalog
             End If
         Next
 
+        ' MPAI/MPAV son SKYRIM-only — Fallout 4 no los declara en RACE. Con una raza que no es de
+        ' Skyrim no hay nada ofrecido, igual que cuando el record no traia esos subrecords.
         Dim offered As RACE_AvailableMorphs = Nothing
-        If effectiveRace IsNot Nothing Then
-            ' MPAI/MPAV son SKYRIM-only — Fallout 4 no los declara en RACE.
-            offered = TryCast(effectiveRace, Canon.RaceSSE).ReadAvailableMorphs(isFemale)
+        Dim razaSse = TryCast(effectiveRace, Canon.RaceSSE)
+        If razaSse IsNot Nothing Then
+            offered = razaSse.ReadAvailableMorphs(isFemale)
         End If
 
         ' TRES estados, no dos. "Ninguna head part declara chargen .tri" es CONOCIMIENTO —ahí el motor

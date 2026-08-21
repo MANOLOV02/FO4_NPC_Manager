@@ -92,27 +92,39 @@ Friend NotInheritable Class NpcStateFactory
 
     ''' <summary>RACE.{Male|Female}DefaultWeight{Thin|Muscular|Fat}: exclusivo de Fallout 4 (el DATA de
     ''' Skyrim no declara esos floats — el parser viejo tampoco los llenaba nunca para Skyrim, así que
-    ''' 0 acá reproduce el mismo comportamiento).</summary>
+    ''' 0 acá reproduce el mismo comportamiento).
+    ''' <para>Que el campo ESTÉ no significa que traiga un valor: puede traer el centinela que le dice
+    ''' al motor que use el suyo. Se filtra con el mismo predicado que los pesos del NPC — antes acá
+    ''' sólo se miraba la presencia, y una raza con el centinela devolvía una magnitud absurda que
+    ''' terminaba escalando los huesos.</para></summary>
     Private Shared Function DefaultWeight(race As Canon.IRace, isFemale As Boolean, axis As DefaultWeightAxis) As Single
         Dim raceFo4 = TryCast(race, Canon.RaceFO4)
         If raceFo4 Is Nothing Then Return 0.0F
         Select Case axis
             Case DefaultWeightAxis.Thin
                 If isFemale Then
-                    Return If(raceFo4.FemaleDefaultWeightThinPresente, raceFo4.FemaleDefaultWeightThin, 0.0F)
+                    Return PesoOCero(raceFo4.FemaleDefaultWeightThinPresente, raceFo4.FemaleDefaultWeightThin)
                 End If
-                Return If(raceFo4.MaleDefaultWeightThinPresente, raceFo4.MaleDefaultWeightThin, 0.0F)
+                Return PesoOCero(raceFo4.MaleDefaultWeightThinPresente, raceFo4.MaleDefaultWeightThin)
             Case DefaultWeightAxis.Muscular
                 If isFemale Then
-                    Return If(raceFo4.FemaleDefaultWeightMuscularPresente, raceFo4.FemaleDefaultWeightMuscular, 0.0F)
+                    Return PesoOCero(raceFo4.FemaleDefaultWeightMuscularPresente, raceFo4.FemaleDefaultWeightMuscular)
                 End If
-                Return If(raceFo4.MaleDefaultWeightMuscularPresente, raceFo4.MaleDefaultWeightMuscular, 0.0F)
+                Return PesoOCero(raceFo4.MaleDefaultWeightMuscularPresente, raceFo4.MaleDefaultWeightMuscular)
             Case Else ' Fat
                 If isFemale Then
-                    Return If(raceFo4.FemaleDefaultWeightFatPresente, raceFo4.FemaleDefaultWeightFat, 0.0F)
+                    Return PesoOCero(raceFo4.FemaleDefaultWeightFatPresente, raceFo4.FemaleDefaultWeightFat)
                 End If
-                Return If(raceFo4.MaleDefaultWeightFatPresente, raceFo4.MaleDefaultWeightFat, 0.0F)
+                Return PesoOCero(raceFo4.MaleDefaultWeightFatPresente, raceFo4.MaleDefaultWeightFat)
         End Select
+    End Function
+
+    ''' <summary>El peso por defecto de la raza, o cero cuando el campo no está o trae el centinela
+    ''' de "sin valor".</summary>
+    Private Shared Function PesoOCero(presente As Boolean, valor As Single) As Single
+        If Not presente Then Return 0.0F
+        If Canon.CanonInterpretacion.EsPesoSinValor(valor) Then Return 0.0F
+        Return valor
     End Function
 
     Public Shared Function CreateOwnTraitsState(npc As NPC_Data) As MainForm.TraitsState

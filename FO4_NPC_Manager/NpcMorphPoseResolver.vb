@@ -72,11 +72,28 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
         Dim race = _ctx.ParseRaceCanonCached(raceRec)
         ' MorphValues/MorphPresets/MorphGroups son exclusivos de Fallout 4 — Skyrim no los declara en RACE.
+        ' Los tres bloques de morfos de la cara los declara SOLO Fallout 4: sus subrecords son MSID,
+        ' MPPI y MPGS. Skyrim declara otra cosa en su lugar (MPAI/MPAV, las variantes de nariz, ceja,
+        ' ojo y labio), que no son estas definiciones.
+        '
+        ' Con Skyrim quedan VACIOS y se sigue: NO se corta la funcion. El plan de morfos tambien lleva
+        ' el morfo por peso, que es por actor y aplica a cualquier genero; salir aca deja la cabeza en
+        ' peso neutro mientras el cuerpo interpola, y eso es la costura de cuello que documenta el
+        ' comentario de arriba. Es tambien lo que hacia la lectura anterior: si el record no traia esos
+        ' subrecords, las listas salian vacias y el resolvedor se armaba igual.
+        ' Vacias, NO nulas: el modelo anterior declaraba las tres como listas ya construidas, asi que
+        ' un record que no traia esos subrecords daba una lista sin elementos. Devolver nulo en su
+        ' lugar cambia lo que ve todo lo de abajo.
         Dim raceFo4 = TryCast(race, Canon.RaceFO4)
-
-        Dim morphValueDefs = raceFo4.MorphValues
-        Dim morphPresetDefs = raceFo4.ReadMorphPresetsFlat(state.IsFemale)
-        Dim morphGroups = raceFo4.ReadMorphGroups(state.IsFemale)
+        Dim morphValueDefs As IReadOnlyList(Of Canon.RaceFO4_MorphValues) =
+            New List(Of Canon.RaceFO4_MorphValues)()
+        Dim morphPresetDefs As New List(Of RACE_MorphPresetDef)
+        Dim morphGroups As New List(Of RACE_MorphGroup)
+        If raceFo4 IsNot Nothing Then
+            morphValueDefs = raceFo4.MorphValues
+            morphPresetDefs = raceFo4.ReadMorphPresetsFlat(state.IsFemale)
+            morphGroups = raceFo4.ReadMorphGroups(state.IsFemale)
+        End If
 
 
         ' Dump raw MSDK/MSDV table from this NPC (to see what keys+weights the record really has).
@@ -916,8 +933,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
         ' Bone Data (Weight Scale + Range Modifier) es exclusivo de Fallout 4 — Skyrim no lo declara.
+        ' Vacia, NO nula: el modelo anterior declaraba esta lista ya construida, asi que una raza que
+        ' no trae esos subrecords daba una lista sin elementos y lo de abajo no encontraba el bloque
+        ' del genero, que es el mismo resultado.
         Dim raceFo4 = TryCast(_ctx.ParseRaceCanonCached(raceRec), Canon.RaceFO4)
-        Dim boneData = raceFo4.BoneScaleData
+        Dim boneData As IReadOnlyList(Of Canon.RaceFO4_BoneScaleData) =
+            If(raceFo4 Is Nothing, New List(Of Canon.RaceFO4_BoneScaleData)(), raceFo4.BoneScaleData)
 
         ' Log the FaceGen clamps for reference. TBD whether they apply to body BSMS output
         ' or only to face slider*FMIN. Not applying any clamp formula without spec.

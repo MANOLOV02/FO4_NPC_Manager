@@ -9996,7 +9996,9 @@ persist:
         Else
             Dim nz = mv.Where(Function(kv) kv.Value <> 0.0F).Count()
             Console.WriteLine($"  NPC MSDK/MSDV entries: {mv.Count} ({nz} non-zero)")
-            Dim raceSliders = TryCast(race, Canon.RaceFO4).MorphValues
+            Dim razaSliders = TryCast(race, Canon.RaceFO4)
+            Dim raceSliders As IReadOnlyList(Of Canon.RaceFO4_MorphValues) =
+                If(razaSliders Is Nothing, New List(Of Canon.RaceFO4_MorphValues)(), razaSliders.MorphValues)
             For Each kv In mv.OrderBy(Function(x) x.Key)
                 Dim def = raceSliders.FirstOrDefault(Function(x) x.ValueIndex = kv.Key)
                 Dim nm = If(def Is Nothing, "*** no MSID in RACE -> DROPPED ***", $"min='{def.ValueMinName}' max='{def.ValueMaxName}'")
@@ -10330,8 +10332,12 @@ persist:
         Dim ty = (wt + wf) * 0.866025F - 0.577350F
         Dim kk = (0.866025F - CSng(Math.Sqrt(tx * tx + ty * ty))) * 1.154701F
         ' Bone Data es exclusivo de Fallout 4 — Skyrim no lo declara en RACE.
-        Dim gb = TryCast(race, Canon.RaceFO4).BoneScaleData.
+        Dim razaHuesos = TryCast(race, Canon.RaceFO4)
+        Dim gb As Canon.RaceFO4_BoneScaleData = Nothing
+        If razaHuesos IsNot Nothing Then
+            gb = razaHuesos.BoneScaleData.
                  FirstOrDefault(Function(b) b.BoneWeightScaleDataWeightScaleTargetGender = If(female, 1UI, 0UI))
+        End If
         If gb Is Nothing Then Console.WriteLine("   (no BoneData for the gender)") : Return
         Dim names = {"Neck1_skin", "Neck_skin", "Neck_Low_skin", "Spine2_skin", "Chest_skin", "Chest_Upper_Skin", "Head_skin", "Face_skin"}
         For Each nm In names

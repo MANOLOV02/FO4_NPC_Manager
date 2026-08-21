@@ -318,6 +318,19 @@ Public Module NpcOverrideSaver
     ''' fit, or a user-facing message naming the offending field + value. labelSuffix distinguishes
     ''' pre-existing NPCs from the one being edited.
     ''' </summary>
+    ''' <summary>El record iba a preservarse en el plugin y no se pudo abrir.
+    ''' <para>Se corta el guardado en vez de saltearlo. Saltearlo lo DESAPARECE del plugin y todo lo
+    ''' que lo referencie queda colgando: un color de pelo que se cae deja sin destino a cada NPC que
+    ''' lo usaba. Un plugin al que le falta un record no se distingue a simple vista de uno sano, asi
+    ''' que el error tiene que aparecer cuando pasa y no cuando el usuario ve el resultado.</para></summary>
+    Private Function NoSePudoPreservar(rec As PluginRecord) As InvalidOperationException
+        Dim firma = If(rec Is Nothing OrElse rec.Header.Signature Is Nothing, "????", rec.Header.Signature)
+        Dim fid = If(rec Is Nothing, 0UI, rec.Header.FormID)
+        Return New InvalidOperationException(
+            $"No se pudo abrir el record {firma} 0x{fid:X8} que hay que preservar en el plugin. " &
+            "No se graba: saltearlo lo sacaria del archivo y dejaria colgadas las referencias que lo apuntan.")
+    End Function
+
     Private Function FindEncodingConflict(npc As NPC_Data, labelSuffix As String) As String
         If npc Is Nothing Then Return ""
 
@@ -504,7 +517,7 @@ Public Module NpcOverrideSaver
                 End If
                 If rec.Header.Signature = "LVLI" Then
                     Dim parsedLvli = Canon.CanonRecords.Lvli(rec, ctx.PluginManager)
-                    If parsedLvli Is Nothing Then Continue For ' record malformado para el esquema: no se preserva.
+                    If parsedLvli Is Nothing Then Throw NoSePudoPreservar(rec)
                     Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
                         .Record = CType(parsedLvli, Canon.CanonView),
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
@@ -536,7 +549,7 @@ Public Module NpcOverrideSaver
                     ' nadie los lee mas que el emisor de antes (que ahora lee el arbol), y LVLN no comparte la
                     ' interfaz de "Use Global" con LVLI asi que hacerlo pediria un TryCast por juego sin uso.
                     Dim parsedLvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(rec, ctx.PluginManager)
-                    If parsedLvln Is Nothing Then Continue For ' record malformado para el esquema: no se preserva.
+                    If parsedLvln Is Nothing Then Throw NoSePudoPreservar(rec)
                     Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
                         .Record = CType(parsedLvln, Canon.CanonView),
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
@@ -607,7 +620,7 @@ Public Module NpcOverrideSaver
                     ' para ARMO/ARMA/MSWP/OTFT. Los campos de arriba se quedan igual, porque alimentan el
                     ' índice de reuso por color de MaterializeSseHairColors.
                     Dim parsedClfm = Canon.CanonRecords.Clfm(rec, ctx.PluginManager)
-                    If parsedClfm Is Nothing Then Continue For ' record malformado para el esquema: no se preserva.
+                    If parsedClfm Is Nothing Then Throw NoSePudoPreservar(rec)
                     clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
                         .Record = CType(parsedClfm, Canon.CanonView),
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),

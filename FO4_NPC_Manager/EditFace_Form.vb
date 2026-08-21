@@ -284,8 +284,16 @@ Public Class EditFace_Form
         _raceFemaleHeadPartFormIDs = _race.HeadPartsDe(isFemale:=True)
         _raceMaleHairColorFormIDs = _race.HairColorsDe(isFemale:=False)
         _raceFemaleHairColorFormIDs = _race.HairColorsDe(isFemale:=True)
+        ' Los sliders de cara son de Fallout 4: sus subrecords MSID/MPPI/MPGS no existen en el otro
+        ' juego, y la raza tampoco tiene por que estar resuelta. La lista queda VACIA, no nula, que es
+        ' lo que devolvia el modelo anterior — ahi estas listas nacian construidas.
+        ' Los tres grupos se leen con metodos de extension, que ya contemplan la raza ausente.
         Dim raceFo4ForMorphs = TryCast(_race, Canon.RaceFO4)
-        _raceMorphValues = raceFo4ForMorphs.MorphValues
+        If raceFo4ForMorphs IsNot Nothing Then
+            _raceMorphValues = raceFo4ForMorphs.MorphValues
+        Else
+            _raceMorphValues = New List(Of Canon.RaceFO4_MorphValues)()
+        End If
         _raceMaleMorphGroups = raceFo4ForMorphs.ReadMorphGroups(isFemale:=False)
         _raceFemaleMorphGroups = raceFo4ForMorphs.ReadMorphGroups(isFemale:=True)
         ' Fold LooksMenu custom tint templates into the tint list so it shows (and can edit) any
