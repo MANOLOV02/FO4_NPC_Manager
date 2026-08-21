@@ -44,7 +44,7 @@ Partial Class MainForm
         CheckBoxCatGeneric = New CheckBox()
         CheckBoxCatTemplate = New CheckBox()
         CheckBoxCatUnused = New CheckBox()
-        TreeViewNPCs = New BufferedTreeView()
+        TreeViewNPCs = New VirtualTreeList()
         PanelRecordDetails = New Panel()
         TreeViewRecordDetails = New TreeView()
         LabelRecordTitle = New Label()
@@ -423,8 +423,6 @@ Partial Class MainForm
         ' 
         TreeViewNPCs.BorderStyle = BorderStyle.FixedSingle
         TreeViewNPCs.Dock = DockStyle.Fill
-        TreeViewNPCs.DrawMode = TreeViewDrawMode.OwnerDrawText
-        TreeViewNPCs.HideSelection = False
         TreeViewNPCs.Location = New Point(0, 0)
         TreeViewNPCs.Name = "TreeViewNPCs"
         TreeViewNPCs.Size = New Size(700, 468)
@@ -1357,7 +1355,7 @@ Partial Class MainForm
     Friend WithEvents PanelRecordDetails As System.Windows.Forms.Panel
     Friend WithEvents PanelPreviewLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents PanelPreviewHost As System.Windows.Forms.Panel
-    Friend WithEvents TreeViewNPCs As BufferedTreeView
+    Friend WithEvents TreeViewNPCs As VirtualTreeList
     Friend WithEvents TreeViewNpcsContextMenu As System.Windows.Forms.ContextMenuStrip
     Friend WithEvents MenuItemMarkChanged As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents MenuItemResetOverlay As System.Windows.Forms.ToolStripMenuItem

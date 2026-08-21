@@ -90,15 +90,13 @@ Public Class MainForm
     ''' <summary>NPC FormIDs currently multi-selected in the tree. Keyed by FormID so an NPC that
     ''' appears under several nodes (its plugin group + every LVLN that lists it) highlights
     ''' everywhere at once and batch ops dedup naturally. Drives the highlight in
-    ''' <see cref="TreeViewNPCs_DrawNode"/> and the random render pick.</summary>
+    ''' <see cref="TreeViewNPCs_PintarFila"/> and the random render pick.</summary>
     Private ReadOnly _selectedNpcFormIDs As New HashSet(Of UInteger)()
-    ''' <summary>Anchor node for Shift-range selection (set on the last plain/Ctrl click).</summary>
-    Private _multiSelectAnchorNode As TreeNode = Nothing
     ''' <summary>FormID of the NPC actually being rendered out of the selection (the random pick, or
     ''' the single selected one). Painted with the full highlight; the rest of the set gets a paler
     ''' one so the user can see which member was rolled.</summary>
     Private _currentRandomPickFormID As UInteger = 0UI
-    ''' <summary>FormID whose detail tree was just built by <see cref="TreeViewNPCs_AfterSelect"/>.
+    ''' <summary>FormID whose detail tree was just built by <see cref="TreeViewNPCs_FilaEnfocada"/>.
     ''' Lets the debounced render skip the redundant rebuild for the single-select case (AfterSelect
     ''' already populated it). 0 = none pending; consumed-and-cleared in
     ''' <see cref="RenderFromCurrentSelection"/> so it suppresses ONLY the one render that follows
@@ -108,7 +106,7 @@ Public Class MainForm
     ''' disposed in <see cref="MainForm_FormClosing"/>.</summary>
     Private _multiSelectBrush As System.Drawing.SolidBrush = Nothing
     ''' <summary>FormIDs the tree context menu acts on (the multi-selection when the right-click
-    ''' lands inside it, else just the clicked NPC). Set in <see cref="TreeViewNPCs_NodeMouseClick"/>.</summary>
+    ''' lands inside it, else just the clicked NPC). Set in <see cref="TreeViewNPCs_FilaClickeada"/>.</summary>
     Private ReadOnly _contextMenuTargets As New List(Of UInteger)()
     ''' <summary>Debounce timer: coalesces rapid selection changes so the heavy render fires once
     ''' after the selection settles (same pattern as Wardrobe Manager's source/target lists).</summary>
@@ -2557,9 +2555,6 @@ Public Class MainForm
     End Sub
 
     Private Async Sub LoadDataAsync()
-        ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
-        CargaArranca?.Invoke()
-        ' ⛔ FIN INSTRUMENTO TEMPORAL (tree-diag)
         ' Plugins + BA2/BSA archives were loaded by Preflight_Form before MainForm was even
         ' constructed. _pluginManager and FilesDictionary_class are already populated. Here we
         ' just parse the NPC records out of the loaded plugins and populate the tree.
@@ -2576,10 +2571,7 @@ Public Class MainForm
 
             PopulateNPCTree()
 
-            ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
-            ArbolListo?.Invoke()
-            ' ⛔ FIN INSTRUMENTO TEMPORAL (tree-diag)
-
+    
             SetStatus($"Loaded {_directlyPlacedNPCFormIDs.Count} placed NPCs + {_finalLVLNFormIDs.Count} leveled lists from {_pluginManager.Plugins.Count} plugins" &
                       If(_tiemposDeCarga = "", "", " — " & _tiemposDeCarga))
 
@@ -2737,44 +2729,7 @@ Public Class MainForm
     ''' <summary>Desglose del último <see cref="ParseAllNPCs"/>, para el texto de estado.</summary>
     Private _tiemposDeCarga As String = ""
 
-    ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR. Lo usa Program.RunTreeDiag para medir el arranque
-    ' headless de punta a punta y el costo de repoblar el arbol con distintos filtros. No lo llama nada
-    ' de la app: sin el hook conectado, `ArbolListo?.Invoke()` es un no-op.
-    Friend ArbolListo As Action
-    Friend CargaArranca As Action
-    Friend _detalleRepoblado As String = ""
-    Friend ReadOnly Property DetalleRepoblado As String
-        Get
-            Return _detalleRepoblado
-        End Get
-    End Property
-    Private Function ContarNodos(col As TreeNodeCollection) As Integer
-        Dim n = col.Count
-        For Each nodo As TreeNode In col
-            n += ContarNodos(nodo.Nodes)
-        Next
-        Return n
-    End Function
 
-    ''' <summary>Repuebla con un filtro y devuelve lo que tardo. Existe para que el instrumento mida el
-    ''' camino REAL —el mismo `PopulateNPCTree` que corre con cada tecla— y no una reimplementacion.</summary>
-    Friend Function MedirRepoblado(filtro As String) As Long
-        PopulateNPCTree(filtro)
-        Return _msUltimoRepoblado
-    End Function
-
-    Friend ReadOnly Property TiemposDeCargaTexto As String
-        Get
-            Return _tiemposDeCarga
-        End Get
-    End Property
-
-    Friend ReadOnly Property CuantosNpc As Integer
-        Get
-            Return _allNPCs.Count
-        End Get
-    End Property
-    ' ⛔ FIN INSTRUMENTO TEMPORAL (tree-diag)
 
 
     ''' <summary>Cuanto tardo el ultimo <see cref="PopulateNPCTree"/>. Va al texto de estado por el mismo
@@ -4423,16 +4378,28 @@ Public Class MainForm
         Return If(pos < 0, Integer.MaxValue, pos)
     End Function
 
-    ''' <summary>Prefijo "[00042] " de un nodo raíz, con <paramref name="width"/> dígitos y cero a la izquierda.
-    ''' Plugin no cargado → "[?????] " del MISMO ancho, así la alineación no se rompe.
-    ''' <para>Es SÓLO texto del nodo. El nombre del plugin se sigue leyendo de <c>node.Name</c>
-    ''' ("PLUGIN_&lt;nombre&gt;"), nunca de <c>node.Text</c> — ver <see cref="SelectedPluginForFomodExport"/>.</para></summary>
+
+    ''' <summary>Prefijo "[00042] " de una fila de plugin, con <paramref name="width"/> dígitos y cero a
+    ''' la izquierda. Plugin no cargado → "[?????] " del MISMO ancho, así la alineación no se rompe.
+    ''' <para>Es SÓLO texto de la fila. El nombre del plugin se sigue leyendo de la CLAVE de la fila
+    ''' ("PLUGIN_&lt;nombre&gt;"), nunca del texto — ver <see cref="SelectedPluginForFomodExport"/>.</para></summary>
     Private Function LoadOrderPrefix(pluginName As String, width As Integer) As String
         Dim pos = If(_pluginManager Is Nothing, -1, _pluginManager.GetLoadOrderPosition(pluginName))
         If pos < 0 Then Return "[" & New String("?"c, width) & "] "
         Return "[" & pos.ToString().PadLeft(width, "0"c) & "] "
     End Function
 
+    ''' <summary>Rehace el árbol de NPC según el filtro y las casillas de categoría.
+    '''
+    ''' <para>Arma un MODELO (<see cref="ModeloDeArbol"/>) y no nodos de Win32. Es todo el cambio de costo:
+    ''' un <c>TreeNode</c> es un ítem del control con su handle —7.000 de ellos costaban ~1.960 ms entre
+    ''' alta y baja, o sea eso en CADA tecla del buscador— mientras que una <see cref="FilaDeArbol"/> es un
+    ''' objeto chico. El control materializa sólo las ~30 filas que se ven.</para>
+    '''
+    ''' <para>Lo que se muestra NO cambia: mismas dos secciones, mismo orden, mismas cuentas en las
+    ''' cabeceras y la misma regla de expansión —los grupos se abren sólo cuando hay filtro o "sólo
+    ''' cambiados", así que al arrancar se ve el nivel de plugin y nada más—. Con una lista virtual
+    ''' expandir es gratis, así que esa regla se conserva por fidelidad y no por costo.</para></summary>
     Private Sub PopulateNPCTree(Optional filter As String = "")
         If InvokeRequired Then
             Invoke(Sub() PopulateNPCTree(filter))
@@ -4448,256 +4415,183 @@ Public Class MainForm
         ' carries no `facet:value` token, so `normalizedFilter` here is byte-identical to the old
         ' `If(filter, "").Trim()` and every downstream comparison is the one that always ran. Only a
         ' query with facets builds `advIndex` — and only then does anything read a referenced record.
-        ' The gate on that claim is Tools/NpcFilterGate (it left this exe on 2026-08-08); it must stay green.
+        ' El gate de esa afirmación es Tools/NpcFilterGate; tiene que seguir en verde.
         Dim query = NpcFilterQuery.Parse(filter)
         Dim normalizedFilter = query.FreeText.Trim()
         Dim advTerms = query.Terms
         Dim advIndex As NpcFilterIndex = If(advTerms.Length > 0, EnsureFilterIndex(), Nothing)
-        ' The `templates:` mode travels in the query string like everything else, so it is applied per
-        ' repopulate. The setter is a no-op when the value did not change; when it did, it drops the
-        ' per-NPC caches (the effective values are what the mode changes).
         If advIndex IsNot Nothing Then advIndex.FollowTemplates = query.FollowTemplates
-        ' Anything that used to key off "there is text in the box" (auto-expand, LVLN leaf pruning)
-        ' has to key off "there is a filter" now, or an advanced-only query renders a collapsed tree.
+
         Dim filterActive As Boolean = normalizedFilter.Length > 0 OrElse advTerms.Length > 0
-        ' "Only changed" filter: when ticked, restrict the tree to NPCs in the dirty set (bold ones),
-        ' combined with the text filter. Applies to both placed NPCs and LVLN leaf NPCs.
         Dim onlyChanged As Boolean = CheckBoxOnlyChanged IsNot Nothing AndAlso CheckBoxOnlyChanged.Checked
-        ' Section 1 category filters (additive union). Read once here, never inside the lambda.
-        ' Null-guarded because PopulateNPCTree can run before Designer init: "Unique faces" defaults
-        ' TRUE when its checkbox is null so very-early calls reproduce today's behavior; the others
-        ' default FALSE.
         Dim showUnique As Boolean = CheckBoxCatUnique Is Nothing OrElse CheckBoxCatUnique.Checked
         Dim showGeneric As Boolean = CheckBoxCatGeneric IsNot Nothing AndAlso CheckBoxCatGeneric.Checked
         Dim showTemplate As Boolean = CheckBoxCatTemplate IsNot Nothing AndAlso CheckBoxCatTemplate.Checked
         Dim showUnused As Boolean = CheckBoxCatUnused IsNot Nothing AndAlso CheckBoxCatUnused.Checked
 
-        ' Prefijo de orden de carga de los nodos raiz. Ancho FIJO, leido UNA sola vez por repoblado.
         Dim loadOrderWidth As Integer = LoadOrderTagWidth()
+        ' Los grupos se abren solos SÓLO con filtro o con "sólo cambiados", igual que antes: al arrancar
+        ' se ve el nivel de plugin y los NPC quedan adentro.
+        Dim abrirGrupos As Boolean = filterActive OrElse onlyChanged
 
-        ' El repoblado es lo que corre en CADA tecla del buscador y en cada checkbox de categoria, o sea lo
-        ' que el usuario siente como "el arbol responde o no". Se mide y se muestra: sin el numero, cualquier
-        ' cambio en este camino se discute en vez de compararse.
         Dim swArbol = System.Diagnostics.Stopwatch.StartNew()
-        TreeViewNPCs.SuspendLayout()
-        ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
-        Dim swFase = System.Diagnostics.Stopwatch.StartNew()
-        Dim sinExpandir As Boolean = (Environment.GetEnvironmentVariable("TREEDIAG_SIN_EXPAND") = "1")   ' tree-diag
-        Dim msClear As Long = 0, msSec1 As Long = 0, msSec2 As Long = 0, msResto As Long = 0
-        Dim nNodos As Integer = 0
-        ' ⛔ FIN
-        TreeViewNPCs.BeginUpdate()
-        TreeViewNPCs.Nodes.Clear()
-        msClear = swFase.ElapsedMilliseconds   ' ⛔ tree-diag
+        Dim modelo = TreeViewNPCs.Modelo
+        modelo.Limpiar()
 
-        Try
-            ' === Section 1: NPCs grouped by plugin ===
-            ' Which NPCs appear here is now driven by the category checkboxes in the filter row
-            ' (Unique faces / Generic / Template bases / Unused), additive union — an NPC shows if it
-            ' matches ANY ticked category. Default = "Unique faces" only, which reproduces the prior
-            ' behavior: in-world NPCs that define their own visual appearance. (NPCs that inherit
-            ' Traits or ModelAnimation from a template are "Generic"; those used only as TPLT/TPTA
-            ' sources are "Template bases"; the rest are "Unused".) An own-appearance NPC reached via
-            ' an LVLN appears in BOTH this plugin group and under its LVLN node in section 2.
-            Dim pluginSectionNpcs = _allNPCs.
-                Where(Function(n) NpcMatchesCategoryFilter(n, showUnique, showGeneric, showTemplate, showUnused) AndAlso
-                                   (Not onlyChanged OrElse _dirtyNpcs.Contains(n.FormID)) AndAlso
-                                   (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter)) AndAlso
-                                   (advIndex Is Nothing OrElse advIndex.MatchesAll(n, advTerms))).
-                GroupBy(Function(n) If(n.PluginName, "Unknown")).
+        ' === Sección 1: NPC agrupados por plugin ===
+        ' Qué NPC entran lo deciden las casillas de categoría (Unique / Generic / Template bases /
+        ' Unused), en unión aditiva: un NPC aparece si cae en ALGUNA de las tildadas. El default —sólo
+        ' "Unique faces"— reproduce el comportamiento previo. Un NPC con apariencia propia alcanzable
+        ' desde un LVLN aparece EN LAS DOS secciones, que es la regla del producto.
+        Dim pluginSectionNpcs = _allNPCs.
+            Where(Function(n) NpcMatchesCategoryFilter(n, showUnique, showGeneric, showTemplate, showUnused) AndAlso
+                               (Not onlyChanged OrElse _dirtyNpcs.Contains(n.FormID)) AndAlso
+                               (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter)) AndAlso
+                               (advIndex Is Nothing OrElse advIndex.MatchesAll(n, advTerms))).
+            GroupBy(Function(n) If(n.PluginName, "Unknown")).
+            OrderBy(Function(g) LoadOrderSortKey(g.Key)).
+            ThenBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
+
+        For Each pluginGroup In pluginSectionNpcs
+            Dim grupo As FilaDeArbol = Nothing
+            Dim matchCount = 0
+
+            ' SIN OrderBy: `_allNPCs` ya viene ordenado por `ClaveDeOrden` (ver OrdenarNpcs) y `GroupBy`
+            ' conserva el orden de la fuente dentro de cada grupo.
+            For Each npc In pluginGroup
+                If grupo Is Nothing Then
+                    grupo = modelo.AgregarRaiz(New FilaDeArbol(TipoDeFila.GrupoDePlugin,
+                                                               $"PLUGIN_{pluginGroup.Key}",
+                                                               pluginGroup.Key, 0, Nothing))
+                End If
+                grupo.Agregar(New FilaDeArbol(TipoDeFila.Npc, $"NPC_{npc.FormID:X8}",
+                                              EtiquetaDeNpc(npc), 1, npc))
+                matchCount += 1
+            Next
+
+            If grupo IsNot Nothing Then
+                grupo.Texto = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}{pluginGroup.Key} ({matchCount})"
+                grupo.Expandida = abrirGrupos
+            End If
+        Next
+
+        ' === Sección 2: leveled lists finales (encuentros) ===
+        ' Cada LVLN cuelga con sus NPC hoja como hijos (recursión aplanada vía CollectLVLNLeafNpcIds).
+        ' SIN dedup: un NPC puede aparecer bajo CADA LVLN que lo lista — regla del usuario 2026-05-18,
+        ' sirve para ver qué LVLNs enrolan al mismo NPC.
+        If _finalLVLNFormIDs.Count > 0 Then
+            Dim value As Canon.ILvln = Nothing
+            Dim visibleLvlns As New List(Of (FormID As UInteger,
+                                             Record As PluginRecord,
+                                             Data As Canon.ILvln,
+                                             VisibleLeaves As List(Of NPC_Data)))
+
+            For Each fid In _finalLVLNFormIDs
+                Dim rec = _pluginManager.GetRecord(fid)
+                Dim lvln = If(_lvlnDataCache.TryGetValue(fid, value), value, Nothing)
+                If rec Is Nothing OrElse lvln Is Nothing Then Continue For
+
+                Dim visibleLeaves As List(Of NPC_Data) = Nothing
+                If onlyChanged OrElse filterActive Then
+                    visibleLeaves = New List(Of NPC_Data)
+                    Dim leaves As List(Of UInteger) = Nothing
+                    If Not _lvlnLeavesCache.TryGetValue(fid, leaves) Then leaves = New List(Of UInteger)
+
+                    For Each leafFid In leaves
+                        Dim leafNpc As NPC_Data = Nothing
+                        If Not _ctx.NpcCache.TryGetValue(leafFid, leafNpc) Then Continue For
+                        If onlyChanged AndAlso Not _dirtyNpcs.Contains(leafFid) Then Continue For
+                        If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
+                        If advIndex IsNot Nothing AndAlso Not advIndex.MatchesAll(leafNpc, advTerms) Then Continue For
+                        visibleLeaves.Add(leafNpc)
+                    Next
+
+                    If onlyChanged Then
+                        If visibleLeaves.Count = 0 Then Continue For
+                    ElseIf filterActive AndAlso visibleLeaves.Count = 0 Then
+                        ' Un LVLN no tiene head parts / skin / outfit propios, así que NUNCA puede
+                        ' satisfacer un término de faceta: con el filtro avanzado sobrevive sólo por un
+                        ' hijo que matchee. El texto libre solo conserva el comportamiento viejo (la
+                        ' lista misma puede matchear por EditorID / FormID / plugin).
+                        If advTerms.Length > 0 Then Continue For
+                        If Not NpcDisplayHelpers.MatchesRecordFilter(rec, normalizedFilter) Then Continue For
+                    End If
+                End If
+
+                visibleLvlns.Add((fid, rec, lvln, visibleLeaves))
+            Next
+
+            Dim lvlnsByPlugin = visibleLvlns.
+                GroupBy(Function(x) If(x.Record.SourcePluginName, "Unknown")).
                 OrderBy(Function(g) LoadOrderSortKey(g.Key)).
                 ThenBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
-            For Each pluginGroup In pluginSectionNpcs
-                Dim pluginNode As TreeNode = Nothing
+            For Each pluginGroup In lvlnsByPlugin
+                Dim grupo As FilaDeArbol = Nothing
                 Dim matchCount = 0
 
-                ' SIN OrderBy: `_allNPCs` ya viene ordenado por `ClaveDeOrden` (ver OrdenarNpcs) y `GroupBy`
-                ' conserva el orden de la fuente dentro de cada grupo.
-                For Each npc In pluginGroup
-                    If pluginNode Is Nothing Then
-                        pluginNode = New TreeNode(pluginGroup.Key) With {
-                            .Name = $"PLUGIN_{pluginGroup.Key}",
-                            .Tag = Nothing
-                        }
+                For Each item In pluginGroup.OrderBy(Function(x) x.Data.EditorID, StringComparer.OrdinalIgnoreCase)
+                    If grupo Is Nothing Then
+                        grupo = modelo.AgregarRaiz(New FilaDeArbol(TipoDeFila.GrupoDeLvlnPorPlugin,
+                                                                   $"LVLN_PLUGIN_{pluginGroup.Key}",
+                                                                   pluginGroup.Key, 0, Nothing))
                     End If
 
-                    Dim displayLabel As String = Nothing
-                    If Not _npcDisplayLabelCache.TryGetValue(npc.FormID, displayLabel) Then
-                        ' Y SE GUARDA. Sin esto, un NPC que no quedo en el cache se re-arma la etiqueta en
-                        ' CADA repoblado — o sea en cada tecla del buscador — para siempre.
-                        displayLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
-                        _npcDisplayLabelCache(npc.FormID) = displayLabel
-                    End If
-                    ' The node text is the NPC's label and NOTHING else. An earlier version appended
-                    ' the matched facet here ("— hair↑ Hair_Cait"); the filter must not rewrite what the
-                    ' NPC is called.
-                    Dim npcNode = New TreeNode(displayLabel) With {
-                        .Name = $"NPC_{npc.FormID:X8}",
-                        .Tag = npc
-                    }
-                    pluginNode.Nodes.Add(npcNode)
-                    matchCount += 1
-                Next
+                    Dim label = If(item.Data.EditorID <> "", item.Data.EditorID, item.FormID.ToString("X8"))
+                    Dim filaLvln = grupo.Agregar(New FilaDeArbol(TipoDeFila.Lvln, $"LVLN_{item.FormID:X8}",
+                                                                 label, 1, item.Data))
 
-                If pluginNode IsNot Nothing Then
-                    pluginNode.Text = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}{pluginGroup.Key} ({matchCount})"
-                    TreeViewNPCs.Nodes.Add(pluginNode)
-                    If (filterActive OrElse onlyChanged) AndAlso Not sinExpandir Then pluginNode.Expand()
-                End If
-            Next
-
-            Dim value As Canon.ILvln = Nothing
-            msSec1 = swFase.ElapsedMilliseconds   ' ⛔ tree-diag
-            ' === Section 2: Final Leveled NPC Lists (encounter spawns) ===
-            ' Cada LVLN se cuelga con sus NPC entries como hijos (recursión flatten via
-            ' CollectLVLNLeafNpcIds). El usuario puede expandir el LVLN y elegir un NPC específico,
-            ' o clickear el LVLN para random roll (handler diferencia por Tag type). Sin dedup:
-            ' un NPC puede aparecer bajo CADA LVLN que lo lista (regla del usuario 2026-05-18 —
-            ' útil para ver qué LVLNs enrolan a un mismo NPC).
-            If _finalLVLNFormIDs.Count > 0 Then
-                Dim visibleLvlns As New List(Of (FormID As UInteger,
-                                                 Record As PluginRecord,
-                                                 Data As Canon.ILvln,
-                                                 VisibleLeaves As List(Of NPC_Data)))
-
-                For Each fid In _finalLVLNFormIDs
-                    Dim rec = _pluginManager.GetRecord(fid)
-                    Dim lvln = If(_lvlnDataCache.TryGetValue(fid, value), value, Nothing)
-                    If rec Is Nothing OrElse lvln Is Nothing Then Continue For
-
-                    Dim visibleLeaves As List(Of NPC_Data) = Nothing
-                    If onlyChanged OrElse filterActive Then
-                        visibleLeaves = New List(Of NPC_Data)
+                    Dim childMatchCount = 0
+                    If item.VisibleLeaves IsNot Nothing Then
+                        For Each leafNpc In item.VisibleLeaves
+                            filaLvln.Agregar(New FilaDeArbol(TipoDeFila.NpcDeLvln, $"NPC_{leafNpc.FormID:X8}",
+                                                             EtiquetaDeNpc(leafNpc), 2, leafNpc))
+                            childMatchCount += 1
+                        Next
+                    Else
                         Dim leaves As List(Of UInteger) = Nothing
-                        If Not _lvlnLeavesCache.TryGetValue(fid, leaves) Then leaves = New List(Of UInteger)
-
+                        If Not _lvlnLeavesCache.TryGetValue(item.FormID, leaves) Then leaves = New List(Of UInteger)
                         For Each leafFid In leaves
                             Dim leafNpc As NPC_Data = Nothing
                             If Not _ctx.NpcCache.TryGetValue(leafFid, leafNpc) Then Continue For
-                            If onlyChanged AndAlso Not _dirtyNpcs.Contains(leafFid) Then Continue For
-                            If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
-                            If advIndex IsNot Nothing AndAlso Not advIndex.MatchesAll(leafNpc, advTerms) Then Continue For
-                            visibleLeaves.Add(leafNpc)
+                            filaLvln.Agregar(New FilaDeArbol(TipoDeFila.NpcDeLvln, $"NPC_{leafNpc.FormID:X8}",
+                                                             EtiquetaDeNpc(leafNpc), 2, leafNpc))
+                            childMatchCount += 1
                         Next
-
-                        If onlyChanged Then
-                            If visibleLeaves.Count = 0 Then Continue For
-                        ElseIf filterActive AndAlso visibleLeaves.Count = 0 Then
-                            ' An LVLN record has no head parts / skin / outfit of its own, so it can
-                            ' NEVER satisfy a facet term: with the advanced filter on it survives only
-                            ' through a matching child. Free text alone keeps the old behaviour (the
-                            ' list itself can match by EditorID / FormID / plugin).
-                            If advTerms.Length > 0 Then Continue For
-                            If Not NpcDisplayHelpers.MatchesRecordFilter(rec, normalizedFilter) Then Continue For
-                        End If
                     End If
 
-                    visibleLvlns.Add((fid, rec, lvln, visibleLeaves))
+                    filaLvln.Expandida = (childMatchCount > 0 AndAlso abrirGrupos)
+                    matchCount += 1
                 Next
 
-                ' Group final LVLNs by source plugin
-                Dim lvlnsByPlugin = visibleLvlns.
-                    GroupBy(Function(x) If(x.Record.SourcePluginName, "Unknown")).
-                    OrderBy(Function(g) LoadOrderSortKey(g.Key)).
-                    ThenBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
+                If grupo IsNot Nothing AndAlso grupo.Hijos.Count > 0 Then
+                    grupo.Texto = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}[LVLN] {pluginGroup.Key} ({matchCount})"
+                    grupo.Expandida = abrirGrupos
+                End If
+            Next
+        End If
 
-                For Each pluginGroup In lvlnsByPlugin
-                    Dim pluginNode As TreeNode = Nothing
-                    Dim matchCount = 0
+        TreeViewNPCs.Refrescar()
+        swArbol.Stop()
+        _msUltimoRepoblado = swArbol.ElapsedMilliseconds
 
-                    For Each item In pluginGroup.OrderBy(Function(x) x.Data.EditorID, StringComparer.OrdinalIgnoreCase)
-                        If pluginNode Is Nothing Then
-                            pluginNode = New TreeNode($"[LVLN] {pluginGroup.Key}") With {
-                                .Name = $"LVLN_PLUGIN_{pluginGroup.Key}",
-                                .Tag = Nothing
-                            }
-                        End If
-
-                        Dim label = If(item.Data.EditorID <> "", item.Data.EditorID, item.FormID.ToString("X8"))
-
-                        Dim lvlnNode = New TreeNode(label) With {
-                            .Name = $"LVLN_{item.FormID:X8}",
-                            .Tag = item.Data
-                        }
-
-                        ' Colgar cada NPC leaf del LVLN como hijo seleccionable. Recurse en nested
-                        ' LVLNs para aplanar el árbol — el usuario ve los NPCs concretos, no
-                        ' sub-LVLNs intermedios. SIN dedup contra otros LVLNs: si el NPC está en
-                        ' múltiples lvl lists, aparece bajo cada una. Leaves vienen del cache
-                        ' precomputado (_lvlnLeavesCache) — O(1) lookup en lugar de recursión.
-                        Dim childMatchCount = 0
-                        If item.VisibleLeaves IsNot Nothing Then
-                            For Each leafNpc In item.VisibleLeaves
-                                Dim childLabel As String = Nothing
-                                If Not _npcDisplayLabelCache.TryGetValue(leafNpc.FormID, childLabel) Then
-                                    ' Y SE GUARDA. Sin esto, un NPC que no quedó en el caché se re-arma la etiqueta en CADA
-                                    ' repoblado — o sea en cada tecla del buscador — para siempre.
-                                    childLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(leafNpc)
-                                    _npcDisplayLabelCache(leafNpc.FormID) = childLabel
-                                End If
-                                Dim childNode = New TreeNode(childLabel) With {
-                                    .Name = $"NPC_{leafNpc.FormID:X8}",
-                                    .Tag = leafNpc
-                                }
-                                lvlnNode.Nodes.Add(childNode)
-                                childMatchCount += 1
-                            Next
-                        Else
-                            Dim leaves As List(Of UInteger) = Nothing
-                            If Not _lvlnLeavesCache.TryGetValue(item.FormID, leaves) Then leaves = New List(Of UInteger)
-                            For Each leafFid In leaves
-                                Dim leafNpc As NPC_Data = Nothing
-                                If Not _ctx.NpcCache.TryGetValue(leafFid, leafNpc) Then Continue For
-                                Dim childLabel As String = Nothing
-                                If Not _npcDisplayLabelCache.TryGetValue(leafFid, childLabel) Then
-                                    ' Y SE GUARDA. Sin esto, un NPC que no quedó en el caché se re-arma la etiqueta en CADA
-                                    ' repoblado — o sea en cada tecla del buscador — para siempre.
-                                    childLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(leafNpc)
-                                    _npcDisplayLabelCache(leafFid) = childLabel
-                                End If
-                                Dim childNode = New TreeNode(childLabel) With {
-                                    .Name = $"NPC_{leafNpc.FormID:X8}",
-                                    .Tag = leafNpc
-                                }
-                                lvlnNode.Nodes.Add(childNode)
-                                childMatchCount += 1
-                            Next
-                        End If
-
-                        pluginNode.Nodes.Add(lvlnNode)
-                        matchCount += 1
-                        ' Auto-expand to reveal the surviving children when filtering by text or by
-                        ' "Only changed" (so the dirty NPCs show without a manual expand).
-                        If (childMatchCount > 0 AndAlso (filterActive OrElse onlyChanged)) AndAlso Not sinExpandir Then lvlnNode.Expand()
-                    Next
-
-                    If pluginNode IsNot Nothing AndAlso pluginNode.Nodes.Count > 0 Then
-                        pluginNode.Text = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}[LVLN] {pluginGroup.Key} ({matchCount})"
-                        TreeViewNPCs.Nodes.Add(pluginNode)
-                        If (filterActive OrElse onlyChanged) AndAlso Not sinExpandir Then pluginNode.Expand()
-                    End If
-                Next
-            End If
-        Finally
-            msResto = swFase.ElapsedMilliseconds   ' ⛔ tree-diag
-            nNodos = ContarNodos(TreeViewNPCs.Nodes)
-            TreeViewNPCs.EndUpdate()
-            TreeViewNPCs.ResumeLayout()
-            ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
-            _detalleRepoblado = $"clear {msClear} · sec1 {msSec1 - msClear} · sec2+3 {msResto - msSec1} · " &
-                                $"endupdate {swFase.ElapsedMilliseconds - msResto} · nodos {nNodos}"
-            ' ⛔ FIN
-            swArbol.Stop()
-            _msUltimoRepoblado = swArbol.ElapsedMilliseconds
-            ' Sólo cuando el repoblado viene de un FILTRO: en la carga inicial el que manda el estado es
-            ' LoadDataAsync, con el desglose completo, y pisarlo acá lo borraría.
-            If filterActive OrElse onlyChanged Then
-                Dim visibles = TreeViewNPCs.Nodes.Count
-                SetStatus($"Filter — {visibles} plugin group(s) in {_msUltimoRepoblado} ms")
-            End If
-        End Try
+        ' Sólo cuando el repoblado viene de un FILTRO: en la carga inicial el que manda el estado es
+        ' LoadDataAsync, con el desglose completo, y pisarlo acá lo borraría.
+        If abrirGrupos Then
+            SetStatus($"Filter — {modelo.Raices.Count} plugin group(s), {modelo.Visibles.Count} row(s) in {_msUltimoRepoblado} ms")
+        End If
     End Sub
+
+    ''' <summary>La etiqueta de un NPC, del caché; si no está, se arma Y SE GUARDA. Sin guardarla, un NPC
+    ''' que no quedó en el caché se re-arma la etiqueta en cada repoblado —o sea en cada tecla— para
+    ''' siempre. Un solo sitio: antes esto estaba escrito en los tres lugares que crean filas de NPC.</summary>
+    Private Function EtiquetaDeNpc(npc As NPC_Data) As String
+        Dim etiqueta As String = Nothing
+        If _npcDisplayLabelCache.TryGetValue(npc.FormID, etiqueta) Then Return etiqueta
+        etiqueta = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
+        _npcDisplayLabelCache(npc.FormID) = etiqueta
+        Return etiqueta
+    End Function
 
 
     ''' <summary>Compute (memoized) la lista flattened de NPC FormIDs alcanzables desde un LVLN.
@@ -4989,120 +4883,126 @@ Public Class MainForm
     Private _currentOutfitEntries As New List(Of OutfitComboEntry)
     Private _suppressOutfitComboEvent As Boolean = False
 
-    Private Sub TreeViewNPCs_DrawNode(sender As Object, e As DrawTreeNodeEventArgs) Handles TreeViewNPCs.DrawNode
-        Dim npc = TryCast(e.Node.Tag, NPC_Data)
-        Dim lvln = TryCast(e.Node.Tag, Canon.ILvln)
-        Dim textColor = Color.Black
+    ''' <summary>Estilo de una fila: la MISMA ley de colores y fuentes de siempre —gris si el NPC sólo
+    ''' sirve de plantilla, azul si es una leveled list, negrita si tiene cambios sin guardar, tachado y
+    ''' rojo si está marcado para borrar, y el resaltado suave de la multi-selección—.
+    '''
+    ''' <para>Los colores salen de <see cref="ColoresDelArbol"/>, o sea de <c>SystemColors</c>: un color
+    ''' escrito a mano pierde el contraste apenas el usuario cambia a tema oscuro o a alto contraste.</para>
+    '''
+    ''' <para>El FONDO de la selección del sistema lo pinta el control (con el par
+    ''' Highlight/HighlightText); acá sólo se pide el resaltado PROPIO de la multi-selección, que es un
+    ''' concepto distinto —los NPC elegidos para actuar en lote— y por eso tiene su tono.</para></summary>
+    Private Sub TreeViewNPCs_PintarFila(sender As Object, e As PintarFilaEventArgs) Handles TreeViewNPCs.PintarFila
+        Dim npc = e.Fila.Npc
+        Dim esLvln = (e.Fila.Tipo = TipoDeFila.Lvln)
+
+        e.Estilo.Texto = ColoresDelArbol.Texto
         If npc IsNot Nothing AndAlso IsTemplateOnly(npc) Then
-            textColor = Color.Gray
-        ElseIf lvln IsNot Nothing Then
-            textColor = Color.DarkBlue
+            e.Estilo.Texto = ColoresDelArbol.Apagado
+        ElseIf esLvln Then
+            e.Estilo.Texto = ColoresDelArbol.Acento
         End If
 
-        ' NPCs with unsaved changes (edited this session or manually marked) render bold. The bold
-        ' font is derived once from the tree's font and cached (_dirtyNodeFont).
-        Dim nodeFont = TreeViewNPCs.Font
+        ' Con cambios sin guardar va en negrita. La fuente se deriva una vez de la del control.
+        Dim fuente = TreeViewNPCs.Font
         If npc IsNot Nothing AndAlso _dirtyNpcs.Contains(npc.FormID) Then
             If _dirtyNodeFont Is Nothing Then _dirtyNodeFont = New Font(TreeViewNPCs.Font, FontStyle.Bold)
-            nodeFont = _dirtyNodeFont
+            fuente = _dirtyNodeFont
         End If
 
-        ' Marked-to-delete NPCs render struck-through + firebrick (overrides the dirty-bold style, since a
-        ' record about to be dropped from the plugin shouldn't also read as a pending edit).
+        ' Marcado para borrar: tachado y rojo, y le gana a la negrita — un record que está por
+        ' desaparecer del plugin no puede leerse además como "edición pendiente".
         If npc IsNot Nothing AndAlso _recordsToRemove.Contains(npc.FormID) Then
             If _deleteNodeFont Is Nothing Then _deleteNodeFont = New Font(TreeViewNPCs.Font, FontStyle.Strikeout)
-            nodeFont = _deleteNodeFont
-            textColor = Color.Firebrick
+            fuente = _deleteNodeFont
+            e.Estilo.Texto = ColoresDelArbol.Peligro
         End If
+        e.Estilo.Fuente = fuente
 
-        ' Selection highlight. With manual multi-select the framework only marks SelectedNode, so we
-        ' paint every node whose NPC FormID is in _selectedNpcFormIDs. The member actually being
-        ' rendered (_currentRandomPickFormID) gets the full system highlight; the rest of a
-        ' multi-selection get a paler highlight so the user can tell which one was rolled.
-        Dim inMultiSet As Boolean = (npc IsNot Nothing AndAlso _selectedNpcFormIDs.Contains(npc.FormID))
-        Dim isPicked As Boolean = (npc IsNot Nothing AndAlso _currentRandomPickFormID <> 0UI AndAlso npc.FormID = _currentRandomPickFormID)
-        ' Only honor the framework's SelectedNode highlight when there is NO NPC multi-selection (e.g. a
-        ' single LVLN / plugin / group node is focused). Otherwise the framework SelectedNode can diverge
-        ' from our set and paint a PHANTOM second highlight — the "I selected one but two stay lit" bug.
-        Dim frameworkSelected As Boolean = ((e.State And TreeNodeStates.Selected) <> 0) AndAlso _selectedNpcFormIDs.Count = 0
-        If isPicked OrElse frameworkSelected Then
-            e.Graphics.FillRectangle(SystemBrushes.Highlight, e.Bounds)
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, SystemColors.HighlightText, TextFormatFlags.GlyphOverhangPadding)
-        ElseIf inMultiSet Then
-            If _multiSelectBrush Is Nothing Then _multiSelectBrush = New SolidBrush(Color.FromArgb(198, 220, 247))
-            e.Graphics.FillRectangle(_multiSelectBrush, e.Bounds)
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, textColor, TextFormatFlags.GlyphOverhangPadding)
-        Else
-            e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds)
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, textColor, TextFormatFlags.GlyphOverhangPadding)
+        ' Resaltado propio de la multi-selección. El que SE ESTÁ renderizando
+        ' (_currentRandomPickFormID) no lleva éste: se lo queda la selección del sistema, que el control
+        ' pinta aparte, y así se distingue cuál de los elegidos es el que se ve en el visor.
+        Dim enElConjunto = (npc IsNot Nothing AndAlso _selectedNpcFormIDs.Contains(npc.FormID))
+        Dim esElRenderizado = (npc IsNot Nothing AndAlso _currentRandomPickFormID <> 0UI AndAlso
+                               npc.FormID = _currentRandomPickFormID)
+        If enElConjunto AndAlso Not esElRenderizado AndAlso Not e.SeleccionadaPorElSistema Then
+            e.Estilo.Fondo = ColoresDelArbol.SeleccionSuave
         End If
     End Sub
 
-    ''' <summary>AfterSelect ONLY refreshes the record-details panel. Selection-SET management lives
-    ''' in <see cref="TreeViewNPCs_NodeMouseClick"/> (mouse) and <see cref="TreeViewNPCs_KeyUp"/>
-    ''' (keyboard), so it can never fight this event: touching _selectedNpcFormIDs here collapsed or
-    ''' deselected multi-selections because AfterSelect's order relative to NodeMouseClick is not
-    ''' guaranteed (it can fire before OR after the click handler).</summary>
-    Private Sub TreeViewNPCs_AfterSelect(sender As Object, e As TreeViewEventArgs) Handles TreeViewNPCs.AfterSelect
-        Dim npc = TryCast(e.Node?.Tag, NPC_Data)
+    ''' <summary>El foco del árbol se movió: refresca el panel de detalles. NO toca el conjunto
+    ''' seleccionado — de eso se ocupa <see cref="TreeViewNPCs_SeleccionCambiada"/>, y separarlos es lo que
+    ''' evita que se peleen (el orden entre "cambió el foco" y "cambió la selección" no está garantizado).</summary>
+    Private Sub TreeViewNPCs_FilaEnfocada(sender As Object, e As FilaEventArgs) Handles TreeViewNPCs.FilaEnfocada
+        Dim npc = e.Fila?.Npc
         PopulateRecordDetails(npc)
-        ' Record which NPC the details panel now shows so the debounced render
-        ' (RenderFromCurrentSelection, ~180 ms later) can skip rebuilding the identical detail tree
-        ' for the common single-select case — it is built twice today (once here for instant
-        ' feedback, once in the render). See _detailsAfterSelectFormID.
+        ' Se anota qué NPC muestra el panel para que el render con retardo (RenderFromCurrentSelection,
+        ' ~180 ms después) pueda saltearse rearmar el mismo árbol de detalles en el caso común de
+        ' selección simple — hoy se construye dos veces. Ver _detailsAfterSelectFormID.
         _detailsAfterSelectFormID = If(npc IsNot Nothing, npc.FormID, 0UI)
-        ' Export FOMOD gate is per-PLUGIN (root node or NPC leaf) — instant feedback here, and
-        ' again in the debounced RenderFromCurrentSelection (idempotent, cheap).
+        ' El gate de Export FOMOD es por PLUGIN (nodo raíz o NPC): respuesta inmediata acá, y otra vez en
+        ' el render con retardo (idempotente y barato).
         UpdateExportFomodEnabled()
     End Sub
 
-    ''' <summary>Tree mouse click. LEFT click drives manual multi-select (plain = single, Ctrl =
-    ''' toggle, Shift = range over the currently-shown NPC leaf nodes). RIGHT click opens the context
-    ''' menu on NPC nodes only (never on plugin-group / LVLN / empty space), targeting the whole
-    ''' multi-selection when the click lands inside it, otherwise just the clicked NPC. Right-click
-    ''' does not start a render (no heavy work on a context click).</summary>
-    Private Sub TreeViewNPCs_NodeMouseClick(sender As Object, e As TreeNodeMouseClickEventArgs) Handles TreeViewNPCs.NodeMouseClick
-        If e.Button = MouseButtons.Left Then
-            HandleLeftMultiSelectClick(e)
-            Return
-        End If
-        If e.Button <> MouseButtons.Right Then Return
+    ''' <summary>Cambió el CONJUNTO seleccionado del árbol: se traduce a los FormID de NPC con los que
+    ''' trabaja el resto de la app.
+    '''
+    ''' <para>⛔ LA MECÁNICA DE SELECCIÓN VIVE EN EL CONTROL, NO ACÁ. Antes el formulario tenía su propio
+    ''' ancla, su propio rango con Shift y su propio alternado con Ctrl (<c>HandleLeftMultiSelectClick</c>,
+    ''' <c>SelectNpcRange</c>, <c>_multiSelectAnchorNode</c>), duplicando lo que un control de lista ya
+    ''' sabe hacer y con la semántica escrita en dos lugares. Acá sólo se DERIVA: las filas que no son NPC
+    ''' —cabeceras de plugin, leveled lists— no aportan FormID, así que seleccionar una vacía el conjunto,
+    ''' que es exactamente lo que hacía antes.</para></summary>
+    Private Sub TreeViewNPCs_SeleccionCambiada(sender As Object, e As EventArgs) Handles TreeViewNPCs.SeleccionCambiada
+        _selectedNpcFormIDs.Clear()
+        For Each fila In TreeViewNPCs.Seleccionadas
+            Dim npc = fila.Npc
+            If npc IsNot Nothing Then _selectedNpcFormIDs.Add(npc.FormID)
+        Next
+        TreeViewNPCs.Invalidate()
+        RestartSelectionDebounce()
+    End Sub
 
-        Dim npc = TryCast(e.Node.Tag, NPC_Data)
+    ''' <summary>Click en una fila. El botón derecho abre el menú contextual, y SÓLO sobre NPC —nunca
+    ''' sobre una cabecera de plugin, un LVLN o el vacío—. Los objetivos son toda la multi-selección si el
+    ''' click cayó adentro, o ese NPC solo si cayó afuera. No arranca ningún render: un click de menú no
+    ''' puede costar trabajo pesado.</summary>
+    Private Sub TreeViewNPCs_FilaClickeada(sender As Object, e As FilaEventArgs) Handles TreeViewNPCs.FilaClickeada
+        If e.Boton <> MouseButtons.Right Then Return
+        Dim npc = e.Fila?.Npc
         If npc Is Nothing Then Return
 
-        ' Action targets: the whole multi-selection if the right-click landed inside it, otherwise
-        ' re-select just this node and act on it alone.
         _contextMenuTargets.Clear()
         If _selectedNpcFormIDs.Count > 1 AndAlso _selectedNpcFormIDs.Contains(npc.FormID) Then
             _contextMenuTargets.AddRange(_selectedNpcFormIDs)
         Else
-            _selectedNpcFormIDs.Clear()
-            _selectedNpcFormIDs.Add(npc.FormID)
-            _multiSelectAnchorNode = e.Node
+            ' El control ya dejó seleccionada la fila clickeada (ver OnMouseDown), así que acá sólo se
+            ' fija cuál es el que se va a renderizar y se arma el objetivo.
             _currentRandomPickFormID = npc.FormID
             _contextMenuTargets.Add(npc.FormID)
             TreeViewNPCs.Invalidate()
         End If
         _contextMenuNpcFormID = npc.FormID
 
-        ' Reset is only meaningful when at least one target has something to discard.
+        ' Reset sólo tiene sentido si algún objetivo tiene algo que descartar.
         MenuItemResetOverlay.Enabled = _contextMenuTargets.Any(
             Function(fid) _appliedPresets.ContainsKey(fid) OrElse _dirtyNpcs.Contains(fid))
 
-        ' Mark-to-delete toggle: label flips to "Unmark delete" only when EVERY target is already marked,
-        ' so a mixed selection re-marks the un-marked ones (idempotent) rather than un-marking all.
+        ' El texto de marcar-para-borrar pasa a "Unmark delete" sólo cuando TODOS los objetivos ya están
+        ' marcados, así una selección mixta re-marca los que faltan (idempotente) en vez de desmarcar todo.
         Dim allMarked = _contextMenuTargets.Count > 0 AndAlso _contextMenuTargets.All(AddressOf _recordsToRemove.Contains)
         MenuItemMarkToDelete.Text = If(allMarked, "Unmark delete", "Mark to delete (on Save)")
 
-        TreeViewNpcsContextMenu.Show(TreeViewNPCs, e.Location)
+        TreeViewNpcsContextMenu.Show(TreeViewNPCs, e.Punto)
     End Sub
 
     ''' <summary>Right-click "Mark to delete (on Save)" — toggle every context target in
     ''' <see cref="_recordsToRemove"/>. On the next Save the writer's Phase 2a drops these records from the
     ''' plugin (a saved NEW record vanishes, an OVERRIDE reverts to the base) — and if the FormID is NOT in
     ''' the target ESP it is simply never written, so this is a safe no-op for base records with no override.
-    ''' Marked nodes render struck-through (see <see cref="TreeViewNPCs_DrawNode"/>). The label flipped to
+    ''' Marked nodes render struck-through (see <see cref="TreeViewNPCs_PintarFila"/>). The label flipped to
     ''' "Unmark delete" when all targets were already marked, so this un-marks in that case.</summary>
     Private Sub MenuItemMarkToDelete_Click(sender As Object, e As EventArgs) Handles MenuItemMarkToDelete.Click
         If _contextMenuTargets.Count = 0 Then Return
@@ -5119,111 +5019,10 @@ Public Class MainForm
         If _recordsToRemove.Count > 0 Then ButtonSavePlugin.Enabled = True
     End Sub
 
-    ''' <summary>Apply a LEFT-click to the multi-selection per the held modifier. Only NPC leaf nodes
-    ''' participate; clicks on group / LVLN nodes are handled by AfterSelect (which clears the set).
-    ''' Plain click is handled here too (not only in AfterSelect) so clicking an already-selected node
-    ''' still collapses a multi-selection to that one — AfterSelect won't fire when the selection
-    ''' didn't change.</summary>
-    Private Sub HandleLeftMultiSelectClick(e As TreeNodeMouseClickEventArgs)
-        Dim npc = TryCast(e.Node.Tag, NPC_Data)
-        If npc Is Nothing Then
-            Dim lvln = TryCast(e.Node.Tag, Canon.ILvln)
-            ' LVLN nodes only count as a SINGLE selection (their own random pick). Held with
-            ' Ctrl/Shift they are NOT considered — leave the current NPC multi-selection untouched.
-            If lvln IsNot Nothing AndAlso (Control.ModifierKeys And (Keys.Control Or Keys.Shift)) <> 0 Then
-                Return
-            End If
-            ' Plain LVLN click, or a plugin / group node → drop the NPC multi-selection. The tick then
-            ' renders the LVLN's own random pick (single) via TreeViewNPCs.SelectedNode, or disables
-            ' the per-NPC controls for a group node.
-            _selectedNpcFormIDs.Clear()
-            _multiSelectAnchorNode = Nothing
-            TreeViewNPCs.Invalidate()
-            RestartSelectionDebounce()
-            Return
-        End If
 
-        ' Operate directly on the persistent _selectedNpcFormIDs — AfterSelect never touches it, so
-        ' this is immune to the TreeView's mouse/select event ordering.
-        Dim ctrlDown As Boolean = (Control.ModifierKeys And Keys.Control) <> 0
-        Dim shiftDown As Boolean = (Control.ModifierKeys And Keys.Shift) <> 0
 
-        If shiftDown AndAlso _multiSelectAnchorNode IsNot Nothing Then
-            SelectNpcRange(_multiSelectAnchorNode, e.Node)   ' range REPLACES the selection
-        ElseIf ctrlDown Then
-            If Not _selectedNpcFormIDs.Remove(npc.FormID) Then _selectedNpcFormIDs.Add(npc.FormID)
-            _multiSelectAnchorNode = e.Node
-        Else
-            ' Plain click → single-select.
-            _selectedNpcFormIDs.Clear()
-            _selectedNpcFormIDs.Add(npc.FormID)
-            _multiSelectAnchorNode = e.Node
-        End If
 
-        TreeViewNPCs.Invalidate()
-        RestartSelectionDebounce()
-    End Sub
 
-    ''' <summary>Keyboard navigation in the tree → single-select the focused node (no Ctrl/Shift
-    ''' multi-select via keys for now). Fires only for keyboard, never mouse, so it cannot race the
-    ''' click handler.</summary>
-    Private Sub TreeViewNPCs_KeyUp(sender As Object, e As KeyEventArgs) Handles TreeViewNPCs.KeyUp
-        Select Case e.KeyCode
-            Case Keys.Up, Keys.Down, Keys.Left, Keys.Right, Keys.PageUp, Keys.PageDown, Keys.Home, Keys.End
-                Dim node = TreeViewNPCs.SelectedNode
-                Dim npc = TryCast(node?.Tag, NPC_Data)
-                _selectedNpcFormIDs.Clear()
-                If npc IsNot Nothing Then
-                    _selectedNpcFormIDs.Add(npc.FormID)
-                    _multiSelectAnchorNode = node
-                Else
-                    _multiSelectAnchorNode = Nothing
-                End If
-                TreeViewNPCs.Invalidate()
-                RestartSelectionDebounce()
-        End Select
-    End Sub
-
-    ''' <summary>Set the selection to the NPC leaf nodes between anchor and target in display order
-    ''' (expand-aware: only currently-shown rows). Falls back to single-select if the anchor is no
-    ''' longer in the tree (e.g. after a rebuild).</summary>
-    Private Sub SelectNpcRange(anchorNode As TreeNode, targetNode As TreeNode)
-        Dim flat = FlattenVisibleNodes()
-        Dim iA = flat.IndexOf(anchorNode)
-        Dim iB = flat.IndexOf(targetNode)
-        _selectedNpcFormIDs.Clear()
-        If iA < 0 OrElse iB < 0 Then
-            Dim n0 = TryCast(targetNode.Tag, NPC_Data)
-            If n0 IsNot Nothing Then _selectedNpcFormIDs.Add(n0.FormID)
-            _multiSelectAnchorNode = targetNode
-            Return
-        End If
-        Dim lo = Math.Min(iA, iB)
-        Dim hi = Math.Max(iA, iB)
-        For i = lo To hi
-            Dim n = TryCast(flat(i).Tag, NPC_Data)
-            If n IsNot Nothing Then _selectedNpcFormIDs.Add(n.FormID)
-        Next
-    End Sub
-
-    ''' <summary>Currently-shown tree nodes in display order (expand-aware: collapsed children are
-    ''' excluded, matching the rows the user sees). Used for Shift-range selection.</summary>
-    Private Function FlattenVisibleNodes() As List(Of TreeNode)
-        Dim acc As New List(Of TreeNode)()
-        For Each top As TreeNode In TreeViewNPCs.Nodes
-            FlattenVisibleInto(top, acc)
-        Next
-        Return acc
-    End Function
-
-    Private Sub FlattenVisibleInto(node As TreeNode, acc As List(Of TreeNode))
-        acc.Add(node)
-        If node.IsExpanded Then
-            For Each child As TreeNode In node.Nodes
-                FlattenVisibleInto(child, acc)
-            Next
-        End If
-    End Sub
 
     ''' <summary>(Re)start the selection debounce so the render fires once the selection settles.
     ''' Also refreshes the Re-roll enable state + the selection-count readout immediately (not only
@@ -5271,7 +5070,7 @@ Public Class MainForm
         _currentRandomPickFormID = 0UI
         RefreshMultiSelectControls()
         TreeViewNPCs.Invalidate()
-        Dim lvln = TryCast(TreeViewNPCs.SelectedNode?.Tag, Canon.ILvln)
+        Dim lvln = TryCast(TreeViewNPCs.FilaEnfocadaActual()?.Tag, Canon.ILvln)
         If lvln IsNot Nothing Then
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
             LoadLVLNOnDemandAsync(lvln, requestVersion)
@@ -5460,7 +5259,7 @@ Public Class MainForm
 
     ''' <summary>Restaura el estado "sin NPC seleccionado" de los controles de acción por-NPC
     ''' (el mismo baseline que el Designer fija al arrancar — ver MainForm.Designer.vb líneas
-    ''' 576-745). Se llama desde <see cref="TreeViewNPCs_AfterSelect"/> cuando la selección del
+    ''' 576-745). Se llama desde <see cref="TreeViewNPCs_FilaEnfocada"/> cuando la selección del
     ''' árbol cae en un nodo NO accionable: un root de plugin / grupo "[LVLN]" (Tag = Nothing) o
     ''' ausencia de nodo. Sin esto los botones quedaban habilitados apuntando vía
     ''' <c>_renderHost.LastRenderedState</c> / <c>CurrentBaseState</c> al NPC cargado previamente
@@ -5492,12 +5291,14 @@ Public Class MainForm
     ''' node ("PLUGIN_&lt;name&gt;", Tag=Nothing) resolves to its own name. Anything else (LVLN
     ''' roots, group nodes, no selection) → Nothing.</summary>
     Private Function SelectedPluginForFomodExport() As String
-        Dim node = TreeViewNPCs.SelectedNode
-        If node Is Nothing Then Return Nothing
-        Dim npc = TryCast(node.Tag, NPC_Data)
+        Dim fila = TreeViewNPCs.FilaEnfocadaActual()
+        If fila Is Nothing Then Return Nothing
+        Dim npc = fila.Npc
         If npc IsNot Nothing Then Return npc.PluginName
-        If node.Parent Is Nothing AndAlso node.Name.StartsWith("PLUGIN_", StringComparison.Ordinal) Then
-            Return node.Name.Substring("PLUGIN_".Length)
+        ' Cabecera de plugin de la sección 1: el nombre sale de la CLAVE, nunca del texto —el texto
+        ' lleva el prefijo "[00042] " y la cuenta "(23)".
+        If fila.Tipo = TipoDeFila.GrupoDePlugin Then
+            Return fila.Clave.Substring("PLUGIN_".Length)
         End If
         Return Nothing
     End Function
@@ -5801,7 +5602,7 @@ Public Class MainForm
             Return
         End If
 
-        Dim selectedNode = TreeViewNPCs.SelectedNode
+        Dim selectedNode = TreeViewNPCs.FilaEnfocadaActual()
         If selectedNode Is Nothing Then Return
 
         ' If selected node is a LVLN, re-pick a random NPC from it
@@ -5829,7 +5630,7 @@ Public Class MainForm
             RerollFromSelection()
             Return
         End If
-        Dim lvln = TryCast(TreeViewNPCs.SelectedNode?.Tag, Canon.ILvln)
+        Dim lvln = TryCast(TreeViewNPCs.FilaEnfocadaActual()?.Tag, Canon.ILvln)
         If lvln IsNot Nothing Then
             Dim v = Interlocked.Increment(_previewRequestVersion)
             LoadLVLNOnDemandAsync(lvln, v)
@@ -8728,7 +8529,7 @@ Public Class MainForm
                 End If
                 ' TryAbrirLvlnTolerante devuelve Nothing en el LVLN malformado que existe para
                 ' tolerar. Sin este guard el .LeveledListEntries de abajo tira NRE dentro de un handler
-                ' Handles (TreeViewNPCs_AfterSelect -> PopulateRecordDetails, que tiene Finally pero NO
+                ' Handles (TreeViewNPCs_FilaEnfocada -> PopulateRecordDetails, que tiene Finally pero NO
                 ' Catch). Mismo patron que los otros call sites de TryAbrirLvlnTolerante en este archivo
                 ' y en NpcTemplateHelpers/NpcStateResolver.
                 If lvln Is Nothing Then Return current
@@ -8973,7 +8774,7 @@ Public Class MainForm
     Private ReadOnly _npcRecordOverrides As New Dictionary(Of UInteger, NpcRecordOverride)
 
     ''' <summary>NPCs the user has changed this session — drives the bold rendering in
-    ''' <see cref="TreeViewNPCs_DrawNode"/>. Set on each editor commit (Load LM / Edit Face /
+    ''' <see cref="TreeViewNPCs_PintarFila"/>. Set on each editor commit (Load LM / Edit Face /
     ''' Edit Body / Edit Outfit / Paste) and on the context-menu "Mark as changed"; cleared on a
     ''' successful Save of that NPC and on context-menu "Reset". Deliberately decoupled from
     ''' <see cref="_appliedPresets"/> emptiness: after Save the overlay keeps non-ESP fields
@@ -8990,7 +8791,7 @@ Public Class MainForm
     Private _deleteNodeFont As Font
 
     ''' <summary>FormID of the NPC node the tree context menu was opened on. Set in
-    ''' <see cref="TreeViewNPCs_NodeMouseClick"/>, consumed by the Mark/Reset menu handlers.</summary>
+    ''' <see cref="TreeViewNPCs_FilaClickeada"/>, consumed by the Mark/Reset menu handlers.</summary>
     Private _contextMenuNpcFormID As UInteger
 
     ''' <summary>Flag an NPC as having unsaved changes (bold in the tree). Idempotent.</summary>
@@ -11359,12 +11160,10 @@ Public Class MainForm
         If treeChanged Then
             PopulateNPCTree(_pendingTreeFilter)
             If reloadFid <> 0UI Then
-                Dim moved = TreeViewNPCs.Nodes.Find($"NPC_{reloadFid:X8}", searchAllChildren:=True)
-                If moved IsNot Nothing AndAlso moved.Length > 0 Then
-                    moved(0).EnsureVisible()
-                    TreeViewNPCs.SelectedNode = moved(0)  ' fires AfterSelect → reload (clean state)
-                    Return
-                End If
+                ' Una sola llamada: busca por clave en TODO el árbol —también dentro de grupos
+                ' cerrados—, abre lo que haga falta, lo trae a la vista y lo enfoca. Antes eran cuatro
+                ' pasos y el `Find` no veía lo que no estuviera expandido.
+                If TreeViewNPCs.EnfocarClave($"NPC_{reloadFid:X8}") Then Return
             End If
         End If
 
