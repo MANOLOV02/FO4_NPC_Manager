@@ -2557,6 +2557,9 @@ Public Class MainForm
     End Sub
 
     Private Async Sub LoadDataAsync()
+        ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
+        CargaArranca?.Invoke()
+        ' ⛔ FIN INSTRUMENTO TEMPORAL (tree-diag)
         ' Plugins + BA2/BSA archives were loaded by Preflight_Form before MainForm was even
         ' constructed. _pluginManager and FilesDictionary_class are already populated. Here we
         ' just parse the NPC records out of the loaded plugins and populate the tree.
@@ -2572,6 +2575,10 @@ Public Class MainForm
             FlushPendingLoadWarnings()
 
             PopulateNPCTree()
+
+            ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
+            ArbolListo?.Invoke()
+            ' ⛔ FIN INSTRUMENTO TEMPORAL (tree-diag)
 
             SetStatus($"Loaded {_directlyPlacedNPCFormIDs.Count} placed NPCs + {_finalLVLNFormIDs.Count} leveled lists from {_pluginManager.Plugins.Count} plugins" &
                       If(_tiemposDeCarga = "", "", " — " & _tiemposDeCarga))
@@ -2729,6 +2736,46 @@ Public Class MainForm
 
     ''' <summary>Desglose del último <see cref="ParseAllNPCs"/>, para el texto de estado.</summary>
     Private _tiemposDeCarga As String = ""
+
+    ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR. Lo usa Program.RunTreeDiag para medir el arranque
+    ' headless de punta a punta y el costo de repoblar el arbol con distintos filtros. No lo llama nada
+    ' de la app: sin el hook conectado, `ArbolListo?.Invoke()` es un no-op.
+    Friend ArbolListo As Action
+    Friend CargaArranca As Action
+    Friend _detalleRepoblado As String = ""
+    Friend ReadOnly Property DetalleRepoblado As String
+        Get
+            Return _detalleRepoblado
+        End Get
+    End Property
+    Private Function ContarNodos(col As TreeNodeCollection) As Integer
+        Dim n = col.Count
+        For Each nodo As TreeNode In col
+            n += ContarNodos(nodo.Nodes)
+        Next
+        Return n
+    End Function
+
+    ''' <summary>Repuebla con un filtro y devuelve lo que tardo. Existe para que el instrumento mida el
+    ''' camino REAL —el mismo `PopulateNPCTree` que corre con cada tecla— y no una reimplementacion.</summary>
+    Friend Function MedirRepoblado(filtro As String) As Long
+        PopulateNPCTree(filtro)
+        Return _msUltimoRepoblado
+    End Function
+
+    Friend ReadOnly Property TiemposDeCargaTexto As String
+        Get
+            Return _tiemposDeCarga
+        End Get
+    End Property
+
+    Friend ReadOnly Property CuantosNpc As Integer
+        Get
+            Return _allNPCs.Count
+        End Get
+    End Property
+    ' ⛔ FIN INSTRUMENTO TEMPORAL (tree-diag)
+
 
     ''' <summary>Cuanto tardo el ultimo <see cref="PopulateNPCTree"/>. Va al texto de estado por el mismo
     ''' motivo que los tiempos de carga: en Release el log esta apagado, asi que lo unico que se puede
@@ -4433,8 +4480,15 @@ Public Class MainForm
         ' cambio en este camino se discute en vez de compararse.
         Dim swArbol = System.Diagnostics.Stopwatch.StartNew()
         TreeViewNPCs.SuspendLayout()
+        ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
+        Dim swFase = System.Diagnostics.Stopwatch.StartNew()
+        Dim sinExpandir As Boolean = (Environment.GetEnvironmentVariable("TREEDIAG_SIN_EXPAND") = "1")   ' tree-diag
+        Dim msClear As Long = 0, msSec1 As Long = 0, msSec2 As Long = 0, msResto As Long = 0
+        Dim nNodos As Integer = 0
+        ' ⛔ FIN
         TreeViewNPCs.BeginUpdate()
         TreeViewNPCs.Nodes.Clear()
+        msClear = swFase.ElapsedMilliseconds   ' ⛔ tree-diag
 
         Try
             ' === Section 1: NPCs grouped by plugin ===
@@ -4489,11 +4543,12 @@ Public Class MainForm
                 If pluginNode IsNot Nothing Then
                     pluginNode.Text = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}{pluginGroup.Key} ({matchCount})"
                     TreeViewNPCs.Nodes.Add(pluginNode)
-                    If filterActive OrElse onlyChanged Then pluginNode.Expand()
+                    If (filterActive OrElse onlyChanged) AndAlso Not sinExpandir Then pluginNode.Expand()
                 End If
             Next
 
             Dim value As Canon.ILvln = Nothing
+            msSec1 = swFase.ElapsedMilliseconds   ' ⛔ tree-diag
             ' === Section 2: Final Leveled NPC Lists (encounter spawns) ===
             ' Cada LVLN se cuelga con sus NPC entries como hijos (recursión flatten via
             ' CollectLVLNLeafNpcIds). El usuario puede expandir el LVLN y elegir un NPC específico,
@@ -4614,19 +4669,25 @@ Public Class MainForm
                         matchCount += 1
                         ' Auto-expand to reveal the surviving children when filtering by text or by
                         ' "Only changed" (so the dirty NPCs show without a manual expand).
-                        If childMatchCount > 0 AndAlso (filterActive OrElse onlyChanged) Then lvlnNode.Expand()
+                        If (childMatchCount > 0 AndAlso (filterActive OrElse onlyChanged)) AndAlso Not sinExpandir Then lvlnNode.Expand()
                     Next
 
                     If pluginNode IsNot Nothing AndAlso pluginNode.Nodes.Count > 0 Then
                         pluginNode.Text = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}[LVLN] {pluginGroup.Key} ({matchCount})"
                         TreeViewNPCs.Nodes.Add(pluginNode)
-                        If filterActive OrElse onlyChanged Then pluginNode.Expand()
+                        If (filterActive OrElse onlyChanged) AndAlso Not sinExpandir Then pluginNode.Expand()
                     End If
                 Next
             End If
         Finally
+            msResto = swFase.ElapsedMilliseconds   ' ⛔ tree-diag
+            nNodos = ContarNodos(TreeViewNPCs.Nodes)
             TreeViewNPCs.EndUpdate()
             TreeViewNPCs.ResumeLayout()
+            ' ⛔ INSTRUMENTO TEMPORAL (tree-diag) — BORRAR
+            _detalleRepoblado = $"clear {msClear} · sec1 {msSec1 - msClear} · sec2+3 {msResto - msSec1} · " &
+                                $"endupdate {swFase.ElapsedMilliseconds - msResto} · nodos {nNodos}"
+            ' ⛔ FIN
             swArbol.Stop()
             _msUltimoRepoblado = swArbol.ElapsedMilliseconds
             ' Sólo cuando el repoblado viene de un FILTRO: en la carga inicial el que manda el estado es
