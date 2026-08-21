@@ -332,8 +332,12 @@ Public Module NpcRecordOverlay
             sr.PonerDeslizadoresDeCara(n9)
         End If
         If preset.HasSseMorphs AndAlso preset.SseNama IsNot Nothing Then
+            ' El relleno es el CENTINELA, no cero: son dos valores distintos y los dos son legitimos.
+            ' Con el centinela el motor no aplica nada; con cero aplica la variante "Default" con peso
+            ' entero, asi que rellenar con ceros le CAMBIA LA CARA a un NPC que no traia el subrecord.
+            ' El vector sale del helper compartido: era la cuarta rama que lo armaba por su cuenta.
             Dim na = raw.Record.PartesDeCara()
-            If na Is Nothing Then na = New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}
+            If na Is Nothing Then na = SseNam9MorphMap.DefaultNamaVector()
             For f = 0 To Math.Min(preset.SseNama.Length, Math.Min(na.Length, SseNam9MorphMap.NamaFamilyCount)) - 1
                 na(f) = preset.SseNama(f)
             Next

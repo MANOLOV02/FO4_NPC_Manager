@@ -1771,21 +1771,11 @@ Public Class OutfitPicker_Form
         If fo4 IsNot Nothing Then fo4.LeveledListEntryChanceNone = value
     End Sub
 
-    ''' <summary>Saca <paramref name="en"/> de <paramref name="rec"/> por posición — las vistas
-    ''' generadas
-    ''' sólo ofrecen "quitar por índice", no por referencia. Compara por <c>Node</c> (el árbol es el
-    ''' único
-    ''' dueño de los datos) y no por la vista en sí: cada llamado a <c>LeveledListEntries</c>
-    ''' envuelve los
-    ''' mismos nodos en objetos nuevos.</summary>
+    ''' <summary>Saca <paramref name="en"/> de <paramref name="rec"/>. La baja por referencia la
+    ''' resuelve la vista generada: quien tiene el elemento en la mano no tiene por que saber en que
+    ''' posicion quedo.</summary>
     Private Shared Sub RemoveEntry(rec As Canon.ILvli, en As Canon.ILvli_LeveledListEntries)
-        Dim entries = rec.LeveledListEntries
-        For i = 0 To entries.Count - 1
-            If entries(i).Node Is en.Node Then
-                rec.QuitarLeveledListEntries(i)
-                Return
-            End If
-        Next
+        rec.QuitarLeveledListEntries(en)
     End Sub
 
     ''' <summary>Human-readable list of the biped slots a mask occupies, GAME-AWARE: names come from the

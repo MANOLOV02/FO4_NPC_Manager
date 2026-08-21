@@ -191,10 +191,57 @@ Public Class MainForm
     ''' Invalidation: rebuilt in BuildNPCClassification. Save ESP changes PluginName for a single
     ''' NPC → entry gets rebuilt via InvalidateNpcSearchCache.</summary>
     Private _npcSearchableCache As New Dictionary(Of UInteger, String)()
-    ''' <summary>Pre-computed display label per NPC FormID ("FullName (EditorID, FormID)" with
-    ''' fallbacks). All inputs are FormID-stable (FullName/EditorID don't change post-load), so
-    ''' no invalidation needed after initial warmup.</summary>
+    ''' <summary>Etiqueta del nodo por FormID ("FullName (EditorID, FormID)", con alternativas).
+    ''' <para>⛔ El doc viejo decia que sus entradas "no cambian despues de la carga" y era FALSO:
+    ''' hay DOS caminos que le cambian el nombre a un record ya cargado —el readback del Save y el
+    ''' editor de NPC—, y los dos tienen que refrescar este cache. Van por
+    ''' <see cref="RefrescarCachesDerivados"/>, junto con el texto buscable y la clave de orden, que
+    ''' salen de los mismos campos.</para></summary>
     Private _npcDisplayLabelCache As New Dictionary(Of UInteger, String)()
+
+    ''' <summary>Clave con la que se ORDENA la lista, por FormID. Es exactamente
+    ''' <c>NPC_Data.ToString()</c>, precalculada.
+    ''' <para>Existe porque la clave se leia VIVA en los dos sitios que ordenan, y leerla no es
+    ''' gratis: <c>ToString()</c> lee <c>Record.Name</c>, o sea una resolucion de ruta sobre el arbol
+    ''' del record. El orden de <c>_allNPCs</c> hace ~2 lecturas por comparacion (unas 107 mil para
+    ''' 4.473 NPC), y <c>PopulateNPCTree</c> vuelve a ordenar EN CADA repoblado: cada tecla del
+    ''' buscador, cada checkbox de categoria y cada Save.</para>
+    ''' <para>Se llena y se invalida en los MISMOS tres sitios que
+    ''' <see cref="_npcDisplayLabelCache"/>, que tiene el mismo contrato de frescura: el barrido de
+    ''' <c>RebuildTreeModelCache</c>, el <c>Clear</c> de <c>BuildNPCClassification</c> y el refresco
+    ''' por NPC del readback del Save. Quien no este en el cache cae a leer el valor vivo, asi que
+    ''' una ausencia da el mismo orden, no uno distinto.</para></summary>
+    Private _npcSortKeyCache As New Dictionary(Of UInteger, String)()
+
+    ''' <summary>La clave de orden de un NPC: la del cache, o la viva si no esta.</summary>
+    Private Function ClaveDeOrden(n As NPC_Data) As String
+        If n Is Nothing Then Return ""
+        Dim k As String = Nothing
+        If _npcSortKeyCache.TryGetValue(n.FormID, k) Then Return k
+        Return n.ToString()
+    End Function
+
+    ''' <summary>QUE es la clave de orden. Un solo sitio.
+    ''' <para>Estaba escrita en los tres lugares que llenan el cache. El plan contempla —y por ahora
+    ''' descarta -- un desempate por FormID; el dia que se agregue, olvidarse de uno de los tres deja
+    ''' la lista ordenada con dos leyes y sin ningun aviso.</para></summary>
+    Private Sub SembrarClaveDeOrden(npc As NPC_Data)
+        If npc Is Nothing Then Return
+        _npcSortKeyCache(npc.FormID) = npc.ToString()
+    End Sub
+
+    ''' <summary>Rehace los TRES caches que se derivan del record de un NPC: el texto que busca el
+    ''' filtro, la etiqueta del nodo y la clave de orden.
+    ''' <para>Van juntos porque salen de los mismos campos —FullName y EditorID— y porque el que se
+    ''' olvide deja la lista mostrando una cosa y ordenando por otra. Lo llaman los dos caminos que
+    ''' mutan un record ya cargado: el readback del Save y el editor de NPC.</para></summary>
+    Private Sub RefrescarCachesDerivados(fid As UInteger, npc As NPC_Data)
+        If npc Is Nothing Then Return
+        _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
+        _npcDisplayLabelCache(fid) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
+        SembrarClaveDeOrden(npc)
+    End Sub
+
     Private _pendingTreeFilter As String = ""
     Private WithEvents SearchDebounceTimer As New System.Windows.Forms.Timer()
 
@@ -2487,7 +2534,8 @@ Public Class MainForm
 
             PopulateNPCTree()
 
-            SetStatus($"Loaded {_directlyPlacedNPCFormIDs.Count} placed NPCs + {_finalLVLNFormIDs.Count} leveled lists from {_pluginManager.Plugins.Count} plugins")
+            SetStatus($"Loaded {_directlyPlacedNPCFormIDs.Count} placed NPCs + {_finalLVLNFormIDs.Count} leveled lists from {_pluginManager.Plugins.Count} plugins" &
+                      If(_tiemposDeCarga = "", "", " — " & _tiemposDeCarga))
 
             ' Warm the anim-clip cache for the races present in the load order on a background thread, so the
             ' first NPC selection of each race does NOT pay the ~16 s behavior walk on the UI thread. Bounded:
@@ -2596,27 +2644,55 @@ Public Class MainForm
         ResolveInheritedFullNames()
         Dim resolveMs = sw.ElapsedMilliseconds
         sw.Restart()
-        _allNPCs.Sort(Function(a, b) String.Compare(a.ToString(), b.ToString(), StringComparison.OrdinalIgnoreCase))
+        ' La clave se calcula UNA vez por NPC. Tiene que ser DESPUES de ResolveInheritedFullNames,
+        ' que le ESCRIBE el nombre heredado al record: con la clave tomada antes, todo NPC que hereda
+        ' el nombre de su plantilla ordenaria por su EditorID en vez de por el nombre.
+        _npcSortKeyCache.Clear()
+        For Each npc In _allNPCs
+            SembrarClaveDeOrden(npc)
+        Next
+        _allNPCs.Sort(Function(a, b) String.Compare(ClaveDeOrden(a), ClaveDeOrden(b), StringComparison.OrdinalIgnoreCase))
         Dim sortMs = sw.ElapsedMilliseconds
         sw.Restart()
         RebuildTreeModelCache()
         Dim cacheMs = sw.ElapsedMilliseconds
         sw.Stop()
+        ' Los cinco tiempos se medían y se TIRABAN: cinco variables asignadas y nunca leídas. Ahora
+        ' quedan en el texto de estado, que es lo único que el usuario final ve — el log está
+        ' clavado en apagado en Release, así que dejarlos ahí sería no medirlos.
+        _tiemposDeCarga = $"{getNpcsMs + parseMs + resolveMs + sortMs + cacheMs} ms " &
+                          $"(records {getNpcsMs} · árbol {parseMs} · nombres {resolveMs} · " &
+                          $"orden {sortMs} · caches {cacheMs})"
     End Sub
+
+    ''' <summary>Desglose del último <see cref="ParseAllNPCs"/>, para el texto de estado.</summary>
+    Private _tiemposDeCarga As String = ""
 
     ''' <summary>For NPCs with no FullName that inherit BaseData from a template, resolve the name from the chain.</summary>
     Private Sub ResolveInheritedFullNames()
+        ' Un ANCESTRO se parsea UNA vez. Sin esto, cada eslabon de cada cadena de plantillas volvia a
+        ' construir el arbol canonico entero del record —y a traducir todas sus referencias— cada vez
+        ' que alguien pasaba por el, y en un orden de carga real hay miles de NPC colgando de un
+        ' punado de plantillas.
+        '
+        ' ⛔ La cache es de PARSEOS, no de nombres resueltos, y guarda instancias PROPIAS: no se
+        ' reusan las de `_allNPCs`. Este mismo Sub le ESCRIBE el nombre heredado a las de `_allNPCs`,
+        ' asi que leer de ahi haria que un eslabon devolviera un nombre que otra vuelta del bucle
+        ' acababa de asignarle, en vez del que trae el record. Con instancias propias se lee siempre
+        ' lo que dice el archivo, que es lo que hacia el re-parseo.
+        Dim parseados As New Dictionary(Of UInteger, NPC_Data)()
         For Each npc In _allNPCs
             If npc.Record.Name <> "" Then Continue For
             If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then Continue For
 
             Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.BaseData)
-            Dim resolved = ResolveInheritedFullName(sourceFormID, New HashSet(Of UInteger)())
+            Dim resolved = ResolveInheritedFullName(sourceFormID, New HashSet(Of UInteger)(), parseados)
             If resolved <> "" Then npc.Record.Name = resolved
         Next
     End Sub
 
-    Private Function ResolveInheritedFullName(formID As UInteger, visited As HashSet(Of UInteger)) As String
+    Private Function ResolveInheritedFullName(formID As UInteger, visited As HashSet(Of UInteger),
+                                              parseados As Dictionary(Of UInteger, NPC_Data)) As String
         If formID = 0UI OrElse visited.Contains(formID) Then Return ""
         visited.Add(formID)
 
@@ -2625,11 +2701,16 @@ Public Class MainForm
 
         Select Case rec.Header.Signature
             Case "NPC_"
-                Dim npc = RecordParsers.ParseNPC(rec, _pluginManager)
+                Dim npc As NPC_Data = Nothing
+                If Not parseados.TryGetValue(formID, npc) Then
+                    npc = RecordParsers.ParseNPC(rec, _pluginManager)
+                    parseados(formID) = npc
+                End If
+                If npc Is Nothing Then Return ""
                 If npc.Record.Name <> "" Then Return npc.Record.Name
                 ' Follow BaseData chain if this NPC also inherits
                 If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then
-                    Return ResolveInheritedFullName(NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.BaseData), visited)
+                    Return ResolveInheritedFullName(NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.BaseData), visited, parseados)
                 End If
             Case "LVLN"
                 ' Pick first NPC entry from the LVLN to get a representative name
@@ -2639,7 +2720,7 @@ Public Class MainForm
                 If lvln Is Nothing Then Return ""
                 For Each entry In lvln.LeveledListEntries
                     If entry.LeveledListEntryNPC = 0UI Then Continue For
-                    Dim resolved = ResolveInheritedFullName(entry.LeveledListEntryNPC, visited)
+                    Dim resolved = ResolveInheritedFullName(entry.LeveledListEntryNPC, visited, parseados)
                     If resolved <> "" Then Return resolved
                 Next
         End Select
@@ -2674,6 +2755,7 @@ Public Class MainForm
         For Each npc In _ctx.NpcCache.Values
             _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
             _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
+            SembrarClaveDeOrden(npc)
         Next
         ' Load order changed: the advanced-filter caches are keyed by FormID (both the NPC results and
         ' the referenced HDPT/ARMO/RACE labels), so they cannot survive a different plugin set. Not
@@ -2916,17 +2998,21 @@ Public Class MainForm
         For Each npc In _allNPCs
             If npc.Record.Skin <> 0UI Then _skinArmoUniverse.Add(npc.Record.Skin)
         Next
-        ' RACE.WNAM contributions — iterate AllRecords filtering by signature; parse the RACE only on
-        ' matches. Vanilla FO4 has ~150 races so the cost is negligible.
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Continue For
-            Try
-                Dim race = _ctx.ParseRaceCanonCached(rec)
-                If race.Skin <> 0UI Then _skinArmoUniverse.Add(race.Skin)
-            Catch
-            End Try
-        Next
+        ' RACE.WNAM contributions. Se piden por TIPO: el índice por signature ya existe y lo mantiene
+        ' el propio gestor. Antes se recorrían las 127.850 entradas de AllRecords comparando la
+        ' signature cadena a cadena para quedarse con ~150 RACE — el mismo índice que la línea de al
+        ' lado (BuildOutfitUniverse) ya usaba para los OTFT.
+        Dim raceRecs = _pluginManager.GetRecordsOfType("RACE")
+        If raceRecs IsNot Nothing Then
+            For Each rec In raceRecs
+                If rec Is Nothing Then Continue For
+                Try
+                    Dim race = _ctx.ParseRaceCanonCached(rec)
+                    If race.Skin <> 0UI Then _skinArmoUniverse.Add(race.Skin)
+                Catch
+                End Try
+            Next
+        End If
     End Sub
 
     ''' <summary>Sweep all OTFT FormIDs in the load order into <see cref="_outfitUniverse"/>. Cheap —
@@ -3992,6 +4078,7 @@ Public Class MainForm
         _lvlnLeavesCache.Clear()
         _npcSearchableCache.Clear()
         _npcDisplayLabelCache.Clear()
+        _npcSortKeyCache.Clear()
 
         ' Collect NPCs placed in the world (ACHR records from CELL/WRLD groups)
         Dim placedNPCs = _pluginManager.GetPlacedNPCFormIDs()
@@ -4066,12 +4153,15 @@ Public Class MainForm
             ComputeAndCacheLVLNLeaves(lvlnFid, New HashSet(Of UInteger)())
         Next
 
-        ' Scan all NPCs to find which are used as template sources
+        ' Scan all NPCs to find which are used as template sources.
+        ' El TPLT se lee UNA vez por NPC: leerlo tres veces son tres resoluciones de ruta para el
+        ' mismo campo, por cada NPC del orden de carga.
         For Each npc In _allNPCs
-            If npc.Record.Plantilla() <> 0UI Then
-                Dim rec = _pluginManager.GetRecord(npc.Record.Plantilla())
+            Dim tplt = npc.Record.Plantilla()
+            If tplt <> 0UI Then
+                Dim rec = _pluginManager.GetRecord(tplt)
                 If rec IsNot Nothing AndAlso rec.Header.Signature = "NPC_" Then
-                    _npcsUsedAsTemplates.Add(npc.Record.Plantilla())
+                    _npcsUsedAsTemplates.Add(tplt)
                 End If
             End If
             For Each actor In npc.Record.ActoresDePlantilla()
@@ -4289,7 +4379,7 @@ Public Class MainForm
                 Dim pluginNode As TreeNode = Nothing
                 Dim matchCount = 0
 
-                For Each npc In pluginGroup.OrderBy(Function(n) n.ToString(), StringComparer.OrdinalIgnoreCase)
+                For Each npc In pluginGroup.OrderBy(Function(n) ClaveDeOrden(n), StringComparer.OrdinalIgnoreCase)
                     If pluginNode Is Nothing Then
                         pluginNode = New TreeNode(pluginGroup.Key) With {
                             .Name = $"PLUGIN_{pluginGroup.Key}",
@@ -4597,9 +4687,11 @@ Public Class MainForm
         Dim dependencies As New List(Of KeyValuePair(Of UInteger, String))
         If npc Is Nothing Then Return dependencies
 
-        For Each boxedCategory In [Enum].GetValues(GetType(NPC_TemplateCategory))
-            Dim category = CType(boxedCategory, NPC_TemplateCategory)
-            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Continue For
+        ' Las banderas se leen UNA vez. Leerlas dentro del bucle son trece resoluciones de ruta por
+        ' NPC para el mismo campo, y esto corre por cada NPC del orden de carga.
+        Dim flags = npc.Record.ConfigurationTemplateFlags
+        For Each category As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
+            If Not NpcTemplateHelpers.HasTemplateFlag(flags, category) Then Continue For
 
             Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, category)
             If sourceFormID = 0UI Then Continue For
@@ -8098,8 +8190,7 @@ Public Class MainForm
                 End If
                 If Not isSse Then
                     ' TPTA + the legendary template pair are Fallout-only subrecords.
-                    For Each boxedCat In [Enum].GetValues(GetType(NPC_TemplateCategory))
-                        Dim cat = CType(boxedCat, NPC_TemplateCategory)
+                    For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
                         Dim actor = npc.Record.ActorDePlantilla(cat)
                         If actor = 0UI Then Continue For
                         AddNode(tplNode, $"TPTA[{cat}] ({NpcManagerFormat.GetTemplateCategoryLabel(cat)}): {DescribeFormID(actor)}")
@@ -8112,8 +8203,7 @@ Public Class MainForm
                 End If
                 ' The 13 template-flag bits are identical in both engines.
                 Dim flagList As New List(Of String)
-                For Each boxedCat In [Enum].GetValues(GetType(NPC_TemplateCategory))
-                    Dim cat = CType(boxedCat, NPC_TemplateCategory)
+                For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
                     If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then flagList.Add(NpcManagerFormat.GetTemplateCategoryLabel(cat))
                 Next
                 If flagList.Count > 0 Then AddNode(tplNode, $"Active flags: {String.Join(", ", flagList)}")
@@ -9864,6 +9954,12 @@ Public Class MainForm
         Using dlg As New NpcEditor_Form(Me, npc, npcFormID, st.RaceFormID, st.IsFemale, AddressOf _ctx.GetParsedNpc)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse Not dlg.HasChanges Then Return
             ' OK with real changes: the live NPC_Data was mutated in place — re-render + mark dirty.
+            ' Y con ella, los TRES caches derivados del record: el editor le puede haber cambiado el
+            ' nombre visible, y de ese nombre salen la etiqueta del nodo, el texto que busca el
+            ' filtro y la CLAVE CON LA QUE SE ORDENA LA LISTA. Sin esto, renombrar "Aaa" a "Zzz"
+            ' repinta el árbol con el nodo todavía en la posición de "Aaa". Es el mismo refresco por
+            ' FormID que hace el readback del Save.
+            RefrescarCachesDerivados(npcFormID, npc)
             Try
                 Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
@@ -11065,6 +11161,10 @@ Public Class MainForm
                 _npcDisplayLabelCache.TryGetValue(fid, oldLabel)
                 Dim newLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(freshNpc)
                 _npcDisplayLabelCache(fid) = newLabel
+                ' Mismo motivo que la etiqueta: un Save puede cambiar FullName o EditorID, y la clave
+                ' de orden sale de los dos. Sin refrescarla aca, la lista quedaria ordenada por el
+                ' nombre VIEJO hasta la proxima recarga del orden de carga.
+                SembrarClaveDeOrden(freshNpc)
                 ' Refreshing the cache is NOT enough on its own: PopulateNPCTree copied the old value
                 ' into TreeNode.Text when it built the node, so the tree has to be rebuilt for the new
                 ' label to show. Reuse the flag the plugin-name change below already uses — in the

@@ -781,7 +781,9 @@ Public Class NpcEditor_Form
     End Function
 
     ''' <summary>Agrega una faccion. La entrada se crea en el borrador ANTES de abrir el sub-editor -es un
-    ''' nodo del arbol, no un objeto suelto- y se saca de vuelta si el usuario cancela.</summary>
+    ''' nodo del arbol, no un objeto suelto- y se saca de vuelta si el usuario cancela. La baja va por
+    ''' referencia: sacar "la ultima" daba lo mismo hoy, pero apoyado en que nadie mas toque la lista
+    ''' mientras el dialogo esta abierto, y eso no es una garantia de nada.</summary>
     Private Sub OnAddFaction(sender As Object, e As EventArgs)
         Dim entrada = _borrador.AgregarFactions()
         If entrada Is Nothing Then Return
@@ -791,7 +793,7 @@ Public Class NpcEditor_Form
                 entrada.FactionRank = dlg.ResultRank
                 RefreshFactionsGrid()
             Else
-                _borrador.QuitarFactions(_borrador.Factions.Count - 1)
+                _borrador.QuitarFactions(entrada)
             End If
         End Using
     End Sub
@@ -855,7 +857,7 @@ Public Class NpcEditor_Form
                 entrada.ItemCount = dlg.ResultCount
                 RefreshInventoryGrid()
             Else
-                _borrador.QuitarItems(_borrador.Items.Count - 1)
+                _borrador.QuitarItems(entrada)
             End If
         End Using
     End Sub
@@ -921,7 +923,7 @@ Public Class NpcEditor_Form
                 entrada.PerkRank = dlg.ResultRank
                 RefreshPerksGrid()
             Else
-                _borrador.QuitarPerks(_borrador.Perks.Count - 1)
+                _borrador.QuitarPerks(entrada)
             End If
         End Using
     End Sub
@@ -1023,7 +1025,7 @@ Public Class NpcEditor_Form
                 entrada.PropertyValue = dlg.ResultValue
                 RefreshPropsGrid()
             Else
-                nf.QuitarProperties2(nf.Properties2.Count - 1)
+                nf.QuitarProperties2(entrada)
             End If
         End Using
     End Sub

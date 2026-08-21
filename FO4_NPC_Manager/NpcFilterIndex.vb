@@ -233,7 +233,7 @@ Friend NotInheritable Class NpcFilterIndex
                 ' The template link itself is never resolved THROUGH the chain — it IS the chain.
                 Dim outIds As New List(Of UInteger)
                 If npc.Record.Plantilla() <> 0UI Then outIds.Add(npc.Record.Plantilla())
-                For Each cat As NPC_TemplateCategory In [Enum].GetValues(GetType(NPC_TemplateCategory))
+                For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
                     Dim actor = npc.Record.ActorDePlantilla(cat)
                     If actor <> 0UI AndAlso Not outIds.Contains(actor) Then outIds.Add(actor)
                 Next

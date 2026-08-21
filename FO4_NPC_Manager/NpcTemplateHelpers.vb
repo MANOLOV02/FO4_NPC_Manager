@@ -94,9 +94,13 @@ Friend NotInheritable Class NpcTemplateHelpers
     ''' <summary>True if this NPC inherits its visual appearance (Traits or ModelAnimation) from any template.
     ''' Such NPCs are generic — their look is defined by the template chain, not by themselves.</summary>
     Public Shared Function NpcInheritsVisualAppearance(npc As NPC_Data) As Boolean
-        If npc Is Nothing OrElse npc.Record.ConfigurationTemplateFlags = 0US Then Return False
-        Return HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) OrElse
-               HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.ModelAnimation)
+        If npc Is Nothing Then Return False
+        ' UNA lectura del campo, no tres. Lo llama el filtro de categorías por cada NPC y en cada
+        ' repoblado del árbol, o sea una vez por tecla del buscador.
+        Dim flags = npc.Record.ConfigurationTemplateFlags
+        If flags = 0US Then Return False
+        Return HasTemplateFlag(flags, NPC_TemplateCategory.Traits) OrElse
+               HasTemplateFlag(flags, NPC_TemplateCategory.ModelAnimation)
     End Function
 
 End Class

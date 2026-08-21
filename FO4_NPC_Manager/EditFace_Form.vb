@@ -37,7 +37,10 @@ Public Class EditFace_Form
     ' game-gated so the FO4 path is byte-identical.
     Private ReadOnly _isSSE As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
     Private _sseNam9 As Single() = New Single(SseNam9MorphMap.Nam9SliderCount - 1) {}
-    Private _sseNama As UInteger() = New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}
+    ' Arranca en el centinela "sin tipo asignado", no en ceros: cero es el tipo 0 REAL. Hoy lo pisa
+    ' LoadSseMorphValues antes de cualquier lectura, asi que el valor inicial no se ve; queda asi para
+    ' que el default del campo no contradiga la ley que aplica el resto del formulario.
+    Private _sseNama As UInteger() = SseNam9MorphMap.DefaultNamaVector()
     Private _sseNam9Sliders As FO4_Base_Library.TinySliderTextBox() = New FO4_Base_Library.TinySliderTextBox(SseNam9MorphMap.Nam9SliderCount - 1) {}
     Private _sseNamaCombos As System.Windows.Forms.ComboBox() = New System.Windows.Forms.ComboBox(SseNam9MorphMap.NamaFamilyCount - 1) {}
     ''' <summary>Los tipos NAMA que el motor puede aplicar a ESTE NPC (+ la anotación de cuáles ofrece el CK).

@@ -1,0 +1,52 @@
+﻿------------------------------------------------------------------------------
+  Program name:  FO4 NPC Manager - FO4 / SSE NPC manager
+  Copyright (C) 2025  ManoloV02 (https://github.com/MANOLOV02)
+
+  Credits:
+   - ManoloV02: FO4 Base Library - Licensed under the GPL-3.0 License (https://github.com/MANOLOV02/FO4_Base_Library)
+   - ManoloV02: BSA/BA2 Library - Licensed under the GPL-3.0 License (https://github.com/MANOLOV02/BSA_BA2_Library_DLL)
+   - ManoloV02: DirectXTexWrapper - Licensed under the GPL-3.0 License (https://github.com/MANOLOV02/DirectXTexWrapper)
+   - Ousnius: NiflySharp - Licensed under the GPL-3.0 License (https://github.com/MANOLOV02/NiflySharpFork)
+       MODIFICADO. Fork de https://github.com/ousnius/NiflySharp con cambios propios; el fuente correspondiente es el del fork
+   - Lukas Cone: HavokLib - Licensed under the GPL-3.0 License (https://github.com/PredatorCZ/HavokLib)
+       hkaLosslessCompressedAnimation decoder ported into FO4_Base_Library/HkxLosslessAnimationGraphParser.vb
+   - Microsoft: DirectXTex - Licensed under the MIT License (https://github.com/microsoft/DirectXTex)
+       wrapped by DirectXTexWrapper
+   - Ousnius: Material Editor - Licensed under the MIT License (https://github.com/ousnius/Material-Editor)
+   - Stefanos Apostolopoulos: OpenTK (Core, Graphics, Mathematics, Windowing) - Licensed under the MIT License (https://github.com/opentk/opentk)
+       Copyright (c) 2006-2018 Stefanos Apostolopoulos, for the Open Toolkit library
+   - Team OpenTK: OpenTK.GLControl - Licensed under the MIT License (https://github.com/opentk/opentk)
+       Copyright (c) 2025 Team OpenTK
+   - Marcus Geelnard, Camilla Löwy: GLFW (glfw3.dll) - Licensed under the zlib/libpng License (https://www.glfw.org)
+       redistributed through OpenTK.redist.glfw
+   - SharpZipLib Contributors: SharpZipLib 1.4.2 - Licensed under the MIT License (https://github.com/icsharpcode/SharpZipLib)
+   - Milosz Krajewski: K4os.Compression.LZ4 (+ .Streams) - Licensed under the MIT License (https://github.com/MiloszKrajewski/K4os.Compression.LZ4)
+       Copyright (c) 2017 Milosz Krajewski
+   - Milosz Krajewski: K4os.Hash.xxHash - Licensed under the MIT License (https://github.com/MiloszKrajewski/K4os.Hash.xxHash)
+       Copyright (c) 2017 Milosz Krajewski
+   - Lorenzo Delana: miniball - Licensed under the Apache-2.0 License (https://github.com/SearchAThing-forks/miniball)
+       fork of https://github.com/hbf/miniball by Martin Kutz (FU Berlin), Kaspar Fischer (ETH Zurich) and Bernd Gaertner (ETH Zurich); reached through NiflySharp
+   - Microsoft: System.IO.Pipelines - Licensed under the MIT License (https://github.com/dotnet/runtime)
+   - Microsoft: Ijwhost (Ijwhost.dll) - Licensed under the MIT License (https://github.com/dotnet/runtime)
+       C++/CLI host shim required by DirectXTexWrapper
+   - ElminsterAU and the xEdit contributors: xEdit - Licensed under the MPL-2.0 License (https://github.com/TES5Edit/TES5Edit)
+       the plugin format declarations are mechanically translated into the schema tables; see THIRD-PARTY-NOTICES.md
+
+  The GPL-3.0 text is in LICENSE. The text of every OTHER licence above is in the
+  licenses/ folder.
+  Per-component copyright lines and the source-code offer are in
+  THIRD-PARTY-NOTICES.md, distributed alongside this file.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+------------------------------------------------------------------------------

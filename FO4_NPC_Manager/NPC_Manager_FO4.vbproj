@@ -82,4 +82,21 @@
   <!-- La configuracion Publish: es Release con carpeta propia. Sin esto compilaria SIN
        OPTIMIZAR, en verde. Ver el comentario del .targets. -->
   <Import Project="..\..\FO4_Base_Library\ConfiguracionPublish.targets" />
+
+  <!-- Licencias. GPL-3 §4/§5 exige que el texto acompañe al binario, y MIT/Apache-2.0 exigen que
+       viaje el aviso de cada componente. Se copian al output para que el paquete salga completo:
+       CopyPublish.bat las toma de ahí y CORTA si falta alguna. Ver THIRD-PARTY-NOTICES.md. -->
+  <ItemGroup>
+    <Content Include="..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\LICENSE_CREDITS.txt" Link="LICENSE_CREDITS.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Explicitas, NO un wildcard: `licenses\*.txt` no puede fallar, y un paquete sin los
+         textos se distribuiria en infraccion en verde. Un Content que apunta a un archivo
+         inexistente da MSB3030 y pone el build en ROJO. Si se agrega una familia de licencia
+         nueva, va aca Y en el for de CopyPublish.bat. -->
+    <Content Include="..\licenses\MIT.txt" Link="licenses\MIT.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\licenses\Apache-2.0.txt" Link="licenses\Apache-2.0.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\licenses\MPL-2.0.txt" Link="licenses\MPL-2.0.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\licenses\GLFW-zlib.txt" Link="licenses\GLFW-zlib.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
