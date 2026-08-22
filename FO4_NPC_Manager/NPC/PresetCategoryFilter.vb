@@ -153,9 +153,9 @@ Public Module PresetCategoryFilter
                             p.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
                                 .TemplateId = ov.TemplateId,
                                 .Priority = ov.Priority,
-                                .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                                .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                                .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                                .Tint = CType(ov.Tint?.Clone(), Single()),
+                                .OffsetUV = CType(ov.OffsetUV?.Clone(), Single()),
+                                .ScaleUV = CType(ov.ScaleUV?.Clone(), Single())
                             })
                         Next
                         p.HasOverlays = baseline.HasOverlays
@@ -165,7 +165,7 @@ Public Module PresetCategoryFilter
             Case PresetCategory.SkinOverride
                 ' NPC.WNAM. Nothing = "no override", which the overlay merge resolves to the raw record's
                 ' own skin — so preserving means carrying the baseline's override (if any) and nothing else.
-                p.SkinFormIDOverride = If(baseline Is Nothing, Nothing, baseline.SkinFormIDOverride)
+                p.SkinFormIDOverride = baseline?.SkinFormIDOverride
 
             Case PresetCategory.LmSkinTemplate
                 ' F4SE LM SkinInterface template (FO4-only), separate from the WNAM record skin.
@@ -181,8 +181,8 @@ Public Module PresetCategoryFilter
 
             Case PresetCategory.Outfit
                 ' NPC.DOFT + NPC.SOFT. Same Nothing-means-fall-back-to-record rule as the skin override.
-                p.DefaultOutfitFormIDOverride = If(baseline Is Nothing, Nothing, baseline.DefaultOutfitFormIDOverride)
-                p.SleepOutfitFormIDOverride = If(baseline Is Nothing, Nothing, baseline.SleepOutfitFormIDOverride)
+                p.DefaultOutfitFormIDOverride = baseline?.DefaultOutfitFormIDOverride
+                p.SleepOutfitFormIDOverride = baseline?.SleepOutfitFormIDOverride
 
             Case PresetCategory.FaceParts
                 ' The overlay merge does wipe + race defaults + preset entries, so preserving means copying
@@ -217,7 +217,7 @@ Public Module PresetCategoryFilter
                 Else
                     p.HairColorFormID = If(raw Is Nothing, 0UI, raw.Record.HairColor)
                 End If
-                p.SseHairColorRgb = If(baseline Is Nothing, Nothing, baseline.SseHairColorRgb)
+                p.SseHairColorRgb = baseline?.SseHairColorRgb
                 ' El identificador sin resolver viaja con el color: acá el color se REEMPLAZA por el del
                 ' baseline/raw, así que el crudo del archivo dejaría de describirlo. Sin limpiarlo, un
                 ' HairColorFormID=0 legítimo (el baseline no tenía color) más un UnresolvedHairColor viejo
@@ -272,8 +272,8 @@ Public Module PresetCategoryFilter
                         p.SseNama = If(baseline.SseNama Is Nothing, SseNam9MorphMap.DefaultNamaVector(), DirectCast(baseline.SseNama.Clone(), UInteger()))
                         p.HasSseMorphs = True
                     Else
-                        Dim rawNam9 = If(raw Is Nothing, Nothing, raw.Record.DeslizadoresDeCara())
-                        Dim rawNama = If(raw Is Nothing, Nothing, raw.Record.PartesDeCara())
+                        Dim rawNam9 = raw?.Record.DeslizadoresDeCara()
+                        Dim rawNama = raw?.Record.PartesDeCara()
                         Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
                         For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
                             If rawNam9 IsNot Nothing AndAlso i < rawNam9.Length Then
@@ -326,7 +326,7 @@ Public Module PresetCategoryFilter
                 p.FaceBoneRegions.Clear()
                 If baseline IsNot Nothing AndAlso baseline.HasFaceBoneRegions Then
                     For Each kv In baseline.FaceBoneRegions
-                        p.FaceBoneRegions(kv.Key) = If(kv.Value Is Nothing, Nothing, CType(kv.Value.Clone(), Single()))
+                        p.FaceBoneRegions(kv.Key) = CType(kv.Value?.Clone(), Single())
                     Next
                     p.FacialMorphIntensity = baseline.FacialMorphIntensity
                 ElseIf raw IsNot Nothing Then

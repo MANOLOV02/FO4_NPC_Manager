@@ -74,7 +74,7 @@ Public Class ArmoDraft
 
     Public Function Clone() As ArmoDraft
         Return New ArmoDraft With {
-            .Record = If(Record Is Nothing, Nothing, Record.Copia()),
+            .Record = Record?.Copia(),
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

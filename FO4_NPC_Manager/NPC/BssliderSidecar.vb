@@ -244,9 +244,9 @@ Public Module BssliderSidecar
                 preset.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
                     .TemplateId = ov.TemplateId,
                     .Priority = ov.Priority,
-                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                    .Tint = CType(ov.Tint?.Clone(), Single()),
+                    .OffsetUV = CType(ov.OffsetUV?.Clone(), Single()),
+                    .ScaleUV = CType(ov.ScaleUV?.Clone(), Single())
                 })
             Next
             preset.HasOverlays = True
@@ -349,9 +349,9 @@ Public Module BssliderSidecar
                 entry.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
                     .TemplateId = ov.TemplateId,
                     .Priority = ov.Priority,
-                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                    .Tint = CType(ov.Tint?.Clone(), Single()),
+                    .OffsetUV = CType(ov.OffsetUV?.Clone(), Single()),
+                    .ScaleUV = CType(ov.ScaleUV?.Clone(), Single())
                 })
             Next
         End If

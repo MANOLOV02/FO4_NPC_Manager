@@ -15,7 +15,7 @@ Imports FO4_Base_Library
 ''' skee SUMA por key y f4ee toma el MAX. Y se mueven aca porque BodyGen se evalua UNA vez y solo si el actor
 ''' no tiene morphs, asi que una referencia que YA existe en la partida no lo recibe nunca. Ver
 ''' 60-papyrus-bodymorph-delivery.</para>
-''' <para>â›” A proposito NO se emiten, porque ya llegan por otra via y mandarlos de nuevo los aplicaria DOS
+''' <para>⛔ A proposito NO se emiten, porque ya llegan por otra via y mandarlos de nuevo los aplicaria DOS
 ''' veces: morphs de cara, sculpt y TINTS de cara, todo eso se hornea en el FaceGen en los dos juegos. Los
 ''' overlays de CARA son el caso con matiz: en SSE solo si el bake no se los queda (ver
 ''' <see cref="SkipFaceOverlays"/>); en FO4 siempre, porque alla no hay bake de overlays de cara.</para>
@@ -63,14 +63,14 @@ Public Module NpcApplyScriptEmitter
         Return If(game = Config_App.Game_Enum.Skyrim, LegacyScriptSse, LegacyScriptFo4)
     End Function
 
-    ''' <summary>â›” En SSE la cara es del bake MIENTRAS EL BAKE SE LA QUEDE: con
+    ''' <summary>⛔ En SSE la cara es del bake MIENTRAS EL BAKE SE LA QUEDE: con
     ''' <c>Setting_BakeSseRaceMenuOverlays</c> ON no se emite ningun nodo Face; con el toggle OFF si, porque si
     ''' no los overlays de cara quedan SIN DUENO y se pierden.
-    ''' <para>â›” El gate va SOLO sobre ese toggle. NO volver a gatearlo por "el bake de CharGen corre": ese era
+    ''' <para>⛔ El gate va SOLO sobre ese toggle. NO volver a gatearlo por "el bake de CharGen corre": ese era
     ''' el agujero original, porque el flag de CharGen es global del guardado mientras el bake ademas se saltea
     ''' POR NPC (raza sin FaceGen), asi que siempre quedaba un caso donde el emisor creia que el bake lo horneaba
     ''' y no lo horneaba.</para>
-    ''' <para>â›” Emitirlos EXIGE que el script barra los nodos <c>Face [Ovl]</c>, y los dos cambios van juntos:
+    ''' <para>⛔ Emitirlos EXIGE que el script barra los nodos <c>Face [Ovl]</c>, y los dos cambios van juntos:
     ''' todo entra con persist=true (co-save), asi que un overlay aplicado con el toggle OFF sobrevive en esa
     ''' partida y sin barrerlo quedaria aplicado DOS veces. Emitir sin barrer es PEOR que no emitir.</para></summary>
     ''' <remarks>SÓLO aplica al pool NORMAL de la cara. El pool MAGIC (<c>Face [SOvl{n}]</c>) queda FUERA de este
@@ -96,7 +96,7 @@ Public Module NpcApplyScriptEmitter
         Return SseOverlayCompositor.IsSpellOverlayNodeName(nodeName)
     End Function
 
-    ''' <summary>â›”â›” UNA ARRAY-PROPERTY NUNCA VA VACIA **NI AUSENTE**. Cuando no hay datos se emite un array de
+    ''' <summary>⛔⛔ UNA ARRAY-PROPERTY NUNCA VA VACIA **NI AUSENTE**. Cuando no hay datos se emite un array de
     ''' UN elemento CENTINELA que el script saltea solo ("" para nombres, 0 para slots/valores).
     ''' <para>Papyrus de Skyrim deja exactamente esa salida, encerrado entre dos reglas medidas: un array de
     ''' longitud 0 es ILEGAL (la property falla al inicializar, queda en None y envenena la instancia entera, o
@@ -129,7 +129,7 @@ Public Module NpcApplyScriptEmitter
 
     ''' <summary>Techo de elementos por array del payload, para TODAS las familias de arrays paralelos y en los
     ''' dos juegos: una sola ley.
-    ''' <para>â›” 512 NO es un limite del motor, es una decision de COSTO. El famoso tope de 128 es del COMPILADOR
+    ''' <para>⛔ 512 NO es un limite del motor, es una decision de COSTO. El famoso tope de 128 es del COMPILADOR
     ''' sobre <c>new T[n]</c>, y un array que arma el LOADER DEL VMAD no pasa por el compilador: medido in-game
     ''' en los dos juegos, 512 elementos entran y se aplican enteros.</para>
     ''' <para>El costo: en FO4 cada <c>SetMorph</c> hace ceder la VM (f4ee no le pone NoWait), asi que 512
@@ -161,11 +161,11 @@ Public Module NpcApplyScriptEmitter
     ''' <para>En SSE se emite la SUMA de las contribuciones keyed bajo UNA key nuestra: skee las netea sumando
     ''' al renderizar, asi que el numero es el mismo y encima compra el deshacer quirurgico. En FO4 va el dict
     ''' plano, porque f4ee no tiene keys de string.</para>
-    ''' <para>â›” SE FILTRAN LOS CEROS: en FO4 un valor exactamente 0 BORRA la entrada, asi que un 0 no significa
+    ''' <para>⛔ SE FILTRAN LOS CEROS: en FO4 un valor exactamente 0 BORRA la entrada, asi que un 0 no significa
     ''' "morph en cero" sino "morph ausente"; en SSE sumaria 0 y solo gastaria techo.</para>
     ''' <para>Orden ordinal por nombre y no el del diccionario: el sello es un hash del payload, y un orden
     ''' inestable haria re-aplicar a NPCs que no cambiaron.</para>
-    ''' <para>âš ï¸ Si hay mas de <see cref="MaxArrayElements"/> se recorta por |valor| descendente y se LOGUEA lo
+    ''' <para>⚠️ Si hay mas de <see cref="MaxArrayElements"/> se recorta por |valor| descendente y se LOGUEA lo
     ''' que quedo afuera: recortar en silencio es el modo de falla que este proyecto ya se comio dos veces.</para></summary>
     Private Sub BuildMorphArrays(preset As LooksmenuLoader.LooksmenuPreset,
                                  game As Config_App.Game_Enum,
@@ -311,7 +311,7 @@ Public Module NpcApplyScriptEmitter
     ''' cuyo payload no habia cambiado, salian en la primera linea sin correr ni RemovePrevious().</para>
     ''' <para>Subirla cambia el sello de TODOS los NPC, asi que cada actor re-aplica UNA vez y despues vuelve el
     ''' comportamiento por-NPC de siempre. Ese re-apply global es el precio y es intencional.</para>
-    ''' <para>âš ï¸ El sufijo de generacion <c>_G&lt;n&gt;</c> resuelve OTRA cosa: una property con nombre nuevo no
+    ''' <para>⚠️ El sufijo de generacion <c>_G&lt;n&gt;</c> resuelve OTRA cosa: una property con nombre nuevo no
     ''' esta en el savegame, asi que el motor la inicializa del VMAD en vez de restaurarla rancia (ver
     ''' 60-papyrus-property-freshness). appliedVersion en cambio SI persiste, a proposito.</para>
     ''' <para>Historial por revision (detalle en 60-papyrus-apply-script): 1 original Â· 2 RemovePrevious barre
@@ -322,7 +322,7 @@ Public Module NpcApplyScriptEmitter
     ''' 9 paridad de instrumentacion entre los dos .psc Â·
     ''' 10 SSE: PurgeOverlayGroup barre los overlays de indice &gt;= iNumOverlays (hasta el tope del motor, 127),
     ''' que el barrido viejo no alcanzaba y quedaban clavados en el co-save para siempre.</para>
-    ''' <para>â›”â›” OJO, LA JUSTIFICACION DE ARRIBA YA NO SE SOSTIENE CON ESTE CODIGO. Dice que el sello "se
+    ''' <para>⛔⛔ OJO, LA JUSTIFICACION DE ARRIBA YA NO SE SOSTIENE CON ESTE CODIGO. Dice que el sello "se
     ''' calculaba SOLO sobre el payload" y que un NPC sin cambios "ni siquiera re-aplica". Hoy es FALSO:
     ''' <see cref="NpcVmadBuilder.StablePayloadHash"/> mezcla el NOMBRE de cada property (<c>mix(p.Name)</c>), y
     ''' los nombres llevan el sufijo <c>_G&lt;generacion&gt;&lt;salt&gt;</c> con un salt ALEATORIO por Save ESP
@@ -336,7 +336,7 @@ Public Module NpcApplyScriptEmitter
 
     ''' <summary>Spec de LIMPIEZA: el NPC se quedo sin overlays/skin/transforms pero YA tenia script nuestro,
     ''' asi que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.
-    ''' <para>â›” NO se arma a mano. Antes se construia con solo IsFemale + SchemaVersion, y eso ROMPIA la
+    ''' <para>⛔ NO se arma a mano. Antes se construia con solo IsFemale + SchemaVersion, y eso ROMPIA la
     ''' garantia de la que el .psc depende explicitamente (toda array-property existe y trae al menos un
     ''' CENTINELA): una array-property ausente le llega al script como None, su <c>.Length</c> revienta y aborta
     ''' el stack, o sea que el spec que existe PARA LIMPIAR moria antes de limpiar. Comparar contra None tampoco

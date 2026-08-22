@@ -24,16 +24,13 @@ Friend NotInheritable Class PoseMath
         ClampBoth = 3
     End Enum
 
-    ''' <summary>Active body-weight clamp model, read per-bone in BuildBodyWeightPose. Set to
-    ''' ClampBoth: honors the documented "Range clamps the weight delta" intent AND keeps the final
-    ''' bone scale inside [1+Min, 1+Max] regardless of weight/MRSV direction (el modificador de
-    ''' rango del RACE). NOTE: chosen default pending CK confirmation on opposite-direction
-    ''' bones (e.g. ShoulderFat). The other models stay in the enum so this can be changed in the
-    ''' future by editing this one line — no re-plumbing. (The diagnostic ComboBox that exposed all
-    ''' four models was removed once ClampBoth was selected.)</summary>
-    ' 2026-06-17: ClampBoth → Off por RE de Fallout4.exe (22-morphs-re-clamps-y-regiones). La cadena completa
-    ' del body-weight apply (0x6E0820→0x652100→0x6517A0→0x664850) NO tiene NI UN minss/maxss: el engine
-    ' NO clampea el scale al RangeModifier. La "centralidad" la da el término K (Layer 1), no un clamp.
+    ''' <summary>Active body-weight clamp model, read per-bone in BuildBodyWeightPose. Set to Off: RE
+    ''' of Fallout4.exe's full body-weight apply chain (0x6E0820→0x652100→0x6517A0→0x664850, ver
+    ''' 22-morphs-re-clamps-y-regiones) found NOT A SINGLE minss/maxss — the engine does not clamp the
+    ''' scale to the RACE's RangeModifier; the "centrality" comes from the K term in Layer 1, not a
+    ''' clamp. The other models stay in the enum so this can be changed in the future by editing this
+    ''' one line — no re-plumbing. (The diagnostic ComboBox that exposed all four models was removed
+    ''' once the engine-faithful model was confirmed.)</summary>
     Private Shared ReadOnly _bodyWeightClampModel As BodyWeightClampModel = BodyWeightClampModel.Off
 
     ''' <summary>Bone→MRSV-region map, EXACT from CreationKit.exe (fn 0xA95C70 builds this hardcoded
@@ -272,10 +269,10 @@ Friend NotInheritable Class PoseMath
             Dim sx As Single = 1.0F, sy As Single = 1.0F, sz As Single = 1.0F
 
             ' --- Layer 1: RACE.BSMS WeightScale (3 archetype interpolation) ---
-            ' RACE.BSMS WeightScale = 9 floats = 3 × Vec3 (Thin, Musc, Fat) × (X, Y, Z).
-            ' Parser reads all 9 (RecordParsers.vb:1216-1226). Previously only Y/Z were consumed
-            ' here; X was silently discarded. Fixed 2026-04-19 per audit — ignored X caused the
-            ' systematic X-dominant residual vs CK FaceGen bake at shared neck bones.
+            ' RACE.BSMS WeightScale = 9 floats = 3 × Vec3 (Thin, Musc, Fat) × (X, Y, Z), all 9 read
+            ' by the canon view (<see cref="Canon.RaceFO4_BoneWeightScales"/>). Reading only Y/Z and
+            ' discarding X causes a systematic X-dominant residual vs CK FaceGen bake at shared neck
+            ' bones — keep all three axes.
             If weightLayersEnabled AndAlso escala IsNot Nothing Then
                 sx = escala.ThinX * wt + escala.MuscularX * wm + escala.FatX * wf
                 sy = escala.ThinY * wt + escala.MuscularY * wm + escala.FatY * wf
@@ -388,8 +385,8 @@ Friend NotInheritable Class PoseMath
         ' Body-weight summary + per-bone clamp diagnostic. Log-only: the String.Join, OrderBy and
         ' per-row formatting are all dedicated to logging, so the whole block is guarded by
         ' Logger.Enabled (logging convention). [BW-CLAMP-DIAG] shows, per affected bone, the
-        ' Layer-1 raw weight scale vs the Range Modifier bounds the parser documents as a CLAMP on
-        ' the weight DELTA (RecordParsers.vb:955-959): ifClampedWeight = 1 + clamp(raw-1,Min,Max),
+        ' Layer-1 raw weight scale vs the Range Modifier bounds (<see cref="Canon.RaceFO4_BoneRangeModifiers"/>),
+        ' which act as a CLAMP on the weight DELTA: ifClampedWeight = 1 + clamp(raw-1,Min,Max),
         ' and weightExcess = (raw-1) - clamp(...) = how far the raw weight delta overshoots the
         ' Range. Positive weightExcess on Leg/Thigh/Calf bones is the suspected cause of legs
         ' reading fatter than CK. mrsv/arma columns attribute any extra contribution; NOT a clamp.

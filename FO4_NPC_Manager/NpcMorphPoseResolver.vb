@@ -747,7 +747,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <para><b>Por que las dos: el ID identifica la TABLA, no el genero del NPC.</b> Los dos JSON por genero de
     ''' una raza usan NAMESPACES DE ID DISJUNTOS (medido sobre HumanRace y GhoulRace de Fallout4.esm, 32 regiones
     ''' cada una, interseccion VACIA).</para>
-    ''' <para>â›” Los rangos observados son EVIDENCIA, NO UNA SPEC, y nada de este codigo ramifica sobre ellos: no
+    ''' <para>⛔ Los rangos observados son EVIDENCIA, NO UNA SPEC, y nada de este codigo ramifica sobre ellos: no
     ''' hay constante de rango ni test numerico. La resolucion es PURAMENTE FILE-DRIVEN - se cargan las dos
     ''' tablas de la raza y se indexa lo que cada archivo declara, asi que un mod con sus propios IDs funciona sin
     ''' cambios. Tampoco es una heuristica de "si falla, probar el otro archivo": el ID designa la tabla.</para>
@@ -756,7 +756,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' fallaban TODOS los lookups, no se aplicaba ninguna deformacion osea y la cabeza salia exactamente neutra
     ''' (desviacion 0,0000-0,0001 contra 0,068-0,290 del CK). Impacto: 83 de 377 shapes. Ningun FormID
     ''' hardcodeado: el trabajo lo hace la union de las tablas shipeadas.</para>
-    ''' <para>â›” SYNC: RENDER == BAKE. Es el unico punto de resolucion, usado por el render en vivo
+    ''' <para>⛔ SYNC: RENDER == BAKE. Es el unico punto de resolucion, usado por el render en vivo
     ''' (<see cref="BuildFaceBoneTransforms"/>, <see cref="ResolveNeckNnamScale"/>) y por el bake offline
     ''' (FaceGenBuilder -> FaceGenBuildPipeline.BuildBakeState).</para>
     ''' <para>GAME-AWARE: los JSON de FacialBoneRegions son un mecanismo de FALLOUT 4. En SSE no existen (sus
@@ -810,7 +810,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
 
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
         Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
-        Dim npcFo4 = TryCast(If(npcData Is Nothing, Nothing, npcData.Record), Canon.NpcFO4)
+        Dim npcFo4 = TryCast(npcData?.Record, Canon.NpcFO4)
         If npcFo4 Is Nothing OrElse npcFo4.FaceMorphs.Count = 0 Then Return Nothing
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
@@ -996,7 +996,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <para>Las tres fuentes escriben campos DISJUNTOS de <c>PoseTransformData</c> (race a Scale, body-weight a
     ''' ScaleX/Y/Z, FMRS a T/R), asi que el merge por campo preserva el aporte de cada una aunque el mismo hueso
     ''' aparezca en dos. <c>PoseMath.MergePoses</c> loguea si alguna vez colisionan: es un canario.</para>
-    ''' <para>â›” Contrato con el caller: el esqueleto tiene que estar YA cargado y mergeado (cara/robot) antes de
+    ''' <para>⛔ Contrato con el caller: el esqueleto tiene que estar YA cargado y mergeado (cara/robot) antes de
     ''' llamar, porque el paso de body-weight camina su jerarquia para mapear huesos a regiones MRSV.</para></summary>
     ''' <param name="faceMorphsEnabled">FO4: checkbox "Bone morphs (FMRS)" (y "sin gender override").</param>
     ''' <param name="nodeTransformsEnabled">SSE: el MISMO checkbox, que alla rotula "Node transforms (RaceMenu)"

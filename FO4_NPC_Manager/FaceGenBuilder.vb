@@ -116,10 +116,9 @@ Public Module FaceGenBuilder
     ' corre en UN hilo, y sin este desglose no hay forma de saber cual fase es.
     ' Costo: unos pocos Stopwatch.GetTimestamp por NPC (no por pixel) sobre ~1,6 s ⇒ <0,01 %. Los acumuladores
     ' son Long con Interlocked ⇒ seguro si alguna vez se paraleliza el loop de NPCs.
-    ' EL "other" SE ABRIO (2026-08-01). Antes las fases medidas eran tres y todo lo demas caia en un renglon
-    ' "other (records/morphs/skin/cloning)": un bucket que se nombraba a si mismo pero no se podia atacar,
-    ' porque no decia cual de esas cuatro cosas pesaba. Ahora cada una tiene su fase y el "other" que queda es
-    ' de verdad el resto (parseo de materiales, oclusion, contadores, el shell del NIF).
+    ' Cada una de las cuatro fases de abajo mide una etapa real y separada (records/clone/morph-skin/...);
+    ' el "other" que queda es de verdad el resto (parseo de materiales, oclusion, contadores, el shell del
+    ' NIF) y no un bucket sin nombrar donde cae todo sin decir cual de esas cosas pesa.
     Public Enum BakePhase
         SourceNifParse = 0   ' GetBytes + Load_Manolo de las mallas fuente (se rehace POR NPC: loadedSources es local)
         Textures = 1         ' BakeFaceTextures (FO4 D/N/S) + WriteSseFacetintDds (SSE facetint) = el compose de pixeles
@@ -173,17 +172,16 @@ Public Module FaceGenBuilder
     ''' stall de arranque (no deadlock: Parallel usa el hilo llamador como worker, así que progresa).
     ''' NO sacar la llamada de <c>BuildCharGen</c>: ése es el gate del camino de la UI, que no pasa por el
     ''' runner. Llamarlo dos veces es gratis — el Lazy ya corrió.</para></summary>
-    ''' <remarks>EL MENSAJE NO PUEDE AFIRMAR EL EJE EQUIVOCADO. Decía SIEMPRE "el camino vectorial NO es
-    ''' bit-identico al escalar", pero esta lista mezcla CINCO ejes (ver <see cref="ParityAxis"/>) y el
-    ''' detalle que se adjunta trae el slug del test que falló. MEDIDO 2026-08-01: con
-    ''' <c>Fold.SoftLight</c> en un modelo no-default falla <c>fold-golden</c> —un GOLDEN ABSOLUTO, no una
-    ''' comparación vector-vs-escalar— y el bake abortaba culpando al SIMD. Diagnosticar eso cuesta una
-    ''' sesión. Ahora el mensaje nombra el eje real y sólo habla de la CPU cuando el eje es el vectorial.</remarks>
+    ''' <remarks>EL MENSAJE NO PUEDE AFIRMAR EL EJE EQUIVOCADO: esta lista mezcla varios ejes (ver
+    ''' <see cref="ParityAxis"/>) y el detalle que se adjunta trae el slug del test que falló. Contraejemplo
+    ''' concreto: con <c>Fold.SoftLight</c> en un modelo no-default falla <c>fold-golden</c> —un GOLDEN
+    ''' ABSOLUTO, no una comparación vector-vs-escalar— así que el mensaje sólo puede culpar a la CPU cuando
+    ''' el eje que falló es efectivamente el vectorial.</remarks>
     Public Sub EnsureSimdParityGate()
         Dim r = _simdGate.Value
         If r.Length = 0 Then Return
         Dim slug = If(r.StartsWith("["), r.Substring(1, Math.Max(0, r.IndexOf("]"c) - 1)), "")
-        ' El default es VectorVsScalar: desde 2026-08-08 los DOS ejes que quedan acusan a la CPU, así que un
+        ' El default es VectorVsScalar: los DOS ejes que quedan en el binario acusan a la CPU, así que un
         ' slug que no se resuelva (no debería pasar: sale de esta misma tabla) no puede nombrar un eje ajeno.
         Dim axis = ParityAxis.VectorVsScalar
         For Each t In _parityTests
@@ -197,12 +195,11 @@ Public Module FaceGenBuilder
     ''' <summary>Eje de verificación al que pertenece cada self-test. El gate mezcla cosas que NO prueban lo
     ''' mismo, y reportarlas juntas fue el defecto: quien leía "BIT-IDENTICAL" se llevaba que el camino GPU
     ''' estaba cubierto, cuando ningún test de esta lista toca el GPU.
-    ''' <para>QUEDAN DOS EJES, Y NO ES CASUALIDAD (2026-08-08). Los tres que faltan —GlslLexical,
-    ''' GoldenAbsolute y LawConsistency— se fueron a Tools/ParityGate. El criterio: <b>en el binario sólo
-    ''' viaja el test cuyo resultado DEPENDE DE LA MÁQUINA DEL USUARIO</b>, y lo único que depende del rig
-    ''' ajeno es el ancho que elija <c>Vector(Of T)</c>. Un test de ley o de léxico da lo mismo acá que allá:
-    ''' si falla del otro lado, fallaba también de éste, y lo único que probó es que no lo corrí antes de
-    ''' publicar. Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para></summary>
+    ''' <para>Sólo quedan DOS ejes acá: GlslLexical, GoldenAbsolute y LawConsistency viven en Tools/ParityGate,
+    ''' no en el binario. El criterio: <b>en el binario sólo viaja el test cuyo resultado DEPENDE DE LA
+    ''' MÁQUINA DEL USUARIO</b>, y lo único que depende del rig ajeno es el ancho que elija <c>Vector(Of T)</c>.
+    ''' Un test de ley o de léxico da lo mismo acá que allá: si falla del otro lado, fallaba también de éste.
+    ''' Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para></summary>
     Public Enum ParityAxis
         ''' <summary>escalar == V128 == V256 == Vector(Of T). Corre SIEMPRE (no depende de que haya SIMD).</summary>
         ScalarVsWidths
@@ -217,12 +214,12 @@ Public Module FaceGenBuilder
     ''' <para>El de ANCHOS va primero: es la base de la que dependen los demás. Si los anchos divergen, el
     ''' MISMO binario hornea caras distintas según la CPU y un gate de bytes de UNA máquina no lo vería. Ese
     ''' es, exactamente, el único motivo por el que esta lista existe dentro de una app que se distribuye.</para>
-    ''' <para>SE FUERON OCHO EL 2026-08-08, a <c>Tools/ParityGate</c>: <c>glsl-ascii</c>,
+    ''' <para>Estos OCHO viven en <c>Tools/ParityGate</c>, no acá: <c>glsl-ascii</c>,
     ''' <c>fold-golden</c>, <c>accum-space</c>, <c>cache-keys</c>, <c>bilinear</c>, <c>resample-hoist</c>,
-    ''' <c>qnam-face</c> y <c>softlight-inv</c>. NO se perdió cobertura —siguen corriendo, como gate de
-    ''' BUILD— y NO pueden volver: su resultado no depende de la máquina del usuario, así que correrlos en su
-    ''' proceso no descubre nada y le cuesta ~1 s en el primer Bake. Dos de ellos además MUTABAN globales de
-    ''' producción en caliente. Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para>
+    ''' <c>qnam-face</c> y <c>softlight-inv</c>. NO es pérdida de cobertura —siguen corriendo, como gate de
+    ''' BUILD— y NO pueden volver: su resultado no depende de la máquina del usuario, así que correrlos en el
+    ''' binario de producción no descubre nada y cuesta ~1 s en el primer Bake. Dos de ellos además MUTABAN
+    ''' globales de producción en caliente. Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para>
     ''' <para>SE FUE <c>sse-layer</c> (<c>SseFaceTintComposer.ComposeLayerSelfTest</c>) en la fase 5, y NO se
     ''' perdió cobertura: contrastaba el espejo vectorial del loop de capas PROPIO de SSE, y ese loop se BORRÓ
     ''' —SSE compone por <c>FaceTintCpuCompositor.ComposeChannelAccum</c>, igual que Fallout—. Sus ejes (ley
@@ -293,7 +290,7 @@ Public Module FaceGenBuilder
         Next
         ' Los ejes que este gate NO cubre se nombran igual, para que su ausencia sea VISIBLE y no tácita.
         ' CpuVsGpu se mide horneando con FGBAKE_GPU_PARITY=1 y sale por ParityReport/SseParityReport.
-        ' Los otros tres se fueron a Tools/ParityGate el 2026-08-08 (no dependen de la máquina del usuario);
+        ' Los otros tres se fueron a Tools/ParityGate (no dependen de la máquina del usuario);
         ' se listan acá para que nadie lea este reporte y crea que las leyes quedaron sin gate.
         sb.AppendLine($"     {"CpuVsGpu",-16} : NOT COVERED BY THIS GATE — ver ParityReport / SseParityReport")
         sb.Append($"     {"Law/Glsl/Golden",-16} : NOT COVERED BY THIS GATE — son gate de BUILD: Tools/ParityGate")
@@ -1076,7 +1073,7 @@ Public Module FaceGenBuilder
                             ' SSE = NiSkinInstance / BSDismemberSkinInstance (hereda de NiSkinInstance).
                             ' Antes este sitio SÓLO hacía TryCast a BSSkin_Instance ⇒ en un bake SSE el
                             ' cast daba Nothing siempre y el filtro era VACUO (no podía dispararse nunca).
-                            ' Mismo camino que el barrido de referencedBones más abajo (ver :1004).
+                            ' Mismo camino que el barrido de referencedBones más abajo (el HashSet homónimo).
                             Dim skinBoneRefs As New List(Of Integer)
                             Dim srcSi = TryCast(skBlk, NiflySharp.Blocks.BSSkin_Instance)
                             If srcSi IsNot Nothing AndAlso srcSi.Bones IsNot Nothing Then
@@ -1243,14 +1240,14 @@ Public Module FaceGenBuilder
                         Try
                             ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
                         Catch exMat As Exception
-                            ' El link al BGSM externo YA se corto en :1210, asi que el shader inline es
-                            ' LA LEY y quedo INDETERMINADO (`Save_To_Shader` escribe ~25 flags y 8 slots en
-                            ' secuencia; la derivacion de ShaderType es la ULTIMA linea del branch). Y sin
-                            ' ShaderType derivado, `redirectSlotsToFaceCustomization` da False: los 3 DDS se
-                            ' escriben, el NIF sigue apuntando a las texturas vanilla y el log afirma
+                            ' El link al BGSM externo YA se corto (arriba, cuando se vacia shad.Name.String), asi
+                            ' que el shader inline es LA LEY y quedo INDETERMINADO (`Save_To_Shader` escribe ~25
+                            ' flags y 8 slots en secuencia; la derivacion de ShaderType es la ULTIMA linea del
+                            ' branch). Y sin ShaderType derivado, `redirectSlotsToFaceCustomization` da False: los
+                            ' 3 DDS se escriben, el NIF sigue apuntando a las texturas vanilla y el log afirma
                             ' "= comportamiento del CK". Por eso la shape SALE del NIF.
                             ' Y EL ROLLBACK VA COMPLETO. `clonedShapeNames`/`shapesCloned` se
-                            ' incrementaron en :1122-1123, ANTES de esto. Sacar la shape sin revertirlos deja
+                            ' incrementaron arriba (al clonar), ANTES de esto. Sacar la shape sin revertirlos deja
                             ' el guard F7 de mas abajo (`If shapesCloned = 0 Then Success = False`) sin
                             ' disparar y se escribe un FaceGeom VACIO con Success = True: cabeza INVISIBLE
                             ' in-game reportada como exito. Y `clonedShapeNames` sin revertir hace que otro
@@ -1281,12 +1278,12 @@ Public Module FaceGenBuilder
                                 ' edit bakes WYSIWYG.
                                 ' Captura para el _2c forzado (SOLO debug): head + complexion/normal ORIGINALES
                                 ' ANTES de que el pass normal pueda mutar los slots (evita doble-pliegue). La captura
-                                ' y el forzado son 100% CPU (fold+neutral+normal), NO tocan GL ⇒ gate = DebugMode a
-                                ' secas (NO WriteGPUSandboxOutput: eso apagaba el _2c en el bake loose async).
-                                ' Misma compuerta que el consumidor de mas abajo (~1771). Con solo `DebugMode`
-                                ' esta captura no ocurria en un barrido (Logger apagado), asi que sseForcedHead
-                                ' quedaba Nothing y el sandbox _2c/_2d —el UNICO que ejercita el camino GPU de
-                                ' SSE— no corria: medido reachability gate=0 sobre 451 NPCs horneados.
+                                ' y el forzado son 100% CPU (fold+neutral+normal), NO tocan GL — pero el gate NO
+                                ' puede ser sólo DebugMode: con Logger apagado (el caso normal de un barrido) esta
+                                ' captura no ocurría nunca, sseForcedHead quedaba Nothing y el sandbox _2c/_2d —el
+                                ' ÚNICO que ejercita el camino GPU de SSE— no corría (medido: reachability gate=0
+                                ' sobre 451 NPCs horneados). El gate real es DebugMode OrElse WriteGPUSandboxOutput,
+                                ' la MISMA compuerta que usa el consumidor más abajo (donde se lee sseForcedHead).
                                 If DebugMode OrElse WriteGPUSandboxOutput Then
                                     Dim sp = GetSseHeadSlotPaths(nif, cloned)
                                     sseForcedHead = cloned : sseForcedComplexion = sp.Slot0 : sseForcedNormal = sp.Slot1 : sseForcedDetail = sp.Slot3
@@ -1302,7 +1299,7 @@ Public Module FaceGenBuilder
                                 ' SIEMPRE, pliegue o no. Los slots 0/1/3 son relativos a Data\Textures\ y NO
                                 ' pueden llevar el prefijo 'textures\'; el camino no plegado dejaba el valor crudo
                                 ' de la resolución de material, que a veces YA viene prefijado, y eso daba CARA
-                                ' MARRÓN (medido, npc 0x0001360B). Ver NormalizeSseHeadTexSetSlots. Va DESPUÉS de
+                                ' MARRÓN (medido). Ver NormalizeSseHeadTexSetSlots. Va DESPUÉS de
                                 ' las dos rutinas para normalizar también lo que ellas hayan escrito — es
                                 ' idempotente, así que sobre un path ya correcto no hace nada.
                                 NormalizeSseHeadTexSetSlots(nif, cloned, npcFormID)
@@ -1608,9 +1605,9 @@ Public Module FaceGenBuilder
 
         ' --- FaceGen shell parity (Fase 1): los shapes deben colgar de un NiNode
         ' 'BSFaceGenNiNodeSkinned' (Flags 0x0E=14, identidad — verificado con byte-compare vs BA2,
-        ' 88/88; antes poníamos 0x2000000E con el bit 0x20000000 de más, gemelo del bug del root #1),
+        ' 88/88; NO 0x2000000E, que trae de más el bit 0x20000000 — mismo defecto que tenía el root),
         ' NO directo del root. El root ya es
-        ' NiNode "" (creado arriba; ver #1 2026-06-13). Sin esta capa el FaceGen LOOSE no renderiza la
+        ' NiNode "" (creado arriba). Sin esta capa el FaceGen LOOSE no renderiza la
         ' cabeza (el engine FaceGen exige la geometría skinneada bajo ese nodo). Los huesos (NiNode)
         ' quedan como hijos directos del root, igual que CK.
         ' Corre DESPUÉS de RemoveUnreferencedBlocks para operar sobre índices de bloque ya finales.
@@ -1629,8 +1626,8 @@ Public Module FaceGenBuilder
                 ' Race height (RACE.DATA Female/MaleHeight, ya parseado en bakeState.Race). CK escala
                 ' las TRANSLATIONS de los nodos de hueso por este factor (female ≈ 0.98). Solo a los
                 ' nodos de referencia: la geometría queda ×1.0 (la escala real la aplica el motor al
-                ' actor en runtime; hornearla en la malla la dejaría doble-escalada). Verificado vs CK
-                ' 2026-05-25: nodos female = base × 0.98, geo ×1.0, bind ×1.0.
+                ' actor en runtime; hornearla en la malla la dejaría doble-escalada). Verificado vs CK:
+                ' nodos female = base × 0.98, geo ×1.0, bind ×1.0.
                 Dim raceHeight As Single = 1.0F
                 If bakeState IsNot Nothing AndAlso bakeState.Race IsNot Nothing Then
                     ' MaleHeight/FemaleHeight: mismo campo, cada juego lo declara con su propio subrecord.
@@ -1708,7 +1705,7 @@ Public Module FaceGenBuilder
                                         niSi.SkeletonRoot = New NiflySharp.NiBlockPtr(Of NiflySharp.Blocks.NiNode)(skinnedIdx)
                                     End If
                                     ' PF_EDITOR_VISIBLE (bit 0 de BSPartFlag): el CK lo ASSERTA, no lo preserva.
-                                    ' MEDIDO 2026-08-10 sobre el corpus SSE entero contra los 3215 FaceGeom del CK:
+                                    ' MEDIDO sobre el corpus SSE entero contra los 3215 FaceGeom del CK:
                                     '   mallas FUENTE (482 head parts): bit0 apagado en 463/590 (78,5 %)
                                     '   CK  : 22.787/22.787 con bit0  (11.697 en `1` + 11.090 en `257`)
                                     '   app : 162/22.787   — preservábamos el de la fuente
@@ -1740,10 +1737,10 @@ Public Module FaceGenBuilder
                         ' Bone node (flat child of root). Paridad CK:
                         '  - race height: escalar SOLO la translation del nodo por raceHeight (ver arriba).
                         '    Geometría y bind intactos.
-                        ' #2 (2026-06-13): NO renombrar "HEAD"→"Head". CK MANTIENE "HEAD" (mayúscula) en el
+                        ' NO renombrar "HEAD"→"Head". CK MANTIENE "HEAD" (mayúscula) en el
                         ' nodo y en BSSkin::Instance.bones — verificado con NiflySharp contra los FaceGen del
-                        ' BA2 (47/47 = "HEAD"). La nota previa "CK normaliza a Head, igualar por paridad byte"
-                        ' era FALSA (medida contra refs contaminadas; ver 10-stack-arnes-de-medicion).
+                        ' BA2 (47/47 = "HEAD"). Ojo: la creencia "CK normaliza a Head, igualar por paridad byte"
+                        ' es FALSA (salió de refs contaminadas; ver 10-stack-arnes-de-medicion) — no reintroducir ese renombre.
                         ' La fuente del esqueleto ya es "HEAD" = CK → lo dejamos intacto. El skin referencia el
                         ' nodo por puntero, así que con NO renombrar quedan iguales el nombre del nodo Y la ref.
                         Dim boneNode = TryCast(childBlk, NiflySharp.Blocks.NiNode)
@@ -2302,7 +2299,7 @@ Public Module FaceGenBuilder
                 bsls.RootMaterialName = ""
                 ' CK sets Transform_Changed (F4SPF2 bit 7) on every baked FaceGen shape — universal
                 ' across all 4 reference NPCs (human M/F, ghoul, supermutant), every single shape,
-                ' no exception (measured 2026-05-25 via C:\temp\flagcmp.py). It's a housekeeping flag,
+                ' no exception (measured). It's a housekeeping flag,
                 ' not a material field (absent from the BGSM), so it belongs here with the other CK
                 ' bake conventions, not in Save_To_Shader. shad.Type was set by Save_To_Shader above,
                 ' so SetFlagSF2 resolves the FO4-specific bit correctly.
@@ -2622,14 +2619,15 @@ Public Module FaceGenBuilder
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: la cadena GPU (fold + capas + unfold) fallo.")
             Return
         End If
-        ' ComposeFoldedGpuResident devuelve LINEAL A PROPOSITO (SseFoldLayerStack:240 corre un cvt sRGB->lineal
+        ' ComposeFoldedGpuResident devuelve LINEAL A PROPOSITO (corre un cvt sRGB->lineal internamente
         ' porque ESA textura alimenta al RENDER, que muestrea en lineal). El _2d, en cambio, es un artefacto de
         ' DISCO y tiene que quedar en sRGB igual que el _2c/_2. Volcarlo tal cual era el bug: MEDIDO sobre 285.978
         ' muestras, _2d == sRGB_to_linear(_2c) EXACTO (err medio 0,255/255, max 0,942, CERO fuera de +-2, contra un
         ' err de control de 44,1) => el arnes que existe justamente para confirmar CPU(_2c)==GPU(_2d) daba un
         ' desacuerdo del 99,989% de los pixeles que NO era del pliegue. No afectaba al juego (lo que se empaqueta
         ' sale del camino CPU y es byte-identico al _2c), solo cegaba la validacion de paridad.
-        ' Se deshace con la MISMA funcion (cvt(0,1) es la inversa exacta del cvt(1,0) de la linea 240), en GPU y
+        ' Se deshace con la MISMA funcion (cvt(0,1) es la inversa exacta del cvt(1,0) que corre dentro de
+        ' ComposeFoldedGpuResident), en GPU y
         ' ANTES del readback: nada de matematica CPU nueva que pueda derivar del shader. El orden queda igual que
         ' el _2c/_2 (resample del BGRA en sRGB y recien despues el encode), que es el que exige la paridad.
         Dim srgbId = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, foldedId, w, h, 0, 1)
@@ -3420,12 +3418,10 @@ Public Module FaceGenBuilder
             textureLightingColorArgb:=state.TextureLightingColor.ToArgb(),
             dataPath:=lutDataPath)
 
-        ' SACADA (2026-07-30) la biseccion de diagnostico `FGBAKE_LAYER_CUTOFF` / `FGBAKE_SWAP_CUTOFF`,
-        ' que truncaba capas y swaps en LOS DOS compositores para aislar la fase que divergia. Cumplio su
-        ' proposito: localizo la divergencia CPU-vs-GPU en el region swap (seed solo = 0 px de cola; 1 swap
-        ' = 96) y de ahi salio la causa real (el GPU mezclaba MIPMAPS de las texturas FUENTE mientras el CPU
-        ' muestrea mip 0). La receta exacta para re-armarla, con todos los numeros, esta en memoria:
-        ' 40-bake-estado-cerrado. No se deja en el bake: truncar el compose es un foot-gun.
+        ' Los env vars de diagnostico `FGBAKE_LAYER_CUTOFF` / `FGBAKE_SWAP_CUTOFF` (truncaban capas y swaps
+        ' en LOS DOS compositores para aislar la fase que diverge) NO viven en el bake: truncar el compose
+        ' es un foot-gun. La receta exacta para re-armarlos, con todos los numeros, esta en memoria:
+        ' 40-bake-estado-cerrado.
 
         ' --- 3. Upload face source D/N/S to GL temporaries (these are the inputs to the pipeline). ---
         Dim diffuseKey = FO4UnifiedMaterial_Class.CorrectTexturePath(diffusePath)
@@ -3798,7 +3794,7 @@ Public Module FaceGenBuilder
 
             Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)
             ' Full "Data\Textures\..." prefix, matching CK vanilla exactly (CK's loose FaceGen renders
-            ' fine with this prefix — verified 2026-05-25 — so the prefix is NOT the loose-breaker).
+            ' fine with this prefix — verified — so the prefix is NOT the loose-breaker).
             Dim canonicalNifPath = $"Data\Textures\Actors\Character\FaceCustomization\{originPlugin}\{formIdLow:X8}{embeddedSuffix}"
             While texset.Textures.Count <= entry.Slot
                 texset.Textures.Add(New NiflySharp.NiString4 With {.Content = ""})
@@ -3874,13 +3870,7 @@ Public Module FaceGenBuilder
             Case 7 : ch = cpu.Specular
             Case Else : ch = cpu.Diffuse
         End Select
-        Return If(ch Is Nothing, Nothing, ch.Bgra)
+        Return ch?.Bgra
     End Function
-
-    ''' <summary>Log the shader-inline + related-material lighting fields for a shape, tagged
-    ''' with a stage label (e.g. "SOURCE-LOAD" right after Load_Manolo). Used to track where
-    ''' material values diverge across the bake pipeline: load → resolver → TXST.MNAM swap →
-    ''' MSWP swap → final embed. Comparing the same shape's tag-by-tag lines tells us which
-    ''' stage mutated each field.</summary>
 
 End Module

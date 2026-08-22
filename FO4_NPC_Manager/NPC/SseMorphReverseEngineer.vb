@@ -15,7 +15,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' que la mascara de cada columna es FIJA, se precomputa una vez y la aplicacion queda LINEAL en el peso.
 ''' Verificado por RE de los dos binarios de SSE: el gate no es una comparacion en tiempo de aplicacion sino un
 ''' mapa RLE precomputado en los datos del morph, consumido ANTES de que el peso entre.</para>
-''' <para>âš ï¸ QUE ELIGE ESTE CODIGO: la descomposicion NO es unica -el sculpt es un campo libre por vertice y puede
+''' <para>⚠️ QUE ELIGE ESTE CODIGO: la descomposicion NO es unica -el sculpt es un campo libre por vertice y puede
 ''' absorber cualquier cosa, asi que infinitos pares (NAM9, sculpt) dan el MISMO horneado-. Se elige el que
 ''' MINIMIZA LA ENERGIA DEL SCULPT, que es lo que da minimos cuadrados. Los NAM9 devueltos NO son "los
 ''' originales" (eso no lo puede recuperar nadie): son unos que reproducen la geometria. La geometria cierra al

@@ -173,14 +173,14 @@ Friend NotInheritable Class NpcMaterialResolver
             Dim clfm = ResolveColorFormData(hairColorFormID)
             If clfm IsNot Nothing AndAlso clfm.TieneIndiceDePaleta() Then
                 ' PRESERVAR el opt-in de palette de la FUENTE (no forzarlo). Probado sobre el corpus
-                ' FaceGen vanilla (BeardRuleProbe 2026-06-13, 1100 shapes de barba, 7 diffuse): el flag
+                ' FaceGen vanilla (BeardRuleProbe, 1100 shapes de barba, 7 diffuse): el flag
                 ' GreyscaleToPalette_Color es UNIFORME por barba (función de la barba fuente, NO del NPC,
                 ' 0 casos mix). CK lo deja como vino la fuente: barbas tintables (facialhair01/02, haircurly*)
                 ' con flag ON; stubble (hairshaved04) con flag OFF. Nuestro código forzaba ON para toda
                 ' shape Hair → rompía las OFF (88/1100). Fix: solo encender el flag + inyectar la textura
                 ' del LUT si la FUENTE ya optó por palette (flag propio o textura greyscale propia).
                 ' El SCALE (RemappingIndex) se escribe SIEMPRE — CK lo propaga uniforme por NPC, inerte
-                ' en las shapes sin flag/textura (memoria grayscale 2026-05-25).
+                ' en las shapes sin flag/textura (ver memoria de grayscale-palette).
                 Dim sourceHadPalette As Boolean = material.GrayscaleToPaletteColor OrElse Not String.IsNullOrEmpty(material.GreyscaleTexture)
                 Dim oldPalColor = material.GrayscaleToPaletteColor
                 Dim oldScale = material.GrayscaleToPaletteScale
@@ -234,7 +234,7 @@ Friend NotInheritable Class NpcMaterialResolver
             End If
             ' HDPT.CNAM (Head Part Color) GANA sobre NPC.HCLF, por head part. Se resuelve ACÁ —punto
             ' compartido render+bake— porque el camino del RENDER llama con hairTintColorOverride:=Nothing
-            ' (NpcFaceTintResolver.vb:1184) y sin esto vería el HCLF mientras el bake ve el CNAM: RENDER ≠ BAKE.
+            ' (NpcFaceTintResolver.RefreshFaceTintLivePreview) y sin esto vería el HCLF mientras el bake ve el CNAM: RENDER ≠ BAKE.
             ' MEDIDO: sólo 5 HDPT en todo vanilla+DLC tienen CNAM<>0 (pelo y hairline de Serana y Valerica,
             ' todas → 0x000A0434 HairColor11Black). CK hornea (52,56,56) = 2×(26,28,28) del CNAM; nosotros
             ' dábamos el HCLF del NPC. Sus cejas (sin CNAM) coinciden en ambos lados y caen al HCLF, lo que
@@ -402,11 +402,10 @@ Friend NotInheritable Class NpcMaterialResolver
             ' SU `[arma+sex*8+0x240]`; si ese slot es null, el shape conserva SU PROPIA textura
             ' (`[prop+0xb0]`). El motor NUNCA cae a OTRO armature buscando uno que sí tenga TXST.
             '
-            ' Acá había `Continue For` y ESE era el bug de UBE (medido 2026-08-15, log + records):
-            ' `00UBE_SkinNaked` (0x0D0144E7) lista 25 armatures; los 3 de UBE (00UBE_NakedTorso/Feet/Hands)
-            ' traen las texturas DENTRO del NIF y dejan NAM0=NAM1=0, así que el scan se los salteaba y
-            ' seguía por los 21 armatures vanilla que el ARMO hereda → devolvía `SkinBodyFemaleChild`
-            ' (0x0007E5CF: `FemaleChild\UpperBodyFemale.dds` + `MaleChild\UpperBodyMale_n/_sk`) y la pintaba
+            ' Acá había `Continue For`, y era un bug real (medido con log + records sobre un ARMO de UBE):
+            ' `00UBE_SkinNaked` lista 25 armatures; los 3 propios de UBE traen las texturas DENTRO del NIF y
+            ' dejan NAM0=NAM1=0, así que el scan se los salteaba y seguía por los armatures vanilla que el
+            ' ARMO hereda → devolvía el TXST de OTRO armature (`SkinBodyFemaleChild`) y la pintaba
             ' sobre las UV de UBE en los shapes SkinTint del outfit — encima con normal MSN vanilla sobre un
             ' mesh `*_tangent_*.nif`. El cuerpo desnudo NO se veía afectado porque ése va por
             ' `candidate.TextureSetFormID` (=0 ⇒ ApplyTextureSetOverrides hace Return y conserva lo autorado):
@@ -471,8 +470,8 @@ Friend NotInheritable Class NpcMaterialResolver
     '''
     ''' Inercia MEDIDA hoy (`sweep_v3.py`, condición suficiente, predicado de raza con la cadena RACE.RNAM
     ''' completa, universo = ARMO por RACE.WNAM ∪ NPC_.WNAM, regiones Body y Hand, ambos sexos):
-    ''' pasada 1 = **516 combinaciones en SSE y 366 en FO4, 0 cambios reales** en las dos. (Conteo verificado
-    ''' contra un arnés independiente del revisor, que dio los mismos 516/366.)
+    ''' pasada 1 = **516 combinaciones en SSE y 366 en FO4, 0 cambios reales** en las dos (conteo verificado
+    ''' con un arnés independiente).
     '''
     ''' Esto NO implementa el selector per-slot del motor, sólo se acerca: la REGIÓN del candidate sigue
     ''' decidiendo el conjunto antes del desempate (el lumping Body-vs-Hand sigue vivo) y la pasada 2 va con
@@ -555,14 +554,10 @@ Friend NotInheritable Class NpcMaterialResolver
         Return candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace
     End Function
 
-    ' BORRADO 2026-07-21: IsNpcExplicitFaceTextureSetFor + el parámetro isNpcExplicitFaceTextureSet de
-    ' ApplyTextureSetOverrides. Era el PROXY REFUTADO del alpha de la cabeza ("el NPC declara su cara por
-    ' FTST"): coincidía con Valentine/DiMA por casualidad sobre un corpus de 2 casos, y el árbitro real es
-    ' el flag ACBS "Diffuse Alpha Test" (0x01000000) — RE CreationKit 0x140ED41F6, gate [npc+0x9b]&1;
-    ' confirmado también en el esquema del record ACBS. Al reemplazarlo por HeadDiffuseAlphaTest
-    ' quedó como parámetro que los dos call-sites calculaban y pasaban pero que el CUERPO NO
-    ' LEÍA NUNCA. Ver
-    ' 40-bake-leyes-fo4.
+    ' PROXY REFUTADO — no reintroducir un flag "el NPC declara su cara por FTST": coincidía con
+    ' Valentine/DiMA por casualidad sobre un corpus de 2 casos. El árbitro real es el flag ACBS "Diffuse
+    ' Alpha Test" (0x01000000) — RE CreationKit 0x140ED41F6, gate [npc+0x9b]&1 — consumido como
+    ' HeadDiffuseAlphaTest. Ver 40-bake-leyes-fo4.
 
     Friend Function ResolveHeadPartSolidTintColor(candidate As MainForm.MeshCandidate) As Nullable(Of Color)
         If candidate Is Nothing OrElse Not candidate.UseSolidTint Then Return Nothing
@@ -725,7 +720,7 @@ Friend NotInheritable Class NpcMaterialResolver
 
         ' ACÁ ARRIBA Y SIN CONDICIÓN, A PROPÓSITO. Es un HECHO del record del NPC (flag ACBS Diffuse Alpha
         ' Test), no una decisión sobre texturas, así que no puede depender de nada de lo que sigue.
-        ' Hasta 2026-08-08 se asignaba DENTRO de la rama del MNAM, ~60 líneas más abajo: si el TXST no traía
+        ' Antes se asignaba DENTRO de la rama del MNAM, más abajo: si el TXST no traía
         ' MaterialPath, el dato que el call-site había calculado bien NUNCA llegaba al material. Medido:
         ' 1.757 NPC en FO4, y el 100% de SSE — el TXST de Skyrim no tiene subrecord MNAM, así que allá el
         ' portador era estructuralmente inalcanzable. El único síntoma visible era nulo (ver la nota de
@@ -738,7 +733,7 @@ Friend NotInheritable Class NpcMaterialResolver
         ' a los NPC cuyo TXST no trae MNAM (1.757 en FO4) y a todo SSE, donde antes se perdía.
         material.VetoAlphaPropertyCreation = Not npcDiffuseAlphaTest
 
-        ' forceDiffuseOnly (RE 2026-07-16): la fuente FTST del camino Face FO4 aplica SOLO el slot 0 — el
+        ' forceDiffuseOnly (RE): la fuente FTST del camino Face FO4 aplica SOLO el slot 0 — el
         ' ATTACH del engine, GetTexturePath(slot 0) (game 0x1406EE0D7 / CK 0x140ED3830, todas las llamadas
         ' con xor edx,edx).
         '
@@ -806,7 +801,7 @@ Friend NotInheritable Class NpcMaterialResolver
     End Sub
 
     ''' <param name="fo4FaceComposeInputsOnly">SOLO FO4, texture set del head part de CARA — venga de
-    ''' NPC.FTST, de RACE.DFT o del TNAM del propio head part (los tres, medido 2026-07-30). Ver la
+    ''' NPC.FTST, de RACE.DFT o del TNAM del propio head part (medido en los tres). Ver la
     ''' REGLA MEDIDA en el cuerpo (bake controlado BAKETESTFO4.esp).</param>
     Friend Shared Sub ApplyTextureSetToMaterial(material As FO4UnifiedMaterial_Class, textureSet As Canon.ITxst, Optional isHeadPartTextureSet As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False)
         If material Is Nothing OrElse textureSet Is Nothing Then Return
@@ -902,7 +897,7 @@ Friend NotInheritable Class NpcMaterialResolver
     End Sub
 
 
-    ''' <summary>DIAGNÓSTICO one-shot (2026-05-31): dumpea TODOS los TXST cargados (vanilla + mods) con
+    ''' <summary>DIAGNÓSTICO one-shot: dumpea TODOS los TXST cargados (vanilla + mods) con
     ''' su flag DNAM (0x0001 NoSpecularMap, 0x0002 FacegenTextures, 0x0004 ModelSpaceNormal) y qué
     ''' slots traen (D/N/S). Sirve para auditar el universo del gate: facegen=True → full D/N/S;
     ''' facegen=False → diffuse-only (skip N/S). Gateado por Logger.Enabled, corre UNA vez por sesión.
@@ -1113,7 +1108,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' refresh en vivo. La variante SIN ajuste de arriba es la que sigue leyendo la CARA -si las dos fueran la
     ''' misma, el origen del match se moveria junto con el destino y el ajuste no podria converger nunca.</summary>
     Friend Function ResolveNpcBodySkinToneColor(state As MainForm.NPCVisualState) As Nullable(Of Color)
-        Return ResolveNpcSkinToneCore(state, If(state Is Nothing, Nothing, state.SkinToneOffset))
+        Return ResolveNpcSkinToneCore(state, state?.SkinToneOffset)
     End Function
 
     Private Function ResolveNpcSkinToneCore(state As MainForm.NPCVisualState, offset As SkinToneQnamOffset) As Nullable(Of Color)
@@ -1484,7 +1479,7 @@ Friend NotInheritable Class NpcMaterialResolver
             If candidate Is Nothing OrElse candidate.Kind <> MainForm.MeshCandidateKind.Outfit Then
                 ' Skin (naked body) candidate: the body-skin TXST (ARMA NAM0/NAM1) must ONLY replace
                 ' shapes whose shader is SkinTint — the engine only skins SkinTint geometry (both games,
-                ' user rule 2026-07-09). Non-SkinTint shapes bundled inside a body mesh (e.g. CBBE
+                ' user rule). Non-SkinTint shapes bundled inside a body mesh (e.g. CBBE
                 ' Bra/Panty underwear = Default shader, or the eyes/mouth in the vanilla all-in-one
                 ' childfeet.nif = EyeEnvmap/Default) keep their OWN material — painting them with the
                 ' body diffuse was the "skin on underwear / body texture on eyes" bug. FO4 body meshes
@@ -1515,7 +1510,7 @@ Friend NotInheritable Class NpcMaterialResolver
                     ' (material con alphaTest=True) estrenarían un NiAlphaProperty que el CK no pone.
                     ' Ver 40-bake-leyes-fo4.
                     ' HECHO del record + anatomía: el bit F4SPF2 Alpha_Test lo pone el CK sólo en la CARA
-                    ' de un NPC con el flag ACBS. Es lo único que este dato gobierna desde 2026-08-08 (antes
+                    ' de un NPC con el flag ACBS. Es lo único que este dato gobierna hoy (antes
                     ' también vetaba la creación del NiAlphaProperty; ese veto se borró, ver NpcDiffuseAlphaTest).
                     Dim npcDiffuseAlphaTest As Boolean = state IsNot Nothing AndAlso
                                                         state.HeadDiffuseAlphaTest AndAlso
@@ -1591,7 +1586,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' normal + spec) por las del body skin del actor (race-specific). Material params
             ' (specular, smoothness, subsurface, etc.) NO se tocan — vienen del NIF original.
             ' Decisión per-shape via material.NifShaderType porque un mismo .nif suele tener shapes
-            ' mixtos. El render lee el path desde relatedMaterial.material (Render.vb:1362).
+            ' mixtos. El render lee el path desde relatedMaterial.material (Render.vb, DiffuseTexture_ID).
             If actorBodySkinTxst IsNot Nothing AndAlso material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint Then
                 Dim diffuseBefore = material.Diffuse_or_Base_Texture
                 ' Si el TXST trae MaterialPath (MNAM .bgsm), las texturas viven dentro del BGSM —

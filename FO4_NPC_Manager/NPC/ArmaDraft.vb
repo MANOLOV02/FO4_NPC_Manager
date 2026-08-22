@@ -73,7 +73,7 @@ Public Class ArmaDraft
 
     Public Function Clone() As ArmaDraft
         Return New ArmaDraft With {
-            .Record = If(Record Is Nothing, Nothing, Record.Copia()),
+            .Record = Record?.Copia(),
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

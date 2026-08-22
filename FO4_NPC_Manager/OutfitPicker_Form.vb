@@ -205,7 +205,7 @@ Public Class OutfitPicker_Form
         AddHandler ButtonReroll.Click, AddressOf OnReroll
         AddHandler ButtonNewLvl.Click, AddressOf OnNewLvl
         AddHandler ButtonAddToLvl.Click, AddressOf OnAddToLvl
-        ' Explicit New-record vs Override intent for the OUTFIT, replacing the old New/Override radio.
+        ' Explicit New-record vs Override intent for the OUTFIT.
         AddHandler ButtonNewOutfit.Click, AddressOf OnActionNewOutfit
         AddHandler ButtonOverrideOutfit.Click, AddressOf OnActionOverrideOutfit
         AddHandler TextBoxEdid.TextChanged, AddressOf OnCreateEdidChanged

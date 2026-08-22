@@ -14,41 +14,41 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 Public Class MainForm
 
     Private ReadOnly _pluginManager As PluginManager
-    ''' <summary>Shared record-parse services (Phase 2 split). Single owner of the ARMO/ARMA/RACE/
+    ''' <summary>Shared record-parse services. Single owner of the ARMO/ARMA/RACE/
     ''' HDPT/NPC_ parse caches; created once in the ctor and injected into extracted render
     ''' subsystems. Replaces the per-MainForm parse caches + GetParsed* helpers.</summary>
     Private ReadOnly _ctx As NpcRenderContext
-    ''' <summary>Material / texture-set / hair-palette / color-form resolution (Phase 2 split,
-    ''' increment 1). Receives the shared <see cref="_ctx"/>; ApplyShapeMaterialOverrides + skin-tone
-    ''' resolvers still live here pending later increments.</summary>
+    ''' <summary>Material / texture-set / hair-palette / color-form resolution.
+    ''' Receives the shared <see cref="_ctx"/>; ApplyShapeMaterialOverrides + skin-tone
+    ''' resolvers still live here.</summary>
     Private ReadOnly _materialResolver As NpcMaterialResolver
     ''' <summary>NPC visual-state resolution (template-chain traits/inventory/model, race fallbacks,
-    ''' skeleton key, leveled-NPC pick). Phase 2 split. Receives the shared context + collaborators +
+    ''' skeleton key, leveled-NPC pick). Receives the shared context + collaborators +
     ''' IoC delegates for the MainForm-resident state it can't own (gender filter, LM-skin resolver).</summary>
     Private ReadOnly _stateResolver As NpcStateResolver
     ''' <summary>Morph + pose resolution (face/body morph resolvers, FMRS face-bone transforms,
-    ''' body-weight data, race height, merged pose, facial-bone regions). Phase 2 split; skeleton
+    ''' body-weight data, race height, merged pose, facial-bone regions). Skeleton
     ''' LOADING (PrepareSkeleton) + caches stay in MainForm. IoC: overlay + host-provider delegates.</summary>
     Private ReadOnly _morphPoseResolver As NpcMorphPoseResolver
     ''' <summary>FaceTint compositor EXECUTION (face-tint compose + skin SoftLight/subsurface passes,
-    ''' pristine diffuse snapshot/rollback, live face-tint refresh). Phase 2 split; owns the per-process
+    ''' pristine diffuse snapshot/rollback, live face-tint refresh). Owns the per-process
     ''' _tintBytesCache. The skin-override live-preview fast-path stays in MainForm (coupled to
     ''' CollectArmoCandidates) and calls back into this resolver. IoC: ctx + materialResolver +
     ''' host-provider delegate + shared _appliedPresets.</summary>
     Private ReadOnly _faceTintResolver As NpcFaceTintResolver
-    ''' <summary>MeshCollection/Mounting Increment 1: mounting math (mount-delta transforms for robot
+    ''' <summary>Mounting math (mount-delta transforms for robot
     ''' chunks/sockets onto a live SkeletonInstance, host-scoped socket resolution, synthetic-skin Pipboy).
     ''' Pure data + NiflySharp, no GL/controls. The render orchestrator (RenderCurrentStateAsync) stays in
     ''' MainForm and calls this. IoC: ctx + stateResolver.</summary>
     Private ReadOnly _mountingResolver As NpcMountingResolver
-    ''' <summary>MeshCollection/Mounting Increment 2: the candidate pipeline (ResolvePreviewVariant →
+    ''' <summary>The candidate pipeline (ResolvePreviewVariant →
     ''' collect ARMO/OTFT/headpart/robot-chunk candidates → slot-conflict selection + headwear occlusion →
     ''' LoadNifShapes). Pure data + NiflySharp, no GL/controls. The render orchestrator stays in MainForm
     ''' and calls _meshCollector.ResolvePreviewVariant. IoC: ctx + materialResolver + stateResolver +
     ''' mountingResolver + Func delegates (ArmoIsPowerArmor, RaceIsPowerArmor —
     ''' shared power-armor predicates kept in MainForm because the outfit/armo-universe also uses them).</summary>
     Private ReadOnly _meshCollector As NpcMeshCollector
-    ''' <summary>MeshCollection Increment 3: skin-override live-preview fast-path (EditBody skin swap →
+    ''' <summary>Skin-override live-preview fast-path (EditBody skin swap →
     ''' re-resolve TXST/MSWP in place + re-bake face tint/softlight, no VBO regen). Orchestrates
     ''' meshCollector + materialResolver + faceTintResolver over host.PreviewCtl. IoC: the three
     ''' resolvers + host-provider + shared _appliedPresets + Func delegates for ResolveLmSkinTemplate
@@ -194,11 +194,10 @@ Public Class MainForm
     ''' NPC → entry gets rebuilt via InvalidateNpcSearchCache.</summary>
     Private _npcSearchableCache As New Dictionary(Of UInteger, String)()
     ''' <summary>Etiqueta del nodo por FormID ("FullName (EditorID, FormID)", con alternativas).
-    ''' <para>⛔ El doc viejo decia que sus entradas "no cambian despues de la carga" y era FALSO:
-    ''' hay DOS caminos que le cambian el nombre a un record ya cargado —el readback del Save y el
-    ''' editor de NPC—, y los dos tienen que refrescar este cache. Van por
-    ''' <see cref="RefrescarCachesDerivados"/>, junto con el texto buscable y la clave de orden, que
-    ''' salen de los mismos campos.</para></summary>
+    ''' <para>⛔ SÍ cambia después de la carga: el readback del Save y el editor de NPC le cambian el
+    ''' nombre a un record ya cargado, y los dos tienen que refrescar este cache vía
+    ''' <see cref="RefrescarCachesDerivados"/>, junto con el texto buscable y la clave de orden (salen
+    ''' de los mismos campos).</para></summary>
     Private _npcDisplayLabelCache As New Dictionary(Of UInteger, String)()
 
     ''' <summary>Clave con la que se ORDENA la lista, por FormID. Es exactamente
@@ -223,10 +222,10 @@ Public Class MainForm
         Return n.ToString()
     End Function
 
-    ''' <summary>QUE es la clave de orden. Un solo sitio.
-    ''' <para>Estaba escrita en los tres lugares que llenan el cache. El plan contempla —y por ahora
-    ''' descarta -- un desempate por FormID; el dia que se agregue, olvidarse de uno de los tres deja
-    ''' la lista ordenada con dos leyes y sin ningun aviso.</para></summary>
+    ''' <summary>QUE es la clave de orden. Un solo sitio: el plan contempla —y por ahora
+    ''' descarta— un desempate por FormID; el día que se agregue, hay que actualizarlo en los tres
+    ''' call-sites que llenan <see cref="_npcSortKeyCache"/> o la lista queda ordenada con dos leyes
+    ''' distintas sin ningún aviso.</summary>
     Private Sub SembrarClaveDeOrden(npc As NPC_Data)
         If npc Is Nothing Then Return
         _npcSortKeyCache(npc.FormID) = npc.ToString()
@@ -381,11 +380,10 @@ Public Class MainForm
     Friend Const HeadPartTypeFacialHair As Integer = 4
     Private Const HeadPartTypeHeadRear As Integer = 9
 
-    ' The old fixed HeadwearOcclusionSlots const ({30,31,32,46,48,49} for every NPC) has been REMOVED.
-    ' Head-part occlusion is now per-NPC and RACE-driven: ResolvePreviewVariant computes the slot mask from
-    ' the NPC's RACE.DATA biped objects via RaceUtil.RaceHeadOcclusionMask (engine-faithful — verified vs
-    ' Fallout4.exe + .esm, see [[23-armor-oclusion-fo4-re]]) and carries it on
-    ' PreviewResolutionResult.HeadOcclusionMask; NpcRenderHost.ApplyRenderToggleVisibility reads that instead.
+    ' Head-part occlusion is per-NPC and RACE-driven, NOT a fixed slot set: ResolvePreviewVariant computes
+    ' the slot mask from the NPC's RACE.DATA biped objects via RaceUtil.RaceHeadOcclusionMask (engine-faithful
+    ' — verified vs Fallout4.exe + .esm) and carries it on PreviewResolutionResult.HeadOcclusionMask;
+    ' NpcRenderHost.ApplyRenderToggleVisibility reads that.
 
     Private Enum PreviewMode
         FullCharacter = 0
@@ -607,16 +605,16 @@ Public Class MainForm
         ''' <summary>HeadPart candidates only: True cuando un headwear aceptado oculta este head
         ''' part por la occlusion matrix vanilla (Hair ocluido por HairTop/HairLong/FaceGenHead;
         ''' FacialHair ocluido por FaceGenHead/Beard/Mouth; Eyebrows por FaceGenHead; HeadRear por
-        ''' HairTop AND (HairLong OR FaceGenHead)). Antes esto descartaba el head part entero;
-        ''' ahora se acepta con flag para que "Render headwear OFF" pueda destaparlo runtime.</summary>
+        ''' HairTop AND (HairLong OR FaceGenHead)). Se acepta con flag (no se descarta) para que
+        ''' "Render headwear OFF" pueda destaparlo runtime.</summary>
         Public IsOccludedByHeadwear As Boolean = False
         ''' <summary>HeadPart candidates only: True cuando el candidato fue colectado via la
         ''' recursión HNAM de un parent (parentPartType≥0 en CollectHeadPartCandidate), no como
         ''' entry top-level de NPC.PNAM/RACE defaults. Vanilla engine renderiza HNAM-extras aunque
         ''' un headwear oculte al parent — sólo FaceGenHead full-face los tapa. Independiente del
         ''' raw type del extra: el flag de "entró via HNAM" es el que determina la regla de
-        ''' addon, no su PartType. Caso 2026-05-17: hair nuevo cuya HNAM declara una hairline raw=3
-        ''' (no Misc) — sin este flag caía en la rama Hair de occlusion y la gorra la ocultaba.</summary>
+        ''' addon, no su PartType. Contraejemplo: un hair cuya HNAM declara una hairline raw=3
+        ''' (no Misc) — sin este flag cae en la rama Hair de occlusion y la gorra lo oculta.</summary>
         Public IsHnamExtra As Boolean = False
         ''' <summary>Hair candidates {30,31} only: qué particiones (Top=v30−v31, Long=v31−v30) se ZAPEAN
         ''' este render, según el modelo complementario main/hairline (ver <see cref="HairZapParts"/>).
@@ -739,7 +737,7 @@ Public Class MainForm
         ''' ApplyRenderToggleVisibility: con "Render headwear" ON el head part ocluido se oculta;
         ''' OFF lo destapa para mostrar el pelo/barba/etc bajo el headwear oculto.</summary>
         Public ReadOnly ShapeOccludedByHeadwear As New Dictionary(Of IRenderableShape, Boolean)
-        ''' <summary>Per-shape (Fase 2): the OWN worn biped-slot mask of the candidate this shape came from
+        ''' <summary>Per-shape: the OWN worn biped-slot mask of the candidate this shape came from
         ''' (bit N-30 = biped slot N, same convention as <see cref="EquipResolver.EquipResolution.OccupiedSlots"/>).
         ''' Stored only for worn-item (Kind=Outfit) shapes; head parts / skin have no entry (own slots = 0).
         ''' ApplyRenderToggleVisibility rebuilds the per-segment occlusion mask (IRenderableShape.CoveredSlotsMask)
@@ -877,24 +875,21 @@ Public Class MainForm
         Public WeightThin As Single?
         Public WeightMuscular As Single?
         Public WeightFat As Single?
-        ' [TEST: TPLT-traits-bucket] Face-appearance fields live in the Traits bucket (moved here from
-        ' the former ModelAnimationState). The template flags total 15 bits but don't pin each
-        ' NPC_ subrecord to a specific bit. These ride "Use Traits" since the CK Traits tab covers the
-        ' actor's visual identity (race, skin, head, hair) — same conceptual bucket as RNAM/WNAM/MWGT.
-        ' The OBTS fields below joined this bucket after measurement (see their note); the now-empty
-        ' Model/Animation bucket was removed, so a revert means re-introducing it.
+        ' [TEST: TPLT-traits-bucket] Face-appearance fields live in the Traits bucket: the template
+        ' flags total 15 bits but don't pin each NPC_ subrecord to a specific bit, so these ride
+        ' "Use Traits" — the CK Traits tab covers the actor's visual identity (race, skin, head, hair),
+        ' same conceptual bucket as RNAM/WNAM/MWGT.
         Public HeadTextureFormID As UInteger
         Public HairColorFormID As UInteger
         Public FacialHairColorFormID As UInteger
         Public HasTextureLighting As Boolean
         Public TextureLightingColor As Color = Color.Empty
         Public HeadPartFormIDs As New List(Of UInteger)
-        ' [TEST: TPLT-traits-bucket] NPC ObjectTemplate (OBTE/OBTS) MOVED here from ModelAnimationState.
-        ' The old comment claimed OBTS was "model assembly, closer to Model/Animation". MEASURED wrong:
-        ' GutsyTemplateProbe over all 4365 load-order NPC_ shows ZERO inherit OBTS via Use Model/Animation
-        ' (bit6); the rank variants (encMrGutsy02/03/04, SentryBot/Assaultron/Synth encounters) reach the
-        ' OBTS holder ONLY via Use Traits (bit0) — 225 NPCs go from empty→rendered, 0 regressions. Matches
-        ' the CK, where the "Object Template" section lives on the Traits tab. So OBTS rides the Traits walk.
+        ' [TEST: TPLT-traits-bucket] NPC ObjectTemplate (OBTE/OBTS) rides "Use Traits" (bit0), NOT
+        ' "Use Model/Animation" (bit6): GutsyTemplateProbe over all 4365 load-order NPC_ shows ZERO
+        ' inherit OBTS via bit6; the rank variants (encMrGutsy02/03/04, SentryBot/Assaultron/Synth
+        ' encounters) reach the OBTS holder ONLY via bit0 — 225 NPCs go from empty→rendered, 0
+        ' regressions. Matches the CK, where "Object Template" lives on the Traits tab.
         ''' <summary>Legacy flat list of OMOD FormIDs from combo #0 (kept for back-compat).</summary>
         Public ObjectTemplateOMODFormIDs As New List(Of UInteger)
         ''' <summary>Full OBTE/OBTS combinations — used by the robot-chunk path resolver.</summary>
@@ -1184,11 +1179,10 @@ Public Class MainForm
         ' idempotente; ApplyBoneMorphPose no borra el mount).
         _mountingResolver.ApplyMountPlanForActor(host.LastSkeletonInstance, host.LastRenderData)
 
-        ' Head skeleton: re-pose WITH body weight AND NNAM neck-fat (FASE 1 2026-06-24). Antes el NNAM se
-        ' suprimía acá porque escala el hueso ANCESTRO "Neck" y propagaba la escala a toda la cara (balloon).
-        ' Ahora BuildBodyWeightPose mete la COMPENSACIÓN anti-propagación (S⁻¹ a los hijos directos de
-        ' "Neck"), así la escala queda solo en los verts del "Neck" y la cara NO se infla. fmrsEnabled
-        ' sigue honrado (la cabeza conserva sus morphs FMRS).
+        ' Head skeleton: re-pose CON body weight Y NNAM neck-fat. BuildBodyWeightPose mete la
+        ' compensación anti-propagación (S⁻¹ a los hijos directos de "Neck") para que la escala del
+        ' hueso ancestro "Neck" quede solo en sus propios verts y no infle (balloon) el resto de la
+        ' cara. fmrsEnabled sigue honrado (la cabeza conserva sus morphs FMRS).
         If host.LastHeadSkeletonInstance IsNot Nothing AndAlso Not ReferenceEquals(host.LastHeadSkeletonInstance, host.LastSkeletonInstance) Then
             Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastHeadSkeletonInstance, Nothing,
                                                                  nodeTransformsEnabled:=nodeXfEnabled)
@@ -1311,10 +1305,10 @@ Public Class MainForm
     Private _animSuppressMs As Boolean = False          ' al setear NumericAnimFrameMs programáticamente
     ''' <summary>hkbClipGenerator::m_playbackSpeed del clip seleccionado. Se RESUELVE al cargar el
     ''' clip (multiplica el FPS nativo) y desde ahí el usuario puede editar el numeric libremente.
-    ''' El SIGNO se guarda aparte: el numeric sólo admite FPS positivos, pero un clip autorado a -1x
-    ''' se reproduce al REVÉS (HkxAnimationPlayer.FrameForNow ya soporta TargetFps negativo: envuelve
-    ''' con 'If f &lt; 0 Then f += count'). Medido: 17,1% de los clips SSE y 5,3% de los FO4 tienen
-    ''' playbackSpeed &lt;&gt; 1.0 (0,1x, 10x, 2x, -1x…), y antes de esto TODOS se reproducían a 1x.</summary>
+    ''' El SIGNO se guarda aparte: el numeric sólo admite FPS positivos, y ⛔ el REVÉS lo resuelve el
+    ''' CALLER — HkxAnimationPlayer.FrameForNow coacciona TargetFps &lt;= 0 a 1.0, así que un fps
+    ''' negativo NO reproduce al revés por sí solo. Medido: 17,1% de los clips SSE y 5,3% de los FO4 tienen
+    ''' playbackSpeed &lt;&gt; 1.0 (0,1x, 10x, 2x, -1x…): no es caso raro, hay que resolverlo siempre.</summary>
     Private _animClipSpeed As Double = 1.0
     Private _animOverBudget As Boolean = False          ' FPS en rojo = render no llega al target
 
@@ -1656,23 +1650,18 @@ Public Class MainForm
     ''' diciendo otra cosa.
     ''' <para>Pasa de verdad: un clip que el behavior graph declara pero cuyo .hkx no esta instalado
     ''' (DLC o mod ausente) hace que <c>LoadAnimHkxBytes</c> devuelva Nothing.</para>
-    ''' <para>El <c>Catch</c> ya limpiaba <c>_animSession</c> —pero no <c>_animPlayer</c>— y los dos
-    ''' early-returns no limpiaban nada. Ahora los tres caminos hacen lo mismo.</para></summary>
+    ''' <para>Los tres caminos (el <c>Catch</c> y los dos early-returns) tienen que limpiar TANTO
+    ''' <c>_animSession</c> COMO <c>_animPlayer</c> — dejar alguno afuera deja controles de la barra
+    ''' de transporte vivos que no hacen nada.</para></summary>
     Private Sub AbortarSeleccionDeClip(motivo As String)
         _animSession = Nothing
         _animPlayer = Nothing
-        ' Y HAY QUE APAGAR LA BARRA DE TRANSPORTE. Limpiar sólo los dos campos dejaba el slider de
-        ' frame, el numeric de FPS y el botón ▶ HABILITADOS y con el rango del clip ANTERIOR: el camino
-        ' de éxito es el único que los toca (los prende junto con el Maximum nuevo), y `StopAnimPlayback`
-        ' —que corre antes desde `ComboAnim_SelectedIndexChanged`— re-habilita el slider según ese
-        ' Maximum viejo y delega el apagado en quien descarta el clip. O sea que tras un aborto quedaban
-        ' tres controles vivos que no hacen nada: arrastrar el slider entra en `ApplyAnimFrame` y sale
-        ' en seco por `_animPlayer Is Nothing`, y ▶ no encuentra su rama. Con `ComboPose` además
-        ' deshabilitado (el combo de anim no está en "(None)"), la barra entera quedaba muerta y la única
-        ' salida era que el usuario dedujera que tenía que volver a "(None - static)".
-        ' Es lo mismo que hace `ResetAnimToTPose`; acá no se puede llamar entera porque esa además
-        ' resetea la pose del esqueleto y re-renderiza, y un clip que no cargó no tiene por qué tirar
-        ' abajo lo que se está viendo.
+        ' HAY QUE APAGAR LA BARRA DE TRANSPORTE (slider/FPS/▶): dejarlos con el rango del clip ANTERIOR
+        ' los deja "vivos" pero muertos (arrastrar el slider entra en `ApplyAnimFrame` y sale en seco
+        ' por `_animPlayer Is Nothing`; ▶ no encuentra rama), y con `ComboPose` deshabilitado tampoco
+        ' hay forma de recuperarlos salvo volver a "(None - static)" a mano.
+        ' No se puede llamar `ResetAnimToTPose` entera: esa además resetea la pose del esqueleto y
+        ' re-renderiza, y un clip que no cargó no tiene por qué tirar abajo lo que se está viendo.
         SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
         Logger.LogLazy(Function() $"[ANIM-BAR] SelectAnimationClip abort: {motivo}")
     End Sub
@@ -1909,20 +1898,14 @@ Public Class MainForm
 
     ''' <summary>(Re)lee el catálogo de poses si cambiaron las rutas (o si <paramref name="force"/>),
     ''' y repuebla el combo conservando la selección. Barato: son unas pocas decenas de XML/JSON
-    ''' chicos, así que corre sincrónico (a diferencia del walk de behaviors de la animación).</summary>
-    ''' <summary>LA CLAVE INCLUYE LOS DIRECTORIOS RESUELTOS, Y TIENE QUE SEGUIR INCLUYÉNDOLOS.
-    ''' <para>Llegué a cortar por JUEGO antes de resolverlos, para ahorrar el I/O de
-    ''' <c>ResolveBsExeFromSiblingWm</c> en cada render. Estaba MAL y el modo de falla era grave: en una
-    ''' instalación sin BodySlide configurado, la primera lectura deja el catálogo con sólo "None", eso
-    ''' deja <c>ComboPose</c> DESHABILITADO (<c>UpdatePoseComboEnabled</c> exige más de un ítem), y un
-    ''' combo deshabilitado no dispara <c>DropDown</c> — que es el único call site con
-    ''' <c>force:=True</c> fuera del botón de export. O sea que después de configurar BodySlide en Edit
-    ''' Body las poses no aparecían NUNCA hasta reiniciar la app.</para>
-    ''' <para>Y el comentario que escribí ahí afirmaba que había call sites de "cambiar la config" con
-    ''' force:=True. NO EXISTEN: los cuatro son el render (False), el DropDown y dos del botón de export.
-    ''' Verificar los call sites antes de apoyar una decisión en ellos.</para>
-    ''' <para>El costo se ataca donde está —el escaneo de carpetas hermanas— memoizándolo en
-    ''' <c>PoseCatalog</c>, no dejando de mirar si las rutas cambiaron.</para></summary>
+    ''' chicos, así que corre sincrónico (a diferencia del walk de behaviors de la animación).
+    ''' <para>LA CLAVE TIENE QUE INCLUIR LOS DIRECTORIOS YA RESUELTOS, no sólo el juego: cortar antes
+    ''' de resolverlos (para ahorrar el I/O de <c>ResolveBsExeFromSiblingWm</c> por render) deja, en una
+    ''' instalación sin BodySlide configurado, el catálogo pegado en sólo "None" — y como los ÚNICOS
+    ''' call sites con <c>force:=True</c> son <c>DropDown</c> y los dos del botón de export (ninguno
+    ''' dispara en "cambió la config"), las poses no vuelven a aparecer hasta reiniciar la app.</para>
+    ''' <para>El costo del escaneo de carpetas hermanas se ataca memoizándolo en <c>PoseCatalog</c>,
+    ''' no dejando de mirar si las rutas cambiaron.</para></summary>
     Private Sub EnsurePoseCatalog(force As Boolean)
         Dim isSse = Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
         If force Then PoseCatalog.OlvidarEscaneoDeHermanos()
@@ -2284,7 +2267,7 @@ Public Class MainForm
         ' Snapshot WHICH NPCs woke up with F4SE data persisted on disk (sidecar row → BodyGen .ini →
         ' VMAD apply-script): before this point _appliedPresets is empty, so after hydration its keys
         ' are exactly the sidecar-backed set. "Reset (discard changes)" consults it to keep such NPCs
-        ' dirty so the next Save prunes their disk state (WYSIWYG routing, user decision 2026-07-16);
+        ' dirty so the next Save prunes their disk state (WYSIWYG routing);
         ' ApplyPostSaveReadback keeps it current as saves add/remove sidecar rows.
         For Each hydratedFid In _appliedPresets.Keys
             _sidecarBackedNpcs.Add(hydratedFid)
@@ -2636,10 +2619,9 @@ Public Class MainForm
         Dim npcRecords = _pluginManager.GetNPCs()
         Dim getNpcsMs = sw.ElapsedMilliseconds
         sw.Restart()
-        ' El `Catch` pelado que había acá ANULABA los fail-loud que los parsers construyeron a propósito.
-        ' RecordParsers lanza deliberadamente en varios sitios ("fail loud rather than silently corrupt"), y en
-        ' este camino —el que carga TODOS los NPC— se los tragaba enteros: el NPC no aparecía en el árbol y no
-        ' había un solo mensaje. El gate existía, era correcto, y no se podía observar.
+        ' RecordParsers lanza deliberadamente en varios sitios ("fail loud rather than silently corrupt").
+        ' Este camino —el que carga TODOS los NPC— tiene que CAPTURAR y REPORTAR cada fallo (ver abajo):
+        ' un `Catch` que sólo trague la excepción deja al NPC ausente del árbol sin un solo mensaje.
         Dim parseFailures As New List(Of String)
         Dim parseFailureTotal As Integer = 0
         ' EL ÁRBOL DE CADA NPC SE ARMA EN PARALELO. Cada uno sale de SU record y de nada más: no hay
@@ -2647,9 +2629,8 @@ Public Class MainForm
         ' <para>Que armar árboles concurrentemente sea seguro NO es una suposición nueva: es lo que hace
         ' cada bake. `FaceGenBuilder.BuildCharGen` corre dentro del `Parallel.ForEach` por NPC de
         ' `BakeAllRunner`, y ahí adentro llama a `NpcRecordOverlay.GetParsedNpc` (⇒ `RecordParsers.ParseNPC`)
-        ' y a `Canon.CanonRecords.Race/Otft/Arma/Armo`. ⛔ El bucle de `BakeAllRunner` que arma la lista de
-        ' objetivos SÍ es secuencial — citarlo como precedente, que fue lo primero que escribí acá, es
-        ' falso.</para>
+        ' y a `Canon.CanonRecords.Race/Otft/Arma/Armo`. (El bucle que arma la LISTA de objetivos de
+        ' `BakeAllRunner` sí es secuencial; el paralelismo relevante es el `Parallel.ForEach` por NPC.)</para>
         ' <para>EL RESULTADO SE DEPOSITA POR ÍNDICE Y SE VUELCA EN ORDEN. `_allNPCs` queda exactamente en
         ' el orden en que vino `GetNPCs()` —el mismo que daba el bucle secuencial—, y los fallos se
         ' reportan también por índice: si se acumularan según termina cada hilo, la lista de las primeras
@@ -2680,16 +2661,16 @@ Public Class MainForm
         End If
         If parseFailureTotal > 0 Then
             ' EL AVISO NO PUEDE VIVIR SOLO EN EL LOGGER: en Release `Logger.Enabled` está clavado en False
-            ' (Logger.vb:31-37; el único que prende AllowInReleaseBuilds es el CLI), así que `LogLazy` sale en su
-            ' primera línea y el usuario final ve EXACTAMENTE lo mismo que antes — el NPC ausente del árbol y ni
-            ' un mensaje. Un "fail loud" que sólo grita en Debug no es un fail loud.
+            ' (sólo el CLI prende `Logger.AllowInReleaseBuilds`), así que `LogLazy` sale en su primera línea
+            ' y el usuario final no ve nada — el NPC queda ausente del árbol sin un solo mensaje. Un
+            ' "fail loud" que sólo grita en Debug no es un fail loud.
             ' El MessageBox espeja el que ya usa el Preflight para los plugins excluidos por master faltante.
             Dim n = parseFailureTotal
             Dim detail = String.Join(vbLf & "    ", parseFailures)
             Logger.LogLazy(Function() $"[LOAD] {n} NPC_ record(s) could not be parsed and are ABSENT from the " &
                                       "list (they would also be absent from any bake):" & vbLf & "    " & detail)
-            ' NO se muestra acá: ParseAllNPCs corre SIEMPRE dentro de `Await Task.Run` (:2476), o sea en un
-            ' hilo del pool. Un MessageBox desde ahí no es modal respecto de MainForm (que ya está visible y
+            ' NO se muestra acá: ParseAllNPCs corre SIEMPRE dentro del `Await Task.Run` de `LoadDataAsync`,
+            ' o sea en un hilo del pool. Un MessageBox desde ahí no es modal respecto de MainForm (que ya está visible y
             ' bombeando mensajes, porque LoadDataAsync se lanza sin await desde el ctor): el usuario clickea la
             ' ventana principal, el box se va atrás y la carga queda colgada. Se ACUMULA y lo muestra el hilo de
             ' UI después del Await, con owner — igual que el aviso del Save.
@@ -2845,7 +2826,7 @@ Public Class MainForm
         ' del plugin que la app acaba de escribir. No hace nada si no hay nada pendiente.
         ' DIFERIDO: un MessageBox modal bombea mensajes, y abrirlo en medio del rebuild deja reentrar a
         ' PopulateNPCTree -> RebuildTreeModelCache sobre los mismos diccionarios (la carrera que documenta
-        ' :2511). Se muestra cuando el rebuild ya termino.
+        ' FlushPendingLoadWarnings). Se muestra cuando el rebuild ya termino.
         If Not IsDisposed AndAlso IsHandleCreated Then BeginInvoke(Sub() FlushPendingLoadWarnings())
     End Sub
 
@@ -3118,7 +3099,7 @@ Public Class MainForm
     ''' <summary>Outfits selectable for (race, gender). For each OTFT in the universe, deterministically
     ''' enumerate every possible terminal ARMO (<see cref="OutfitResolver.EnumerateAllTerminalArmos"/>)
     ''' and accept the OTFT if ANY of its ARMAs is valid for the race (RaceFormID ∪ AdditionalRaces)
-    ''' AND carries a world mesh (with the renderer's male/female fallback, MainForm.vb:6914-6915).
+    ''' AND carries a world mesh (matching the renderer's own gender-fallback rule for model paths).
     ''' <para>Filter is PER-ARMA, never by ARMO.RaceFormID: most vanilla clothing has RNAM=HumanRace,
     ''' so filtering by the ARMO would drop outfits valid for ghouls/other races (the closed
     ''' ghoul-outfit bug). Known deferred edge case: ghouls wearing human outfits whose ARMA doesn't
@@ -3670,7 +3651,7 @@ Public Class MainForm
                 If armo Is Nothing Then Continue For
                 ' El gate de power-armor (no ofrecer piezas de PA a una raza que no es de PA: montarían mal
                 ' sin armazón) lo aplica la ley única y se reporta en PowerArmorRejected.
-                ' Effective slot footprint, matching the render (CollectArmoCandidates:7319): per addon take
+                ' Effective slot footprint, matching the render (CollectArmoCandidates): per addon take
                 ' the ARMA's own BOD2 mask, falling back to the ARMO's only when the ARMA declares none, and
                 ' UNION across every race-valid addon that has a mesh. The render builds one candidate per
                 ' ARMA and feeds them all to EquipResolver; for the Create tab — one piece per ARMO —
@@ -3874,9 +3855,9 @@ Public Class MainForm
 
     ''' <summary>Deja que el sorteador de la librería vea también las listas por nivel que
     ''' todavía son borradores y no están en ningún archivo.
-    ''' <para>El borrador YA ES su record, así que no hay nada que adaptar: se devuelve tal cual. Antes
-    ''' acá se armaba una copia campo por campo hacia el modelo viejo, y cada campo que se olvidaba
-    ''' hacía que el sorteo de un borrador se comportara distinto al de una lista real.</para></summary>
+    ''' <para>El borrador YA ES su record, así que no hay nada que adaptar: se devuelve tal cual — una
+    ''' copia campo por campo arriesga que un campo olvidado haga que el sorteo de un borrador se
+    ''' comporte distinto al de una lista real.</para></summary>
     Private Function ResolveLeveledDraftView(formID As UInteger) As Canon.ILvli
         Dim d = TryGetLeveledListDraft(formID)
         If d Is Nothing Then Return Nothing
@@ -4319,9 +4300,9 @@ Public Class MainForm
     ''' once by the caller (PopulateNPCTree), not per-NPC. Categories:
     ''' Unique faces = in-world AND own appearance; Generic = in-world AND inherits appearance;
     ''' Template bases = used as a TPLT/TPTA source; Unused = not in-world and not a template source.
-    ''' CharGen face presets (ACBS bit 0x04) land under Unused too: they were excluded until v1.1.2,
-    ''' which hid vanilla's preset sets (30 FO4 / 200 SSE, measured) but ALSO any mod whose plugin only
-    ''' ships chargen presets — those plugins listed zero editable NPCs (Nexus report, 2026-07-16).</summary>
+    ''' CharGen face presets (ACBS bit 0x04) land under Unused too — NOT excluded: excluding them hides
+    ''' vanilla's preset sets (30 FO4 / 200 SSE, measured) but also any mod whose plugin only ships
+    ''' chargen presets, which would then list zero editable NPCs.</summary>
     Private Function NpcMatchesCategoryFilter(n As NPC_Data, showUnique As Boolean, showGeneric As Boolean,
                                               showTemplate As Boolean, showUnused As Boolean) As Boolean
         Dim inWorld = _npcsInGameWorld.Contains(n.FormID)
@@ -4356,12 +4337,12 @@ Public Class MainForm
     ''' <summary>Ancho (en dígitos) del prefijo de orden de carga de los nodos raíz: el que pida la posición
     ''' más alta del load order cargado, con piso 3. Con 300 plugins da [000]..[299]; pasando los 1001 pasa a
     ''' [0000] (los ESL cuentan en el mismo cupo, así que es alcanzable), y si después bajan, vuelve a 3.
-    ''' <para>Que sea variable NO puede mezclar anchos en pantalla, y está VERIFICADO, no asumido: las ÚNICAS
-    ''' tres mutaciones de <c>TreeViewNPCs.Nodes</c> son el <c>Clear()</c> de :4442 y los dos <c>Add()</c> de
-    ''' :4491 / :4616, y los únicos dos <c>.Text =</c> de un nodo raíz son :4490 y :4615 — los cinco
-    ''' dentro de ESTA misma pasada de <see cref="PopulateNPCTree"/>, que arranca borrando el árbol entero. No
-    ''' hay camino incremental que agregue o reetiquete un nodo de plugin sin repoblar todo, así que el árbol
-    ''' se repinta ENTERO con el ancho de esta lectura: o todo en 3 dígitos o todo en 4, nunca mezclado.</para>
+    ''' <para>Que sea variable NO puede mezclar anchos en pantalla, y está VERIFICADO, no asumido: dentro de
+    ''' UNA sola pasada de <see cref="PopulateNPCTree"/> hay exactamente un <c>modelo.Limpiar()</c>, dos
+    ''' <c>modelo.AgregarRaiz</c> (Sección 1 y Sección 2) y dos asignaciones a <c>.Texto</c> de un nodo raíz —
+    ''' los cinco dentro de esa misma pasada, que arranca borrando el árbol entero. No hay camino incremental
+    ''' que agregue o reetiquete un nodo de plugin sin repoblar todo, así que el árbol se repinta ENTERO con
+    ''' el ancho de esta lectura: o todo en 3 dígitos o todo en 4, nunca mezclado.</para>
     ''' <para>Por eso se lee UNA vez acá y viaja como parámetro hasta <see cref="LoadOrderPrefix"/>: si cada
     ''' nodo lo recalculara, un save que monta un plugin nuevo y cruza el umbral EN MEDIO del repoblado sí
     ''' dejaría media lista con un ancho y media con otro.</para></summary>
@@ -4477,8 +4458,8 @@ Public Class MainForm
 
         ' === Sección 2: leveled lists finales (encuentros) ===
         ' Cada LVLN cuelga con sus NPC hoja como hijos (recursión aplanada vía CollectLVLNLeafNpcIds).
-        ' SIN dedup: un NPC puede aparecer bajo CADA LVLN que lo lista — regla del usuario 2026-05-18,
-        ' sirve para ver qué LVLNs enrolan al mismo NPC.
+        ' SIN dedup: un NPC puede aparecer bajo CADA LVLN que lo lista — regla del usuario, sirve para
+        ' ver qué LVLNs enrolan al mismo NPC.
         If _finalLVLNFormIDs.Count > 0 Then
             Dim value As Canon.ILvln = Nothing
             Dim visibleLvlns As New List(Of (FormID As UInteger,
@@ -4584,7 +4565,8 @@ Public Class MainForm
 
     ''' <summary>La etiqueta de un NPC, del caché; si no está, se arma Y SE GUARDA. Sin guardarla, un NPC
     ''' que no quedó en el caché se re-arma la etiqueta en cada repoblado —o sea en cada tecla— para
-    ''' siempre. Un solo sitio: antes esto estaba escrito en los tres lugares que crean filas de NPC.</summary>
+    ''' siempre. Un solo sitio: los tres lugares que crean filas de NPC llaman acá en vez de armar la
+    ''' etiqueta cada uno por su cuenta.</summary>
     Private Function EtiquetaDeNpc(npc As NPC_Data) As String
         Dim etiqueta As String = Nothing
         If _npcDisplayLabelCache.TryGetValue(npc.FormID, etiqueta) Then Return etiqueta
@@ -4949,12 +4931,10 @@ Public Class MainForm
     ''' <summary>Cambió el CONJUNTO seleccionado del árbol: se traduce a los FormID de NPC con los que
     ''' trabaja el resto de la app.
     '''
-    ''' <para>⛔ LA MECÁNICA DE SELECCIÓN VIVE EN EL CONTROL, NO ACÁ. Antes el formulario tenía su propio
-    ''' ancla, su propio rango con Shift y su propio alternado con Ctrl (<c>HandleLeftMultiSelectClick</c>,
-    ''' <c>SelectNpcRange</c>, <c>_multiSelectAnchorNode</c>), duplicando lo que un control de lista ya
-    ''' sabe hacer y con la semántica escrita en dos lugares. Acá sólo se DERIVA: las filas que no son NPC
-    ''' —cabeceras de plugin, leveled lists— no aportan FormID, así que seleccionar una vacía el conjunto,
-    ''' que es exactamente lo que hacía antes.</para></summary>
+    ''' <para>⛔ LA MECÁNICA DE SELECCIÓN VIVE EN EL CONTROL, NO ACÁ: no reintroducir un ancla propia, un
+    ''' rango con Shift o un alternado con Ctrl acá (duplicaría lo que el control de lista ya sabe hacer,
+    ''' con la semántica escrita en dos lugares). Acá sólo se DERIVA: las filas que no son NPC —cabeceras
+    ''' de plugin, leveled lists— no aportan FormID, así que seleccionar una vacía el conjunto.</para></summary>
     Private Sub TreeViewNPCs_SeleccionCambiada(sender As Object, e As EventArgs) Handles TreeViewNPCs.SeleccionCambiada
         _selectedNpcFormIDs.Clear()
         For Each fila In TreeViewNPCs.Seleccionadas
@@ -5175,11 +5155,11 @@ Public Class MainForm
 
     ''' <summary>Context-menu "Reset": discard the in-memory overlay for the NPC. The NPC reverts to its
     ''' current baseline record: the saved override if it was saved this session (MergeOverridePlugin put
-    ''' it in GetRecord), else vanilla. Does NOT touch disk itself (2026-05-24) — but an NPC with F4SE
-    ''' data persisted on disk (sidecar row → BodyGen .ini → VMAD apply-script) STAYS dirty so the next
-    ''' Save prunes that state and the game ends up matching the pristine preview (WYSIWYG routing, user
-    ''' decision 2026-07-16; before it, "Reset → Save" was a silent no-op and the game / next session
-    ''' kept showing the discarded edits). NPCs never saved just drop their dirty flag as before.
+    ''' it in GetRecord), else vanilla. Does NOT touch disk itself — but an NPC with F4SE data persisted
+    ''' on disk (sidecar row → BodyGen .ini → VMAD apply-script) STAYS dirty so the next Save prunes that
+    ''' state and the game ends up matching the pristine preview (WYSIWYG routing): leaving it clean here
+    ''' would make "Reset → Save" a silent no-op, with the game / next session still showing the discarded
+    ''' edits. NPCs never saved just drop their dirty flag.
     ''' Destructive (drops BodyMorphs/Skin edits too) → confirmation first.</summary>
     Private Async Sub MenuItemResetOverlay_Click(sender As Object, e As EventArgs) Handles MenuItemResetOverlay.Click
         Dim sourceTargets = If(_contextMenuTargets.Count > 0, _contextMenuTargets, New List(Of UInteger) From {_contextMenuNpcFormID})
@@ -5214,7 +5194,7 @@ Public Class MainForm
             ' cache; the re-render below re-parses the base record fresh (GetParsedNpc), giving the pristine NPC.
             Dim discardedNpc As NPC_Data = Nothing
             _ctx.NpcCache.TryRemove(fid, discardedNpc)
-            ' WYSIWYG routing (user decision 2026-07-16): when this NPC has F4SE data already persisted
+            ' WYSIWYG routing: when this NPC has F4SE data already persisted
             ' (sidecar row → BodyGen .ini → VMAD apply-script), the revert only reaches the game after a
             ' Save prunes it — so KEEP the NPC dirty and let the normal "Save (all changed)" route there:
             ' MergeOneNpcIntoSidecar rebuilds an EMPTY row (Write() drops it), the BodyGen .ini is
@@ -5258,8 +5238,8 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Restaura el estado "sin NPC seleccionado" de los controles de acción por-NPC
-    ''' (el mismo baseline que el Designer fija al arrancar — ver MainForm.Designer.vb líneas
-    ''' 576-745). Se llama desde <see cref="TreeViewNPCs_FilaEnfocada"/> cuando la selección del
+    ''' (el mismo baseline que fija el Designer al arrancar, en MainForm.Designer.vb
+    ''' InitializeComponent). Se llama desde <see cref="TreeViewNPCs_FilaEnfocada"/> cuando la selección del
     ''' árbol cae en un nodo NO accionable: un root de plugin / grupo "[LVLN]" (Tag = Nothing) o
     ''' ausencia de nodo. Sin esto los botones quedaban habilitados apuntando vía
     ''' <c>_renderHost.LastRenderedState</c> / <c>CurrentBaseState</c> al NPC cargado previamente
@@ -5582,14 +5562,13 @@ Public Class MainForm
             End If
         End If
 
-        ' Disparar render. OJO — esto YA NO re-rolea los modcol_*: ResolveNpcCombinations es ahora
-        ' DETERMINISTA por defecto (first-wins en los includes DontUseAll). Antes usaba
-        ' Random.Shared, lo que hacía que el MISMO NPC produjera NIFs distintos en dos corridas e
-        ' invalidaba toda comparación por hash aguas abajo.
-        ' La variación sigue disponible, pero ahora es EXPLÍCITA y reproducible: pasar `rngSeed` a
+        ' Disparar render. OJO — esto YA NO re-rolea los modcol_*: ResolveNpcCombinations es DETERMINISTA
+        ' por defecto (first-wins en los includes DontUseAll) — NO usar Random.Shared ahí: el mismo NPC
+        ' produciría NIFs distintos en dos corridas e invalidaría toda comparación por hash aguas abajo.
+        ' La variación sigue disponible, pero EXPLÍCITA y reproducible: pasar `rngSeed` a
         ' ResolveNpcCombinations / ResolveArmoCombinations (hoy los call sites de NpcMeshCollector
-        ' no lo pasan). Si se quiere recuperar el re-roll de chunks de robot en el preview, hay que
-        ' cablear un seed variable desde acá hasta esos dos call sites — cambio de app, no de lib.
+        ' no lo pasan). Recuperar el re-roll de chunks de robot en el preview requiere cablear un seed
+        ' variable hasta esos dos call sites — cambio de app, no de lib.
         ' Si solo hay OBTE sin outfit (robots, brahmin), hoy no aplica ningún re-roll.
         Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
         RenderOnDemandAsync(requestVersion)
@@ -5748,9 +5727,9 @@ Public Class MainForm
         ' Gate de FaceGen = RACE.DATA bit 0x2 "FaceGen Head", el discriminador canónico de 0 excepciones
         ' (RaceUtil.RaceSupportsFaceGen) — el MISMO que habilita el botón Edit Face (UpdateEditFaceEnabled),
         ' que gatea el bake (FaceGenBuilder) y que deja entrar las head parts (NpcMeshCollector.
-        ' RaceBuildsFaceGenHead). Antes era HasFaceGenAssets = "¿existe el FaceGeom horneado?", una
-        ' heurística: el motor tiene DOS ramas aguas abajo del bit (cargar el NIF horneado o armar la cabeza
-        ' desde head parts), así que la falta del NIF elige rama, no apaga el FaceGen.
+        ' RaceBuildsFaceGenHead). NO usar "¿existe el FaceGeom horneado?" (HasFaceGenAssets) como
+        ' heurística: el motor tiene DOS ramas aguas abajo del bit (cargar el NIF horneado o armar la
+        ' cabeza desde head parts), así que la falta del NIF elige rama, no apaga el FaceGen.
         ' "Show other gender" (editores ARMA/ARMO): se dibuja una cabeza race-default del género destino, NO
         ' la del NPC fuente (que es la del género ORIGINAL) — ahí sí se suprime el FaceGen a mano.
         Dim useFaceGen = RaceUtil.RaceSupportsFaceGen(state.RaceFormID, _pluginManager) AndAlso Not host.PreviewGenderOverride.HasValue
@@ -6001,16 +5980,15 @@ Public Class MainForm
         Dim bodyWeightEnabled = host.Toggles.ApplyBodyWeight
         Dim sculptEnabled = host.Toggles.ApplySculpt
 
-        ' Per-ARMA skeleton flow (refactored 2026-04-27, replaces single shared skeleton):
-        ' Each shape goes to a SkeletonInstance with its own ARMA's sculpt applied (if any), or to
-        ' the base instance (no sculpt) if its ARMA has none. Generic for ANY ARMA — body / outfit /
-        ' gloves / underarmor / etc. all follow the same rule. Multiple shapes from the same NIF
+        ' Per-ARMA skeleton flow: each shape goes to a SkeletonInstance with its own ARMA's sculpt applied
+        ' (if any), or to the base instance (no sculpt) if its ARMA has none. Generic for ANY ARMA — body /
+        ' outfit / gloves / underarmor / etc. all follow the same rule. Multiple shapes from the same NIF
         ' share the same skeleton (cached by ArmorAddonFormID).
-        ' Sculpt formula: H3 multiplicative (s = race_s · (1 + arma_d)) hardcoded — A REVISAR.
-        ' Closure plan P0: fórmula correcta del engine no confirmada vs CK. H3 es candidata
-        ' conceptual más limpia (cumple invariantes naturales) pero sin verificación pixel-match.
-        ' Re-introducción del dropdown experimental se descartó 2026-04-29 tras detectar que el
-        ' clip motivador era OMODs/add-ons no renderizados, no la fórmula.
+        ' Sculpt formula: H3 multiplicative (s = race_s · (1 + arma_d)) hardcoded — A REVISAR: la fórmula
+        ' correcta del engine no está confirmada vs CK (H3 es la candidata conceptual más limpia, cumple
+        ' invariantes naturales, pero sin verificación pixel-match). NO reintroducir un dropdown
+        ' experimental de fórmulas como "arreglo": un caso que lo motivó eran OMODs/add-ons no
+        ' renderizados, no la fórmula.
         Dim inst = PrepareSkeleton(state, renderData)
 
         ' [PIPBOY-DIAG] dump del skeleton actor para ver si trae el socket donde el Pipboy NIF
@@ -6039,12 +6017,12 @@ Public Class MainForm
         inst.ApplyBoneMorphPose(basePose)
         _morphPoseResolver.ApplyNeckNnamCompensation(inst)
 
-        ' Head skeleton: SAME morph/FMRS pose as `inst` WITH body weight AND NNAM neck-fat (FASE 2
-        ' 2026-06-24). Body weight scales the _skin LEAF bones (Head_skin/Face_skin/Neck1_skin + shared
-        ' neck/chest), which do NOT propagate. El NNAM escala el hueso ANCESTRO "Neck"; antes se suprimía
-        ' acá porque propagaba [1+nnam,1+nnam,1] a toda la cara (balloon). Ahora ApplyNeckNnamCompensation
-        ' (post-pase) compensa a TODOS los hijos directos de "Neck" (comp = L_C⁻¹∘S⁻¹∘L_C ∘ FMRS, con shear),
-        ' dejando la escala solo en los verts del "Neck" → la cara NO se infla y los FMRS del cuello quedan.
+        ' Head skeleton: SAME morph/FMRS pose as `inst` WITH body weight AND NNAM neck-fat. Body weight
+        ' scales the _skin LEAF bones (Head_skin/Face_skin/Neck1_skin + shared neck/chest), which do NOT
+        ' propagate. NNAM escala el hueso ANCESTRO "Neck": sin compensar, propaga [1+nnam,1+nnam,1] a toda
+        ' la cara (balloon). ApplyNeckNnamCompensation (post-pase) compensa a TODOS los hijos directos de
+        ' "Neck" (comp = L_C⁻¹∘S⁻¹∘L_C ∘ FMRS, con shear), dejando la escala solo en los verts del "Neck"
+        ' → la cara NO se infla y los FMRS del cuello quedan.
         ' Head-part shapes are routed here (loop below); animation frames applied too (ApplyAnimFrame). Built
         ' unconditionally + separate so it stays in sync with the BODY skeleton. No chunk/pipboy injection.
         Dim headInst = PrepareSkeleton(state, renderData)
@@ -6201,9 +6179,9 @@ Public Class MainForm
         ' para entender qué bones ya están + qué nombres aporta cada chunk + si hay colisión
         ' por idempotencia. Filtrado por chunks robot solo (state.HasObjectTemplate) para no
         ' contaminar logs de humanoides normales.
-        ' NOTA: isRobotMount es SOLO filtro de verbosidad de diagnósticos. La aplicación V2
-        ' SKEL-OVERRIDE ya NO depende de este flag (gate Fase 2.5 removido) — V2 aplica a
-        ' robot Y biped por igual. Biped corre V2 sin emitir estos logs verbosos.
+        ' NOTA: isRobotMount es SOLO filtro de verbosidad de diagnósticos — la aplicación V2
+        ' SKEL-OVERRIDE NO depende de este flag: V2 aplica a robot Y biped por igual (biped corre
+        ' V2 sin emitir estos logs verbosos).
         Dim isRobotMount = state.HasObjectTemplate AndAlso shapesWithSocket.Count > 0
         If isRobotMount AndAlso Logger.Enabled Then
             ' [DIAG-PRE-INJECT] Dump bones del actor ANTES de cualquier inject de chunk.
@@ -6339,7 +6317,7 @@ Public Class MainForm
                 Logger.LogLazy(Function() $"[MATERIALIZE-HOST-CLONE] host sockets materializados sobre clone per-ARMA para mount shape '{shHM}'")
             End If
 
-            ' [SOCKET-EFFECTIVE-OVERRIDE] Per OpenAI Vuelta 17: para chunks downstream del
+            ' [SOCKET-EFFECTIVE-OVERRIDE] Para chunks downstream del
             ' shape loop (INJECT, FAKE-SKIN, V2 reskin path B), usar el SkeletonFallbackSocket
             ' del cand cuando existe — su parent bone está en nomenclatura actor.skel (indexed:
             ' Arm1|0/1/2) en lugar del publisher chunk socket cuyo parent es chunk-internal
@@ -6391,12 +6369,11 @@ Public Class MainForm
             Try
                 Dim _cand As MeshCandidate = Nothing
                 renderData.ShapeCandidate.TryGetValue(shape, _cand)
-                ' [FASE 3] Criterio estructural: el chunk-mount path es 'soy attachment con
-                ' MountSocket resuelto', no 'soy de FormType X'. Antes el filtro NPC_ gateaba
-                ' biped fuera; ahora capas 1+2 (coord fix + socket disambig) son compartidas.
-                ' Capa 3 V2 aplica a robot Y biped: cualquier shape con MountSocket recibe el mount
-                ' vía MountDeltaTransform en los huesos (ApplyMountPlanForActor → OverrideActorBoneWorld).
-                ' isRobotMount quedó sólo como filtro de verbosidad.
+                ' Criterio estructural: el chunk-mount path es 'soy attachment con MountSocket
+                ' resuelto', no 'soy de FormType X'. Capas 1+2 (coord fix + socket disambig) y capa 3
+                ' (V2) son compartidas entre robot y biped: cualquier shape con MountSocket recibe el
+                ' mount vía MountDeltaTransform en los huesos (ApplyMountPlanForActor →
+                ' OverrideActorBoneWorld). isRobotMount quedó sólo como filtro de verbosidad.
                 If _cand IsNot Nothing AndAlso _cand.Kind = MeshCandidateKind.Attachment AndAlso _cand.MountSocket IsNot Nothing Then
                     _mountingResolver.EnsureChunkToActor(_cand, _candByOrdinal, renderData, targetSkel, targetWB, ensureVisiting)
                 End If
@@ -6582,7 +6559,7 @@ Public Class MainForm
             renderData.ShapeCandidate.TryGetValue(shape, fakeSkinCand)
             Dim isAttachmentMount As Boolean = fakeSkinCand IsNot Nothing AndAlso fakeSkinCand.Kind = MeshCandidateKind.Attachment AndAlso fakeSkinCand.MountSocket IsNot Nothing
             If Not shape.IsSkinned AndAlso isAttachmentMount Then
-                ' [FAKE-SKIN-DIAG] Confirmaciones discriminantes (OpenAI Vuelta 19): estado de la shape
+                ' [FAKE-SKIN-DIAG] Confirmaciones discriminantes: estado de la shape
                 ' antes de aplicar el anchor. Permite verificar la hipótesis del bug en el log.
                 If Logger.Enabled Then
                     Dim shD = shape.ShapeName, isSk = shape.IsSkinned, sbC = If(shape.ShapeBones IsNot Nothing, shape.ShapeBones.Count, -1), sockD = If(socket?.Name, "?")
@@ -6603,7 +6580,7 @@ Public Class MainForm
                         ' early-exits y nunca crea el synthetic anchor.
                         Dim cxBoneName As String = BSConnectPointBoneInjector_Class.TryGetSocketCounterpartName(socket.Name)
                         Dim cxInDict As Boolean = Not String.IsNullOrEmpty(cxBoneName) AndAlso targetSkel.SkeletonDictionary.ContainsKey(cxBoneName)
-                        ' [CAMINO C — materialización lazy on-demand del C-X] (OpenAI Vuelta 20).
+                        ' [CAMINO C — materialización lazy on-demand del C-X]
                         ' Si el C-X counterpart no está en el skel (chunk unskinned puro: el injector
                         ' early-exit con ShapeBones=0 y el bulk materialize pudo no correr/correr tarde),
                         ' materializarlo AHORA desde el socket EFECTIVO que el shape loop ya tiene. Mantiene
@@ -6623,7 +6600,7 @@ Public Class MainForm
                             Dim chunkRootName = If(shape.NifContent.GetRootNode()?.Name?.String, "chunk")
                             anchorName = "__chunkAnchor__" & socket.Name & "__" & chunkRootName
                         End If
-                        ' [FAKE-SKIN-DIAG] Confirmación #2 (OpenAI Vuelta 19): ¿el C-X counterpart
+                        ' [FAKE-SKIN-DIAG] Confirmación #2: ¿el C-X counterpart
                         ' está materializado en el skel? Si cxInDict=False, el anchor cae al synthetic
                         ' __chunkAnchor__ que el injector puede no haber creado para shapes sin bones →
                         ' el anchor apuntaría a un bone inexistente → sin ancla real (origen).
@@ -6781,7 +6758,7 @@ Public Class MainForm
             Next
         End If
 
-        ' DIAG (2026-05-13 socket-math): para cada chunk shape con socket, dumpear el
+        ' DIAG socket-math: para cada chunk shape con socket, dumpear el
         ' bone.world (OriginalGetGlobalTransform) de cada bone que el shape referencia.
         ' Con esto + bind log + socket log podemos hacer la matemática completa offline.
         If isRobotMount AndAlso Logger.Enabled Then
@@ -6810,7 +6787,7 @@ Public Class MainForm
                 Next
             Next
 
-            ' DIAG VERTEX-TRACE (2026-05-14): per chunk shape, replicar la fórmula de skinning
+            ' DIAG VERTEX-TRACE: per chunk shape, replicar la fórmula de skinning
             ' app-side y loggear la posición predicta del primeros vertices. Muestra:
             '   v_local      → posición cruda en NIF chunk-local
             '   v_after_LT_i → v_local · localT_i (después del primer paso de skinning)
@@ -7302,8 +7279,8 @@ Public Class MainForm
 
     ''' <summary>Facade for the editors: delegates to the FaceTint resolver's live tint refresh
     ''' (rollback to pristine → re-compose face tints + skin SoftLight → refresh uniforms). Kept on
-    ''' MainForm so EditFace_Form's <c>_mainForm.RefreshFaceTintLivePreview</c> call site is unchanged
-    ''' by the Phase 2 split.</summary>
+    ''' MainForm so EditFace_Form's <c>_mainForm.RefreshFaceTintLivePreview</c> call site stays
+    ''' unchanged.</summary>
     Friend Function RefreshFaceTintLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
         Return _faceTintResolver.RefreshFaceTintLivePreview(host)
     End Function
@@ -7332,8 +7309,8 @@ Public Class MainForm
     End Function
 
     ''' <summary>Facade for the editors: delegates to the skin-override live-preview fast-path. Kept on
-    ''' MainForm so EditBody_Form's <c>_mainForm.RefreshBodySkinLivePreview</c> call site is unchanged
-    ''' by the Phase 2 split.</summary>
+    ''' MainForm so EditBody_Form's <c>_mainForm.RefreshBodySkinLivePreview</c> call site stays
+    ''' unchanged.</summary>
     Friend Function RefreshBodySkinLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
         Return _skinLivePreview.RefreshBodySkinLivePreview(host)
     End Function
@@ -7479,9 +7456,8 @@ Public Class MainForm
         Await loadTask
 
         ' Drenar SIEMPRE (la cola de FilesDictionary crece un item por archivo escaneado si nadie la vacia);
-        ' el desglose es diagnostico y va gateado. Antes esto contaba hits/misses y recorria el reporte con
-        ' un `For Each ... Next` de cuerpo VACIO, y despues no usaba ninguno de los dos: era el esqueleto de
-        ' un log que nunca se escribio. Ahora, o se loguea, o no se calcula.
+        ' el desglose es diagnostico y va gateado — o se loguea, o no se calcula (no dejar un
+        ' `For Each ... Next` de cuerpo vacio que arme datos que nadie usa).
         Dim scanReport = FilesDictionary_class.DrainScanReport()
         If Logger.Enabled AndAlso scanReport.Count > 0 Then
             Dim hits As Integer = 0
@@ -7504,8 +7480,7 @@ Public Class MainForm
         ' head-parts DISTINTOS de los que hornea la GUI para el mismo NPC. Ver NpcSessionCatalogs.
         NpcSessionCatalogs.EnsureLoaded(_pluginManager)
 
-        ' Asset dictionary ready; hide the progress bar. (Debug-only TRI / mouth-NIF enumeration
-        ' scaffolding — whose results were discarded — was removed 2026-06-24.)
+        ' Asset dictionary ready; hide the progress bar.
         If InvokeRequired Then
             BeginInvoke(Sub() ToolStripProgressBar1.Visible = False)
         Else
@@ -7810,19 +7785,6 @@ Public Class MainForm
         ToolStripProgressBar1.Value = Math.Max(0, Math.Min(info.Value, ToolStripProgressBar1.Maximum))
         SetStatus(info.Stepn)
     End Sub
-
-    ' BORRADO 2026-07-24 — `HasFaceGenAssets` ("¿existe el FaceGeom horneado de este NPC?") + su
-    ' `ResolveFaceGenNifPath`. Era el gate del insumo `_faceBones` del head-bake y es una HEURÍSTICA:
-    ' el gate del motor es RACE.DATA bit 0x2 (RaceUtil.RaceSupportsFaceGen), y aguas abajo de ese bit
-    ' el motor tiene DOS ramas — cargar el FaceGeom horneado o armar la cabeza desde head parts — así
-    ' que la falta del NIF elige RAMA, no apaga el FaceGen. Consecuencia medida: en todo NPC sin
-    ' FaceGeom shipeado no se recolectaba el `_faceBones`, la cabeza quedaba en la malla PLANA y los
-    ' sliders de Bone Regions del Edit Face no hacían nada (MQ101PlayerSpouseFemale 0x000A7D35).
-    ' El path del FaceGeom sigue vivo donde SÍ corresponde: FaceGenBuilder.ResolveFaceGenPath.
-
-    ' (También borrado: el wrapper privado `TryGetFaceBonesVariant(meshDictKey, partType)` — ya no tenía
-    ' llamadores, todos usan MeshPathHelpers.TryGetFaceBonesVariant directo, que es el dueño de la
-    ' convención de paths `_faceBones` para render y bake.)
 
 
     ' === Power-armor gating (registry-derived, no hardcoded race/FormID list) ===
@@ -8522,9 +8484,8 @@ Public Class MainForm
                 If Not _detailsLvlnCache.TryGetValue(sourceFormID, lvln) Then
                     lvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(sourceRec, _pluginManager)
                     ' El fallo también se cachea: `_detailsLvlnCache` se vacía en CADA repoblado del árbol
-                    ' de detalle (:8255), o sea en cada selección de NPC, así que no puede quedar pegado.
-                    ' (Acá decía que no se cacheaba "para que un LVLN arreglado en disco no siguiera roto
-                    '  hasta reiniciar" — razón FALSA con esa vida útil.)
+                    ' de detalle (ver PopulateRecordDetails), o sea en cada selección de NPC, así que no
+                    ' puede quedar pegado.
                     _detailsLvlnCache(sourceFormID) = lvln
                 End If
                 ' TryAbrirLvlnTolerante devuelve Nothing en el LVLN malformado que existe para
@@ -9553,9 +9514,9 @@ Public Class MainForm
                 preset.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
                     .TemplateId = ov.TemplateId,
                     .Priority = ov.Priority,
-                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                    .Tint = CType(ov.Tint?.Clone(), Single()),
+                    .OffsetUV = CType(ov.OffsetUV?.Clone(), Single()),
+                    .ScaleUV = CType(ov.ScaleUV?.Clone(), Single())
                 })
             Next
             ' LM SkinTemplate id is overlay-only (no record source). Carry through so Copy Look
@@ -9574,11 +9535,11 @@ Public Class MainForm
         ' Capturar state.SkinFormID directamente vs overlay-only garantiza que Copy → Paste
         ' transfiera el skin AUNQUE el NPC source no tenga overlay explícito (caso típico:
         ' vanilla NPC con WNAM autoreado).
-        ' SerializePreset SÍ emite este campo (`_npcm_SkinFormID`, LooksmenuLoader.vb). El comentario decía
-        ' lo contrario y quedó de cuando era clipboard-only. Consecuencia REAL, deliberada y compartida con
-        ' DOFT/SOFT: como se captura la piel EFECTIVA (incluye el fallback RACE.WNAM), todo preset guardado
-        ' PINNEA esa ARMO, y cargarlo sobre un NPC de otra raza se la impone. Es la misma ley que los dos
-        ' campos de abajo; si algún día se quiere cambiar, se cambian los TRES juntos.
+        ' SerializePreset SÍ emite este campo (`_npcm_SkinFormID`, LooksmenuLoader.vb). Consecuencia REAL,
+        ' deliberada y compartida con DOFT/SOFT: como se captura la piel EFECTIVA (incluye el fallback
+        ' RACE.WNAM), todo preset guardado PINNEA esa ARMO, y cargarlo sobre un NPC de otra raza se la
+        ' impone. Es la misma ley que los dos campos de abajo; si algún día se quiere cambiar, se cambian
+        ' los TRES juntos.
         preset.SkinFormIDOverride = state.SkinFormID
 
         ' NPC.DOFT default outfit: capturamos el outfit EFECTIVO (post-override) igual que skin.
@@ -9587,9 +9548,9 @@ Public Class MainForm
         ' ResolveNPCBaseState.
         preset.DefaultOutfitFormIDOverride = state.DefaultOutfitFormID
         ' NPC.SOFT sleep outfit: MISMO par que DOFT — la categoría Outfit del filtro de Paste revierte
-        ' LOS DOS (PresetCategoryFilter:176-177) pero acá sólo se capturaba el DOFT, así que con Outfit
-        ' tildado el sleep outfit del NPC origen no viajaba nunca (quedaba en Nothing = "preservar el del
-        ' destino"). Asimetría silenciosa entre dos campos que el resto del sistema trata como uno solo.
+        ' LOS DOS (ver PresetCategoryFilter), así que los dos tienen que capturarse acá simétricamente:
+        ' si sólo viajara el DOFT, con Outfit tildado el sleep outfit del NPC origen nunca llegaría al
+        ' destino (quedaría en Nothing = "preservar el del destino").
         preset.SleepOutfitFormIDOverride = state.SleepOutfitFormID
 
         ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": se captura el valor EFECTIVO (overlay si existe,
@@ -9662,7 +9623,7 @@ Public Class MainForm
         ' Copy and Save capture the FULL effective SSE state, exactly as the render+bake read it.
         '
         ' Source priority per field: the existing overlay `_appliedPresets(RootNpcFormID)` (fetched as `overlay`
-        ' at :8298) wins because it holds live edits; record-backed fields fall back to the parsed NPC (`raw`)
+        ' earlier in this function) wins because it holds live edits; record-backed fields fall back to the parsed NPC (`raw`)
         ' when the overlay is absent or hasn't set them. Body morphs / sculpt / custom morphs / body overlays
         ' have NO record source (F4SE/RaceMenu-only) → left empty when there is no overlay.
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
@@ -9703,16 +9664,16 @@ Public Class MainForm
                 Next
                 Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
                 For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
-                    ' El centinela 0xFFFFFFFF ("esta familia NO tiene tipo asignado") viaja INTACTO.
-                    ' Acá se colapsaba a 0, que es un tipo REAL — y el lector del .jslot hace lo contrario y lo
-                    ' documenta ("0xFFFFFFFF = unset/default, preserved (never forced to a real type 0)",
-                    ' RaceMenuPresetMapper.vb:345-352). Con el colapso, guardar un preset de un NPC sin NAMA y
-                    ' recargarlo le CAMBIA LA CARA: skee asigna el tipo tal cual (`presets[i] = value`,
-                    ' PresetInterface.cpp:1052-1058) y la app misma los distingue (NpcMorphResolver:587-591 no
-                    ' hace nada con el centinela y aplica el morph "Default" con peso 1.0 con el 0).
+                    ' El centinela 0xFFFFFFFF ("esta familia NO tiene tipo asignado") viaja INTACTO — NO
+                    ' colapsarlo a 0, que es un tipo REAL: el lector del .jslot (RaceMenuPresetMapper,
+                    ' "0xFFFFFFFF = unset/default, preserved (never forced to a real type 0)") y el motor
+                    ' lo distinguen igual (skee asigna el tipo tal cual, `presets[i] = value`,
+                    ' PresetInterface.cpp:1052-1058; NpcMorphResolver no hace nada con el centinela y
+                    ' aplica el morph "Default" con peso 1.0 con el 0). Colapsarlo le CAMBIA LA CARA a un
+                    ' NPC sin NAMA al guardar y recargar su preset.
                     ' Medido: en los 48 presets reales conviven 43 centinelas y 27 ceros, o sea que RaceMenu
                     ' escribe los dos y el centinela es un valor legítimo del formato.
-                    ' El sitio gemelo es PresetCategoryFilter.vb (misma ley, mismo motivo).
+                    ' El sitio gemelo es PresetCategoryFilter (misma ley, mismo motivo).
                     nama(f) = If(rawNama IsNot Nothing AndAlso f < rawNama.Length,
                                  rawNama(f), SseNam9MorphMap.NamaUnset)
                 Next
@@ -10293,8 +10254,8 @@ Public Class MainForm
         Using f As New CharGenOptionsForm()
             If f.ShowDialog(Me) = DialogResult.OK Then
                 ' Las convenciones FaceTint (tab "FaceTint Conventions") afectan el composite del render
-                ' EN VIVO, no sólo el bake. Re-render el NPC actual para reflejarlo (decisión usuario
-                ' 2026-06-04, opción A). RenderFromCurrentSelection re-corre la pipeline facetint completa.
+                ' EN VIVO, no sólo el bake. Re-render el NPC actual para reflejarlo.
+                ' RenderFromCurrentSelection re-corre la pipeline facetint completa.
                 RenderFromCurrentSelection()
             End If
         End Using
@@ -10811,7 +10772,7 @@ Public Class MainForm
         ' lanza a propósito). Con `Not execResult.Success Then Return` cualquier excepción de esas fases se
         ' llevaba puesto el readback y, con él, PromoteSavedDrafts. Al reintentar, el OTFT/ARMO ya escrito se
         ' preserva con su FormID REAL mientras el draft en memoria sigue en 0xFF…, y `alreadyEmitted`
-        ' (NpcOverrideSaver.vb:623) sólo contiene FormID reales ⇒ se emite OTRA VEZ como record nuevo, con `_2`
+        ' (en NpcOverrideSaver) sólo contiene FormID reales ⇒ se emite OTRA VEZ como record nuevo, con `_2`
         ' pegado al EditorID y sin un aviso. Repetible por cada reintento, y viaja al plugin que se distribuye.
         ' Disparadores reales: Data\Scripts de sólo lectura, carpeta virtual del mod manager, juego abierto.
         ' Con `WriterResult` presente el archivo YA está en disco, así que el estado en memoria tiene que
@@ -11016,9 +10977,9 @@ Public Class MainForm
         ' Round-trip through the sidecar's own entry type: EntryFromPreset keeps exactly the fields
         ' MergeOneNpcIntoSidecar persists, and ApplyEntryToPreset rebuilds them exactly like a fresh
         ' hydration — the residual is "structurally identical to a sidecar hydration" BY CONSTRUCTION,
-        ' so the mirrors can no longer drift (the 2026-07-16 audit found a hand-rolled copy here missing
+        ' so the mirrors can no longer drift. NOT a hand-rolled field-by-field copy: one here once missed
         ' BodyMorphsKeyed + SseCustomMorphs + SseSculptHead/Parts + SseTintTexOverride, which a second
-        ' Save then silently wiped from the sidecar on disk).
+        ' Save then silently wiped from the sidecar on disk.
         Dim entry = BssliderSidecar.EntryFromPreset(overlay, "", "")
         If entry.HasAnything Then
             Dim residual As New LooksmenuLoader.LooksmenuPreset()
@@ -11469,12 +11430,12 @@ Public Class MainForm
                                           progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
-        ' LA IDENTIDAD DEL BAKE ES EL NPC QUE SE GUARDA, PUNTO. Antes se derivaba de
-        ' `_renderHost.LastRenderedState.ModelSourceFormID` cuando el NPC horneado coincidía con el renderizado.
-        ' Era inerte (NpcStateFactory:128-129: "ModelSourceFormID was never wired in the render path" — siempre
-        ' caía al root), pero dejaba una lectura del RENDER decidiendo dos cosas críticas: qué NPC se hornea y,
-        ' vía GetOriginatingPluginName + ToFaceGenLocalFormID, LA RUTA DE SALIDA del FaceGeom y sus texturas. Si
-        ' alguien cableaba ese campo, el bake de un NPC empezaba a escribir en la ruta de OTRO, en silencio.
+        ' LA IDENTIDAD DEL BAKE ES EL NPC QUE SE GUARDA, PUNTO — NO derivarla de
+        ' `_renderHost.LastRenderedState.ModelSourceFormID`: ese campo es inerte en el render hoy
+        ' (NpcStateFactory nunca lo cablea, siempre cae al root), pero si algún día se cablea dejaría una
+        ' lectura del RENDER decidiendo dos cosas críticas: qué NPC se hornea y, vía
+        ' GetOriginatingPluginName + ToFaceGenLocalFormID, LA RUTA DE SALIDA del FaceGeom y sus texturas —
+        ' el bake de un NPC empezaría a escribir en la ruta de OTRO, en silencio.
         ' BuildCharGen es headless: resuelve la apariencia del record + overlay, sin estado del host.
         Dim bakeFormID As UInteger = npcFormID
 
@@ -11638,10 +11599,10 @@ Public Class MainForm
             End If
             If missingBundles > 0 Then
                 ' Hard discrepancy: we baked N OK and only N - missingBundles fully landed in BA2.
-                ' B1: además del conteo, se NOMBRAN los NPC afectados y el primer archivo que le falta a cada uno.
-                ' Antes esto era sólo "N NPCs failed to pack (M files unaccounted for)" y el desglose vivía en el
-                ' log — que en Release no existe (Logger.Enabled=False), así que el usuario no tenía forma de saber
-                ' a qué NPC volver. Se muestran los primeros 10, como el batch loose muestra 15.
+                ' Además del conteo, se NOMBRAN los NPC afectados y el primer archivo que le falta a cada uno:
+                ' el log por sí solo no alcanza (en Release no existe, Logger.Enabled=False), así que sin esto
+                ' el usuario no tiene forma de saber a qué NPC volver. Se muestran los primeros 10, como el
+                ' batch loose muestra 15.
                 summary &= $" ⚠ {missingBundles} NPC{If(missingBundles = 1, "", "s")} failed to pack ({missingSources} file{If(missingSources = 1, "", "s")} unaccounted for)."
                 If packResult.FailedBundles.Count > 0 Then
                     Dim shownFb = packResult.FailedBundles.Take(10).ToList()
@@ -11707,7 +11668,7 @@ Public Class MainForm
     ''' UNA sola lectura para las DOS ramas de BuildPresetFromState: tenerla en una sola era el defecto —
     ''' el arreglo quedaba inerte justo en el camino con overlay, que es el normal.</summary>
     Private Shared Function VampireMorphFromNam9(raw As NPC_Data) As Single?
-        Return SseNam9MorphMap.VampireMorphDe(If(raw Is Nothing, Nothing, raw.Record.DeslizadoresDeCara()))
+        Return SseNam9MorphMap.VampireMorphDe(raw?.Record.DeslizadoresDeCara())
     End Function
 
 

@@ -125,7 +125,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' resolver y los handlers de los CheckBoxes setean RenderHide según categoría + estado
         ' de los toggles. Ver ApplyRenderToggleVisibility.
 
-        ' Sculpt source identification (rule per user 2026-04-27):
+        ' Sculpt source identification (rule):
         '   - Underarmor source = ARMA con slot 33 (BODY) AND HasSculptData. Si existe, su SCLP
         '     aplica a TODOS los over-armor shapes (excepto los con NoUnderarmorScaling=True).
         '   - Si no hay slot-33 source: cada [U] piece (slots 36-40) provee SCLP para SU [A]
@@ -1604,8 +1604,6 @@ Friend NotInheritable Class NpcMeshCollector
         ' escudo (39, rígido al antebrazo vía Prn='SHIELD'/ApplyPrnRigidAttach), cola (40) y los
         ' slots modulares sin nombre asignado (44-49 / 52-61: capas, mochilas, SOS…).
         ' Ninguno ocluye piel.
-        ' Generaliza la regla que antes era sólo del escudo (usuario 2026-07-09: "cablea el shield al
-        ' toggle show armor como el pipboy") — mismo destino, ahora para todo el grupo.
         ' El amuleto (35) NO cae acá: está en la región Headwear (BipedSlots) y lo agarra la regla de
         ' headwear de más arriba, igual que las prendas de cuello de FO4.
         ' Condición: Outfit que no toca NINGÚN bit de cuerpo/manos/headwear pero sí declara algún slot.
@@ -1653,8 +1651,8 @@ Friend NotInheritable Class NpcMeshCollector
 
             ' Layer 2: cada OMOD include dentro de la combination puede sobrescribir via su
             ' AddonIndex Property. FunctionType=0 SET (overwrite),
-            ' FunctionType=2 ADD (add to running value). Vanilla dump v2 (2026-05-10): 59 SET
-            ' casos + 10 ADD casos confirman ambos. Walk ops en orden de declaración del OMOD.
+            ' FunctionType=2 ADD (add to running value) — medido: 59 casos SET + 10 casos ADD en el dump
+            ' vanilla confirman que ambos existen. Walk ops en orden de declaración del OMOD.
             For Each inc In combo.Includes
                 Dim omodRec = _ctx.PluginManager.GetRecord(inc.IncludeMod)
                 If omodRec Is Nothing OrElse omodRec.Header.Signature <> "OMOD" Then Continue For
@@ -1797,19 +1795,18 @@ Friend NotInheritable Class NpcMeshCollector
             ' sin tocar el resto del NIF. Reescritura quirúrgica per-instancia.
             If candidate.ChunkOmodFormID <> 0UI AndAlso candidate.MountApIdx > 0 Then
                 RenameShapeBoneIndices(shapes, candidate.MountApIdx)
-                ' Fix Bug HIGH #1+#2: sub-sockets que esta chunk NIF expone también necesitan
-                ' rename del ParentBoneName, sino sub-chunks se anclan al bone |0 equivocado.
+                ' Los sub-sockets que esta chunk NIF expone también necesitan rename del ParentBoneName,
+                ' sino sub-chunks se anclan al bone |0 equivocado.
                 RenameSubSocketParentBones(nif, candidate.MountApIdx)
             End If
 
-            ' RESUELTO (2026-06-14): los shapes skinned a bones del ACTOR (PackBase brahmin: Pelvis/
-            ' Spine; brazos Mr Handy) NO necesitan el MountSocket — cabalgan los bones del actor que YA
-            ' están posicionados. La "mala posición" que se veía eran los bones PRIVADOS del chunk
-            ' (lag bones, etc.), ahora colocados bien por InjectChunkBonesIntoLiveSkeleton (regla:
+            ' Los shapes skinned a bones del ACTOR (PackBase brahmin: Pelvis/Spine; brazos Mr Handy) NO
+            ' necesitan el MountSocket — cabalgan los bones del actor que YA están posicionados. Los bones
+            ' PRIVADOS del chunk (lag bones, etc.) los coloca InjectChunkBonesIntoLiveSkeleton (regla:
             ' A=actorWorld(huesoCompartido)×bind; privados en A×inv(bind) — ver memoria
             ' 24-robots-huesos-inyectados; brahmin validado sin regresión).
             ' Por eso NO se aplica el socket a los bind transforms de estos shapes: aplicarlo a shapes
-            ' que cabalgan el actor DISTORSIONA (verificado 2026-05-13: ambos órdenes rompieron todo).
+            ' que cabalgan el actor DISTORSIONA (verificado: invertir el orden tampoco lo arregla).
             ' NO re-habilitar. (Pendiente: validar visualmente Mr Handy/Codsworth multi-instancia.)
 
             If logEnabled Then
@@ -2229,8 +2226,7 @@ Friend NotInheritable Class NpcMeshCollector
     ''' de `Bone|0` a `Bone|N`, los sub-sockets BSConnectPoint::Parents que esa chunk NIF expone
     ''' siguen apuntando a `Bone|0` en su `ParentBoneName` literal — esto hace que sub-chunks que
     ''' se mounten sobre el chunk parent terminen anclados al bone |0 en vez del |N correcto.
-    ''' Remap el ParentBoneName de cada sub-socket en la misma sufijo |N que los shape bones.
-    ''' Fix de Bug HIGH #1 + #2 del análisis 2026-05-15.</summary>
+    ''' Remap el ParentBoneName de cada sub-socket en la misma sufijo |N que los shape bones.</summary>
     Private Sub RenameSubSocketParentBones(nif As Nifcontent_Class_Manolo, apIdx As Byte)
         If nif Is Nothing OrElse apIdx = 0 Then Return
         Dim root = nif.GetRootNode()

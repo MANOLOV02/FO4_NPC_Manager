@@ -55,10 +55,9 @@ Public Module NpcOverrideSaver
         ''' queda en False, porque lo que no corrió es el merge. Su consumidor
         ''' (<c>ApplyPostSaveReadback</c>) lo usa para decidir si vale el invariante "residual conservado ⟺ fila
         ''' en disco", que sólo tiene sentido si el merge efectivamente pasó.</para>
-        ''' <para>El doc viejo decía "es el RESULTADO, no la intención (<c>SaveTarget.WriteBssliders</c>)" y
-        ''' la asignación es literalmente <c>= target.WriteBssliders</c>. Reconciliarlo al revés — volverlo True
-        ''' cuando el archivo se toca — es exactamente la regresión que el comentario inline de la asignación
-        ''' advierte. La semántica del código es la correcta; el doc era el viejo.</para></summary>
+        ''' <para>NO reconciliar esto invirtiendo el sentido — haciéndolo True sólo cuando el archivo SE TOCA —
+        ''' es exactamente la regresión que la asignación (<c>= target.WriteBssliders</c>) previene: el campo
+        ''' representa si el MERGE corrió, no si el archivo cambió.</para></summary>
         Public SidecarWritten As Boolean = False
         ''' <summary>Final list of NPC FormIDs in the saved plugin (preserved existing + every new
         ''' override). Used by MainForm to update the auto-gen plugin cache.</summary>
@@ -479,14 +478,13 @@ Public Module NpcOverrideSaver
                 ' NO se anota nada. El master de origen de este NPC todavia no esta en la MAST del
                 ' destino (se suma recien en ESTE guardado, Paso 2b del writer), asi que el archivo NO
                 ' PUEDE contener una copia suya y no hay nada que descartar.
-                ' El codigo viejo caia a SELF (reader.Masters.Count) para este caso, que es la respuesta
-                ' correcta SOLO cuando el dueno ES el archivo destino. Con un master ausente producia un
-                ' FormID local que colisiona con los records PROPIOS del destino: los drafts de la app
-                ' arrancan en 0x800 (PluginWriter.NEXT_OBJECT_ID_DEFAULT) y los records nuevos de
-                ' cualquier mod tambien, por la convencion del CK. El record colisionado se saltaba
-                ' en el barrido de
-                ' preservacion de abajo y DESAPARECIA del plugin, sin aviso. Medido: un outfit creado en
-                ' una sesion previa se perdia al guardar por primera vez un NPC de un mod nuevo.
+                ' Caer a SELF (reader.Masters.Count) para este caso sería incorrecto salvo cuando el dueño ES
+                ' el archivo destino: con un master ausente produce un FormID local que colisiona con los
+                ' records PROPIOS del destino (los drafts de la app arrancan en 0x800 —
+                ' PluginWriter.NEXT_OBJECT_ID_DEFAULT—, igual que los records nuevos de cualquier mod por
+                ' convención del CK). El barrido de preservación de abajo saltearía ese record colisionado y
+                ' DESAPARECERÍA del plugin sin aviso — un outfit se perdía al guardar por primera vez un NPC
+                ' de un mod nuevo.
                 Logger.LogLazy(Function() $"[SAVE] NPC {npcInput.NpcFormID:X8}: su master de origen no esta " &
                                           $"en la MAST de '{reader.FileName}' todavia, asi que el archivo no " &
                                           "puede tener una copia previa; no se descarta ningun record.")
@@ -542,11 +540,11 @@ Public Module NpcOverrideSaver
                     ' entries on the shared leveled path (IsNpcList=True → emitted as LVLN). Without this they
                     ' fell through to existingRecords → SerializeExistingRecord, which only handles NPC_ and
                     ' threw "currently only supports NPC_ records. Encountered 'LVLN'".
-                    ' Migrado a Canon.CanonRecords.Lvln (via el envoltorio tolerante que ya comparten MainForm/
+                    ' Via Canon.CanonRecords.Lvln (el envoltorio tolerante que ya comparten MainForm/
                     ' NpcStateResolver): el arbol reproduce el generic model (MODL/MODT/MODC/MODS/MODF) por si
-                    ' solo, asi que ya no hace falta la copia de ModelSubrecords a mano de antes de este cambio.
+                    ' solo, no hace falta copiar ModelSubrecords a mano.
                     ' ChanceNone/Flags/MaxCount/HasUseGlobal/FilterKeywords quedan sin poblar en esta entrada:
-                    ' nadie los lee mas que el emisor de antes (que ahora lee el arbol), y LVLN no comparte la
+                    ' nadie mas los lee (el emisor consume el arbol directamente), y LVLN no comparte la
                     ' interfaz de "Use Global" con LVLI asi que hacerlo pediria un TryCast por juego sin uso.
                     Dim parsedLvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(rec, ctx.PluginManager)
                     If parsedLvln Is Nothing Then Throw NoSePudoPreservar(rec)
@@ -1062,15 +1060,14 @@ Public Module NpcOverrideSaver
             ' LA CLAVE DEL SIDECAR SE NORMALIZA ACÁ, UNA VEZ, Y ESTE ES EL ÚNICO LUGAR QUE HACE FALTA.
             ' La ley ("el hex es el OBJECT ID pelado del dueño: 12 bits si es light, 24 si es full") vive en
             ' BssliderSidecar.BuildIdentifier, pero los emisores del morphs.ini tomaban los 24 bits crudos de
-            ' TryParseIdentifier, o sea una SEGUNDA ley. Con una fila escrita por una build vieja (que
-            ' enmascaraba con 0xFFFFFF) y un master ESL, el hex lleva embebido el light slot de aquella sesión y
-            ' f4ee lo ORea sin máscara (BodyGenInterface.cpp:319-321) ⇒ slot bogus ⇒ los morphs de ese NPC caen
-            ' sobre otro record o sobre ninguno.
+            ' TryParseIdentifier, o sea una SEGUNDA ley. Con una fila escrita enmascarando con 0xFFFFFF y un
+            ' master ESL, el hex lleva embebido el light slot de esa corrida y f4ee lo ORea sin máscara
+            ' (BodyGenInterface.cpp:319-321) ⇒ slot bogus ⇒ los morphs de ese NPC caen sobre otro record o
+            ' sobre ninguno.
             ' Normalizar el DICCIONARIO —y no cada consumidor— hace que la ley la imponga el DATO y no la
             ' disciplina: cualquier consumidor futuro la hereda sin saber que existe. Y como el Write de abajo
             ' persiste lo normalizado, el sidecar queda MIGRADO en disco al primer guardado y la forma vieja
-            ' desaparece para siempre. Por eso FoldLegacyKeys (que sólo plegaba las del NPC que se re-grababa,
-            ' dejando las otras N-1 rotas) ya no existe.
+            ' desaparece para siempre.
             Dim foldedRows = BssliderSidecar.NormalizeKeys(mergedSidecar.Npcs, ctx.PluginManager)
             If foldedRows > 0 Then
                 Logger.LogLazy(Function() $"[SAVE] sidecar: {foldedRows} fila(s) con la forma vieja de identificador " &
@@ -1364,10 +1361,9 @@ Public Module NpcOverrideSaver
     ''' Mirror of <see cref="OutfitDraft.EditorIdPrefix"/> / <see cref="LeveledListDraft.EditorIdPrefix"/>.</summary>
     Public Const LeveledNpcListEditorIdPrefix As String = "npcm_LVLN_"
 
-    ''' <summary>ACBS Flags bit 0x04 = "Is CharGen Face Preset" (NPC_AcbsData.IsCharGenFacePreset,
-    ''' RecordParsers.vb:134). Cleared from saved overrides when the user bakes CharGen and ticks
-    ''' "Remove CharGen flag", so the engine loads the baked FaceGen instead of reconstructing the
-    ''' face at runtime.</summary>
+    ''' <summary>ACBS Flags bit 0x04 = "Is CharGen Face Preset" (NPC_.ConfigurationFlags). Cleared from
+    ''' saved overrides when the user bakes CharGen and ticks "Remove CharGen flag", so the engine loads the
+    ''' baked FaceGen instead of reconstructing the face at runtime.</summary>
     Private Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
 
     ''' <summary>LLCT is a single unsigned byte → a leveled list holds at most 255
@@ -2104,12 +2100,12 @@ Public Module NpcOverrideSaver
 
         ' Acá NO se pliega nada: el diccionario entero ya vino normalizado por
         ' BssliderSidecar.NormalizeKeys, que corre una sola vez al leer el sidecar (ver ExecuteWritePhases).
-        ' El fold viejo corría UNA VEZ POR NPC GUARDADO, así que las filas de los NPC que NO entraban en este
-        ' guardado sobrevivían con la forma vieja y salían así al morphs.ini.
+        ' Un fold por NPC guardado (en vez de por diccionario entero) dejaría las filas de los NPC que NO
+        ' entran en este guardado con la forma vieja, saliendo así al morphs.ini.
 
-        ' Overlay → entry via the ONE preset↔entry mirror (BssliderSidecar.EntryFromPreset). The field
-        ' list used to be duplicated here and in HydratePresets/StripEspFieldsFromOverlay, and the copies
-        ' drifted (2026-07-16 audit: the residual was missing 5 fields, so a second Save wiped them).
+        ' Overlay → entry via the ONE preset↔entry mirror (BssliderSidecar.EntryFromPreset). Do not duplicate
+        ' this field list elsewhere (e.g. in HydratePresets/StripEspFieldsFromOverlay) — a duplicated copy can
+        ' drift and silently drop fields, wiping them on a second Save.
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
         Dim entry = BssliderSidecar.EntryFromPreset(overlay,
@@ -2274,9 +2270,9 @@ Public Module NpcOverrideSaver
     ''' dice de qué NPC se trata, y con cientos de records eso es indiagnosticable. Acá se chequea POR NPC,
     ''' apenas se le arma el VMAD, para poder nombrarlo.
     '''
-    ''' <para>Referencia medida (2026-07-28): un NPC con 2 overlays + 1 skin + 1 node + 22 morphs pesa 1622 B,
-    ''' o sea 2,5 % del techo. Lo que empuja el tamaño son los PATHS DE TEXTURA de overlays y skin, no los
-    ''' morphs (~22 B por morph).</para></summary>
+    ''' <para>Referencia medida: un NPC con 2 overlays + 1 skin + 1 node + 22 morphs pesa 1622 B, o sea 2,5 %
+    ''' del techo. Lo que empuja el tamaño son los PATHS DE TEXTURA de overlays y skin, no los morphs
+    ''' (~22 B por morph).</para></summary>
     Private Sub CheckVmadSize(npcSpec As NPC_Data, label As String, ctx As SaveContext)
         If npcSpec Is Nothing OrElse npcSpec.Record Is Nothing Then Return
         Dim n = npcSpec.Record.TamanoDeSubrecord("VMAD")
@@ -2319,13 +2315,11 @@ Public Module NpcOverrideSaver
         If target.ScriptVersionOverride > 0 Then
             ' Forzada a mano desde el dialogo: gana, porque para eso existe.
             '
-            ' AVISO CORREGIDO 2026-07-28. Antes decía "los actores conservarán el payload VIEJO", y eso era
-            ' cierto SÓLO antes de que existiera la sal. Ahora el sufijo es <contador><sal>, así que reusar el
-            ' número NO reusa el nombre: la sal se sortea igual y las properties siguen siendo inéditas para el
-            ' savegame. MEDIDO: forzar la versión 5 sobre una 5 ya publicada aplicó perfecto, porque el sufijo
-            ' pasó de `_G000005` a `_G000005C6BC`.
-            ' Se sigue avisando porque hay algo real que se pierde —el número deja de indicar el orden de
-            ' publicación— pero el texto ya no puede afirmar una pérdida de datos que no ocurre.
+            ' El sufijo final es <contador><sal>, así que reusar el número NO reusa el nombre completo: la sal
+            ' se sortea igual y las properties siguen siendo inéditas para el savegame (MEDIDO: forzar la
+            ' versión 5 sobre una 5 ya publicada aplicó perfecto — el sufijo pasó de `_G000005` a
+            ' `_G000005C6BC`). Se avisa igual porque el número deja de indicar el orden de publicación, aunque
+            ' el payload sí llega.
             ctx.ApplyScriptGeneration = target.ScriptVersionOverride
             If target.ScriptVersionOverride <= floorGen Then
                 ctx.PayloadWarnings.Add(
@@ -2505,7 +2499,7 @@ Public Module NpcOverrideSaver
     ''' <para>El nombre es la CLAVE del mapa de templates y tiene que ser ÚNICO. Antes era sólo
     ''' <c>NPCM_&lt;EDID saneado&gt;</c> y era el único identificador de la app que NO pasaba por
     ''' <c>MakeUniqueEditorId</c>. El saneo reemplaza todo carácter que no sea ASCII alfanumérico por <c>_</c> y
-    ''' mapea el vacío a <c>"Unnamed"</c> (BodyGenIniWriter.vb:126-134), así que chocaban: dos EDID vacíos, un
+    ''' mapea el vacío a <c>"Unnamed"</c> (BodyGenIniWriter.SanitizeTemplateName), así que chocaban: dos EDID vacíos, un
     ''' <c>"Foo Bar"</c> contra un <c>"Foo_Bar"</c>, y —el caso que más pesa— <b>dos EDID no-ASCII cualesquiera
     ''' del mismo largo</b>, que colapsan a la misma cadena de guiones bajos (una lista de mods rusa o china).
     ''' Los dos motores hacen <c>bodyGenTemplates[templateName] = bodyGenSets</c> (f4ee BodyGenInterface.cpp:151,

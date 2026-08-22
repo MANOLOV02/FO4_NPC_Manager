@@ -412,10 +412,10 @@ Friend Module BakeAllRunner
                     If npc Is Nothing Then Continue For
                     targets.Add((npc.FormID, npc.ToString(), npc.Record.Race, npc.Record.ConfigurationFlagsFemale))
                 Catch ex As Exception
-                    ' Un record que no parsea no se hornea. El comentario viejo decia "la GUI tambien se los
-                    ' traga": ya no. La GUI los cuenta, los nombra y saca un aviso que dice literalmente que
-                    ' faltarian de cualquier bake — asi que callarlos ACA seria dejar la consecuencia del lado
-                    ' silencioso y que el usuario distribuya un FaceGen incompleto sin senal.
+                    ' Un record que no parsea no se hornea. La GUI cuenta estos fallos, los nombra y saca un
+                    ' aviso que dice literalmente que faltarian de cualquier bake — asi que callarlos ACA
+                    ' seria dejar la consecuencia del lado silencioso y que el usuario distribuya un FaceGen
+                    ' incompleto sin senal.
                     parseFailures += 1
                     If parseFirstFailure = "" Then _
                         parseFirstFailure = $"{rec.SourcePluginName}:{rec.Header.FormID:X8} — {ex.GetType().Name}: {ex.Message}"
@@ -491,10 +491,8 @@ Friend Module BakeAllRunner
             ' Desde que se elimino la agrupacion por (raza,sexo), el techo es el UNICO mecanismo que acota el
             ' conjunto vivo — y tiene que serlo, porque con el loop paralelo no hay ningun punto del barrido
             ' en el que sea seguro tirar el cache entero.
-            ' CORREGIDO: este comentario decia que el default "se DERIVA DE LA RAM (25 % acotado a
-            ' [512 MB, 4 GB])". Eso YA NO ES ASI y hace rato: la derivacion se saco a proposito y el
-            ' argumento esta escrito en ResolveDecodeCacheBudgetFromEnvironment (un techo inventado que
-            ' fuerza re-decodes cuesta tiempo invisible). El default HOY es SIN TECHO, opt-in por env var.
+            ' El default es SIN TECHO, opt-in por env var — un techo inventado que fuerza re-decodes cuesta
+            ' tiempo invisible, y ese argumento esta escrito en ResolveDecodeCacheBudgetFromEnvironment.
             '   env ausente -> SIN techo
             '   env = "0"   -> SIN techo (explicito; sirve de baseline para medir)
             '   env > 0     -> ese valor en MB (reproducible entre maquinas, para comparar corridas)

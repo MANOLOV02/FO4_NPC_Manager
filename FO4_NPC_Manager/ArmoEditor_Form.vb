@@ -350,9 +350,8 @@ Public Class ArmoEditor_Form
         RequestPreview()
     End Sub
 
-    ''' <summary>"New from template…" → pick a REAL ARMO and COPY it into a NEW record (fresh draft FormID,
-    ''' IsOverride=False) — copies it as a new record. Race/gender-filtered like the old
-    ''' Template picker.</summary>
+    ''' <summary>"New from template…" → pick a REAL ARMO (race/gender-filtered) and copy it into a NEW record
+    ''' (fresh draft FormID, IsOverride=False).</summary>
     Private Sub OnActionNewFromTemplate(sender As Object, e As EventArgs)
         Dim fid = PickRealArmo("Copy ARMO into a NEW record")
         If fid = 0UI Then Return
@@ -364,8 +363,7 @@ Public Class ArmoEditor_Form
     End Sub
 
     ''' <summary>"Override existing…" → pick a REAL ARMO and edit it as an OVERRIDE (keep its global FormID +
-    ''' EditorID, IsOverride=True) — copies it as an override; your plugin replaces that
-    ''' record on Save.</summary>
+    ''' EditorID, IsOverride=True); your plugin replaces that record on Save.</summary>
     Private Sub OnActionOverrideExisting(sender As Object, e As EventArgs)
         Dim fid = PickRealArmo("Override an existing ARMO")
         If fid = 0UI Then Return

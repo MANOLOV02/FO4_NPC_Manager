@@ -67,7 +67,7 @@ Public Class LeveledListDraft
 
     Public Function Clone() As LeveledListDraft
         Return New LeveledListDraft With {
-            .Record = If(Record Is Nothing, Nothing, Record.Copia()),
+            .Record = Record?.Copia(),
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

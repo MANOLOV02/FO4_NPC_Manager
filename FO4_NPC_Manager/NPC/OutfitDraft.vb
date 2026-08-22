@@ -121,7 +121,7 @@ Public Class OutfitDraft
 
     Public Function Clone() As OutfitDraft
         Dim c As New OutfitDraft With {
-            .Record = If(Record Is Nothing, Nothing, Record.Copia()),
+            .Record = Record?.Copia(),
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

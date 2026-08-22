@@ -19,7 +19,7 @@ Imports FO4_Base_Library
 ''' </summary>
 Public Class EditBody_Form
 
-    ' SSE (Skyrim) body editing mirrors the EditFace idiom (EditFace_Form.vb:54): under _isSSE the FO4-only
+    ' SSE (Skyrim) body editing mirrors the EditFace idiom (see EditFace_Form's `_isSSE` gate): under _isSSE the FO4-only
     ' sections (MWGT 3-axis triangle, MRSV, LM Skin template) are hidden and their FO4 seed/build paths are
     ' skipped; a code-built single 0-100 weight slider (BuildSseWeightSection, mirror BuildSseMorphTab) drives
     ' the vanilla body weight (NAM7 → _0/_1 LERP) plus Load/Save .jslot. Everything game-gated so FO4 is
@@ -89,8 +89,8 @@ Public Class EditBody_Form
     Private ReadOnly _bodySlideBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
     Private ReadOnly _bodySlideRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
 
-    ' BodySlide preset selector state (mirrors WM's ComboBoxPresets + ComboBoxSize —
-    ' Wardrobe_Manager_Form.vb:2649/2177). The catalog reads <BS exe dir>\SliderPresets\*.xml;
+    ' BodySlide preset selector state (mirrors Wardrobe_Manager_Form's ComboBoxPresets + ComboBoxSize
+    ' fields). The catalog reads <BS exe dir>\SliderPresets\*.xml;
     ' the exe path / size persist per-game in NPC_Config (npc_config.json). The preset NAME is
     ' NOT persisted and the combo always opens at "(none)": it reflects THIS NPC's state, and a
     ' restored name would claim a preset the NPC's sliders don't carry. Values only move on a
@@ -270,7 +270,7 @@ Public Class EditBody_Form
         CreateBodySlideRows()
         PopulateSkinCombos()
 
-        ' SSE (Skyrim) body editing — mirror EditFace_Form.vb:221-232. Build the code-built weight slider,
+        ' SSE (Skyrim) body editing — mirror EditFace_Form's `_isSSE` branch. Build the code-built weight slider,
         ' hide the FO4-only controls, and re-source the Overlays tab from the RaceMenu (path-based) carrier
         ' (Phase 3). The BodySlide tab + Skin(WNAM) group are game-agnostic and stay as-is.
         If _isSSE Then
@@ -427,7 +427,7 @@ Public Class EditBody_Form
         ' Index 0 = "(use RACE default)" → FormID 0 (el juego acepta NULL en NPC.WNAM). Encoded as
         ' SkinFormIDOverride = Some(0) so the writer can later emit "no WNAM subrecord" for the
         ' Save ESP path; the runtime overlay merge already maps 0 to RACE.WNAM fallback
-        ' (MainForm.vb:6185-6187). Any other index encodes the chosen ARMO FormID.
+        ' (MainForm's ApplyRaceFallbacks / RecomputeEffectiveSkinFormID). Any other index encodes the chosen ARMO FormID.
         p.SkinFormIDOverride = _wnamComboFormIDs(idx)
         Await TriggerSkinChangeReload()
     End Sub
@@ -1074,7 +1074,7 @@ Public Class EditBody_Form
 
     ' =====================================================================
     ' BodySlide preset selector — mirrors Wardrobe Manager's preset flow:
-    '   • combo of presets from <BS exe dir>\SliderPresets\*.xml (Relee_Presets, WM_Form.vb:2649)
+    '   • combo of presets from <BS exe dir>\SliderPresets\*.xml (mirrors Wardrobe_Manager_Form.Relee_Presets)
     '   • size combo Default/Big/Small (ComboBoxSize; FO4 ignores the size → disabled there)
     '   • picking a preset moves the tab's sliders to the game-aware resolved values
     '     (SliderSet_Class.SetPreset semantics via BodySlidePresetCatalog.ResolveValues)
@@ -1113,7 +1113,7 @@ Public Class EditBody_Form
     ''' population with the persisted selection restored WITHOUT applying.</summary>
     Private Sub InitBodySlidePresetSelector()
         ' Size combo: restore persisted index. Game-aware: FO4 presets carry no size variants
-        ' (SetPreset ignores the weight under FO4 — OSP_Clases.vb:2498), so the combo is disabled
+        ' (SetPreset ignores the weight under FO4 — see OSP_Clases.SetPreset), so the combo is disabled
         ' there; under SSE, Default behaves as Big (SSE presets don't use Default entries).
         _seedingBsPresetCombo = True
         Try
@@ -1249,7 +1249,7 @@ Public Class EditBody_Form
     End Sub
 
     ''' <summary>Move the tab's sliders to the selected preset's game-aware values: baseline 0 for
-    ''' every row (WM re-baselines to the slider-set XML defaults first — SetPreset, OSP_Clases.vb:2488;
+    ''' every row (WM re-baselines to the slider-set XML defaults first — see OSP_Clases.SetPreset;
     ''' the PIRT rows have no XML default, so the baseline is 0), then the preset's matching values on
     ''' top. Model + bars updated together, one refresh at the end (same shape as ResetBodySlideSection).
     ''' "(none)" resolves to no values = all zeros.</summary>
@@ -1308,7 +1308,7 @@ Public Class EditBody_Form
     Private Sub ResetSseBodyScaleSection()
         Dim p = Preset
         If p Is Nothing Then Return
-        p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(If(_priorPreset Is Nothing, Nothing, _priorPreset.SseNodeTransforms))
+        p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(_priorPreset?.SseNodeTransforms)
         RefreshSseBodyScaleBars()
         _mainForm.RebuildAndApplyMergedPose(_editorHost)
         _editorHost.PreviewCtl.InvalidateRender()
@@ -1318,7 +1318,7 @@ Public Class EditBody_Form
     Private Async Function ResetSseSkinOverridesSection() As Task
         Dim p = Preset
         If p Is Nothing Then Return
-        p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(If(_priorPreset Is Nothing, Nothing, _priorPreset.SseSkinOverrides))
+        p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(_priorPreset?.SseSkinOverrides)
         RefreshSseSkinList(-1)
         Await TriggerOverlayReload()
     End Function
@@ -1738,8 +1738,8 @@ Public Class EditBody_Form
         ' this axis-angle (untouched rotations stay byte-exact from Raw).
         Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(-SliderSseNodeRotX.Value, -SliderSseNodeRotY.Value, -SliderSseNodeRotZ.Value)
         Dim aa = FO4_Base_Library.Transform_Class.Matrix33ToBSRotation(m)
-        ' UNA sola llamada, y a propósito: acá se seteaba RotX/Y/Z + HasRotation + RotationDirty a mano y se
-        ' OLVIDABA invalidar la matriz cruda, que el sidecar persiste. Ver SetRotationFromUi.
+        ' UNA sola llamada, a propósito: setear RotX/Y/Z a mano sin invalidar la matriz cruda que el
+        ' sidecar persiste dejaría el .jslot desincronizado. Ver SetRotationFromUi.
         nt.SetRotationFromUi(aa.X, aa.Y, aa.Z)
         ApplySseNodeEdit()
     End Sub
@@ -1748,10 +1748,10 @@ Public Class EditBody_Form
         If String.IsNullOrEmpty(_sseNodeSelected) Then Return
         Dim p = Preset
         If p Is Nothing OrElse p.SseNodeTransforms Is Nothing Then Return
-        ' ANTES ERA UN RemoveAll, y eso se llevaba el elemento COMPLETO del .jslot: con él la key 40 —el
-        ' re-parenteo con el que XPMSE te cuelga la espada de la espalda— y cualquier value ajeno que no modelamos.
-        ' La ley del subsistema es por COMPONENTE: "reset" saca lo que se compone (30/31/32) y deja lo demás. El nodo
-        ' sólo desaparece de la lista si no quedaba nada más que conservar.
+        ' La ley del subsistema es por COMPONENTE: "reset" saca lo que se compone (30/31/32) y deja lo demás.
+        ' Un RemoveAll se llevaría también la key 40 (el re-parenteo con el que XPMSE cuelga la espada de la
+        ' espalda) y cualquier value ajeno que no modelamos. El nodo sólo desaparece de la lista si no queda
+        ' nada más que conservar.
         For Each nt In p.SseNodeTransforms.ToList()
             If nt Is Nothing OrElse Not String.Equals(nt.NodeName, _sseNodeSelected, StringComparison.OrdinalIgnoreCase) Then Continue For
             If Not nt.ResetComposingComponents() Then p.SseNodeTransforms.Remove(nt)
@@ -2070,11 +2070,9 @@ Public Class EditBody_Form
         ' SSE overlay editor uses the SAME two-list paradigm as the FO4 overlay editor: LEFT = the paint catalog for
         ' the selected zone (choose from), RIGHT = the applied overlays. "Add →" creates an overlay node from the
         ' selected paint; "← Remove" deletes it. Keep the FO4 three-column layout (available | buttons | applied).
-        ' Lo que este método hacía ANTES para reproducir el layout de 3 columnas ya declaradas del Designer
-        ' (GroupBoxOverlayAvailable.Visible=True, 3× SetCellPosition, 3× ColumnStyles) eran no-ops: el Designer ya
-        ' declara exactamente esa disposición (OverlayListsLayout 50%/AutoSize/50%, celdas (0,0)/(1,0)/(2,0)) —
-        ' medido, no supuesto. Y el SetRow(ButtonOverlayAdd,1)/SetRow(ButtonOverlayRemove,2) desaparece porque las
-        ' filas quedan declaradas en el Designer (FlowSseOverlayZone en fila 0).
+        ' El layout de 3 columnas (GroupBoxOverlayAvailable, celdas (0,0)/(1,0)/(2,0), OverlayListsLayout
+        ' 50%/AutoSize/50%) y la fila de FlowSseOverlayZone ya están declarados en el Designer (medido, no
+        ' supuesto) — no hace falta redeclararlos ni fijar SetRow/SetCellPosition/ColumnStyles acá.
         GroupBoxOverlayAvailable.Text = "Paints (RaceMenu)"
         GroupBoxOverlayApplied.Text = "Applied overlays"
         TextBoxOverlayFilter.PlaceholderText = "Filter paints…"
@@ -2158,15 +2156,8 @@ Public Class EditBody_Form
         Dim toSpell = CheckBoxSseOverlayMagic.Checked
         If toSpell = ov.IsSpell Then Return   ' ya está en ese pool (re-seed de la UI) → nada que hacer
         Dim n = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, z.Value, toSpell)
-        ' ACÁ EL POOL MAGIC SE NEGABA, Y ERA INCOHERENTE CON LA DECISIÓN QUE YA ESTABA TOMADA PARA TODOS LOS
-        ' OVERLAYS: avisar y dejar autorar. La negativa se apoyaba en "en la partida de algunos jugadores NO SE PUEDE
-        ' SACAR", y eso dejó de ser cierto cuando el barrido pasó a recorrer los 127 slots que skee puede crear —
-        ' el techo del que dependía ese argumento ya no existe. Consecuencias medidas de la negativa:
-        '   · con el default del motor (iSpellOverlays=1) se podía autorar UN magic por zona y nada más;
-        '   · con [Features] bEnableFaceOverlays=0 NO se podía autorar NI UNO de cara, nunca;
-        '   · y como el Return salía primero, el aviso de abajo con isSpell:=True era INALCANZABLE desde producto —
-        '     o sea superficie que sólo usaba el gate y viajaba igual en el binario que se distribuye.
-        ' El pool normal, en la misma situación, avisa y sigue. Ahora los dos hacen lo mismo.
+        ' El pool magic sigue la MISMA regla que el pool normal: avisar cuando el destino no tiene tantos slots
+        ' y dejar autorar igual (es legal e inerte hasta que suba la key) — no hay motivo para tratarlo distinto.
         ' El aviso usa el contador DEL MOTOR y tiene su one-shot POR POOL.
         Dim limit = SseCatalogs.OverlayCount(z.Value, toSpell)
         If n >= limit AndAlso SseCatalogs.ClaimOverlayLimitWarning(toSpell) Then
@@ -2196,8 +2187,8 @@ Public Class EditBody_Form
     ''' entry (the ListBox index can't be used directly once filtered). This is the union of every mod's
     ''' Add{Body,Hand,Feet}Paint registration — exactly the list RaceMenu shows.</summary>
     Private Sub RefreshSsePaintCatalog()
-        ' El gate es el JUEGO. Los dos guards de nulo que habia aca no podian fallar desde que los dos
-        ' controles viven en el Designer (00-reglas-epistemica §9).
+        ' El gate es el JUEGO (_isSSE). Los dos controles viven en el Designer, así que nunca son Nothing
+        ' (00-reglas-epistemica §9) y no hace falta guardarlos contra nulo.
         If Not _isSSE Then Return
         _ssePaintShown.Clear()
         ListBoxOverlayAvailable.BeginUpdate()
@@ -2286,10 +2277,10 @@ Public Class EditBody_Form
                 If p IsNot Nothing AndAlso p.SseBodyOverlays IsNot Nothing Then
                     ' Show in DRAW ORDER so Up/Down are intuitive: group by zone (Body, Hands, Feet), and within a
                     ' zone list the topmost-drawn first. Face overlays are edited on the Face Paint tab, excluded here.
-                    ' EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE COMPOSICIÓN, no el índice pelado: el pool magic va
-                    ' ENCIMA de TODO el pool normal (skee instala el pool primario y después el secundario), así que
-                    ' un [SOvl0] se dibuja sobre un [Ovl5]. Ordenar por índice mostraba la lista al revés de lo que
-                    ' se ve, y Up/Down "arreglaban" un orden que no era el que estaba mal.
+                    ' EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE COMPOSICIÓN (CompositeOrderKey), no el índice
+                    ' numérico del nodo: el pool magic va ENCIMA de TODO el pool normal (skee instala el pool
+                    ' primario y después el secundario), así que un [SOvl0] se dibuja sobre un [Ovl5]. Ordenar
+                    ' por índice numérico invertiría el orden visual real.
                     Dim shown = p.SseBodyOverlays.
                         Where(Function(o) o IsNot Nothing AndAlso SseCatalogs.ZoneOfNode(o.NodeName).HasValue AndAlso
                                           SseCatalogs.ZoneOfNode(o.NodeName).Value <> SseCatalogs.OverlayZone.Face).
@@ -2345,9 +2336,8 @@ Public Class EditBody_Form
             LabelOverlaySelected.Text = If(has, $"Overlay: {ov.NodeName}", "(no overlay selected — Add one)")
             ' Point "Add to:" at the zone of whatever is selected, so adding a second Hands overlay doesn't
             ' silently create a Body one.
-            ' Los cuatro controles son del Designer: NUNCA son Nothing, así que ya no se chequea. El guard de nulo
-            ' que había acá existía porque bajo Fallout 4 estos controles no se construían; el gate real de esta
-            ' pestaña es que no exista bajo FO4 (ver la rama Else del .ctor).
+            ' Los cuatro controles son del Designer: NUNCA son Nothing, no hace falta chequearlos. El gate real
+            ' de esta pestaña es que no exista bajo FO4 (ver la rama Else del .ctor).
             If has Then
                 Dim z = SseCatalogs.ZoneOfNode(ov.NodeName)
                 If z.HasValue AndAlso CInt(z.Value) < ComboBoxSseOverlayZone.Items.Count Then ComboBoxSseOverlayZone.SelectedIndex = CInt(z.Value)
@@ -2361,8 +2351,8 @@ Public Class EditBody_Form
             ' ACTIVE + CYCLE_REVERSE anima la Alpha 0↔1 (ver SseOverlayCompositor.IsSpellOverlayNodeName), así que el
             ' valor autorado se guarda y viaja, pero in-game lo pisa la animación mientras corre. Dejar el slider
             ' igual que en un overlay normal era prometer un control que el motor no respeta.
-            ' ERA "Opacity:" con el motivo SÓLO en el tooltip del slider. Un pelado es una alarma sobre la que el
-        ' usuario no puede actuar: no dice qué pasa ni qué hacer. El motivo va escrito, una vez, abajo.
+            ' El label queda genérico ("Opacity:"); el motivo (un magic overlay anima su alpha) va sólo en el
+        ' tooltip de abajo, no acá — un label pelado con la alarma sin el motivo no le sirve al usuario.
         LabelOverlayTintAlpha.Text = "Opacity:"
             _sseOverlayToolTip.SetToolTip(SliderOverlayTintAlpha,
                 If(has AndAlso ov.IsSpell,
@@ -2622,7 +2612,7 @@ Public Class EditBody_Form
     Private Function AppliedOverlayLabel(ov As LooksmenuLoader.OverlayEntry) As String
         Dim tpl = ResolveAppliedTemplate(ov)
         If tpl IsNot Nothing Then Return OverlayDisplay(tpl)
-        ' Missing overlay (2026-07-09, same rule as missing tints): the template mod isn't installed
+        ' Missing overlay (same rule as missing tints): the template mod isn't installed
         ' / not for this gender. Kept verbatim in p.Overlays (round-trips on Save), the render can't
         ' resolve it so it's never applied, and the props pane stays disabled. Shown with a MISSING
         ' marker so the user can still identify and remove it.
@@ -2999,9 +2989,9 @@ Public Class EditBody_Form
                 p.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
                     .TemplateId = ov.TemplateId,
                     .Priority = ov.Priority,
-                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                    .Tint = CType(ov.Tint?.Clone(), Single()),
+                    .OffsetUV = CType(ov.OffsetUV?.Clone(), Single()),
+                    .ScaleUV = CType(ov.ScaleUV?.Clone(), Single())
                 })
             Next
             p.HasOverlays = _priorPreset.HasOverlays
@@ -3029,7 +3019,7 @@ Public Class EditBody_Form
 
     ''' <summary>Immediate full preview reload after a structural overlay change (add/remove/
     ''' reorder/tint-toggle). Overlays are re-resolved ONLY inside BuildRenderPlan
-    ''' (MainForm.ResolveOverlayLayers, MainForm.vb:4340) — which runs in RenderInHostAsync, NOT in
+    ''' (MainForm.ResolveOverlayLayers) — which runs in RenderInHostAsync, NOT in
     ''' the RefreshBodySkinLivePreview fast path. So we MUST do a full RenderInHostAsync and CANNOT
     ''' route through TriggerSkinChangeReload: that helper short-circuits on the fast path when the
     ''' skin mesh is unchanged (which it always is for an overlay-only edit), skipping
@@ -3357,7 +3347,7 @@ Public Class EditBody_Form
 
     ''' <summary>Deshace las ediciones en vivo restaurando el snapshot del constructor. Las ediciones
     ''' mutan _appliedPresets[npc] POR REFERENCIA, así que sin esto un cierre no-OK dejaba el overlay ya
-    ''' modificado mientras el caller (MainForm.vb:9920, exige DialogResult=OK) se saltaba MarkNpcDirty y
+    ''' modificado mientras el caller (MainForm's `Using dlg As New EditBody_Form(...)` call site, que exige DialogResult=OK) se saltaba MarkNpcDirty y
     ''' el re-render. Idempotente y sólo toca campos ReadOnly del ctor ⇒ seguro respecto al teardown GL.</summary>
     Private Sub RevertOverlay()
         If _hadPriorOverlay Then
@@ -3395,8 +3385,8 @@ Public Class EditBody_Form
     ' =====================================================================
     ' Embedded preview lifecycle (Shown / FormClosing)
     '
-    ' Pattern adopted from Wardrobe_Manager Editor_Form.vb:1046 and
-    ' CreatefromNif_Form.vb:36 — the PreviewControl is created in Shown (NOT in
+    ' Pattern adopted from Wardrobe_Manager's Editor_Form and
+    ' CreatefromNif_Form.Create_from_Nif_2_Shown — the PreviewControl is created in Shown (NOT in
     ' .ctor / Designer) so its OpenGL context is created when the form is actually
     ' visible. FormClosing tears it down explicitly so the GL resources are released
     ' before the form's own Dispose runs.
@@ -3434,10 +3424,10 @@ Public Class EditBody_Form
         ' replaces it as the visibility input.
         ' principal no lo dibuja nunca. El checkbox "Preview magic" es la fuente de verdad (se LEE de él en vez de
         ' asumir True, así que si algún día se persiste su estado, esto lo sigue solo).
-        ' Y sin checkbox ⇒ FALSE, no True: el checkbox sólo se construye en SSE, así que bajo FO4 el `Is Nothing
-        ' OrElse` que había acá arrancaba el host de los editores en True — el default INVERTIDO del que
-        ' NpcRenderHost documenta lo contrario. Hoy sería inerte (el camino magic está gateado por juego), y por eso
-        ' mismo es la clase de default que nadie descubre hasta que otro lector consulta el flag.
+        ' Y sin checkbox ⇒ FALSE, no True: el checkbox sólo se construye en SSE. Un `Is Nothing OrElse` que
+        ' cayera a True sería el default INVERTIDO del que NpcRenderHost documenta lo contrario — inerte hoy
+        ' (el camino magic está gateado por juego), pero la clase de default que nadie descubre hasta que otro
+        ' lector consulta el flag.
         _editorHost = New NpcRenderHost(EditPreviewControl) With {
             .AppliedPresets = _appliedPresets,
             .Toggles = BuildTogglesFromEditorCheckboxes()
@@ -3481,7 +3471,7 @@ Public Class EditBody_Form
     Private Sub EditBodyForm_FormClosing(sender As Object, e As System.Windows.Forms.FormClosingEventArgs) Handles Me.FormClosing
         ' Rollback ANTES del teardown y para CUALQUIER cierre que no sea OK: botón Cancel, X, Esc y
         ' Alt+F4 (WinForms pone DialogResult=Cancel al cerrar un modal con la X, así que este único test
-        ' cubre las cuatro vías). Mismo diseño que ArmoEditor_Form.vb:1677 y EditFace_Form.
+        ' cubre las cuatro vías). Mismo diseño que ArmoEditor_Form_FormClosing y EditFace_Form.
         If DialogResult <> DialogResult.OK Then RevertOverlay()
 
         ' El tab de skin tint desarma su picker y suelta sus dos Bitmaps ACA: su Dispose corre despues del

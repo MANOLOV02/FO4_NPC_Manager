@@ -197,7 +197,7 @@ Public Class NpcMorphResolver
     ' the user's installed body mod (CBBE/FG/etc) defined "WeightThin/Muscular/Fat" or
     ' "MorphRegion<i>" morphs.
 
-    ''' <summary>â›” SYNC: RENDER == BAKE. ESTE es el unico builder del plan de morphs de cara por juego, y el
+    ''' <summary>⛔ SYNC: RENDER == BAKE. ESTE es el unico builder del plan de morphs de cara por juego, y el
     ''' punto donde el contrato se cumple POR CONSTRUCCION: lo llaman los DOS caminos, el render vivo
     ''' (<see cref="ResolveMorphPlan"/>) y el bake offline (<c>FaceGenBuildPipeline.ApplyChargenMorphsInPlace</c>).
     ''' Si algun dia se agrega un segundo builder, preview y NIF horneado divergen sin que nada falle: todo canal
@@ -517,7 +517,7 @@ Public Class NpcMorphResolver
         ' reproducen indice por indice la tabla horneada que reemplazaron, lo que ademas prueba que el orden de
         ' vertices del tri es el de la shape. Leerlo del tri es AGNOSTICO (una cabeza modeada trae el suyo) y
         ' unifica render y bake en este plan: sin tabla y sin resolver aparte.
-        ' â›” El canal SI aplica a barbas y pelo, no solo a la cara (humanbeardshort02.tri y hair09.tri traen
+        ' ⛔ El canal SI aplica a barbas y pelo, no solo a la cara (humanbeardshort02.tri y hair09.tri traen
         ' SkinnyMorph), que es lo correcto porque el CK lo reparte a TODOS los hijos del BSFaceGenNiNode sin
         ' filtrar por tipo de head part. Verificado contra el CK sobre el pelo con residual max 0,00247.
         ' Con el checkbox "Body weight" apagado no se emite el SkinnyMorph: cabeza y cuerpo apagan juntos.
@@ -663,10 +663,10 @@ Public Class NpcMorphResolver
     ''' <summary>Carga los datos de TRI de una shape, resolviendo hasta DOS archivos: el de raza/expresion
     ''' (morphs de animacion o morphs PIRT de cuerpo) y el de chargen (sculpting). Los dos se mergean en un solo
     ''' TriHead para que el loop de aplicacion vea todos los morphs.
-    ''' <para>â›” SYNC: RENDER == BAKE, lado RENDER de la resolucion de <c>.tri</c>. Su gemelo es
+    ''' <para>⛔ SYNC: RENDER == BAKE, lado RENDER de la resolucion de <c>.tri</c>. Su gemelo es
     ''' <c>FaceGenBuildPipeline.LoadMergedHeadTri</c>: los dos resuelven RECORD-DRIVEN por HDPT NAM0/NAM1 (0 =
     ''' race morph, 1 = mesh/SkinnyMorph, 2 = chargen) y, solo para el slot de raza, por BODYTRI.</para>
-    ''' <para>â›” NO agregar un fallback por convencion de nombre del mesh: el MOTOR no tiene ninguno, arma el path
+    ''' <para>⛔ NO agregar un fallback por convencion de nombre del mesh: el MOTOR no tiene ninguno, arma el path
     ''' en un solo sitio y lo unico que hace es NORMALIZAR el que el record ya declara. Adivinarlo hacia que el
     ''' render aplicara morphs que el CK nunca aplica. Ver 40-bake-reglas-comunes.</para></summary>
     Private Sub LoadTriForShape(shape As IRenderableShape, ByRef tri As TriFile, ByRef triHead As TriHeadFile)

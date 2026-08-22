@@ -222,7 +222,7 @@ Public Module PresetCompatibilityReport
         Dim okCount As Integer = 0
         For Each fid In p.HeadPartFormIDs
             If fid = 0UI Then Continue For
-            Dim rec = If(pm Is Nothing, Nothing, pm.GetRecord(fid))
+            Dim rec = pm?.GetRecord(fid)
             If rec Is Nothing Then
                 r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Head parts", $"HDPT 0x{fid:X8} not found",
                                        "No record with this FormID in the current load order — the part is dropped."))
@@ -434,7 +434,7 @@ Public Module PresetCompatibilityReport
         End If
 
         If p.HairColorFormID = 0UI Then Return
-        Dim rec = If(ctx.PluginManager Is Nothing, Nothing, ctx.PluginManager.GetRecord(p.HairColorFormID))
+        Dim rec = ctx.PluginManager?.GetRecord(p.HairColorFormID)
         If rec Is Nothing Then
             r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Hair colour", $"CLFM 0x{p.HairColorFormID:X8} not found",
                                    "The colour record isn't in the load order (its mod isn't installed) — the NPC keeps its current hair colour."))
@@ -524,7 +524,7 @@ Public Module PresetCompatibilityReport
     End Sub
 
     Private Sub CheckFormId(ctx As PresetAuditContext, r As PresetAuditReport, category As String, fid As UInteger, expectedSig As String, consequence As String)
-        Dim rec = If(ctx.PluginManager Is Nothing, Nothing, ctx.PluginManager.GetRecord(fid))
+        Dim rec = ctx.PluginManager?.GetRecord(fid)
         If rec Is Nothing Then
             r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, category, $"{expectedSig} 0x{fid:X8} not found",
                                    "The record isn't in the current load order — its plugin isn't installed/enabled. Consequence: " & consequence))

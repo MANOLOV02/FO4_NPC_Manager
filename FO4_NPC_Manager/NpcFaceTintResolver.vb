@@ -82,7 +82,7 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' <summary>Copia la respuesta de subsurface del material de la CARA sobre cada material de piel del
     ''' cuerpo cuya respuesta difiera, para que cara y cuerpo se iluminen igual. Gana la cara y se copian los
     ''' dos campos verbatim, incluido el False. No-op cuando ya coinciden.
-    ''' <para>âš ï¸ Es una HEURISTICA, no una ley del motor: va detras de un toggle, OFF por defecto. Ver
+    ''' <para>⚠️ Es una HEURISTICA, no una ley del motor: va detras de un toggle, OFF por defecto. Ver
     ''' 30-fo4-subsurface-match-heuristica.</para>
     ''' <para>No aplica los guards del SoftLight (skin tone, QNAM): el subsurface es una propiedad de
     ''' iluminacion del material, independiente del TONO de piel. Render-only y sin persistencia.</para></summary>
@@ -96,7 +96,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' ONLY where the body differs (the per-target guard below skips shapes that already match). This
         ' pairs with the removal of the SSE facegen `bSoftlight` force in Render.vb: subsurface is now
         ' bound per-material from each shape's own Soft_Lighting flag, and this pass reconciles the body
-        ' to the face when they diverge. (RE 2026-07-23: SSE facegen subsurface is selected by the material
+        ' to the face when they diverge. (RE: SSE facegen subsurface is selected by the material
         ' SOFT_LIGHTING flag, not forced; vanilla/mod facegen heads ship it OFF. FO4 is deferred/value-driven.
         ' Full engine parity of the FO4 path was not byte-confirmed -- see memory notes.)
         Dim model = host?.PreviewCtl?.Model
@@ -263,7 +263,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' `SkinToneBaked` era un latch de UNA SOLA VIA: la asignacion del loop lo ponia en True y NADIE lo
         ' bajaba nunca (su flag hermano SseFoldDetailNeutralized si se resetea). Camino concreto que rompia:
         ' edicion viva de tints -> se restaura el diffuse PRISTINE -> el usuario borra todas las capas ->
-        ' se salia por aca con el flag pegado en True -> Render.vb:3590 pone hasTint=False -> bHasTintColor
+        ' se salia por aca con el flag pegado en True -> Render.vb, ApplyMaterial pone hasTint=False -> bHasTintColor
         ' =False -> el shader saltea el soft-light del tono. Resultado: esa malla se dibujaba SIN tono de
         ' piel sobre un diffuse que tampoco lo traia horneado, y solo se recuperaba reiniciando el NPC.
         ' SON DOS PUERTAS, NO UNA: `sin NPC/raza` (built.npcData Is Nothing) y `sin capas` (FO4). La primera
@@ -368,14 +368,14 @@ Friend NotInheritable Class NpcFaceTintResolver
 #If DEBUG Then
                 forceFoldDebug = NPC_Config.Current.SseRenderFoldedPath
 #End If
-                ' âš ï¸ PROVISORIO: el toggle solo FUERZA el fold en NPCs que no lo necesitan (vanilla), para poder
+                ' ⚠️ PROVISORIO: el toggle solo FUERZA el fold en NPCs que no lo necesitan (vanilla), para poder
                 ' comparar tono con y sin pliegue. Con mustFold=True el fold va si o si y la UI lo deshabilita.
-                ' â›” RAZA EFECTIVA (state.RaceFormID) y NO npcData.RaceFormID: npcData sale del parse crudo mas
+                ' ⛔ RAZA EFECTIVA (state.RaceFormID) y NO npcData.RaceFormID: npcData sale del parse crudo mas
                 ' el preset LM y no lleva el override de raza del editor, asi que tras cambiar de raza la CARA
                 ' componia con el catalogo de tints de la raza VIEJA y el cuerpo con la nueva.
                 ' DEDUP DEL FOLD: si dos meshes FaceTint del MISMO NPC resuelven al MISMO complexion, el fold de
                 ' las dos es identico por construccion y ambas terminan usando la misma textura per-NPC.
-                ' â›” El dedup es SOLO del compose: la segunda mesh igual recibe la clave del diffuse plegado y
+                ' ⛔ El dedup es SOLO del compose: la segunda mesh igual recibe la clave del diffuse plegado y
                 ' pasa por ApplySseFacetint (que instala el facetint bajo la clave per-NPC y escribe el
                 ' InnerLayerTexture de ESE material). Saltear cualquiera de las dos la deja sin diffuse o sin slot 6.
                 Dim complexionKey = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
@@ -427,7 +427,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                         ' único que hace que DiffuseTexture_ID devuelva la textura per-NPC en vez de la del
                         ' complexion compartido. Es per-mesh, así que dos NPCs con el mismo complexion no se pisan.
                         mesh.MeshData.Material.SseFoldedDiffuseKey = foldedKeyOut
-                        ' â›” YA NO SE NEUTRALIZA NADA: el diffuse plegado viene PRE-COMPENSADO (la inversa de la
+                        ' ⛔ YA NO SE NEUTRALIZA NADA: el diffuse plegado viene PRE-COMPENSADO (la inversa de la
                         ' cadena del motor), asi que los slots 3 y 6 quedan con su contenido REAL, el shader los
                         ' aplica normalmente y la cadena se cancela. Identico al bake.
                         ' El slot 6 tiene que llevar el FACETINT REAL: como el diffuse va pre-compensado, el
@@ -549,7 +549,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' no se muta-; en cambio se marca ESTA malla para que Render vuelva no-op su propio softlight de
             ' SkinTint. Sin esto la cara recibe el tono dos veces. El cuerpo FO4 no se toca.
             ' Es una ASIGNACION, no un latch: vale exactamente "el diffuse de esta malla salio compuesto en ESTA
-            ' pasada". â›” Las salidas por Continue For de mas arriba no llegan aca y por lo tanto NO reasignan el
+            ' pasada". ⛔ Las salidas por Continue For de mas arriba no llegan aca y por lo tanto NO reasignan el
             ' flag: esas mallas conservan el valor de la pasada anterior. Los caminos de edicion viva restauran
             ' el diffuse a pristine antes de re-entrar, y las dos puertas tempranas cubren los casos sin nada
             ' que componer, que es donde eso pasaba de verdad.
@@ -595,7 +595,7 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' si tiene dos replicas; el normal no entra en esa cadena).</para>
     ''' <para>El <c>_msn</c> es MODEL-SPACE y sus 3 canales son ejes independientes: no hay ninguna conversion
     ''' de espacio de color, entra crudo y sale crudo (IsSRGB=False).</para>
-    ''' <para>â›” EL ALPHA SE PRESERVA TAL CUAL, NO SE MEZCLA. No es "porque lleva la mascara especular": en una
+    ''' <para>⛔ EL ALPHA SE PRESERVA TAL CUAL, NO SE MEZCLA. No es "porque lleva la mascara especular": en una
     ''' malla model-space el mask especular sale del SLOT 7. El alpha del normal lo lee solo la rama no-MSN y el
     ''' envmask del cubemap, que la piel no usa - en la cabeza SSE no lo lee NADIE y mezclarlo seria inventar un
     ''' canal. Ademas seria peligroso: un normal de overlay en BC5 no tiene alpha y el decode lo devuelve
@@ -1022,10 +1022,10 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' COMPOSITE = ESPEJO DEL FLAG DE LA CAMARA (Setting_GPUSkinning), igual que FO4: GPU si esta activo y
         ' hay contexto GL, CPU si no. Ya no hay gate por overlays, porque el facetint es TINT-ONLY (overlays y
         ' skee-masks van sobre el DIFFUSE, en el fold).
-        ' â›” SIN FALLBACK: o todo GPU o todo CPU. Si el flag pide GPU y el GPU falla se ABORTA con log; componer
+        ' ⛔ SIN FALLBACK: o todo GPU o todo CPU. Si el flag pide GPU y el GPU falla se ABORTA con log; componer
         ' por CPU a escondidas taparia el bug y mostraria algo que el flag no pidio.
         ' LOSSLESS en ambos y ambos terminan en Rgba32f: la perdida BCn y la cuantizacion a 8 bits son del
-        ' ARCHIVO que hornea el bake, no del COMPOSE. â›” No volver a UploadRgba8Linear aca.
+        ' ARCHIVO que hornea el bake, no del COMPOSE. ⛔ No volver a UploadRgba8Linear aca.
         Dim newId As Integer
         If Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing Then
             newId = ComposeSseFacetintTexGpu(npcRec, race, npcData, W, H, host, effRaceFid)
@@ -1098,7 +1098,7 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' <para>GPU-RESIDENTE, SIN READBACK: el GetTexImage + re-subida Rgba8 previo frenaba el pipeline con una
     ''' transferencia bloqueante en el camino caliente y cuantizaba a 8 bits EN MEDIO del compose, en espacio
     ''' lineal.</para>
-    ''' <para>â›” SEED EXACTA 0.5 EN FLOAT, no el byte 128 (=0,50196): el CPU siembra 0,5 exacto, asi que el byte
+    ''' <para>⛔ SEED EXACTA 0.5 EN FLOAT, no el byte 128 (=0,50196): el CPU siembra 0,5 exacto, asi que el byte
     ''' metia una divergencia CPU/GPU en el termino del softlight. Estaba TAPADA por la cuantizacion que se
     ''' acaba de quitar. No volver a sembrar por bytes: el float y la seed exacta van juntos.</para>
     ''' <para>Sin capas (raza sin tints) la seed plana ES el facetint neutro correcto y se devuelve tal cual,
@@ -1166,11 +1166,6 @@ Friend NotInheritable Class NpcFaceTintResolver
         Return id
     End Function
 
-    ''' <summary>Records the per-actor skin tone on every body SkinTint shape (hands/neck/body, NOT the
-    ''' face) as material SkinTintColor + SkinTintAlpha. The SkinTint shader soft-lights the untoned body
-    ''' diffuse with it at render (uEffectiveType==4, engine-faithful) — nothing is baked into the texture,
-    ''' so the body needs NO pristine snapshot. Guarded by the race's SkinTone tint catalog (humans have it;
-    ''' synth/ghoul/robot don't → skip; their skin shapes aren't human skin-tone).</summary>
     ''' <summary>Camino BARATO para el editor de "Skin Tint Adjustment": re-resuelve el tono del CUERPO desde
     ''' el overlay y lo vuelve a escribir en los materiales de las shapes de piel. NO recompone la cara ni toca
     ''' una sola textura -el ajuste solo entra por el uniform del soft-light del cuerpo-, asi que sirve tanto
@@ -1189,6 +1184,11 @@ Friend NotInheritable Class NpcFaceTintResolver
         Return True
     End Function
 
+    ''' <summary>Records the per-actor skin tone on every body SkinTint shape (hands/neck/body, NOT the
+    ''' face) as material SkinTintColor + SkinTintAlpha. The SkinTint shader soft-lights the untoned body
+    ''' diffuse with it at render (uEffectiveType==4, engine-faithful) — nothing is baked into the texture,
+    ''' so the body needs NO pristine snapshot. Guarded by the race's SkinTone tint catalog (humans have it;
+    ''' synth/ghoul/robot don't → skip; their skin shapes aren't human skin-tone).</summary>
     Private Sub TryApplyBodySkinSoftLight(state As MainForm.NPCVisualState, Optional host As NpcRenderHost = Nothing)
         If host Is Nothing Then host = _hostProvider()
         If state Is Nothing OrElse Not state.HasTextureLighting Then
@@ -1357,10 +1357,9 @@ Friend NotInheritable Class NpcFaceTintResolver
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
     End Sub
 
-    ''' <summary>Drop every cached face-tint byte buffer and decoded GL texture. Call this
-    ''' when the FilesDictionary is rebuilt (BA2 mount/unmount, plugin reload) so a stale
-    ''' BA2 read cannot leak into a new asset set.</summary>
-    ''' <summary>Suelta los caches per-NPC del host indicado.
+    ''' <summary>Drop every cached face-tint byte buffer and decoded GL texture for the given host. Call this
+    ''' when the FilesDictionary is rebuilt (BA2 mount/unmount, plugin reload) so a stale BA2 read cannot leak
+    ''' into a new asset set.
     ''' <para>EL HOST VA EXPLÍCITO. Antes ignoraba el que recibía el llamador y usaba
     ''' <c>_hostProvider()</c>, que es SIEMPRE el <c>_renderHost</c> del MainForm — y el único llamador
     ''' (<c>LoadNPCOnDemandAsyncFromExisting</c>) DECIDE con su parámetro <c>host</c> dos líneas antes.
@@ -1515,8 +1514,8 @@ Friend NotInheritable Class NpcFaceTintResolver
         End If
 
         ' Stage 0: re-pull QNAM (and any other state field that overlay-mutates per edit)
-        ' from the overlay preset. host.LastRenderedState was seeded once at NPC load (line
-        ' 4106-4107 path) so it's stale after the user changes the combo. Without this sync,
+        ' from the overlay preset. host.LastRenderedState was seeded once at NPC load
+        ' (NpcStateResolver.ResolveNPCBaseState) so it's stale after the user changes the combo. Without this sync,
         ' the rest of the function reads the OLD HairColorFormID — render shows previous hair
         ' color regardless of what the user picked.
         Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -1547,7 +1546,7 @@ Friend NotInheritable Class NpcFaceTintResolver
 
         ' Stage 2a: TryApplyBodySkinSoftLight reads state.TextureLightingColor and SoftLights
         ' the body diffuse with that colour. ResolveNPCBaseState normally seeds it from the
-        ' overlay's slot-12 SkinTone (line 4045-4048), but that runs only on a full reload —
+        ' overlay's slot-12 SkinTone, but that runs only on a full reload —
         ' a live tint edit doesn't touch state. We have to push the freshly-resolved skin
         ' tone into state ourselves before calling the SoftLight pass, otherwise body would
         ' be tinted with the previous QNAM/SkinTone snapshot and face/body would diverge as

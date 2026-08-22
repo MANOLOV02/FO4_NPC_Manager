@@ -100,7 +100,7 @@ Public Module NpcFaceGenPacker
                 .IsTexture = True})
             ' (Eliminado el spec del `facedetailneutral.dds` COMPARTIDO por plugin: el fold ya no neutraliza el
             '  slot 3 — deja el detail REAL y pre-compensa el amplify en el diffuse. Ver
-            '  SseFaceGenBaker.PreCompensateDetailAmplify. Era el único artefacto compartido entre NPCs/ESPs.)
+            '  SseFaceGenBaker.PreCompensateEngineChain. Era el único artefacto compartido entre NPCs/ESPs.)
             ' OPTIONAL per-NPC head diffuse — emitted only when the NPC has RaceMenu face overlays/skee masks baked
             ' in (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays). Absent for vanilla NPCs → silently skipped.
             Dim diffDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalDiffuse, originPlugin)

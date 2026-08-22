@@ -66,7 +66,7 @@ Public Class MswpDraft
 
     Public Function Clone() As MswpDraft
         Return New MswpDraft With {
-            .Record = If(Record Is Nothing, Nothing, Record.Copia()),
+            .Record = Record?.Copia(),
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

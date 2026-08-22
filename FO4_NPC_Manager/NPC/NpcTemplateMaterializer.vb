@@ -11,7 +11,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' bajar el flag dejaria esos campos vacios y rompeia el aspecto.</para>
 ''' <para>USO: el caller ordena MATERIALIZAR, BAJAR EL FLAG y despues APLICAR LA EDICION. Es OPT-IN y no toca el
 ''' camino normal de guardado; un NPC que no hereda la categoria vuelve intacto.</para>
-''' <para>â›” LA INVARIANTE QUE MANTIENE ESTO HONESTO: todo campo que lleve <see cref="MainForm.TraitsState"/>
+''' <para>⛔ LA INVARIANTE QUE MANTIENE ESTO HONESTO: todo campo que lleve <see cref="MainForm.TraitsState"/>
 ''' tiene que materializarse aca. Ese state ES el modelo de la app de "lo que aporta la cadena de Traits", asi que
 ''' un campo presente alla y ausente aca se pierde EN SILENCIO apenas se baja el bit, y el sintoma aparece recien
 ''' al renderizar, hornear o guardar. FTST, QNAM y APPR fueron exactamente ese agujero (medido: 52 NPCs de SSE

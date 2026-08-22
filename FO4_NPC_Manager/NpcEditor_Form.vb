@@ -52,8 +52,8 @@ Public Class NpcEditor_Form
     ''' qué cambió de verdad.</summary>
     Private _snapRecord As Canon.INpc
 
-    ' ACBS flag bit map (checkbox → bit) built from the NPC_AcbsData bit definitions. The union is used to
-    ' preserve bits NOT surfaced as a checkbox when re-composing the flags word.
+    ' ACBS flag bit map (checkbox → bit) built from the Canon.INpc.ConfigurationFlags* bit definitions. The
+    ' union is used to preserve bits NOT surfaced as a checkbox when re-composing the flags word.
     Private ReadOnly _flagChecks As New List(Of (Chk As CheckBox, Mask As UInteger))
     Private _managedFlagMask As UInteger
     Private _loadedFlagsWord As UInteger
@@ -76,7 +76,8 @@ Public Class NpcEditor_Form
     Private _snapSpeedMult As UShort
 
     ''' <summary>True while NumLevel is in "Level Mult" mode (PC Level Mult flag 0x80 set) — the u16 is a mult
-    ''' shown as raw/1000 with 3 decimals. False = fixed integer Level. See NPC_AcbsData.LevelOrLevelMult (+6).</summary>
+    ''' shown as raw/1000 with 3 decimals. False = fixed integer Level. See Canon.INpc.ConfigurationLevelMult,
+    ''' gated by ConfigurationFlagsPCLevelMult.</summary>
     Private _levelIsMult As Boolean
 
     ' Open-time snapshots for per-category change detection (drives which template categories are materialized).

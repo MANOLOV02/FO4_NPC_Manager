@@ -606,8 +606,8 @@ Public Module FaceGenBuildPipeline
     ''' nombre igual que aca. El RE completo esta en 40-bake-leyes-fo4.</para>
     ''' <para>Magnitud, que no es lo mismo que correctitud: mueve la salida max 2,97e-4 / rms 2,20e-5 sobre
     ''' 607.376 vertices, y solo es discriminable donde los binds difieren (FemaleHeadHuman mejora un 24 % contra
-    ''' el CK). â›” Que la correccion sea chica no la hace opcional.</para>
-    ''' <para>â›” Corolario para el RENDER: al DIBUJAR hay que seguir usando el invBind del NIF PLANO. Medido sobre
+    ''' el CK). ⛔ Que la correccion sea chica no la hace opcional.</para>
+    ''' <para>⛔ Corolario para el RENDER: al DIBUJAR hay que seguir usando el invBind del NIF PLANO. Medido sobre
     ''' 301 FaceGeom del BA2, el BoneData que el CK escribe a disco es el del plano en 8.186 entradas contra 0 del
     ''' <c>_faceBones</c>. Esta sustitucion es SOLO del inverso del bake.</para>
     ''' <para>Degrada, no rompe: sin NIF <c>_faceBones</c>, sin shape, o si un hueso del rig plano no aparece en
@@ -728,7 +728,7 @@ Public Module FaceGenBuildPipeline
                                            Optional headMeshTriPath As String = Nothing)
         Dim isSse = state.NpcData IsNot Nothing AndAlso state.NpcData.Game = Config_App.Game_Enum.Skyrim
 
-        ' â›” SYNC: RENDER == BAKE. El resolver de runtime mergea el tri de morphs de raza (HDPT NAM0=0) CON el de
+        ' ⛔ SYNC: RENDER == BAKE. El resolver de runtime mergea el tri de morphs de raza (HDPT NAM0=0) CON el de
         ' chargen (NAM0=2) en UN solo TriHead, y el bake TIENE que hacer lo mismo en SSE o pierde en silencio el
         ' morph facial de la raza: el plan lo aplica por EditorID de RACE a peso 1, pero ese morph vive SOLO en el
         ' tri de raza, asi que con un TriHead de solo chargen el canal queda en no-op. Por eso el render en vivo
@@ -831,7 +831,7 @@ Public Module FaceGenBuildPipeline
         End Try
     End Function
 
-    ''' <summary>â›” SYNC: RENDER == BAKE, lado BAKE de la resolucion de <c>.tri</c>. Su gemelo es
+    ''' <summary>⛔ SYNC: RENDER == BAKE, lado BAKE de la resolucion de <c>.tri</c>. Su gemelo es
     ''' <c>NpcMorphResolver.LoadTriForShape</c> y tiene que resolver IGUAL: primero el tri de raza (HDPT NAM0=0) y
     ''' despues el de chargen (NAM0=2), agregando solo los nombres que la raza no traiga (la raza gana las
     ''' colisiones).

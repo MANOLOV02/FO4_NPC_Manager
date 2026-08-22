@@ -168,7 +168,8 @@ Public Module LooksmenuLoader
         ''' floats (76 bytes) y el modelo editable dimensiona 18 sliders. Nothing = no se conoce.
         ''' <para>Existe porque <c>ToJslot</c> lo escribía con una CONSTANTE (FLT_MAX = "no es vampiro"), así
         ''' que un load→save le pisaba el valor real. Medido: 1 de los 48 presets del usuario trae 0 ahí, y el
-        ''' render propio SÍ lee ese slot (NpcMorphResolver.vb:427-431). Sin conocerlo se sigue emitiendo el
+        ''' render propio SÍ lee ese slot (<see cref="NpcMorphResolver.BuildFaceMorphPlanFromNam9"/>, slot 18).
+        ''' Sin conocerlo se sigue emitiendo el
         ''' centinela, que es el default correcto.</para></summary>
         Public SseVampireMorph As Single? = Nothing
         ' SSE (Skyrim) face tints: las capas editadas. Con HasSseTints el overlay las vuelca al record de
@@ -815,7 +816,7 @@ Public Module LooksmenuLoader
         For Each kv In p.ChargenFaceMorphs : c.ChargenFaceMorphs(kv.Key) = kv.Value : Next
         c.BodyMorphValues.AddRange(p.BodyMorphValues)
         For Each kv In p.FaceBoneRegions
-            c.FaceBoneRegions(kv.Key) = If(kv.Value Is Nothing, Nothing, CType(kv.Value.Clone(), Single()))
+            c.FaceBoneRegions(kv.Key) = CType(kv.Value?.Clone(), Single())
         Next
         c.FacialMorphIntensity = p.FacialMorphIntensity
         For Each tl In p.FaceTintLayers
@@ -852,9 +853,9 @@ Public Module LooksmenuLoader
             c.Overlays.Add(New OverlayEntry With {
                 .TemplateId = ov.TemplateId,
                 .Priority = ov.Priority,
-                .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                .Tint = CType(ov.Tint?.Clone(), Single()),
+                .OffsetUV = CType(ov.OffsetUV?.Clone(), Single()),
+                .ScaleUV = CType(ov.ScaleUV?.Clone(), Single())
             })
         Next
         c.HasOverlays = p.HasOverlays
@@ -884,8 +885,8 @@ Public Module LooksmenuLoader
 
         ' SSE head morphs (NAM9 18 floats + NAMA 4 type uints) — deep-copy the arrays so the clone is
         ' independent; carry HasSseMorphs with them. FO4 leaves these Nothing/False so this no-ops there.
-        c.SseNam9 = If(p.SseNam9 Is Nothing, Nothing, CType(p.SseNam9.Clone(), Single()))
-        c.SseNama = If(p.SseNama Is Nothing, Nothing, CType(p.SseNama.Clone(), UInteger()))
+        c.SseNam9 = CType(p.SseNam9?.Clone(), Single())
+        c.SseNama = CType(p.SseNama?.Clone(), UInteger())
         c.SseVampireMorph = p.SseVampireMorph
         c.HasSseMorphs = p.HasSseMorphs
 
@@ -1201,9 +1202,9 @@ Public Module LooksmenuLoader
                             w.WriteStartArray(keyStr)
                             ' LooksMenu serializes exactly 8 floats per region (CharGenInterface.cpp:147
                             ' `for(UInt32 f = 0; f < 8; f++)`). Pad with 0 if we have less, truncate
-                            ' the trailing scale-or-padding slot if we somehow have more (the ESP
-                            ' parser may keep an extra "Unknown" trailing byte per RecordParsers.vb:48
-                            ' "7 floats + trailing Unknown byte array").
+                            ' the trailing scale-or-padding slot if we somehow have more (the FMRS
+                            ' schema itself is 7 floats + a trailing Wb.Bytes("Unknown", -1) — see the
+                            ' "Face Morph" struct in WbSchemaGen_FO4.vb).
                             For i = 0 To 7
                                 Dim v As Single = If(i < values.Length, values(i), 0.0F)
                                 w.WriteNumberValue(v)
@@ -1296,13 +1297,13 @@ Public Module LooksmenuLoader
                             ' LooksMenu's `palette->color.bgra` UInt32 has bytes in memory order
                             ' [R, G, B, A] despite the field name (verified empirically: TEND
                             ' raw R=0xE9 G=0xDA B=0xD8 → LM emits Color=0x00D8DAE9, which packs
-                            ' as B<<16 | G<<8 | R, NOT R<<16 | G<<8 | B). My previous shift had
-                            ' R and B swapped, producing colors with R/B mirrored vs the in-game
-                            ' palette — the rendered tint visibly differed from the original NPC.
-                            ' A is forced to 0: ESP parser sets A=255 (RecordParsers.vb:940) but
-                            ' a Color with bit 31 set serializes as negative Int32 in jsoncpp,
-                            ' and LooksMenu's asUInt() then asserts → entire Tints block is
-                            ' silently dropped via try/catch.
+                            ' as B<<16 | G<<8 | R, NOT R<<16 | G<<8 | B).
+                            ' A is forced to 0: the app always treats a TEND Color as opaque
+                            ' (Color.FromArgb(255, R, G, B) — the record's TEND Color has no real
+                            ' alpha bit, its 4th byte is Unused in the schema), but a Color with
+                            ' bit 31 set serializes as negative Int32 in jsoncpp, and LooksMenu's
+                            ' asUInt() then asserts → entire Tints block is silently dropped via
+                            ' try/catch.
                             Dim bgra As UInteger =
                                 (CUInt(tl.Color.B) << 16) Or
                                 (CUInt(tl.Color.G) << 8) Or

@@ -76,11 +76,11 @@ Module Program
         ' proposito como control de regresion. Fuente/VAs: FO4_Base_Library.EngineSkinWeightNormalization
         ' (CreationKit.exe 0x142B73230 y Fallout4.exe 0x141837390 son la MISMA funcion).
         ' --ddscompare: NO saltear el bloque DDS del comparador ni los skips de imagen del bake. Es la unica
-        ' forma de validar CONTENIDO DE PIXELES. Desde 2026-07-19 la comparacion existe en LOS DOS motores:
-        ' SSE diffea el facetint _d y FO4 los tres canales de FaceCustomization (_d/_msn/_s), cada uno como
-        ' su propia categoria del reporte (ver CompareFo4FaceCustomizationDds). Antes el bloque era SSE-ONLY,
-        ' asi que correr FO4 con --ddscompare pagaba el costo del encode y comparaba CERO pixeles = cobertura
-        ' FALSA. OJO igual: en FO4 encarece mucho el barrido (compone Y encodea 3 canales a 1024/1024/512 por
+        ' forma de validar CONTENIDO DE PIXELES: la comparacion existe en LOS DOS motores — SSE diffea el
+        ' facetint _d y FO4 los tres canales de FaceCustomization (_d/_msn/_s), cada uno como su propia
+        ' categoria del reporte (ver CompareFo4FaceCustomizationDds). Si el bloque fuera SSE-ONLY, correr FO4
+        ' con --ddscompare pagaria el costo del encode y compararia CERO pixeles = cobertura FALSA.
+        ' OJO igual: en FO4 encarece mucho el barrido (compone Y encodea 3 canales a 1024/1024/512 por
         ' NPC contra el unico 512x512 de SSE).
         Public DdsCompare As Boolean = False
         ' --defaults: IGNORA npc_config.json y corre con los defaults COMPILADOS de NPC_Config. Para
@@ -416,8 +416,6 @@ Module Program
         Directory.CreateDirectory(cacheDir)
         FilesDictionary_class.CacheDirectory = cacheDir
         FilesDictionary_class.RegisterExtensions(".ssf", ".sclp", ".hkx", ".hkt")
-        ' progress NO puede ser Nothing: Fill_DictionaryAsync hace progress.Report(...) sin guard
-        ' (FilesDictionary_class.vb:1010) -> NRE tragado por su Try -> Dictionary vacio. Pasamos un no-op.
         Dim noProg As New Progress(Of (Stepn As String, Value As Integer, Max As Integer))()
         FilesDictionary_class.Fill_DictionaryAsync(dataPath, noProg).GetAwaiter().GetResult()
 
@@ -668,7 +666,7 @@ Module Program
 
         ' --shapeorder: ¿NUESTRO orden de emisión coincide con el del CK? Compara, por NPC, la SECUENCIA de
         ' nombres de shape del NIF horneado por el CK (leído del BSA, no de un suelto) contra el orden que
-        ' produce el sort del bake: OrderBy(PartType).ThenBy(EditorID) — FaceGenBuilder.vb:478.
+        ' produce el sort del bake: OrderBy(PartType).ThenBy(EditorID) — ver FaceGenBuilder.vb, función BuildCharGen.
         ' No hornea nada: el orden nuestro se computa de los records. Responde dos cosas de una:
         '   (a) si el sort primario por PartType reproduce al CK sobre TODO el corpus (medido en 1 NPC no vale)
         '   (b) dónde el desempate DENTRO de un mismo PartType difiere — que es el hueco que decide el fix.
@@ -2007,9 +2005,9 @@ Module Program
 
         ' ================= DDS (pixeles) — SSE: facetint _d · FO4: FaceCustomization _d/_msn/_s ==========
         If Not SkipDdsCompare Then
-            ' UNA sola ruta para los DOS juegos, y SIEMPRE leyendo el .dds DE DISCO (ver CompareOnDiskDds).
-            ' Antes esto era un If/ElseIf con dos implementaciones distintas, y la de SSE RE-COMPONIA el
-            ' facetint en memoria en vez de leer el archivo: el numero de SSE y el de FO4 no median lo mismo.
+            ' UNA sola ruta para los DOS juegos, y SIEMPRE leyendo el .dds DE DISCO (ver CompareOnDiskDds):
+            ' recomponer el facetint en memoria en vez de leer el archivo haria que el numero de SSE y el
+            ' de FO4 no midieran lo mismo.
             CompareOnDiskDds(npcData, origin, fgL, npcFormID, isSse, real, noop)
         Else
             Console.WriteLine("  [DDS] pixel compare SKIPPED (no --ddscompare) — only the NIF was validated")
@@ -2051,7 +2049,7 @@ Module Program
     End Function
 
     ''' <summary>Canales que el bake FO4 escribe en FaceCustomization. MEDIDO sobre los BA2 vanilla+DLC
-    ''' (2026-07-19, 4476 entries / 1489 NPCs): el CK hornea SIEMPRE los TRES, nunca un subconjunto —
+    ''' (4476 entries / 1489 NPCs): el CK hornea SIEMPRE los TRES, nunca un subconjunto —
     ''' <c>_d</c> 1024x1024 BC1_UNORM, <c>_msn</c> 1024x1024 BC1_UNORM, <c>_s</c> 512x512 BC5_UNORM.
     ''' El <c>_s</c> a MITAD de resolucion no es un error: la textura fuente de spec de las cabezas ya es
     ''' 512x512 (basemalehead_s, ghoul*head_s, piperhead_s... todas BC5 512), asi que con
@@ -2077,8 +2075,8 @@ Module Program
         Public SumByteExactPct As Double
         Public MxR As Double, MxG As Double, MxB As Double
         Public Absent As Integer, NoCkRef As Integer, DimMismatch As Integer, LooseRef As Integer, DecodeFail As Integer
-        ' ALPHA agregado. Antes el alpha se medía por-NPC y se IMPRIMÍA, pero en el barrido Console.Out va a
-        ' TextWriter.Null ⇒ en batch no quedaba NADA del alpha, ni siquiera en FO4 donde el bloque sí corría.
+        ' ALPHA agregado: el alpha por-NPC se imprime a Console.Out, que en el barrido va a TextWriter.Null ⇒
+        ' sin este acumulador no queda registro del alpha ni siquiera en FO4, donde el bloque sí corre.
         ' AlphaMismatch es el conteo que importa (CK varía != nuestro varía); los dos CkVaria/MineVaria dan la
         ' POBLACIÓN, sin la cual "0 mismatches" no se puede distinguir de "el detector nunca tuvo nada que ver".
         Public SumRmsA As Double, MxA As Double
@@ -2103,13 +2101,10 @@ Module Program
     End Function
 
     ''' <summary>Comparacion de PIXELES del artefacto REAL on-disk contra la referencia del CK, para LOS DOS
-    ''' juegos. Unifica lo que antes eran dos ramas asimetricas.
-    '''
-    ''' POR QUE SE UNIFICO (2026-07-29): la rama SSE NO leia el .dds — RE-COMPONIA el facetint en memoria
-    ''' con <c>SseFaceGenBaker.BakeFaceTintDds</c> y comparaba ESO. Eso valida el COMPOSITOR pero NO que el
-    ''' bake haya escrito ese resultado a disco, que es justamente el artefacto que consume el juego. Un fallo
-    ''' de escritura, un codec mal aplicado o un naming equivocado eran INVISIBLES en SSE. FO4 ya leia de
-    ''' disco; ahora los dos hacen lo mismo y el numero significa lo mismo en ambos.
+    ''' juegos, LEYENDO SIEMPRE EL .dds DE DISCO — nunca recomponiendo el facetint en memoria. Recomponer
+    ''' valida el COMPOSITOR pero NO que el bake haya escrito ese resultado a disco, que es el artefacto que
+    ''' consume el juego: un fallo de escritura, un codec mal aplicado o un naming equivocado quedarian
+    ''' invisibles si se comparara contra el resultado recompuesto en vez del archivo real.
     '''
     ''' Diferencias legitimas que se respetan: FO4 hornea TRES canales (_d/_msn/_s) en
     ''' <c>FaceCustomization\</c>, SSE uno solo en <c>FaceGenData\FaceTint\</c> (sin sufijo de canal).
@@ -2327,8 +2322,7 @@ Module Program
     End Sub
 
     Private Sub RunSseCompareBatch(pm As PluginManager, limit As Integer)
-        ' GAME-AWARE: antes la lista de masters estaba hardcodeada a Skyrim ⇒ con --game fo4 daba 0 NPCs.
-        ' PluginManager.IsOfficialPlugin cubre LOS DOS motores (Fallout4.esm+DLC, Skyrim.esm+DLC, VR y cc*),
+        ' GAME-AWARE: PluginManager.IsOfficialPlugin cubre LOS DOS motores (Fallout4.esm+DLC, Skyrim.esm+DLC, VR y cc*),
         ' así el barrido 100% vanilla+DLC corre igual en FO4 y SSE con el MISMO filtro (imprescindible para
         ' que baseline y post-fix sean comparables).
         Dim cands As New List(Of UInteger)()
@@ -2349,13 +2343,13 @@ Module Program
         Next
         Dim gameTagB = If(Config_App.Current.Game = Config_App.Game_Enum.Skyrim, "SSE", "FO4")
         Console.WriteLine($"[batch] {cands.Count} vanilla+DLC {gameTagB} NPCs with CK FaceGeom")
-        ' INSTRUMENTACIÓN DE DIAGNÓSTICO (auditoría 2026-07-19) — el barrido entero muere en silencio a
-        ' mitad de camino (exit 127, sin excepción ni evento WER) con crecimiento MONÓTONO de memoria
-        ' (605 MB → 4,6 GB a los 1100 NPCs). Muere en índices DISTINTOS entre corridas ⇒ agotamiento de
-        ' recursos, no un NPC concreto. RunVertexOutlierBatch ya convivía con esto: tiene resume por CSV +
-        ' centinela .cur "el NPC que crasheó el proceso anterior". Este barrido NO tenía nada equivalente.
-        ' Dos agregados, ambos OFF por defecto (sin env var el comportamiento es idéntico al anterior):
-        '   · orden ESTABLE de candidatos (antes: orden de hash del Dictionary AllRecords) — imprescindible
+        ' INSTRUMENTACIÓN DE DIAGNÓSTICO: el barrido entero puede morir en silencio a mitad de camino
+        ' (exit 127, sin excepción ni evento WER) con crecimiento MONÓTONO de memoria (605 MB → 4,6 GB a
+        ' los 1100 NPCs), en índices DISTINTOS entre corridas ⇒ agotamiento de recursos, no un NPC concreto.
+        ' RunVertexOutlierBatch ya tiene resume por CSV + centinela .cur ("el NPC que crasheó el proceso
+        ' anterior"); este barrido agrega lo mismo. Ambos OFF por defecto (sin env var el comportamiento es
+        ' idéntico):
+        '   · orden ESTABLE de candidatos (no el orden de hash del Dictionary AllRecords) — imprescindible
         '     para que los tramos particionen el corpus sin solaparse ni dejar huecos. NO cambia ningún
         '     resultado agregado: las categorías se suman por NPC y por shape, que son order-independent.
         '   · FGCMP_SKIP=<n>: saltea los primeros n candidatos ⇒ con FGCMP_SKIP + limit se corre por tramos
@@ -2408,7 +2402,7 @@ Module Program
 
         SkipDdsCompare = Not DdsCompareRequested   ' barrido de NIF: sin el bloque DDS (recompone el facetint por NPC = costo dominante)
         ' Este barrido valida el NIF, no los pixeles: se saltea el trabajo de imagen del bake en AMBOS juegos.
-        ' MEDIDO 2026-07-18 (sin esto): SSE ~237 NPC/min pero FO4 ~1,7 NPC/min = 15 h el barrido completo, porque
+        ' MEDIDO (sin esto): SSE ~237 NPC/min pero FO4 ~1,7 NPC/min = 15 h el barrido completo, porque
         ' FO4 compone Y encodea 3 canales a resolucion nativa (1024x1024+) por NPC contra el unico 512x512 de SSE.
         ' Ninguno de los dos flags cambia lo que el bake escribe en el NIF (ver sus docs) — validado por byte-diff.
         FO4_NPC_Manager.FaceGenBuilder.SkipDdsEncode = Not DdsCompareRequested
@@ -2425,9 +2419,8 @@ Module Program
         Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
         Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid As UInteger) raw)
         Dim savedOut = Console.Out
-        ' FALLOS NUNCA SILENCIOSOS. Antes las tres rutas de fallo hacian `failCount += 1 : Continue For`
-        ' sin registrar nada (y el Catch ademas se TRAGABA la excepcion), asi que el barrido reportaba
-        ' "fail=2" toda la sesion sin que nadie supiera que NPCs eran ni por que.
+        ' FALLOS NUNCA SILENCIOSOS: cada fallo registra NPC + ruta + causa (nunca `failCount += 1` a
+        ' secas ni un Catch que se traga la excepcion) — sin eso un "fail=2" no dice que NPCs son ni por que.
         ' No es cosmetico: un NPC que falla NO SE COMPARA, asi que no aparece en ninguna categoria. Si un NPC
         ' pasa de "diferente" a "explota", su categoria BAJA de conteo y el criterio "ninguna categoria sube"
         ' lo lee como una MEJORA. Los fallos silenciosos corrompen el criterio de aceptacion del barrido.
@@ -2503,11 +2496,10 @@ Module Program
                 Dim rr = CompareBakedVsCk(pm, fid, bakedPath, verbose:=False)
                 Console.SetOut(savedOut)
                 okCount += 1
-                ' EL CUBO NO-OP TAMBIEN SE AGREGA. Antes el barrido iteraba SOLO rr.Real y rr.Noop se
-                ' calculaba por NPC y se DESCARTABA: toda diferencia clasificada como "esperada" (tamaños de
-                ' byte por codec, sufijo sandbox, GrayscaleToPaletteScale inerte) desaparecia del reporte sin
-                ' dejar rastro. Eso hace que la tabla de categorias parezca exhaustiva cuando no lo es —
-                ' "esperado" es una CLASIFICACION, no una licencia para no mostrarlo.
+                ' EL CUBO NO-OP TAMBIEN SE AGREGA: toda diferencia clasificada como "esperada" (tamaños de
+                ' byte por codec, sufijo sandbox, GrayscaleToPaletteScale inerte) se registra igual, no se
+                ' descarta — "esperado" es una CLASIFICACION, no una licencia para no mostrarlo; ocultarla
+                ' haria parecer exhaustiva a una tabla de REAL que no lo es.
                 For Each d In rr.Noop
                     Dim ncat = normCat(d)
                     noopCount(ncat) = If(noopCount.ContainsKey(ncat), noopCount(ncat), 0) + 1
@@ -2531,7 +2523,7 @@ Module Program
             Catch ex As Exception
                 Console.SetOut(savedOut)
                 ' NUNCA tragarse la excepcion: tipo + mensaje + la primera linea del stack (barato y suele
-                ' bastar para ubicar el sitio). Antes esto era `failCount += 1` a secas y la causa se perdia.
+                ' bastar para ubicar el sitio) — un `failCount += 1` a secas pierde la causa.
                 Dim stk = If(ex.StackTrace, "").Split({Environment.NewLine}, StringSplitOptions.RemoveEmptyEntries)
                 Dim at0 = If(stk.Length > 0, stk(0).Trim(), "<no stack>")
                 recordFail(fid, "exception", $"{ex.GetType().Name}: {ex.Message} | {at0}")
@@ -2685,7 +2677,7 @@ Module Program
         If popBase = 0 OrElse popNoBase = 0 Then
             Dim vacia = If(popBase = 0, "WITH base bones", "WITHOUT base bones")
             Console.WriteLine($"    => NOT APPLICABLE: the class '{vacia}' came out EMPTY; the classifier does not discriminate in this corpus.")
-            ' MEDIDO 2026-07-20, y vale la pena dejarlo escrito porque invalida las DOS lecturas previas:
+            ' MEDIDO, y vale la pena dejarlo escrito porque invalida las DOS lecturas previas:
             ' el clasificador es degenerado en AMBOS motores, cada uno para el lado contrario.
             '   SSE : 0 shapes CON huesos base  (20977 SIN)  -> ademas 0 shapes en la banda
             '   FO4 : 0 shapes SIN huesos base  (17121 CON)  -> la banda cae entera del lado 'con base'
@@ -3351,11 +3343,11 @@ persist:
         ' 4 FaceTint / 5 SkinTint / 6 HairTint / else = no escribe nada). Sin esto un cambio de tipo pasaba
         ' invisible aunque cambie qué slots se escriben.
         If cl.ShaderType_SK_FO4 <> ml.ShaderType_SK_FO4 Then real.Add($"shape '{nm}' shader.TYPE CK={cl.ShaderType_SK_FO4} baked={ml.ShaderType_SK_FO4}")
-        ' flags — GAME-AWARE. BUG CORREGIDO 2026-07-18: se comparaban SIEMPRE SSPF1/SSPF2, que NiflySharp
-        ' sólo puebla con StreamVersion < 130 (= SSE). En FO4 (==130) los flags viven en F4SPF1/F4SPF2 y los
-        ' SSPF quedan en su default ⇒ MEDIDO: 0x00000000 en 284/284 shapes de AMBOS lados ⇒ estas dos líneas
-        ' eran código muerto en FO4 y el barrido NUNCA pudo detectar una divergencia de shader flags ahí.
-        ' Ver BSMain.BSLightingShaderProperty.g.cs:393-402 (el parser branchea por StreamVersion).
+        ' flags — GAME-AWARE: NiflySharp sólo puebla SSPF1/SSPF2 con StreamVersion menor a 130 (= SSE). En FO4
+        ' (==130) los flags viven en F4SPF1/F4SPF2 y los SSPF quedan en su default (MEDIDO: 0x00000000 en
+        ' 284/284 shapes de AMBOS lados) ⇒ comparar siempre SSPF1/SSPF2 deja esas dos líneas como código
+        ' muerto en FO4 y el barrido nunca detecta una divergencia de shader flags ahí.
+        ' Ver BSMain.BSLightingShaderProperty.g.cs (el parser branchea por StreamVersion).
         Dim isFo4Shader As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim)
         Dim ckF1 As UInteger = If(isFo4Shader, CUInt(cl.ShaderFlags_F4SPF1), CUInt(cl.ShaderFlags_SSPF1))
         Dim myF1 As UInteger = If(isFo4Shader, CUInt(ml.ShaderFlags_F4SPF1), CUInt(ml.ShaderFlags_SSPF1))
@@ -3389,7 +3381,7 @@ persist:
         ' 207/207 de los que difieren tienen el flag OFF en ambos lados, y los 77 con el flag ON coinciden
         ' EXACTAMENTE. Además el valor del CK no es una constante (0,675 n=58 · 0,488 n=36 · 0,738 n=30 ·
         ' 0,394 n=18 …), lo que confirma que es residuo del builder, no dato. Misma regla que ya aplica el
-        ' comparador de producción en FaceGenComparator.vb:594-598; el barrido no la tenía.
+        ' comparador de producción en FaceGenComparator.vb, función IsCosmeticDiff; el barrido no la tenía.
         Const G2pMask As UInteger = &H30UI
         If ((ckF1 And G2pMask) <> 0UI) OrElse ((myF1 And G2pMask) <> 0UI) Then
             DiffF(nm, "GrayscaleToPaletteScale", cl.GrayscaleToPaletteScale, ml.GrayscaleToPaletteScale, 0.002F, real)
@@ -3616,10 +3608,10 @@ persist:
             ' peligroso (ruido con forma de hallazgo). Se compara por CONTENIDO, reusando el mismo
             ' comparador recursivo (que ya sabe de NiStringRef, refs a bloque y structs).
             Dim dif = 0
-            ' Se guarda QUE indices difieren y el primer detalle. Antes solo se contaba: la categoria
-            ' agregada decia "1/10 elementos difieren" y no habia forma de saber CUAL de los 10 slots del
-            ' texture set fallaba — la categoria localizaba el problema en el shape pero no en el campo,
-            ' que es justo lo que hace falta para atribuirla a una ley de resolucion de paths.
+            ' Se guarda QUE indices difieren y el primer detalle: contar solamente ("1/10 elementos
+            ' difieren") no permite saber CUAL de los 10 slots del texture set fallaba — localizaria el
+            ' problema en el shape pero no en el campo, que es justo lo que hace falta para atribuirla a
+            ' una ley de resolucion de paths.
             Dim difIdx As New List(Of Integer)()
             Dim firstDetail As String = Nothing
             For i = 0 To la.Count - 1
@@ -4350,12 +4342,11 @@ persist:
         End If
         Dim key = parts(0).Trim()
         Dim outFile = parts(1).Trim()
-        ' DEL ARCHIVE PRIMERO. Esta herramienta existe para sacar la REFERENCIA DEL CK, y usaba GetBytes,
-        ' que los SUELTOS SOMBREAN: con nuestro propio bake suelto en el Data devolvía NUESTRO archivo
-        ' rotulado como "referencia del CK". Caso real 2026-07-21: se "verificó" que el CK y nosotros
-        ' coincidíamos en 0x00074F90 — mismo MD5, porque era el MISMO archivo — y se dieron por buenas tres
-        ' conclusiones falsas. Ahora se pide del archive y, si no hay entrada archivada, se AVISA en vez de
-        ' devolver el suelto en silencio.
+        ' DEL ARCHIVE PRIMERO: GetBytes deja que los SUELTOS SOMBREEN el archive, asi que con nuestro propio
+        ' bake suelto en el Data esta herramienta devolvia NUESTRO archivo rotulado como "referencia del
+        ' CK" (ej. 0x00074F90: mismo MD5 porque era el MISMO archivo, contra el que se "verificaba" con
+        ' exito). Ahora se pide del archive y, si no hay entrada archivada, se AVISA en vez de devolver el
+        ' suelto en silencio.
         Dim bytes = FilesDictionary_class.GetArchiveOriginalBytes(key)
         If bytes Is Nothing OrElse bytes.Length = 0 Then
             bytes = FilesDictionary_class.GetBytes(key)
@@ -4886,7 +4877,7 @@ persist:
             If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Continue For
             Try
                 Dim npc = RecordParsers.ParseNPC(rec, pm)
-                Dim capasDiff = FaceTintInputBuilder.CapasAutoradasDelRecord(If(npc Is Nothing, Nothing, npc.Record))
+                Dim capasDiff = FaceTintInputBuilder.CapasAutoradasDelRecord(npc?.Record)
                 If npc Is Nothing OrElse capasDiff.Count = 0 Then Continue For
                 withTints += 1
                 Dim raceRec = pm.GetRecord(npc.Record.Race)
@@ -10434,15 +10425,12 @@ persist:
                 Case "--sweep" : a.SweepDir = v : i += 2
                 Case "--dump" : a.DumpDir = v : i += 2
                 Case "--game"
-                    ' NO caer al default en silencio. La version previa era
-                    '     If v.StartsWith("sk") Then Skyrim Else Fallout4
-                    ' asi que CUALQUIER valor no-"sk*" daba Fallout4 sin avisar: `--game sse` —
-                    ' el alias natural de Skyrim Special Edition— corrio un barrido ENTERO de FO4
-                    ' rotulado como SSE (1509 NPCs de FO4 en vez de los 3214 de SSE). Un "verde"
-                    ' sobre un juego que nunca se midio, mas 21 minutos de maquina.
-                    ' Misma familia que los otros fallos silenciosos del arnes: no falla nada,
-                    ' simplemente no se mide lo que uno cree. Ahora: tabla explicita de alias y
-                    ' ABORTO con exit != 0 si el valor no se reconoce.
+                    ' NO caer al default en silencio: un valor no reconocido de --game NUNCA debe
+                    ' interpretarse como Fallout4. Ejemplo concreto que esto evita: `--game sse` (el
+                    ' alias natural de Skyrim Special Edition) corriendo un barrido entero de FO4
+                    ' rotulado como SSE — un "verde" sobre un juego que nunca se midio. Misma familia
+                    ' que los otros fallos silenciosos del arnes: no falla nada, simplemente no se mide
+                    ' lo que uno cree. Tabla explicita de alias + ABORTO con exit != 0 si no se reconoce.
                     a.GameRaw = v
                     Dim gv = v.Trim().ToLowerInvariant()
                     Select Case gv

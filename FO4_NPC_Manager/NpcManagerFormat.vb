@@ -97,7 +97,7 @@ Friend NotInheritable Class NpcManagerFormat
     ' NPC_ record-details labels. Enum names and flag bits are transcribed from the game's own
     ' record schema, which is the authoritative source for both games. Where the two engines
     ' disagree the formatter takes the game and branches — the NPC_ record layout is NOT shared
-    ' (ver NPC_AcbsData y el DNAM de Skyrim del record).
+    ' (ver Canon.INpc.ConfigurationFlags y el DNAM de Skyrim del record).
     ' ========================================================================
 
     ''' <summary>ACBS Flags (u32). Bits 0x01..0x80, 0x800, 0x4000, 0x10000, 0x40000..0x100000,
