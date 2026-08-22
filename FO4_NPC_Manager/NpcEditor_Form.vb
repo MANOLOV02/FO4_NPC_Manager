@@ -199,8 +199,8 @@ Public Class NpcEditor_Form
     ''' no control). Gating runs BOTH ways because ACBS/DNAM have a different layout per game:
     '''
     ''' Hidden on SKYRIM (Fallout 4 only): the OBTS/OBTE and PRPS tabs, the APPR attach-parent-slot section, the
-    ''' ACBS 0x800000 flag (see BuildFlagChecks), and XP Value Offset (ACBS +4 in the 20-byte FO4 struct — in the
-    ''' 24-byte Skyrim struct those bytes are the Magicka Offset instead).
+    ''' doce banderas de ACBS que solo Fallout 4 nombra (see BuildFlagChecks), and XP Value Offset (ACBS +4 in the
+    ''' 20-byte FO4 struct — in the 24-byte Skyrim struct those bytes are the Magicka Offset instead).
     '''
     ''' Hidden on FALLOUT 4 (Skyrim only): the Stats tab (DNAM = 52-byte Player Skills in Skyrim; in FO4 DNAM is
     ''' an unrelated 8-byte Calculated-Stats block the engine recomputes, so there is nothing to edit) and the
@@ -216,7 +216,22 @@ Public Class NpcEditor_Form
                                                     LabelXp, NumXp}
                 If c IsNot Nothing Then c.Visible = False
             Next
-            If ChkNoActHellos IsNot Nothing Then ChkNoActHellos.Visible = False
+            ' Las banderas de ACBS que solo Fallout 4 nombra (ver BuildFlagChecks).
+            For Each c As CheckBox In New CheckBox() {
+                    ChkNoActHellos,
+                    ChkHasBaseSoundData,
+                    ChkUseAttackPercentage,
+                    ChkNoLoot,
+                    ChkNoRumors,
+                    ChkDisableNonCombatRegen,
+                    ChkVerySimpleActor,
+                    ChkDisableCombat,
+                    ChkSpawnsDead,
+                    ChkPlayerProtected,
+                    ChkDoNotUseLoadDoors,
+                    ChkNoBleedoutRecovery}
+                If c IsNot Nothing Then c.Visible = False
+            Next
         Else
             If Tabs.TabPages.Contains(TabStats) Then Tabs.TabPages.Remove(TabStats)
             For Each c As Control In New Control() {LabelMagickaOff, NumMagickaOff, LabelStaminaOff, NumStaminaOff,
@@ -247,12 +262,11 @@ Public Class NpcEditor_Form
     ' =====================================================================
 
     Private Sub BuildFlagChecks()
-        ' ACBS Flags bit values. VERIFIED identical between FO4 and Skyrim for EVERY surfaced
-        ' flag EXCEPT bit 0x800000: FO4 = "No Activation / Hellos", Skyrim = "Unknown 23"
-        ' (unused). So ChkNoActHellos is added ONLY on FO4 — on Skyrim its bit stays OUT of
-        ' _managedFlagMask and is preserved verbatim by ComposeFlags (the checkbox is hidden in
-        ' ApplyGameGating). Note: ACBS bit 0x04 (Is CharGen Face Preset) is intentionally NOT
-        ' surfaced here (both games) — owned by the Face editor, preserved verbatim.
+        ' ACBS Flags bit values. Las que se registran para los DOS juegos estan VERIFICADAS
+        ' bit por bit contra las dos tablas del esquema: mismo bit, mismo significado. Doce NO lo
+        ' estan y por eso van gateadas — ver el bloque `If Not isSkyrim` de mas abajo.
+        ' Nota: el bit 0x04 (Is CharGen Face Preset) a proposito NO se expone en ninguno de los dos
+        ' juegos — es del editor de cara, y se preserva verbatim.
         Dim isSkyrim = _isSkyrim
         _flagChecks.Add((ChkFemale, &H1UI))
         _flagChecks.Add((ChkEssential, &H2UI))
@@ -266,7 +280,27 @@ Public Class NpcEditor_Form
         _flagChecks.Add((ChkDoesntBleed, &H10000UI))
         _flagChecks.Add((ChkOppositeGender, &H80000UI))
         _flagChecks.Add((ChkSimpleActor, &H100000UI))
-        If Not isSkyrim Then _flagChecks.Add((ChkNoActHellos, &H800000UI))
+        ' SOLO FALLOUT 4. El bit 0x800000 es 'No Activation / Hellos' en Fallout 4 y esta sin
+        ' usar en Skyrim; los once que siguen son los que el formato dejo de llamar 'Unknown',
+        ' y tambien tienen nombre solo en Fallout 4 -- medido bit por bit contra las dos tablas
+        ' del esquema: en Skyrim son 'Unknown N', salvo el 8 ('Use Template?'), el 21 ('looped
+        ' script?') y el 28 ('looped audio?'), que ahi significan otra cosa. Rotularlos con el
+        ' nombre del otro juego seria peor que no mostrarlos: al quedar fuera de
+        ' _managedFlagMask, ComposeFlags los conserva tal como vinieron del archivo.
+        If Not isSkyrim Then
+            _flagChecks.Add((ChkNoActHellos, &H800000UI))
+            _flagChecks.Add((ChkHasBaseSoundData, &H100UI))
+            _flagChecks.Add((ChkUseAttackPercentage, &H400UI))
+            _flagChecks.Add((ChkNoLoot, &H1000UI))
+            _flagChecks.Add((ChkNoRumors, &H2000UI))
+            _flagChecks.Add((ChkDisableNonCombatRegen, &H8000UI))
+            _flagChecks.Add((ChkVerySimpleActor, &H20000UI))
+            _flagChecks.Add((ChkDisableCombat, &H2000000UI))
+            _flagChecks.Add((ChkSpawnsDead, &H4000000UI))
+            _flagChecks.Add((ChkPlayerProtected, &H8000000UI))
+            _flagChecks.Add((ChkDoNotUseLoadDoors, &H10000000UI))
+            _flagChecks.Add((ChkNoBleedoutRecovery, &H40000000UI))
+        End If
         _flagChecks.Add((ChkGhost, &H20000000UI))
         _flagChecks.Add((ChkInvulnerable, &H80000000UI))
         _managedFlagMask = 0UI

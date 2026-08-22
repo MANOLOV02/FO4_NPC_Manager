@@ -71,13 +71,24 @@ Partial Class NpcEditor_Form
         ChkUnique = New CheckBox()
         ChkNoStealth = New CheckBox()
         ChkPCLevelMult = New CheckBox()
+        ChkHasBaseSoundData = New CheckBox()
+        ChkUseAttackPercentage = New CheckBox()
         ChkProtected = New CheckBox()
+        ChkNoLoot = New CheckBox()
+        ChkNoRumors = New CheckBox()
         ChkSummonable = New CheckBox()
+        ChkDisableNonCombatRegen = New CheckBox()
         ChkDoesntBleed = New CheckBox()
+        ChkVerySimpleActor = New CheckBox()
         ChkOppositeGender = New CheckBox()
         ChkSimpleActor = New CheckBox()
         ChkNoActHellos = New CheckBox()
+        ChkDisableCombat = New CheckBox()
+        ChkSpawnsDead = New CheckBox()
+        ChkPlayerProtected = New CheckBox()
+        ChkDoNotUseLoadDoors = New CheckBox()
         ChkGhost = New CheckBox()
+        ChkNoBleedoutRecovery = New CheckBox()
         ChkInvulnerable = New CheckBox()
         TabObts = New TabPage()
         ObtsLayout = New TableLayoutPanel()
@@ -718,13 +729,24 @@ Partial Class NpcEditor_Form
         FlowFlags.Controls.Add(ChkUnique)
         FlowFlags.Controls.Add(ChkNoStealth)
         FlowFlags.Controls.Add(ChkPCLevelMult)
+        FlowFlags.Controls.Add(ChkHasBaseSoundData)
+        FlowFlags.Controls.Add(ChkUseAttackPercentage)
         FlowFlags.Controls.Add(ChkProtected)
+        FlowFlags.Controls.Add(ChkNoLoot)
+        FlowFlags.Controls.Add(ChkNoRumors)
         FlowFlags.Controls.Add(ChkSummonable)
+        FlowFlags.Controls.Add(ChkDisableNonCombatRegen)
         FlowFlags.Controls.Add(ChkDoesntBleed)
+        FlowFlags.Controls.Add(ChkVerySimpleActor)
         FlowFlags.Controls.Add(ChkOppositeGender)
         FlowFlags.Controls.Add(ChkSimpleActor)
         FlowFlags.Controls.Add(ChkNoActHellos)
+        FlowFlags.Controls.Add(ChkDisableCombat)
+        FlowFlags.Controls.Add(ChkSpawnsDead)
+        FlowFlags.Controls.Add(ChkPlayerProtected)
+        FlowFlags.Controls.Add(ChkDoNotUseLoadDoors)
         FlowFlags.Controls.Add(ChkGhost)
+        FlowFlags.Controls.Add(ChkNoBleedoutRecovery)
         FlowFlags.Controls.Add(ChkInvulnerable)
         FlowFlags.Dock = DockStyle.Fill
         FlowFlags.FlowDirection = FlowDirection.TopDown
@@ -809,6 +831,72 @@ Partial Class NpcEditor_Form
         ChkNoActHellos.AutoSize = True
         ChkNoActHellos.Name = "ChkNoActHellos"
         ChkNoActHellos.Text = "No Activation / Hellos"
+        '
+        ' ChkHasBaseSoundData
+        '
+        ChkHasBaseSoundData.AutoSize = True
+        ChkHasBaseSoundData.Name = "ChkHasBaseSoundData"
+        ChkHasBaseSoundData.Text = "Has Base Sound Data"
+        '
+        ' ChkUseAttackPercentage
+        '
+        ChkUseAttackPercentage.AutoSize = True
+        ChkUseAttackPercentage.Name = "ChkUseAttackPercentage"
+        ChkUseAttackPercentage.Text = "Use Attack Percentage"
+        '
+        ' ChkNoLoot
+        '
+        ChkNoLoot.AutoSize = True
+        ChkNoLoot.Name = "ChkNoLoot"
+        ChkNoLoot.Text = "No Loot"
+        '
+        ' ChkNoRumors
+        '
+        ChkNoRumors.AutoSize = True
+        ChkNoRumors.Name = "ChkNoRumors"
+        ChkNoRumors.Text = "No Rumors"
+        '
+        ' ChkDisableNonCombatRegen
+        '
+        ChkDisableNonCombatRegen.AutoSize = True
+        ChkDisableNonCombatRegen.Name = "ChkDisableNonCombatRegen"
+        ChkDisableNonCombatRegen.Text = "Disable Non-Combat Regen"
+        '
+        ' ChkVerySimpleActor
+        '
+        ChkVerySimpleActor.AutoSize = True
+        ChkVerySimpleActor.Name = "ChkVerySimpleActor"
+        ChkVerySimpleActor.Text = "Very Simple Actor"
+        '
+        ' ChkDisableCombat
+        '
+        ChkDisableCombat.AutoSize = True
+        ChkDisableCombat.Name = "ChkDisableCombat"
+        ChkDisableCombat.Text = "Disable Combat"
+        '
+        ' ChkSpawnsDead
+        '
+        ChkSpawnsDead.AutoSize = True
+        ChkSpawnsDead.Name = "ChkSpawnsDead"
+        ChkSpawnsDead.Text = "Spawns Dead"
+        '
+        ' ChkPlayerProtected
+        '
+        ChkPlayerProtected.AutoSize = True
+        ChkPlayerProtected.Name = "ChkPlayerProtected"
+        ChkPlayerProtected.Text = "Player Protected"
+        '
+        ' ChkDoNotUseLoadDoors
+        '
+        ChkDoNotUseLoadDoors.AutoSize = True
+        ChkDoNotUseLoadDoors.Name = "ChkDoNotUseLoadDoors"
+        ChkDoNotUseLoadDoors.Text = "Do Not Use Load Doors"
+        '
+        ' ChkNoBleedoutRecovery
+        '
+        ChkNoBleedoutRecovery.AutoSize = True
+        ChkNoBleedoutRecovery.Name = "ChkNoBleedoutRecovery"
+        ChkNoBleedoutRecovery.Text = "No Bleedout Recovery"
         '
         ' ChkGhost
         '
@@ -2240,6 +2328,17 @@ Partial Class NpcEditor_Form
     Friend WithEvents ChkOppositeGender As System.Windows.Forms.CheckBox
     Friend WithEvents ChkSimpleActor As System.Windows.Forms.CheckBox
     Friend WithEvents ChkNoActHellos As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkHasBaseSoundData As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkUseAttackPercentage As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkNoLoot As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkNoRumors As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkDisableNonCombatRegen As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkVerySimpleActor As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkDisableCombat As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkSpawnsDead As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkPlayerProtected As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkDoNotUseLoadDoors As System.Windows.Forms.CheckBox
+    Friend WithEvents ChkNoBleedoutRecovery As System.Windows.Forms.CheckBox
     Friend WithEvents ChkGhost As System.Windows.Forms.CheckBox
     Friend WithEvents ChkInvulnerable As System.Windows.Forms.CheckBox
     Friend WithEvents TabObts As System.Windows.Forms.TabPage
