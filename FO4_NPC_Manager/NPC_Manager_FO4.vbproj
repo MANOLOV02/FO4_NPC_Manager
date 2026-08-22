@@ -64,6 +64,11 @@
        shadows the BSA/BA2, so ours would replace RaceMenu's / LooksMenu's real implementation.
        See ..\Papyrus\README.md. -->
   <ItemGroup>
+    <EmbeddedResource Include="..\Papyrus\pex_sse\NPCM_Manolov_ApplySSE.pex" LogicalName="NpcManager.Papyrus.NPCM_Manolov_ApplySSE.pex" />
+    <EmbeddedResource Include="..\Papyrus\pex_fo4\NPCM_Manolov_ApplyFO4.pex" LogicalName="NpcManager.Papyrus.NPCM_Manolov_ApplyFO4.pex" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Tools/OverlaySlotGate: self-test del lector de skee64.ini y de las reglas de slot de overlay
          (SseCatalogs es Friend). Mismo criterio que ParityGate en FO4_Base_Library: el gate llega a los
          miembros Friend desde afuera y la superficie que se distribuye no cambia. El test es de PARSEO y
@@ -82,6 +87,10 @@
   <!-- La configuracion Publish: es Release con carpeta propia. Sin esto compilaria SIN
        OPTIMIZAR, en verde. Ver el comentario del .targets. -->
   <Import Project="..\..\FO4_Base_Library\ConfiguracionPublish.targets" />
+  <!-- Avisa (Debug/Release) o CORTA (Publish) si el .vbproj se quedo sin el <EmbeddedResource> de los
+       .pex de Papyrus. Lo borro el disenador de VS el 2026-08-18 y la app quedo 4 dias fallando el Save
+       ESP despues de escribir el .esp, con el build en verde. Ver el comentario del .targets. -->
+  <Import Project="..\Papyrus\PexEmbebido.targets" />
 
   <!-- Licencias. GPL-3 §4/§5 exige que el texto acompañe al binario, y MIT/Apache-2.0 exigen que
        viaje el aviso de cada componente. Se copian al output para que el paquete salga completo:

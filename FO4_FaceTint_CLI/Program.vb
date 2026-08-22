@@ -7827,9 +7827,16 @@ persist:
             Dim mk As (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean)
             maskOf.TryGetValue(nm, mk)
             Dim mkTxt = If(animated, $"T:{If(mk.Tx, "x", "-")}{If(mk.Ty, "y", "-")}{If(mk.Tz, "z", "-")} R:{If(mk.R, "a", "-")} S:{If(mk.S, "a", "-")}", "(not in clip)")
-            ' [ADD-ORDER DIAG] additive delta = {animado:clip, no-animado:identidad}. Comparo el effective bajo los DOS
-            ' órdenes de composición: base×additive (S∘delta, lo que hace la app HOY) vs additive×base (delta∘S, el fix).
-            ' Si additive×base deja el bone ~en rest (d≈0) y base×additive lo dispara (d grande) ⇒ el bug es el ORDEN.
+            ' [ADD-ORDER DIAG] additive delta = {animado:clip, no-animado:identidad}. Se imprimen SIEMPRE los
+            ' DOS órdenes de composición y se MARCA el que corre, según el blendHint del clip.
+            ' ⛔ Los rótulos nombran el ORDEN, no el momento: "app HOY" / "fix propuesto" se pudren solos y de
+            ' hecho quedaron INVERTIDOS cuando cambió la ley. Ley vigente (ver HkxPoseImportHelper.BuildPose):
+            ' bh=2 ⇒ S∘add · resto ⇒ add∘S.
+            ' ⚠️ `addLoc` NO lleva ScaleVector y descarta la escala animada del clip (a diferencia de la rama
+            ' aditiva de BuildFrameLocalTransform, que sí toma sxA/syA/szA) ⇒ sirve de diagnóstico de
+            ' TRASLACIÓN; NO sirve para verificar el shear ni la escala.
+            ' Salida en ASCII a propósito: este CLI no fija Console.OutputEncoding y en codepage OEM los
+            ' glifos ∘/⇒ salen como '?', justo en el instrumento que existe para que se entienda.
             If animated Then
                 Dim ident As New Transform_Class()
                 Dim addLoc As New Transform_Class With {
@@ -7838,10 +7845,14 @@ persist:
                     .Scale = 1.0F
                 }
                 Dim bl2 = bindLocal(nm)
-                Dim effBA = bl2.ComposeTransforms(addLoc)       ' base × additive  (S ∘ delta) = app HOY
-                Dim effAB = addLoc.ComposeTransforms(bl2)        ' additive × base  (delta ∘ S) = fix propuesto
+                Dim effSA = bl2.ComposeTransforms(addLoc)        ' S o add
+                Dim effAS = addLoc.ComposeTransforms(bl2)        ' add o S
                 Dim rest = bl2.Translation
-                Console.WriteLine($"   [ADD-ORDER {nm}] rest=({rest.X:F1},{rest.Y:F1},{rest.Z:F1})  baseXadd=({effBA.Translation.X:F1},{effBA.Translation.Y:F1},{effBA.Translation.Z:F1}) d={(effBA.Translation - rest).Length():F1}  |  addXbase=({effAB.Translation.X:F1},{effAB.Translation.Y:F1},{effAB.Translation.Z:F1}) d={(effAB.Translation - rest).Length():F1}")
+                Dim bhLive = If(anim.Binding IsNot Nothing, anim.Binding.BlendHint, 0)
+                Dim vivo = If(bhLive = 2, "S o add (bh=2)",
+                           If(bhLive = 1, "add o S (bh=1)",
+                              $"NINGUNO (bh={bhLive} => camino NORMAL; las dos columnas son hipoteticas). El behavior graph puede envolverlo en DynamicAnimationTaggingGenerator y este probe NO lo ve."))
+                Console.WriteLine($"   [ADD-ORDER {nm}] rest=({rest.X:F1},{rest.Y:F1},{rest.Z:F1})  [S o add]=({effSA.Translation.X:F1},{effSA.Translation.Y:F1},{effSA.Translation.Z:F1}) d={(effSA.Translation - rest).Length():F1}  |  [add o S]=({effAS.Translation.X:F1},{effAS.Translation.Y:F1},{effAS.Translation.Z:F1}) d={(effAS.Translation - rest).Length():F1}   <== VIVO: {vivo}")
             End If
             Dim dInj = (ignoredLocal(nm).Translation - bindLocal(nm).Translation).Length()   ' local que la app inyecta vs estructural
             Dim wH = FkWorld(nm, cHon, parentOf, honoredLocal)

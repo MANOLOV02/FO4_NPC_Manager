@@ -1,0 +1,89 @@
+﻿<Project>
+
+  <!-- ============================================================================================
+       CHEQUEO DE QUE LOS .pex SIGUEN EMBEBIDOS.  Solo LEE: no modifica ningun archivo, nunca.
+
+       QUE DETECTA
+       Que el .vbproj siga declarando los dos <EmbeddedResource> de Papyrus\pex_sse y Papyrus\pex_fo4.
+       El .pex compilado viaja EMBEBIDO en el assembly y se extrae a Data\Scripts\ al grabar
+       (NpcApplyScriptEmitter.InstallPex). Sin el recurso, PexBytes devuelve Nothing y el Save ESP tira
+       una FileNotFoundException DESPUES de haber escrito el .esp: el plugin queda en disco referenciando
+       por VMAD un script que no se instalo.
+
+       POR QUE EXISTE, Y NO ES HIPOTETICO
+       MEDIDO 2026-08-22. El commit fad9589 ("Version 1.5.6 testing 2", 2026-08-18 23:53) borro el
+       ItemGroup entero (5 lineas, -5/+0) de NPC_Manager_FO4.vbproj. Los .pex NO habian cambiado (siguen
+       siendo los del 2026-08-10, byte por byte): lo unico que se rompio fue el cableado. De los 15
+       archivos de ese commit, 14 son sesion del disenador de VS (EditBody/EditFace .Designer.vb + .resx
+       regenerados), y el build de hoy sigue avisando por IconosCompartidos sobre esos mismos dos .resx.
+       O sea: el disenador reescribio el proyecto y se llevo puesto un ItemGroup que apunta AFUERA de la
+       carpeta del proyecto (..\Papyrus\...). Estuvo roto 4 dias sin que nada fallara: build verde, y
+       1.5.7 y 1.5.8 salieron asi. Control negativo de la deteccion: las DLL de bin\x64\Release (22-ago)
+       y bin\x64\Publish (21-ago) NO contenian ni el LogicalName ni el payload del .pex; la de
+       bin\Release del 31-jul (anterior al borrado) SI.
+
+       POR QUE EL CHEQUEO VIVE ACA Y NO EN EL .vbproj
+       Porque es el .vbproj lo que el disenador reescribe. Los tres <Import ...targets> que el proyecto
+       ya tenia SOBREVIVIERON a fad9589; el ItemGroup no. Un guard escrito adentro del mismo archivo que
+       se quiere vigilar se borra junto con lo que vigila.
+       (*) HUECO CONOCIDO, a proposito: si lo que se borra es la linea <Import> de este archivo, esto no
+       corre y no avisa nada. Cubre el modo de falla MEDIDO, no todos los posibles.
+
+       POR QUE EL ItemGroup NO SE MUDO ACA ADENTRO
+       Se penso y se descarto: si el ItemGroup viviera en este .targets, borrar el <Import> se llevaria
+       el recurso Y el chequeo de una, y el build volveria a salir verde con la app rota. Separados, el
+       caso que de verdad paso -sobrevive el Import, muere el ItemGroup- CORTA.
+       ============================================================================================ -->
+
+  <PropertyGroup>
+    <!-- Corta SOLO en Publish, que es lo que se distribuye (ver ConfiguracionPublish.targets). En Debug
+         y en Release avisa nomas, para no trabar el laburo del dia.
+         Se puede forzar con -p:PexEmbebidoEsError=true|false -->
+    <PexEmbebidoEsError Condition="'$(PexEmbebidoEsError)' == '' And '$(Configuration)' == 'Publish'">true</PexEmbebidoEsError>
+    <PexEmbebidoEsError Condition="'$(PexEmbebidoEsError)' == ''">false</PexEmbebidoEsError>
+  </PropertyGroup>
+
+  <!-- BeforeTargets="CoreCompile", NO AfterTargets="Build": en Publish tiene que cortar ANTES de dejar
+       una DLL distribuible en bin\. Los items del proyecto ya estan evaluados en ese punto. -->
+  <Target Name="ChequearPexEmbebido" BeforeTargets="CoreCompile" Condition="'$(PexEmbebidoChequeo)' != 'false'">
+
+    <ItemGroup>
+      <!-- La lista es la LEY: estos son los LogicalName que NpcApplyScriptEmitter.PexBytes le pide al
+           assembly en tiempo de ejecucion ("NpcManager.Papyrus." &amp; nombre legado &amp; ".pex"). Si se
+           agrega un juego, se agrega aca tambien. -->
+      <_PexRequerido Include="NpcManager.Papyrus.NPCM_Manolov_ApplySSE.pex" />
+      <_PexRequerido Include="NpcManager.Papyrus.NPCM_Manolov_ApplyFO4.pex" />
+
+      <!-- Se compara contra el LogicalName DECLARADO, no contra la ruta del Include: el lookup en
+           runtime es por LogicalName, asi que un Include correcto con el LogicalName cambiado (o sin
+           LogicalName, donde MSBuild lo deriva de la ruta) tambien tiene que caer. -->
+      <_PexDeclarado Include="@(EmbeddedResource->'%(LogicalName)')" />
+      <_PexFaltante Include="@(_PexRequerido)" Exclude="@(_PexDeclarado)" />
+
+      <!-- Y que el archivo este. Sin esto el modo de falla es un error del compilador de VB sobre un
+           recurso, que no dice una palabra de Papyrus ni de como regenerarlo. -->
+      <_PexEnDisco Include="$(MSBuildThisFileDirectory)pex_sse\NPCM_Manolov_ApplySSE.pex;$(MSBuildThisFileDirectory)pex_fo4\NPCM_Manolov_ApplyFO4.pex" />
+      <_PexSinArchivo Include="@(_PexEnDisco)" Condition="!Exists('%(_PexEnDisco.FullPath)')" />
+    </ItemGroup>
+
+    <!-- La Condition sobre '@(...)' no sobra aunque el %(...) del Text arme el lote: mismo caso que
+         documenta IconosCompartidos.targets, sin ella MSBuild no emite nada con el item POBLADO. -->
+    <Warning Condition="'@(_PexFaltante)' != '' And '$(PexEmbebidoEsError)' != 'true'"
+             File="$(MSBuildProjectFullPath)"
+             Text="Falta el &lt;EmbeddedResource&gt; de %(_PexFaltante.Identity) en $(MSBuildProjectFile). La app va a escribir el .esp y DESPUES fallar el Save ESP con 'the compiled .pex is not embedded in this build', dejando un plugin que referencia por VMAD un script que no se instalo. Lo borra el disenador de VS al guardar un formulario. Como se restaura: ver FO4_NPC_Manager\Papyrus\PexEmbebido.targets." />
+
+    <Error Condition="'@(_PexFaltante)' != '' And '$(PexEmbebidoEsError)' == 'true'"
+           File="$(MSBuildProjectFullPath)"
+           Text="Falta el &lt;EmbeddedResource&gt; de %(_PexFaltante.Identity) en $(MSBuildProjectFile) y esto es lo que se DISTRIBUYE: el Save ESP escribiria el .esp y fallaria despues, dejando plugins que referencian por VMAD un script que no se instalo. Lo borra el disenador de VS al guardar un formulario. Como se restaura: ver FO4_NPC_Manager\Papyrus\PexEmbebido.targets. Para compilar igual: -p:PexEmbebidoEsError=false" />
+
+    <Warning Condition="'@(_PexSinArchivo)' != '' And '$(PexEmbebidoEsError)' != 'true'"
+             File="%(_PexSinArchivo.FullPath)"
+             Text="No esta el .pex compilado. Hay que correr el paso de Papyrus antes de compilar: ver FO4_NPC_Manager\Papyrus\README.md." />
+
+    <Error Condition="'@(_PexSinArchivo)' != '' And '$(PexEmbebidoEsError)' == 'true'"
+           File="%(_PexSinArchivo.FullPath)"
+           Text="No esta el .pex compilado y esto es lo que se DISTRIBUYE. Hay que correr el paso de Papyrus antes de compilar: ver FO4_NPC_Manager\Papyrus\README.md." />
+
+  </Target>
+
+</Project>

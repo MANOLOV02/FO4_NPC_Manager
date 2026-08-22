@@ -1493,10 +1493,10 @@ Public Module NpcOverrideSaver
             .Description = rec.Description,
             .HasDescription = rec.DescriptionPresente,
             .NonPlayable = rec.NonPlayable,
-            .ObndX1 = rec.ObjectBoundsX1, .ObndY1 = rec.ObjectBoundsY1,
-            .ObndZ1 = rec.ObjectBoundsZ1,
-            .ObndX2 = rec.ObjectBoundsX2, .ObndY2 = rec.ObjectBoundsY2,
-            .ObndZ2 = rec.ObjectBoundsZ2,
+            .ObndX1 = rec.MinX, .ObndY1 = rec.MinY,
+            .ObndZ1 = rec.MinZ,
+            .ObndX2 = rec.MaxX, .ObndY2 = rec.MaxY,
+            .ObndZ2 = rec.MaxZ,
             .TemplateArmorFormID = rec.TemplateArmor,
             .MaleWorldModelPath = rec.WorldModelModelFilename,
             .FemaleWorldModelPath = rec.WorldModelModelFilename2,
@@ -1632,12 +1632,12 @@ Public Module NpcOverrideSaver
     ''' inverso — no es una adivinanza, es el mismo struct.</summary>
     Private Function ObjectBoundsRawDe(n As Canon.ILvli) As Byte()
         Dim raw(11) As Byte
-        Buffer.BlockCopy(BitConverter.GetBytes(n.ObjectBoundsX1), 0, raw, 0, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.ObjectBoundsY1), 0, raw, 2, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.ObjectBoundsZ1), 0, raw, 4, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.ObjectBoundsX2), 0, raw, 6, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.ObjectBoundsY2), 0, raw, 8, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.ObjectBoundsZ2), 0, raw, 10, 2)
+        Buffer.BlockCopy(BitConverter.GetBytes(n.MinX), 0, raw, 0, 2)
+        Buffer.BlockCopy(BitConverter.GetBytes(n.MinY), 0, raw, 2, 2)
+        Buffer.BlockCopy(BitConverter.GetBytes(n.MinZ), 0, raw, 4, 2)
+        Buffer.BlockCopy(BitConverter.GetBytes(n.MaxX), 0, raw, 6, 2)
+        Buffer.BlockCopy(BitConverter.GetBytes(n.MaxY), 0, raw, 8, 2)
+        Buffer.BlockCopy(BitConverter.GetBytes(n.MaxZ), 0, raw, 10, 2)
         Return raw
     End Function
 
@@ -1800,8 +1800,8 @@ Public Module NpcOverrideSaver
             .Description = parsed.Description,
             .HasDescription = parsed.DescriptionPresente,
             .NonPlayable = parsed.NonPlayable,
-            .ObndX1 = parsed.ObjectBoundsX1, .ObndY1 = parsed.ObjectBoundsY1, .ObndZ1 = parsed.ObjectBoundsZ1,
-            .ObndX2 = parsed.ObjectBoundsX2, .ObndY2 = parsed.ObjectBoundsY2, .ObndZ2 = parsed.ObjectBoundsZ2,
+            .ObndX1 = parsed.MinX, .ObndY1 = parsed.MinY, .ObndZ1 = parsed.MinZ,
+            .ObndX2 = parsed.MaxX, .ObndY2 = parsed.MaxY, .ObndZ2 = parsed.MaxZ,
             .TemplateArmorFormID = parsed.TemplateArmor,
             .MaleWorldModelPath = parsed.WorldModelModelFilename,
             .FemaleWorldModelPath = parsed.WorldModelModelFilename2,

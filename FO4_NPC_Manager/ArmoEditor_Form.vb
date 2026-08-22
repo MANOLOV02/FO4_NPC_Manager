@@ -599,10 +599,10 @@ Public Class ArmoEditor_Form
         ' escribimos el DESC cuando la fuente realmente lo trae, para no materializarlo donde no
         ' estaba.
         If a.DescriptionPresente Then rec.Description = a.Description
-        rec.ObjectBoundsX1 = a.ObjectBoundsX1 : rec.ObjectBoundsY1 = a.ObjectBoundsY1
-        rec.ObjectBoundsZ1 = a.ObjectBoundsZ1
-        rec.ObjectBoundsX2 = a.ObjectBoundsX2 : rec.ObjectBoundsY2 = a.ObjectBoundsY2
-        rec.ObjectBoundsZ2 = a.ObjectBoundsZ2
+        rec.MinX = a.MinX : rec.MinY = a.MinY
+        rec.MinZ = a.MinZ
+        rec.MaxX = a.MaxX : rec.MaxY = a.MaxY
+        rec.MaxZ = a.MaxZ
         rec.TemplateArmor = a.TemplateArmor
         rec.WorldModelModelFilename = a.WorldModelModelFilename
         rec.WorldModelModelFilename2 = a.WorldModelModelFilename2
@@ -803,12 +803,12 @@ Public Class ArmoEditor_Form
             SetFidText(TextBoxZnam, rec.SoundPutDown)
             SetFidText(TextBoxEtyp, rec.EquipmentType)
             SetFidText(TextBoxBamt, rec.AlternateBlockMaterial)
-            NumObndX1.Value = ClampDec(CDec(rec.ObjectBoundsX1), NumObndX1)
-            NumObndY1.Value = ClampDec(CDec(rec.ObjectBoundsY1), NumObndY1)
-            NumObndZ1.Value = ClampDec(CDec(rec.ObjectBoundsZ1), NumObndZ1)
-            NumObndX2.Value = ClampDec(CDec(rec.ObjectBoundsX2), NumObndX2)
-            NumObndY2.Value = ClampDec(CDec(rec.ObjectBoundsY2), NumObndY2)
-            NumObndZ2.Value = ClampDec(CDec(rec.ObjectBoundsZ2), NumObndZ2)
+            NumObndX1.Value = ClampDec(CDec(rec.MinX), NumObndX1)
+            NumObndY1.Value = ClampDec(CDec(rec.MinY), NumObndY1)
+            NumObndZ1.Value = ClampDec(CDec(rec.MinZ), NumObndZ1)
+            NumObndX2.Value = ClampDec(CDec(rec.MaxX), NumObndX2)
+            NumObndY2.Value = ClampDec(CDec(rec.MaxY), NumObndY2)
+            NumObndZ2.Value = ClampDec(CDec(rec.MaxZ), NumObndZ2)
 
             ' Damage Resist (DAMA): deep-copy into the working buffer, flushed on Apply. FO4-only.
             _damageResists.Clear()
@@ -980,12 +980,12 @@ Public Class ArmoEditor_Form
         rec.SoundPutDown = GetFid(TextBoxZnam)
         rec.EquipmentType = GetFid(TextBoxEtyp)
         rec.AlternateBlockMaterial = GetFid(TextBoxBamt)
-        rec.ObjectBoundsX1 = CShort(NumObndX1.Value)
-        rec.ObjectBoundsY1 = CShort(NumObndY1.Value)
-        rec.ObjectBoundsZ1 = CShort(NumObndZ1.Value)
-        rec.ObjectBoundsX2 = CShort(NumObndX2.Value)
-        rec.ObjectBoundsY2 = CShort(NumObndY2.Value)
-        rec.ObjectBoundsZ2 = CShort(NumObndZ2.Value)
+        rec.MinX = CShort(NumObndX1.Value)
+        rec.MinY = CShort(NumObndY1.Value)
+        rec.MinZ = CShort(NumObndZ1.Value)
+        rec.MaxX = CShort(NumObndX2.Value)
+        rec.MaxY = CShort(NumObndY2.Value)
+        rec.MaxZ = CShort(NumObndZ2.Value)
 
         ' Addons (order matters — copy the working list in row order).
         WriteAddons(rec, _addons)
