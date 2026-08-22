@@ -29,6 +29,12 @@ Public Class EditFace_Form
 
     ' ACBS bit for "Is CharGen Face Preset" (0x04 literal; mirrors bit 2 of the generated Canon
     ' view's INpc.ConfigurationFlags, exposed there as ConfigurationFlagsIsCharGenFacePreset).
+    ''' <summary>Bit "Is CharGen Face Preset" de ACBS.
+    ''' <para>⛔ ES LA ÚNICA COPIA QUE QUEDA, y queda por un motivo: acá se prueba contra
+    ''' <c>_priorAcbsFlagsRaw</c>, que es un SNAPSHOT del entero de banderas tomado antes de editar, no
+    ''' una vista del canon — así que la propiedad <c>INpc.ConfigurationFlagsIsCharGenFacePreset</c>, que
+    ''' es por donde va todo el resto, no se puede aplicar sobre él. Las otras CINCO copias que había en
+    ''' la aplicación se colapsaron contra esa propiedad el 2026-08-22.</para></summary>
     Private Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
 
     ' SSE (Skyrim) face editing is RaceMenu-based (NAM9/NAMA sliders + sculpt + overlays), not LooksMenu.
@@ -194,6 +200,14 @@ Public Class EditFace_Form
     ' (bidirectional, one per group-attached MorphValue key). Keys not referenced by any group
     ' MPGS go to a synthetic "Other Sliders" section at the end if any exist.
     Private ReadOnly _groupSections As New List(Of MorphGroupSection)
+
+    ''' <summary>Por que el tab Vertex Morphs quedo vacio, con los NUMEROS que lo decidieron.
+    ''' <para>Antes el tab mostraba un texto fijo que nombraba las TRES fuentes -MorphValues,
+    ''' MorphPresets y MorphGroups- como si faltaran todas. Casi siempre falta UNA sola: GhoulRace
+    ''' declara 18 MorphValues y 8 MorphGroups, y lo que no tiene es un solo MorphPreset, asi que
+    ''' el mensaje mandaba a buscar el problema al lugar equivocado. Se arma en
+    ''' <see cref="BuildMorphGroupSections"/>, que es el unico que conoce esos conteos.</para></summary>
+    Private _morphEditorEmptyReason As String = ""
     Private ReadOnly _bidiBars As New Dictionary(Of UInteger, FO4_Base_Library.TinySliderTextBox)
     Private ReadOnly _bidiKeyToGroup As New Dictionary(Of UInteger, MorphGroupSection)
     Private ReadOnly _presetKeyToGroup As New Dictionary(Of UInteger, MorphGroupSection)
@@ -558,7 +572,46 @@ Public Class EditFace_Form
                 _groupSections.Add(other)
             End If
         End If
+
+        _morphEditorEmptyReason = DescribirEditorVacio(groups, availableMorphs)
     End Sub
+
+    ''' <summary>El texto del tab vacio, construido con los conteos REALES de esta raza y este genero.
+    ''' Devuelve vacio cuando hay algo que mostrar.</summary>
+    Private Function DescribirEditorVacio(groups As List(Of RACE_MorphGroup),
+                                          availableMorphs As HashSet(Of String)) As String
+        If _groupSections.Count > 0 Then Return ""
+        Dim nValores = If(_raceMorphValues Is Nothing, 0, _raceMorphValues.Count)
+        Dim nGrupos = If(groups Is Nothing, 0, groups.Count)
+        Dim nPresets = 0
+        If groups IsNot Nothing Then
+            For Each g In groups
+                If g.Presets IsNot Nothing Then nPresets += g.Presets.Count
+            Next
+        End If
+        Dim quien = If(_isFemale, "female", "male")
+        If nGrupos = 0 AndAlso nValores = 0 Then
+            Return $"This RACE declares no face vertex morphs at all for {quien} (no MorphValues, no MorphGroups)."
+        End If
+        If nPresets = 0 Then
+            ' El caso de GhoulRace y de HumanChildRace. La regla esta en BuildMorphGroupSections:
+            ' sin preset no hay eleccion de nivel superior, asi que el grupo no tiene UI. El CK
+            ' hace lo mismo -tampoco ofrece editor de cara para esas razas-.
+            Return $"This RACE declares {nValores} MorphValues and {nGrupos} MorphGroups for {quien}, " &
+                   "but not a single MorphPreset. Without a preset a group has no top-level choice, " &
+                   "so the CK offers no face-morph editor for this race either."
+        End If
+        ' Quedan presets autorados, pero ninguno sobrevivio el filtro contra el TRI de chargen.
+        Dim nTri = If(availableMorphs Is Nothing, -1, availableMorphs.Count)
+        If nTri = 0 OrElse nTri = -1 Then
+            Return $"This RACE declares {nPresets} MorphPresets for {quien}, but the head chargen TRI " &
+                   "has not been loaded yet, so none could be matched. Re-open the editor after the face renders."
+        End If
+        Return $"This RACE declares {nValores} MorphValues, {nGrupos} MorphGroups and {nPresets} " &
+               $"MorphPresets for {quien}, but NONE of those preset morphs exists in the head chargen " &
+               $"TRI actually loaded ({nTri} morphs in it). The engine skips them the same way, so the " &
+               "editor offers no control that would do nothing."
+    End Function
 
     ''' <summary>Walk the active gender's TintTemplateGroups and build:
     '''   * <see cref="_tintGroupByIndex"/> : TETI option Index -> the group it belongs to
@@ -3826,7 +3879,9 @@ Public Class EditFace_Form
             Next
             If _groupSections.Count = 0 Then
                 Dim empty As New Label() With {
-                    .Text = "RACE record declares no vertex morphs (MorphValues / MorphPresets / MorphGroups).",
+                    .Text = If(String.IsNullOrEmpty(_morphEditorEmptyReason),
+                               "This RACE declares no face vertex morphs.", _morphEditorEmptyReason),
+                    .MaximumSize = New Size(Math.Max(320, VertexMorphsPanel.ClientSize.Width - 24), 0),
                     .AutoSize = True, .ForeColor = Color.Gray, .Padding = New Padding(8)}
                 VertexMorphsPanel.Controls.Add(empty)
                 Return

@@ -1818,6 +1818,43 @@ Public Module FaceGenBuilder
                     Logger.LogLazy(Function() $"[FACEBAKE] SMP root extradata transfer failed: {ex.GetType().Name}: {ex.Message}")
                 End Try
             Next
+
+            ' ⛔ EL RENOMBRE PUEDE MATAR LA FISICA, EN SILENCIO. El XML liga por NOMBRE DE SHAPE
+            ' (<per-vertex-shape name="X">), y este bake renombra cada shape a `hdpt.EditorID`. Que eso
+            ' coincida NO es una ley: se midio en UN mod (KS Hairdos, donde el autor nombro
+            ' HDPT.EditorID == shape == tag). Otro mod que no lo haga sale con el link intacto, el motor
+            ' carga el XML, no encuentra la shape, y el pelo queda duro sin UN SOLO error.
+            ' Aca no se arregla el nombre -eso seria pisar la decision del autor y romper la paridad con
+            ' el CK-, se AVISA, que es lo unico honesto: el que hornea puede renombrar el tag del XML.
+            Try
+                Dim rutaSmp = nif.TryGetSmpPhysicsXmlPath()
+                If Not String.IsNullOrWhiteSpace(rutaSmp) Then
+                    Dim xml = SmpPhysicsXml.LeerPorRutaRelativa(SmpPhysicsXml.SinPrefijoData(rutaSmp))
+                    Dim parseo As Boolean = False
+                    Dim pedidos = SmpPhysicsXml.NombresDeShape(xml, parseo)
+                    If Not parseo Then
+                        Dim rutaL = rutaSmp
+                        Logger.LogLazy(Function() $"[FACEBAKE-SMP] no pude leer/parsear el XML '{rutaL}': no puedo " &
+                                                  "verificar que los nombres de shape sigan coincidiendo.")
+                    ElseIf pedidos.Count > 0 Then
+                        Dim presentes = New HashSet(Of String)(
+                            nif.NifShapes.Select(Function(sh) If(sh.Name?.String, "")), StringComparer.OrdinalIgnoreCase)
+                        Dim faltan = pedidos.Where(Function(x) Not presentes.Contains(x)).ToList()
+                        If faltan.Count = pedidos.Count Then
+                            Dim rutaL = rutaSmp, faltanL = String.Join(", ", faltan), hayL = String.Join(", ", presentes)
+                            Logger.LogLazy(Function() $"[FACEBAKE-SMP] ⚠ LA FISICA VA A QUEDAR MUERTA: el XML '{rutaL}' " &
+                                                      $"referencia {faltanL} y el NIF horneado no tiene NINGUNA de esas " &
+                                                      $"shapes (tiene: {hayL}). El rename del bake rompio el vinculo por nombre.")
+                        ElseIf faltan.Count > 0 Then
+                            Dim rutaL = rutaSmp, faltanL = String.Join(", ", faltan)
+                            Logger.LogLazy(Function() $"[FACEBAKE-SMP] ⚠ el XML '{rutaL}' referencia shapes que el NIF " &
+                                                      $"horneado no tiene: {faltanL}. Esa parte de la fisica no va a correr.")
+                        End If
+                    End If
+                End If
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[FACEBAKE-SMP] la verificacion de nombres fallo: {ex.GetType().Name}: {ex.Message}")
+            End Try
         End If
 
         result.ShapesKept = shapesCloned
@@ -2243,7 +2280,12 @@ Public Module FaceGenBuilder
     ''' <c>prop+0x10</c> NO vacío los 3 call-sites de carga propia SÍ cargan el BGSM y
     ''' <c>ApplyMaterialToGeometry 0x142169BB0</c> reemplaza el <b>texture set ENTERO</b>
     ''' (<c>prop+0x1d0 ← mat+0x78</c>, 0x142163B70). Con el nombre vacío bailan en la guarda de largo
-    ''' (<c>0x14167C300</c> → je al epílogo) y el shader inline pasa a ser la ley.</para>
+    ''' y el shader inline pasa a ser la ley.</para>
+    ''' <para>⛔ LA VA DE ESA GUARDA SE RETIRÓ (2026-08-22). Decía <c>0x14167C300 → je al epílogo</c>, y en
+    ''' el <c>Fallout4.exe</c> instalado esa dirección es un <c>ret</c> suelto, fuera de toda función que
+    ''' el índice conozca — no un <c>je</c>. No se reemplaza por otra dirección porque no se re-hizo el RE:
+    ''' inventar una sería peor que no tener ninguna. <b>La LEY sigue en pie</b> (se verificó por conducta,
+    ''' no por esta VA); lo que se retira es la cita.</para>
     ''' <para>Consumidores: el bake de FaceGen y el export a NIF. Ver 30-fo4-material-vs-nif.</para></summary>
     Friend Sub TranscribeResolvedMaterialToShader(nif As Nifcontent_Class_Manolo,
                                                   shape As INiShape,

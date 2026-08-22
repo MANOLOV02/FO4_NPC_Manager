@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Text.Json
 Imports System.Text.Json.Serialization
@@ -112,6 +112,7 @@ Public Class PoseCatalog
                         If boneEl.Attribute("scale") IsNot Nothing Then
                             tr.Scale = ParseFloat(boneEl, "scale", xmlPath, nameAttr)
                         End If
+                        tr.LeerPerEje(boneEl)
                         pos.Transforms(boneName) = tr
                     Next
                     Poses(pos.ToString()) = pos
@@ -232,7 +233,7 @@ Public Class PoseCatalog
                                       New XAttribute("transX", tr.Value.X.ToString(CultureInfo.InvariantCulture)),
                                       New XAttribute("transY", tr.Value.Y.ToString(CultureInfo.InvariantCulture)),
                                       New XAttribute("transZ", tr.Value.Z.ToString(CultureInfo.InvariantCulture)),
-                                      New XAttribute("scale", tr.Value.Scale.ToString(CultureInfo.InvariantCulture))))
+                                      New XAttribute("scale", tr.Value.Scale.ToString(CultureInfo.InvariantCulture)), tr.Value.AtributosPerEje()))
         Next
 
         doc.Save(xmlPath)

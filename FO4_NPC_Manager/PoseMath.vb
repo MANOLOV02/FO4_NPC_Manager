@@ -244,17 +244,11 @@ Friend NotInheritable Class PoseMath
                 Continue For
             End If
 
-            ' Diagnostic 2026-04-26: dump bind rotation for bones with ARMA delta to determine
-            ' if frame-of-application could be the issue. (Análisis general de pre vs post bind
-            ' usa el RBIND-DUMP en MainForm post PrepareSkeleton, que es más amplio.)
-            If armaDeltas IsNot Nothing AndAlso armaDeltas.ContainsKey(boneName) Then
-                Dim r = skelBone.OriginalLocaLTransform.Rotation
-                Dim isIdentity = Math.Abs(r.M11 - 1.0F) < 0.001F AndAlso Math.Abs(r.M22 - 1.0F) < 0.001F AndAlso
-                                 Math.Abs(r.M33 - 1.0F) < 0.001F AndAlso Math.Abs(r.M12) < 0.001F AndAlso
-                                 Math.Abs(r.M13) < 0.001F AndAlso Math.Abs(r.M21) < 0.001F AndAlso
-                                 Math.Abs(r.M23) < 0.001F AndAlso Math.Abs(r.M31) < 0.001F AndAlso
-                                 Math.Abs(r.M32) < 0.001F
-            End If
+            ' ⛔ Acá vivía un bloque de diagnóstico del 2026-04-26 que decía "dump bind rotation" y no
+            ' volcaba nada: calculaba `isIdentity` sobre la rotación del bind y NO lo leía nadie —el
+            ' `Dim` moría dentro del propio `If`—, así que corría por cada hueso con delta de ARMA, en
+            ' cada armado de pose y también en Release. El análisis que sí sirve es el `RBIND-DUMP` de
+            ' `MainForm`, después de `PrepareSkeleton`, que además es más amplio.
 
             ' Per-layer detailed logging (added 2026-04-26 for Fase 2 body-morph audit).
             ' Captures snapshots after each layer + computes the three ARMA hypotheses in
@@ -364,7 +358,13 @@ Friend NotInheritable Class PoseMath
                 Continue For
             End If
 
-            diag.Add((boneName,
+            ' El buffer es SÓLO para el resumen de abajo, que está entero bajo `Logger.Enabled`. Sin
+            ' esta guarda se armaba igual en Release —una tupla de 17 campos por hueso afectado, en
+            ' cada armado de pose— para tirarla: en Release `Logger.Enabled` es duro False para las
+            ' apps (`Logger.vb:35`, `value AndAlso _allowInRelease`, y sólo lo prenden el CLI y los
+            ' probes). El comentario del bloque ya decía que "todo el bloque" estaba guardado; el
+            ' llenado no lo estaba.
+            If Logger.Enabled Then diag.Add((boneName,
                       escala IsNot Nothing,
                       rango IsNot Nothing,
                       syR, szR,

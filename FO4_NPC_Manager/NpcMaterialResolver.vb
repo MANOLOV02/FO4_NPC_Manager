@@ -1262,7 +1262,12 @@ Friend NotInheritable Class NpcMaterialResolver
                                                  material As FO4UnifiedMaterial_Class, shape As IRenderableShape)
         If candidate Is Nothing OrElse material Is Nothing Then Return
         If candidate.Kind <> MainForm.MeshCandidateKind.HeadPart Then Return
-        ' [DIAG-HEADREAR] TEMP: trace whenever the head-rear HDPT reaches Apply, pass or fail.
+        ' [DIAG-HEADREAR] Traces the head-rear HDPT every time it reaches Apply, pass OR fail -- the
+        ' failing case is the one worth seeing, so the trace sits BEFORE the gate on purpose.
+        ' Not temporary despite the constant's name: it is behind Logger.Enabled (zero cost when off)
+        ' and it is the only place that shows why the gate rejected a candidate. The TEMP in
+        ' FemaleHeadHumanRearTEMPBareID is load-bearing elsewhere (IsGhoulHeadRearCase keys the whole
+        ' feature off that vanilla FormID), so renaming it here would not make it go away.
         If Logger.Enabled AndAlso (candidate.HeadPartHdptFormID And &HFFFFFFUI) = FemaleHeadHumanRearTEMPBareID Then
             Dim ptL = candidate.HeadPartType, fidL = candidate.HeadPartHdptFormID
             Dim femL = state IsNot Nothing AndAlso state.IsFemale

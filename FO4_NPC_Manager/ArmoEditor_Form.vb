@@ -926,12 +926,17 @@ Public Class ArmoEditor_Form
             End If
         End If
         Dim rec = _draft.Record
-        rec.EditorID = edid
+        ' Los campos de TEXTO se escriben SOLO si cambiaron. Escribirlos siempre fuerza la
+        ' expansion de lstring del escritor sobre un valor que nadie edito: el getter de un record
+        ' localizado devuelve el TEXTO resuelto, y reasignarlo lo fija como texto perdiendo el id
+        ' original. Abrir un ARMO para tocar su ARMA no tiene por que reescribir su nombre.
+        If Not String.Equals(rec.EditorID, edid, StringComparison.Ordinal) Then rec.EditorID = edid
         Dim fo4 = TryCast(rec, Canon.ArmoFO4)
         Dim sse = TryCast(rec, Canon.ArmoSSE)
 
         ' General.
-        rec.Name = TextBoxFull.Text.Trim()
+        Dim nombreNuevo = TextBoxFull.Text.Trim()
+        If Not String.Equals(rec.Name, nombreNuevo, StringComparison.Ordinal) Then rec.Name = nombreNuevo
         rec.Race = GetFid(TextBoxRace)
         rec.Enchantment = GetFid(TextBoxEitm)
         ' NonPlayable vive en la cabecera, que no sale del árbol de campos pero sí viaja en el
@@ -1004,8 +1009,10 @@ Public Class ArmoEditor_Form
         End If
 
         ' World Model & Material.
-        rec.WorldModelModelFilename = TextBoxMod2.Text.Trim()
-        rec.WorldModelModelFilename2 = TextBoxMod4.Text.Trim()
+        Dim mod2 = TextBoxMod2.Text.Trim()
+        Dim mod4 = TextBoxMod4.Text.Trim()
+        If Not String.Equals(rec.WorldModelModelFilename, mod2, StringComparison.Ordinal) Then rec.WorldModelModelFilename = mod2
+        If Not String.Equals(rec.WorldModelModelFilename2, mod4, StringComparison.Ordinal) Then rec.WorldModelModelFilename2 = mod4
 
         ' Dirty only on a REAL change (mirror of ArmaEditor). The preview commits the panels on
         ' every render, so setting IsModified unconditionally re-emitted an identical override at

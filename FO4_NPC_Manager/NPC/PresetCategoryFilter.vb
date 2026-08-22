@@ -348,11 +348,10 @@ Public Module PresetCategoryFilter
                 p.SseSculptParts = If(baseline Is Nothing, Nothing, LooksmenuLoader.CloneSseSculptParts(baseline.SseSculptParts))
 
             Case PresetCategory.IsCharGenPreset
-                Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
                 If baseline IsNot Nothing AndAlso baseline.IsCharGenFacePreset.HasValue Then
                     p.IsCharGenFacePreset = baseline.IsCharGenFacePreset.Value
                 ElseIf raw IsNot Nothing Then
-                    p.IsCharGenFacePreset = ((raw.Record.ConfigurationFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+                    p.IsCharGenFacePreset = raw.Record.ConfigurationFlagsIsCharGenFacePreset
                 Else
                     p.IsCharGenFacePreset = Nothing
                 End If

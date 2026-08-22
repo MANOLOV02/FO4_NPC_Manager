@@ -216,16 +216,12 @@ Public Module NpcRecordOverlay
             End If
         End If
 
-        ' ACBS bit 2 (0x04 = "Is CharGen Face Preset"). El editor lo prende o lo apaga para que quede en
-        ' el plugin; el render no lo mira, así que no tiene efecto visual.
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
-        Const AcbsBitIsCharGenFacePresetMask As UInteger = &HFFFFFFFBUI ' ~0x4 en 32 bits
+        ' "Is CharGen Face Preset". El editor lo prende o lo apaga para que quede en el plugin; el
+        ' render no lo mira, así que no tiene efecto visual.
+        ' Por la propiedad del canon y NO por el bit a mano: el número y su máscara estaban copiados en
+        ' SEIS lugares de la app, y el que se equivoque de bit no lo dice nadie.
         If preset.IsCharGenFacePreset.HasValue Then
-            If preset.IsCharGenFacePreset.Value Then
-                sr.ConfigurationFlags = sr.ConfigurationFlags Or AcbsBitIsCharGenFacePreset
-            Else
-                sr.ConfigurationFlags = sr.ConfigurationFlags And AcbsBitIsCharGenFacePresetMask
-            End If
+            sr.ConfigurationFlagsIsCharGenFacePreset = preset.IsCharGenFacePreset.Value
         End If
 
         ' HeadParts: replicate engine wipe + race defaults + preset overrides — PERO SÓLO SI EL PRESET LOS TRAE.

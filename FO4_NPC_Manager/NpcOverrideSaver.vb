@@ -1222,7 +1222,7 @@ Public Module NpcOverrideSaver
         ' ejecucion (el CK no exporta FaceGen para un NPC marcado como preset de CharGen). No hace nada
         ' en los que no la llevan.
         If target.GenerateChargen AndAlso target.RemoveCharGenFlag Then
-            npcSpec.Record.ConfigurationFlags = npcSpec.Record.ConfigurationFlags And Not AcbsBitIsCharGenFacePreset
+            npcSpec.Record.ConfigurationFlagsIsCharGenFacePreset = False
         End If
 
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -1364,7 +1364,7 @@ Public Module NpcOverrideSaver
     ''' <summary>ACBS Flags bit 0x04 = "Is CharGen Face Preset" (NPC_.ConfigurationFlags). Cleared from
     ''' saved overrides when the user bakes CharGen and ticks "Remove CharGen flag", so the engine loads the
     ''' baked FaceGen instead of reconstructing the face at runtime.</summary>
-    Private Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+
 
     ''' <summary>LLCT is a single unsigned byte → a leveled list holds at most 255
     ''' entries.</summary>

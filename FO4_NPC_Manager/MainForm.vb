@@ -265,17 +265,23 @@ Public Class MainForm
     ''' filtro, la etiqueta del nodo y la clave de orden.
     ''' <para>Van juntos porque salen de los mismos campos —FullName y EditorID— y porque el que se
     ''' olvide deja la lista mostrando una cosa y ordenando por otra. Lo llaman los dos caminos que
-    ''' mutan un record ya cargado: el readback del Save y el editor de NPC.</para></summary>
+    ''' mutan un record ya cargado: el readback del Save y el editor de NPC.</para>
+    ''' <para>⛔ Ese "los dos caminos" era MENTIRA hasta 2026-08-22: el readback RE-IMPLEMENTABA los tres
+    ''' refrescos inline en vez de llamar acá, o sea la misma ley escrita dos veces. Fue por esa puerta
+    ''' que entró el defecto del label viejo. Ahora sí son dos call sites de esta función.</para>
+    ''' <para><paramref name="ordenarAhora"/> existe sólo para el readback, que procesa N NPC en un bucle:
+    ''' ordenar por cada uno sería O(n log n) N veces. Pasa False y ordena UNA vez al salir. El default
+    ''' es True para que el camino de a uno no se pueda olvidar de ordenar.</para></summary>
     ''' <para>El identificador sale SIEMPRE de `npc.FormID`: recibirlo aparte permitia que la etiqueta y
     ''' el texto buscable cayeran en una entrada y la clave de orden en OTRA, y entonces la lista se
     ''' ordenaria con una clave que no es la de ese NPC.</para>
-    Private Sub RefrescarCachesDerivados(npc As NPC_Data)
+    Private Sub RefrescarCachesDerivados(npc As NPC_Data, Optional ordenarAhora As Boolean = True)
         If npc Is Nothing Then Return
         Dim fid = npc.FormID
         _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
         _npcDisplayLabelCache(fid) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
         SembrarClaveDeOrden(npc)
-        OrdenarNpcs()   ' la clave de este NPC acaba de cambiar
+        If ordenarAhora Then OrdenarNpcs()   ' la clave de este NPC acaba de cambiar
     End Sub
 
     Private _pendingTreeFilter As String = ""
@@ -4417,6 +4423,14 @@ Public Class MainForm
 
         Dim swArbol = System.Diagnostics.Stopwatch.StartNew()
         Dim modelo = TreeViewNPCs.Modelo
+        ' ⛔ QUÉ GRUPOS ESTABAN ABIERTOS, ANTES DE DESTRUIRLOS. `Limpiar()` se lleva las filas y con
+        ' ellas su `Expandida`; sin esto, repoblar CIERRA el árbol entero. Antes casi no se notaba
+        ' porque repoblar era raro; ahora el editor y el Save repueblan siempre, y el usuario perdía
+        ' toda su navegación en cada OK.
+        Dim abiertosAntes As New HashSet(Of String)(StringComparer.Ordinal)
+        For Each f In modelo.Visibles
+            If f IsNot Nothing AndAlso f.Expandida AndAlso f.Clave IsNot Nothing Then abiertosAntes.Add(f.Clave)
+        Next
         modelo.Limpiar()
 
         ' === Sección 1: NPC agrupados por plugin ===
@@ -4452,7 +4466,7 @@ Public Class MainForm
 
             If grupo IsNot Nothing Then
                 grupo.Texto = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}{pluginGroup.Key} ({matchCount})"
-                grupo.Expandida = abrirGrupos
+                grupo.Expandida = abrirGrupos OrElse abiertosAntes.Contains(grupo.Clave)
             End If
         Next
 
@@ -4541,13 +4555,13 @@ Public Class MainForm
                         Next
                     End If
 
-                    filaLvln.Expandida = (childMatchCount > 0 AndAlso abrirGrupos)
+                    filaLvln.Expandida = (childMatchCount > 0 AndAlso abrirGrupos) OrElse abiertosAntes.Contains(filaLvln.Clave)
                     matchCount += 1
                 Next
 
                 If grupo IsNot Nothing AndAlso grupo.Hijos.Count > 0 Then
                     grupo.Texto = $"{LoadOrderPrefix(pluginGroup.Key, loadOrderWidth)}[LVLN] {pluginGroup.Key} ({matchCount})"
-                    grupo.Expandida = abrirGrupos
+                    grupo.Expandida = abrirGrupos OrElse abiertosAntes.Contains(grupo.Clave)
                 End If
             Next
         End If
@@ -4737,57 +4751,13 @@ Public Class MainForm
         Return dependencies
     End Function
 
-    Private Function BuildTemplateTreeNode(sourceId As UInteger,
-                                           dependencyEdge As TemplateDependencyEdge,
-                                           dependencyMap As Dictionary(Of UInteger, List(Of TemplateDependencyEdge)),
-                                           npcById As IReadOnlyDictionary(Of UInteger, NPC_Data),
-                                           filter As String,
-                                           path As HashSet(Of UInteger)) As TreeNode
-        Dim selfMatches As Boolean
-
-        Dim node As TreeNode
-        If npcById.ContainsKey(sourceId) Then
-            Dim npc = npcById(sourceId)
-            selfMatches = MatchesNpcFilter(npc, dependencyEdge, filter)
-            node = New TreeNode(NpcDisplayHelpers.GetNpcNodeDisplayText(npc, dependencyEdge)) With {
-                .Name = $"NPC_{npc.FormID:X8}",
-                .Tag = npc
-            }
-        Else
-            Dim sourceRec = _pluginManager.GetRecord(sourceId)
-            If sourceRec Is Nothing OrElse sourceRec.Header.Signature <> "LVLN" Then Return Nothing
-
-            selfMatches = NpcDisplayHelpers.MatchesRecordFilter(sourceRec, filter)
-            node = New TreeNode(GetTemplateSourceDisplayText(sourceRec)) With {
-                .Name = $"LVLN_{sourceId:X8}",
-                .Tag = sourceRec
-            }
-        End If
-
-        Dim childNodes As New List(Of TreeNode)()
-        If Not path.Add(sourceId) Then
-            childNodes.Add(New TreeNode("<cycle detected>") With {.Tag = Nothing})
-        Else
-            Dim edges As List(Of TemplateDependencyEdge) = Nothing
-            If dependencyMap.TryGetValue(sourceId, edges) Then
-                For Each childEdge In edges
-                    Dim childNode = BuildTemplateTreeNode(childEdge.DependentNpc.FormID, childEdge, dependencyMap, npcById, filter, path)
-                    If childNode IsNot Nothing Then childNodes.Add(childNode)
-                Next
-            End If
-            path.Remove(sourceId)
-        End If
-
-        If filter.Length > 0 AndAlso Not selfMatches AndAlso childNodes.Count = 0 Then
-            Return Nothing
-        End If
-
-        For Each childNode In childNodes
-            CType(Nothing, TreeNode).Nodes.Add(childNode)
-        Next
-
-        Return Nothing
-    End Function
+    ' ⛔ Acá vivía `BuildTemplateTreeNode`: un árbol de dependencias de template que NADIE llamaba
+    ' —su único llamador era ella misma— y que además estaba roto de tres formas a la vez: armaba un
+    ' `TreeNode` que nunca usaba, terminaba en un `Return Nothing` incondicional (así que la recursión
+    ' siempre recibía Nothing y la lista de hijos quedaba vacía SIEMPRE), y remataba con
+    ' `CType(Nothing, TreeNode).Nodes.Add(...)`, que es una NRE segura y sólo era inalcanzable por esa
+    ' casualidad. Encima usaba la API de `TreeNode`, que el árbol virtual (`551df68`) reemplazó: revivirla
+    ' habría sido reintroducir el control viejo. Borrada el 2026-08-22.
 
 
     Private Function IsSupportedTemplateSource(sourceFormID As UInteger, npcById As IReadOnlyDictionary(Of UInteger, NPC_Data)) As Boolean
@@ -4804,7 +4774,8 @@ Public Class MainForm
 
         ' Fast path: searchable text pre-built en BuildNPCClassification (lowercase concat de los
         ' 5 campos base separados por '|'). Match con un solo IndexOf. dependencyEdge sólo
-        ' aplica al template tree path (BuildTemplateTreeNode), no a la lista plana de NPCs.
+        ' aplicaba al árbol de dependencias de template, que ya no existe; para la lista plana de NPC
+        ' no cambia nada.
         Dim cached As String = Nothing
         If _npcSearchableCache.TryGetValue(npc.FormID, cached) Then
             If cached.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
@@ -4823,16 +4794,8 @@ Public Class MainForm
     End Function
 
 
-    Private Function GetTemplateSourceDisplayText(sourceRec As PluginRecord) As String
-        If sourceRec Is Nothing Then Return "<missing template source>"
-        If sourceRec.Header.Signature = "LVLN" Then
-            Dim label = If(sourceRec.EditorID <> "", sourceRec.EditorID, sourceRec.Header.FormID.ToString("X8"))
-            Dim pluginSuffix = If(String.IsNullOrWhiteSpace(sourceRec.SourcePluginName), "", $" [{sourceRec.SourcePluginName}]")
-            Return $"LVLN {label}{pluginSuffix}"
-        End If
-
-        Return NpcManagerFormat.DescribeRecord(sourceRec)
-    End Function
+    ' ⛔ `GetTemplateSourceDisplayText` se fue con `BuildTemplateTreeNode`, que era su único llamador.
+    ' Lo que sí sigue vivo es `NpcManagerFormat.DescribeRecord`, que es donde vive esa ley.
 
     ''' <summary>Friend so EditFace_Form / EditBody_Form can read the resolved render state
     ''' (e.g. <see cref="NpcRenderHost.LastFaceTriMorphNames"/>) directly when constructing the
@@ -9555,11 +9518,11 @@ Public Class MainForm
 
         ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": se captura el valor EFECTIVO (overlay si existe,
         ' si no el bit crudo); sin esto Copy->Paste perdía la flag aunque el checkbox estuviera activo.
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+
         If overlay IsNot Nothing AndAlso overlay.IsCharGenFacePreset.HasValue Then
             preset.IsCharGenFacePreset = overlay.IsCharGenFacePreset.Value
         Else
-            preset.IsCharGenFacePreset = ((raw.Record.ConfigurationFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+            preset.IsCharGenFacePreset = raw.Record.ConfigurationFlagsIsCharGenFacePreset
         End If
 
         ' WYSIWYG: with the SkinTemplateId carried over, materialize the template's HDPT bundle
@@ -9881,6 +9844,21 @@ Public Class MainForm
             ' repinta el árbol con el nodo todavía en la posición de "Aaa". Es el mismo refresco por
             ' FormID que hace el readback del Save.
             RefrescarCachesDerivados(npc)
+            ' El editor puede haber cambiado RNAM/head parts/outfit, o sea todo lo que el filtro
+            ' avanzado cachea por NPC. El readback del Save ya lo tiraba; este camino no, y ahora que
+            ' repuebla consumiria el cache sucio: con `race:ghoul` activo, un NPC que acaba de pasar a
+            ' ghoul no aparecería.
+            _filterIndex?.InvalidateNpcState()
+            ' ⛔ Y SE REPUEBLA EL ARBOL. Refrescar los caches NO alcanza: `FilaDeArbol.Texto` es un
+            ' String que `PopulateNPCTree` COPIÓ al construir la fila, no algo que se derive del `Tag`
+            ' al dibujar, así que un `Invalidate` redibuja el MISMO texto viejo. Y además el renombre
+            ' cambia la clave de orden ⇒ la fila tiene que MOVERSE de lugar, cosa que reescribir el
+            ' texto tampoco haría. Este camino no tenía NINGÚN disparador de repoblado: el usuario
+            ' editaba el nombre, aceptaba, y el árbol seguía mostrando el viejo.
+            PopulateNPCTree(_pendingTreeFilter)
+            ' Y se vuelve a enfocar el NPC editado: repoblar lo saca de la vista si su grupo quedo
+            ' cerrado, y el usuario perderia de vista justamente lo que acaba de editar.
+            TreeViewNPCs.EnfocarClave($"NPC_{npcFormID:X8}")
             Try
                 Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
@@ -10886,9 +10864,29 @@ Public Class MainForm
         ' En una falla PARCIAL el diálogo de Save ya mostró el detalle de qué fase reventó. Sacar acá un
         ' "Saved N NPCs" liso sería contradecirlo con el último diálogo que ve el usuario, que es el que se
         ' recuerda.
+        ' Lo que el EMISOR encontró y el usuario tiene que ver: hoy, los textos localizados que no se
+        ' pudieron resolver contra las tablas de idioma y salieron VACÍOS. El archivo sale bien formado y
+        ' el NPC sin nombre, así que sin esto la pérdida es invisible — y como el aviso cambia el
+        ' veredicto, también cambia el ícono y el título.
+        Dim avisosDelEmisor = If(execResult.WriterResult?.Advertencias, New List(Of String)())
+        Dim resumenAvisos As String = ""
+        If avisosDelEmisor.Count > 0 Then
+            Const TOPE = 10
+            resumenAvisos = Environment.NewLine & Environment.NewLine &
+                            $"{avisosDelEmisor.Count} campo(s) de texto no se pudieron resolver contra las tablas de " &
+                            "idioma y se grabaron VACÍOS:" & Environment.NewLine &
+                            String.Join(Environment.NewLine, avisosDelEmisor.Take(TOPE).Select(Function(a) "  · " & a))
+            If avisosDelEmisor.Count > TOPE Then
+                resumenAvisos &= Environment.NewLine & $"  … y {avisosDelEmisor.Count - TOPE} más."
+            End If
+            boxTitle = "Save ESP/ESM — completed with warnings"
+        End If
+        Dim iconoFinal = If(avisosDelEmisor.Count > 0 AndAlso execResult.VerifierIcon = MessageBoxIcon.None,
+                            MessageBoxIcon.Warning, execResult.VerifierIcon)
+
         If Not savePartiallyFailed Then
-            MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
-                            boxTitle, MessageBoxButtons.OK, execResult.VerifierIcon)
+            MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}{resumenAvisos}",
+                            boxTitle, MessageBoxButtons.OK, iconoFinal)
         End If
     End Function
 
@@ -10947,14 +10945,14 @@ Public Class MainForm
         Dim npc As NPC_Data = Nothing
         _ctx.NpcCache.TryGetValue(npcFormID, npc)
         ' ACBS bit 0x04 = "Is CharGen Face Preset".
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+
         Return New NpcOverrideSaver.NpcSaveInput With {
             .NpcFormID = npcFormID,
             .Npc = If(npc, rawNpcSpec),
             .RawRecord = rawRecord,
             .RawNpcSpec = rawNpcSpec,
             .SourcePluginName = sourcePluginName,
-            .IsCharGenFacePreset = (rawNpcSpec.Record.ConfigurationFlags And AcbsBitIsCharGenFacePreset) <> 0UI
+            .IsCharGenFacePreset = rawNpcSpec.Record.ConfigurationFlagsIsCharGenFacePreset
         }
     End Function
 
@@ -11071,43 +11069,34 @@ Public Class MainForm
                         Exit For
                     End If
                 Next
-                _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(freshNpc)
-                ' Same reason the searchable text is refreshed here: a save can change head parts /
-                ' skin / outfit, so every advanced-filter result computed from this record is stale.
-                ' Dropped WHOLESALE (not per FormID) because this NPC may be the template source of
-                ' any number of others, whose effective values just changed too.
+                ' Un Save puede cambiar FullName o EditorID, y de esos dos salen los TRES caches
+                ' derivados. Se refrescan con la MISMA funcion que usa el editor de NPC, no con una
+                ' copia: tener las dos implementaciones es como se llegó a que el filtro buscara por el
+                ' nombre nuevo mientras el nodo seguía etiquetado con el viejo.
+                RefrescarCachesDerivados(freshNpc, ordenarAhora:=False)
+                ' Un save puede cambiar head parts / skin / outfit, asi que todo resultado del filtro
+                ' avanzado calculado desde este record esta viejo. Se tira ENTERO (no por FormID) porque
+                ' este NPC puede ser el template de cualquier cantidad de otros.
                 _filterIndex?.InvalidateNpcState()
-                ' The DISPLAY label has to be refreshed here too, not just the searchable text.
-                ' Both caches are filled together in RebuildTreeModelCache, but only the searchable one
-                ' was refreshed on this path — so after a save that changed FullName or EditorID the
-                ' filter matched the NEW name while the node stayed labelled with the OLD one, until the
-                ' next load-order reload (the only other thing that rebuilds these caches).
-                Dim oldLabel As String = Nothing
-                _npcDisplayLabelCache.TryGetValue(fid, oldLabel)
-                Dim newLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(freshNpc)
-                _npcDisplayLabelCache(fid) = newLabel
-                ' Mismo motivo que la etiqueta: un Save puede cambiar FullName o EditorID, y la clave
-                ' de orden sale de los dos. Sin refrescarla aca, la lista quedaria ordenada por el
-                ' nombre VIEJO hasta la proxima recarga del orden de carga.
-                SembrarClaveDeOrden(freshNpc)
-                ' Y la lista se REORDENA. `PopulateNPCTree` ya no reordena por su cuenta (ver
-                ' OrdenarNpcs): refrescar la clave sin reacomodar la lista dejaria el arbol mostrando
-                ' el nombre nuevo en la posicion vieja. Se marca y se ordena UNA vez al salir del bucle.
+                ' La lista se REORDENA una sola vez al salir del bucle: refrescar la clave sin reacomodar
+                ' dejaria el arbol mostrando el nombre nuevo en la posicion vieja.
                 ordenSucio = True
-                ' Refreshing the cache is NOT enough on its own: PopulateNPCTree copied the old value
-                ' into TreeNode.Text when it built the node, so the tree has to be rebuilt for the new
-                ' label to show. Reuse the flag the plugin-name change below already uses — in the
-                ' common case a save moves the NPC into the auto-generated plugin, so that branch has
-                ' already set it and this adds no extra rebuild. Guarded on oldLabel IsNot Nothing
-                ' because a cache MISS means PopulateNPCTree built the node's text from the NPC_Data
-                ' instance directly (see its TryGetValue fallback) — and that instance was just replaced
-                ' above with freshNpc, so there is nothing stale to fix.
-                If oldLabel IsNot Nothing AndAlso Not String.Equals(oldLabel, newLabel, StringComparison.Ordinal) Then
-                    treeChanged = True
-                End If
-                If Not String.Equals(oldPluginName, freshNpc.PluginName, StringComparison.OrdinalIgnoreCase) Then
-                    treeChanged = True
-                End If
+                ' ⛔ Y SE REPUEBLA SIEMPRE. Acá hubo un detector que decidía si repoblar comparando la
+                ' etiqueta "vieja" contra la nueva, y estaba ENVENENADO: la etiqueta "vieja" salía de
+                ' `_npcDisplayLabelCache`, que el editor de NPC YA HABÍA PISADO antes de llegar acá. Las
+                ' dos eran iguales siempre, así que por el label no repoblaba nunca; lo tapaba el chequeo
+                ' de plugin de más abajo, que es True la PRIMERA vez que se guarda a un plugin nuevo y
+                ' False de ahí en más. Escenario medido: renombrar → Save → renombrar → Save al MISMO
+                ' plugin ⇒ el árbol quedaba con el nombre viejo. Es el defecto que reportó el usuario.
+                '
+                ' El arreglo NO es un detector mejor. Un detector ya falló dos veces en este mismo bloque
+                ' (antes por la guarda `oldLabel IsNot Nothing`, después por el envenenamiento) y además
+                ' no puede ser confiable: la MISMA clave tiene N filas en el árbol —el NPC cuelga de su
+                ' plugin y de cada LVLN— así que comparar contra una no dice nada de las otras. Repoblar
+                ' siempre saca la condición que se podía equivocar. `FilaDeArbol.Texto` es una COPIA que
+                ' hace `PopulateNPCTree`, y el renombre además MUEVE la fila de lugar, así que reescribir
+                ' el texto tampoco alcanzaría.
+                treeChanged = True
             End If
         Next
 
