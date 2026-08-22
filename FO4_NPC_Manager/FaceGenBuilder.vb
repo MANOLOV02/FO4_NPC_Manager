@@ -724,7 +724,7 @@ Public Module FaceGenBuilder
         ' que toque otro campo, hay que copiarlo aca.
         ' WYSIWYG: si el usuario eligio un SkinTemplate de LooksMenu, el bake tiene que aplicar ese bundle igual
         ' que el render, o el NIF horneado diverge del WNAM que el writer pone en el ESP.
-        ' â›” ACA NO SE CAMINA LA CADENA DE PLANTILLAS, Y ESO ES CORRECTO - no "arreglarlo". El CK nunca exporta
+        ' ⛔ ACA NO SE CAMINA LA CADENA DE PLANTILLAS, Y ESO ES CORRECTO - no "arreglarlo". El CK nunca exporta
         ' FaceGen para un NPC que hereda "Use Traits" (medido en los dos juegos), asi que sembrar el state desde
         ' el traits-source fabricaria un artefacto que el CK no produce jamas. El flujo legitimo es el inverso y
         ' ya existe: NpcTemplateMaterializer.MakeCategoryOwn(Traits). Ver 40-bake-reglas-comunes.
@@ -1144,7 +1144,7 @@ Public Module FaceGenBuilder
                         ' outfitSlots solo suma ARMO DETERMINISTICAS, por eso no se gatea por "el outfit tiene
                         ' LVLI": un outfit puramente LVLI no cubre nada (under-hide, el lado seguro) y un casco
                         ' ARMO fijo ocluye igual aunque otra pieza sea LVLI. Ocultar = OR del bit 0x1, como el render.
-                        ' â›”â›” SOLO FO4. En Skyrim el CK NO hornea la oclusion, la deja a runtime (0 de 20.611
+                        ' ⛔⛔ SOLO FO4. En Skyrim el CK NO hornea la oclusion, la deja a runtime (0 de 20.611
                         ' shapes de los facegeom vanilla llevan el bit), y ademas esta regla usa semantica de
                         ' slots de FO4: alla el 32 es el CUERPO, asi que "el outfit cubre 32" seria "lleva ropa"
                         ' y ocultaria las cejas de todo NPC vestido.
@@ -1498,12 +1498,12 @@ Public Module FaceGenBuilder
                             ' Morph por vertice del mesh neutro. Entran LOS DOS JUEGOS: SSE no tiene rig
                             ' _faceBones / FMRS / skin-rebind, asi que su cabeza es un morph puro y la rama
                             ' BakeShape de arriba nunca corre; FO4 entra cuando la shape no tiene _faceBones.nif
-                            ' (p.ej. las cabezas infantiles). â›” Sin esto se escribia NEUTRA en silencio y el
+                            ' (p.ej. las cabezas infantiles). ⛔ Sin esto se escribia NEUTRA en silencio y el
                             ' batch la contaba como exito.
                             ' El mesh-tri es el SkinnyMorph (morph de PESO del actor) y su fuente autoritativa y
-                            ' UNICA es HDPT NAM0=1: el CK lo aplica solo si el record lo declara. â›” No adivinarlo
+                            ' UNICA es HDPT NAM0=1: el CK lo aplica solo si el record lo declara. ⛔ No adivinarlo
                             ' por basename del NIF (el .tri no siempre comparte nombre, y adivinar aplica tris que
-                            ' el CK ignora, sobre-morpheando el pelo). â›” Es ley de SSE y solo se pasa ahi: en FO4
+                            ' el CK ignora, sobre-morpheando el pelo). ⛔ Es ley de SSE y solo se pasa ahi: en FO4
                             ' el peso corporal lo hornea otro mecanismo (MWGT como escala en los huesos *_skin) y
                             ' pasarlo aca lo aplicaria DOS veces.
                             Dim hdptMeshTri As String = If(isSSEBake, hdpt.ArchivoDeDeformacion(1UI), Nothing)
@@ -1551,7 +1551,7 @@ Public Module FaceGenBuilder
         ' paths reproducen 47/75; paths + payload de material, 75/75; agregando las flags, 36/75 (o sea que las
         ' flags NO entran). De los 28 pares que el CK dejo separados pese a tener los 8 paths identicos, 28/28
         ' difieren exclusivamente en specularStrength.
-        ' â›” NO clonar un texture set por shape: el sharing es DELIBERADO. Agregar un campo que falte solo puede
+        ' ⛔ NO clonar un texture set por shape: el sharing es DELIBERADO. Agregar un campo que falte solo puede
         ' SEPARAR lo que hoy se mergea, que es la direccion segura.
         Try
             Dim seenTexset As New Dictionary(Of String, Integer)()
@@ -2312,14 +2312,14 @@ Public Module FaceGenBuilder
                 ' El ShaderType horneado es FUNCION DETERMINISTICA de los flags del material: el CK NO preserva
                 ' el tipo de la fuente, lo DERIVA. Probado al 100 % sobre el corpus FaceGen vanilla de FO4 (1490
                 ' NIF / 14136 lighting shapes, 8 combinaciones de flags, todas puras). Precedencia (load-bearing
-                ' Glow > Face; el resto nunca coexiste): Glowmap -> GlowShader Â· Facegen -> FaceTint Â· SkinTint ->
-                ' SkinTint Â· Hair -> HairTint Â· EnvironmentMapping -> EnvironmentMap Â· si no, Default.
+                ' Glow > Face; el resto nunca coexiste): Glowmap -> GlowShader · Facegen -> FaceTint · SkinTint ->
+                ' SkinTint · Hair -> HairTint · EnvironmentMapping -> EnvironmentMap · si no, Default.
                 ' Testigo de que es por FLAGS y no por el inline: eyelashes.bgsm trae inline EnvironmentMap con su
                 ' flag apagado y el CK las hornea Default (1381/1381).
                 ' Se deriva de los BOOLS del material (fieles a los flags tras Create_From_Shader). Es BAKE-ONLY:
                 ' la Derive de la libreria queda conservadora porque en meshes generales bGlowmap y
                 ' bEnvironmentMapping conviven con inline Default.
-                ' â›” GAME-GATED: en SSE el CK PRESERVA el shader type y los flags del source, asi que derivar alla
+                ' ⛔ GAME-GATED: en SSE el CK PRESERVA el shader type y los flags del source, asi que derivar alla
                 ' colapsaba los ojos a Default y rompia el shader.
                 If Not nif.Header.Version.IsSSE Then
                     Dim bakedType As Enums.BSLightingShaderType
@@ -2777,7 +2777,7 @@ Public Module FaceGenBuilder
     ''' <summary>Contraparte FO4 de <see cref="DeleteFoldedOnlyArtifacts"/>: borra los _d/_msn/_s de
     ''' FaceCustomization de un bake ANTERIOR, en los dos naming (canonico y <c>_2</c>), justo antes de que este
     ''' bake escriba los suyos.
-    ''' <para>â›” El problema: <see cref="BakeFaceTextures"/> saltea un slot cuando el head source no tiene ese
+    ''' <para>⛔ El problema: <see cref="BakeFaceTextures"/> saltea un slot cuando el head source no tiene ese
     ''' canal, y eso es legitimo. El archivo de la corrida anterior QUEDA en disco, y el packer arma el bundle
     ''' leyendo el DISCO, asi que se lo lleva al BA2 aunque este bake no lo haya producido y el NIF no lo
     ''' referencie: el bundle termina siendo mezcla de dos bakes.</para>
@@ -2849,7 +2849,7 @@ Public Module FaceGenBuilder
             ' aunque el usuario tenga el bake de overlays apagado. Sólo gatea el path normal (gateado por overlays).
             If Config_App.Current Is Nothing Then Return
 
-            ' â›” BORRADO DE LOS STALE DEL CAMINO PLEGADO, AL ENTRAR Y SIN CONDICIONES. Los FaceDiffuse\<id>.dds y
+            ' ⛔ BORRADO DE LOS STALE DEL CAMINO PLEGADO, AL ENTRAR Y SIN CONDICIONES. Los FaceDiffuse\<id>.dds y
             ' FaceNormal\<id>.dds los produce SOLO el camino plegado: si un bake anterior plego y este no, quedan
             ' en disco y el packer los mete al archive igual (toma el Source del DISCO) aunque el NIF nuevo
             ' apunte al complexion vanilla, o sea un bundle mezcla de dos bakes.

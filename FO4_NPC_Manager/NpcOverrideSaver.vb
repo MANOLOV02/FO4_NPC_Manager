@@ -1123,12 +1123,12 @@ Public Module NpcOverrideSaver
             Dim iniExists As Boolean = If(isSseSave,
                                           SseBodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName),
                                           BodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName))
-            ' â›” EL .ini NO SE TOCA NUNCA POR LA RUTA DE ENTREGA. El script GANA por construccion, corra antes o
+            ' ⛔ EL .ini NO SE TOCA NUNCA POR LA RUTA DE ENTREGA. El script GANA por construccion, corra antes o
             ' despues que BodyGen, en los DOS juegos: si el script va primero, el actor queda con morphs y
             ' BodyGen se saltea por su gate de "no tiene morphs"; si va primero BodyGen, el .psc barre su key
             ' antes de aplicar la nuestra. No hace falta borrar ni excluir nada del .ini para que el resultado
             ' sea determinista.
-            ' â›” Y NO SE DEBE: el .ini es por PLUGIN y lista TODOS sus NPC. Un NPC que el usuario no re-grabo
+            ' ⛔ Y NO SE DEBE: el .ini es por PLUGIN y lista TODOS sus NPC. Un NPC que el usuario no re-grabo
             ' conserva su VMAD viejo, el script le llega INERTE (sus properties no existen en el .pex nuevo) y el
             ' .ini es su UNICA via; una version anterior borraba el par completo y le cortaba la entrega a todos
             ' ellos. Ademas funciona como red: sin SKSE/F4SE o con VMAD viejo, BodyGen sigue entregando.
@@ -2299,7 +2299,7 @@ Public Module NpcOverrideSaver
         Dim prevSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(target.TargetPath))
         Dim sidecarGen = If(prevSidecar Is Nothing, 0, prevSidecar.PayloadGeneration)
 
-        ' â›”â›” EL CONTADOR NUNCA PUEDE RETROCEDER, Y EL SIDECAR SOLO NO ALCANZA PARA GARANTIZARLO.
+        ' ⛔⛔ EL CONTADOR NUNCA PUEDE RETROCEDER, Y EL SIDECAR SOLO NO ALCANZA PARA GARANTIZARLO.
         ' Reusar una generacion ya publicada es la PEOR falla de este esquema: el savegame del jugador ya tiene
         ' variables con esos nombres, asi que las restaura RANCIAS y le ganan al VMAD. El actor aplica fielmente
         ' el payload VIEJO, sin un solo error en ningun log.
@@ -2357,7 +2357,7 @@ Public Module NpcOverrideSaver
         End Try
     End Function
 
-    ''' <summary>â›” RE-EMITE EL VMAD DE LOS NPC DEL PLUGIN QUE **NO** ENTRAN EN ESTE GUARDADO.
+    ''' <summary>⛔ RE-EMITE EL VMAD DE LOS NPC DEL PLUGIN QUE **NO** ENTRAN EN ESTE GUARDADO.
     ''' <para><b>El problema, medido.</b> El <c>.pex</c> es UNO por plugin y declara UNA sola generacion de
     ''' properties (<c>_G&lt;n&gt;</c>), que sube en cada Save ESP. Pero solo se reescribia el VMAD de los NPC
     ''' incluidos en el guardado: los demas quedaban con su VMAD viejo, nombrando properties que el .pex nuevo YA
@@ -2370,7 +2370,7 @@ Public Module NpcOverrideSaver
     ''' sidecar via <see cref="BssliderSidecar.HydratePresets"/>, el unico espejo entry-preset del proyecto.</para>
     ''' <para>De paso migra el nombre LEGADO al nombre por plugin, porque <c>ApplyToNpc</c> ya hace el upsert en
     ''' dos pasadas.</para>
-    ''' <para>â›” SIN SIDECAR NO SE TOCA EL RECORD: si un NPC lleva nuestro script pero no tiene entrada, no hay
+    ''' <para>⛔ SIN SIDECAR NO SE TOCA EL RECORD: si un NPC lleva nuestro script pero no tiene entrada, no hay
     ''' con que reconstruir su payload, y ApplyToNpc con preset Nothing emitiria el spec de LIMPIEZA, que le
     ''' BORRARIA sus overlays. Se lo deja inerte (que es lo que ya era) y se LOGUEA: perder la entrega es malo,
     ''' borrarle datos al usuario es peor.</para></summary>

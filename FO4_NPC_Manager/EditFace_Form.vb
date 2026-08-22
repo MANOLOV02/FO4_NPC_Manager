@@ -2880,7 +2880,7 @@ Public Class EditFace_Form
     ' combo de arriba sigue siendo la lista de PRESETS (los CLFM AHCM/AHCF de la raza); estos botones son el
     ' color custom encima, y GANA sobre el combo cuando esta seteado - por eso tambien tiene que ser visible.
     '
-    ' â›” No se ofrece en FO4: un CLFM de pelo de Fallout 4 lleva un RemappingIndex (una FILA de la LUT), no un
+    ' ⛔ No se ofrece en FO4: un CLFM de pelo de Fallout 4 lleva un RemappingIndex (una FILA de la LUT), no un
     ' RGB, asi que un color arbitrario no tiene campo donde vivir ni camino en el motor. Dos juegos, dos
     ' sistemas. Save ESP materializa el RGB elegido en un CLFM + HCLF reales.
     ' ---------------------------------------------------------------------
@@ -4688,7 +4688,7 @@ Public Class EditFace_Form
                 ' de frente/mejillas/cuello). Re-correr solo el resolver actualiza la geometria y deja las
                 ' texturas rancias, asi que hay que refrescar tambien el pipeline de tints. No-op para NPCs
                 ' cuyos presets activos no traen MPPT.
-                ' â›” SKYRIM NO TIENE ESE MECANISMO: sus morphs de cara son pura deformacion de vertices y no
+                ' ⛔ SKYRIM NO TIENE ESE MECANISMO: sus morphs de cara son pura deformacion de vertices y no
                 ' tocan textura, asi que correr el pipeline de tints era desperdicio puro - y medido es caro (el
                 ' fold SSE es per-pixel: una cabeza 4096^2 cuesta 2,6-4,5 s, o sea cada arrastre de slider
                 ' congelaba el editor). Gateado a FO4.
