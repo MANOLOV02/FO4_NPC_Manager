@@ -347,6 +347,9 @@ Public Class MainForm
         ' on an actual reload PreloadAnimRacesInBackground re-warms the distinct races OFF the UI thread
         ' right after ParseAllNPCs — the expensive ~16 s behavior walk never blocks the user.
         _animRaceCache.Clear()
+        ' El memo por ARCHIVO de animacion vive en la libreria y es compartido entre razas; muere
+        ' aca por la misma razon que el de arriba: la misma ruta puede resolver a otros bytes.
+        BehaviorClipEnumerator.LimpiarMemoDeArchivos()
         ' Per-process TRI parse caches (Shared in the resolvers): same lifetime contract — kept across a
         ' session (no re-parse while browsing) but dropped on a load-order change so a stale parse from a
         ' path that now resolves to different bytes is discarded and the parsed geometry (MBs each) is freed.

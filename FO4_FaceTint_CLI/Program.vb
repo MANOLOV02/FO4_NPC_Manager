@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Linq
 Imports System.Text.Json
 Imports FO4_Base_Library
@@ -4945,7 +4945,7 @@ persist:
             Try
                 Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bytes))
                 For Each o In sg.GetObjectsByClassName("hkaSkeleton")
-                    Dim sk = sg.ParseSkeleton(o)
+                    Dim sk = Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)
                     If sk Is Nothing OrElse sk.Bones Is Nothing Then Continue For
                     Dim faceB = sk.Bones.Select(Function(b) b.Name).Where(Function(n) Not String.IsNullOrEmpty(n) AndAlso rxFace.IsMatch(n)).Take(30).ToList()
                     tags.Add($"hkaSkeleton '{sk.Name}' bones={sk.Bones.Count}{If(faceB.Count > 0, " FACE-BONES(" & faceB.Count & "):[" & String.Join(",", faceB) & "]", " (no face-bones)")}")
@@ -7724,7 +7724,7 @@ persist:
         Dim rb = LoadAnimCand(rigPath)
         If rb Is Nothing Then Console.WriteLine($"[animsync] rig '{rigPath}' does not load") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(rb))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ReferencePose IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("[animsync] rig without hkaSkeleton") : Return
@@ -7756,14 +7756,20 @@ persist:
             If nm = "" OrElse clipLocal.ContainsKey(nm) Then Continue For
             Dim ht = anim.GetTransform(frame, t) : If ht Is Nothing Then Continue For
             Dim refp = skel.ReferencePose(bi)
-            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.X, 0.0F))
-            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Y, 0.0F))
-            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Z, 0.0F))
-            Dim rr = If(ht.RotationAnimated, ht.Rotation, refp.Rotation)
-            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.X, 1.0F))
-            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Y, 1.0F))
-            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Z, 1.0F))
-            clipLocal(nm) = HkxTransformConventionHelper.ToTransform(tx, ty, tz, rr, sx, sy, sz)
+            ' `ReferencePose` son los 12 floats CRUDOS del `hkQsTransform` que declara la reflexion:
+            ' translation 0..3, rotation 4..7, scale 8..11. Se leen por indice, sin objeto intermedio.
+            Dim rp = If(refp IsNot Nothing AndAlso refp.Length >= 12, refp, New Single(11) {})
+            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), rp(0))
+            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), rp(1))
+            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), rp(2))
+            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), rp(8))
+            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), rp(9))
+            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), rp(10))
+            If ht.RotationAnimated AndAlso ht.Rotation IsNot Nothing Then
+                clipLocal(nm) = HkxTransformConventionHelper.ToTransform(tx, ty, tz, ht.Rotation, sx, sy, sz)
+            Else
+                clipLocal(nm) = HkxTransformConventionHelper.ToTransformRaw(tx, ty, tz, rp(4), rp(5), rp(6), rp(7), sx, sy, sz)
+            End If
             maskOf(nm) = (ht.TranslationXAnimated, ht.TranslationYAnimated, ht.TranslationZAnimated, ht.RotationAnimated, ht.ScaleXAnimated OrElse ht.ScaleYAnimated OrElse ht.ScaleZAnimated)
         Next
 
@@ -7892,7 +7898,7 @@ persist:
         Dim rb = LoadAnimCand(rigPath)
         If rb Is Nothing Then Console.WriteLine($"[clipbase] rig '{rigPath}' does not load") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(rb))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("[clipbase] rig without animation hkaSkeleton") : Return
@@ -7981,14 +7987,18 @@ persist:
             If ht Is Nothing Then Continue For
             Dim refp = skel.ReferencePose(bi)
             ' Componentes no animados → refPose del rig (misma semántica que BuildFrameLocalTransform).
-            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.X, 0.0F))
-            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Y, 0.0F))
-            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Z, 0.0F))
-            Dim rr = If(ht.RotationAnimated, ht.Rotation, refp.Rotation)
-            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.X, 1.0F))
-            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Y, 1.0F))
-            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Z, 1.0F))
-            Dim clip0 = HkxTransformConventionHelper.ToTransform(tx, ty, tz, rr, sx, sy, sz)
+            ' `ReferencePose` son los 12 floats CRUDOS del `hkQsTransform` que declara la reflexion:
+            ' translation 0..3, rotation 4..7, scale 8..11. Se leen por indice, sin objeto intermedio.
+            Dim rp = If(refp IsNot Nothing AndAlso refp.Length >= 12, refp, New Single(11) {})
+            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), rp(0))
+            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), rp(1))
+            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), rp(2))
+            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), rp(8))
+            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), rp(9))
+            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), rp(10))
+            Dim clip0 = If(ht.RotationAnimated AndAlso ht.Rotation IsNot Nothing,
+                           HkxTransformConventionHelper.ToTransform(tx, ty, tz, ht.Rotation, sx, sy, sz),
+                           HkxTransformConventionHelper.ToTransformRaw(tx, ty, tz, rp(4), rp(5), rp(6), rp(7), sx, sy, sz))
             Dim mask = $"T:{If(ht.TranslationXAnimated, "x", "-")}{If(ht.TranslationYAnimated, "y", "-")}{If(ht.TranslationZAnimated, "z", "-")} R:{If(ht.RotationAnimated, "a", "-")} S:{If(ht.ScaleXAnimated OrElse ht.ScaleYAnimated OrElse ht.ScaleZAnimated, "a", "-")}"
 
             Dim rigL = rigLocal(bi)
@@ -8077,7 +8087,7 @@ persist:
         Next
         ' CreateABot HKX: bone → world.
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hbx))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("[chunkcompare] CreateABot without anim skeleton") : Return
@@ -8950,13 +8960,13 @@ persist:
         End If
         ' HKX: bones + parent (vía ParentIndices) + world bind (compose ReferencePose).
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hbx))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         ' DIAG: todos los hkaSkeleton del archivo (name + root + #bones) — para evaluar selección por root.
-        Dim allSk = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim allSk = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                         Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing).ToList()
-        Dim rootOf = Function(s As HkaSkeletonGraph_Class) As String
+        Dim rootOf = Function(s As Havok.Canon.Objects.HkObj_HkaSkeleton) As String
                          For i = 0 To s.Bones.Count - 1
                              Dim pp = If(i < s.ParentIndices.Count, CInt(s.ParentIndices(i)), -1)
                              If pp < 0 OrElse pp >= s.Bones.Count Then Return s.Bones(i).Name
@@ -9030,11 +9040,14 @@ persist:
         Console.WriteLine($"     REGION in NIF ({regNif.Count}): {String.Join(", ", regNif.Where(Function(k) k.IndexOf("_Offset", StringComparison.OrdinalIgnoreCase) < 0))}")
         ' ¿Hay mapeo TAXATIVO de regiones en el HKX? Los únicos campos candidatos del hkaSkeleton:
         ' floatSlots (canales float nombrados) y partitions (agrupaciones de huesos del solver).
-        Dim fs = If(skel.FloatSlotNames, New List(Of String))
+        Dim fs = If(skel.FloatSlots, New List(Of String))
         Console.WriteLine($"     HKX floatSlots ({fs.Count}): {String.Join(", ", fs)}")
-        Dim parts = If(skel.Partitions, New List(Of HkaPartitionGraph_Class))
+        Dim parts = If(skel.Partitions, New List(Of Havok.Canon.Objects.HkObj_HkaSkeletonPartition))
         Console.WriteLine($"     HKX partitions ({parts.Count}): {String.Join(" | ", parts.Select(Function(p) $"'{p.Name}'[start={p.StartBoneIndex} num={p.NumBones}]"))}")
-        Console.WriteLine($"     [reader-check] rawCounts bones={skel.BonesField.Header.Count} refPose(ancla)={skel.ReferencePoseField.Header.Count} refFloats={skel.ReferenceFloatsField.Header.Count} floatSlots={skel.FloatSlotsField.Header.Count} localFrames={skel.LocalFramesField.Header.Count} partitions={skel.PartitionsField.Header.Count}")
+        ' Los conteos CRUDOS salen del lector tipado (`Raw`): lee el header del array sin materializar
+        ' la lista, que es justo lo que este chequeo compara contra lo ya materializado.
+        Dim raw = skel.Raw
+        Console.WriteLine($"     [reader-check] rawCounts bones={raw.BonesCount} refPose(ancla)={raw.ReferencePoseCount} refFloats={raw.ReferenceFloatsCount} floatSlots={raw.FloatSlotsCount} localFrames={raw.LocalFramesCount} partitions={raw.PartitionsCount}")
     End Sub
 
     ''' <summary>Arma el skeleton CANDIDATO = A(HKX no-ragdoll, world) + B(nodos solo-NIF colgando de su
@@ -9047,7 +9060,7 @@ persist:
         If hbx Is Nothing OrElse nbx Is Nothing Then Return
         ' A: HKX (no-ragdoll) → world por hueso.
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hbx))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("  [COMPOSE] HKX without animation skeleton") : Return
@@ -9217,7 +9230,7 @@ persist:
         ' CreateABot.hkx world binds.
         Dim hbx = LoadAnimCand(hkxPath) : If hbx Is Nothing Then Console.WriteLine("  hkx not found") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hbx))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         Dim nBb = skel.Bones.Count
@@ -9262,7 +9275,7 @@ persist:
 
         ' HKX: world binds por bone (compose ReferencePose via ParentIndices, skeleton de animación = no-ragdoll).
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hkxBytesC))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("  no animation skeleton in the HKX") : Return
@@ -9330,7 +9343,7 @@ persist:
         Dim skelBytes = LoadAnimCand("Actors\CreateABot\CharacterAssets\skeleton.hkx")
         If skelBytes Is Nothing Then Console.WriteLine("skeleton CreateABot NOT found") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(skelBytes))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("no animation skeleton") : Return
@@ -9468,7 +9481,7 @@ persist:
         Console.WriteLine("=== clipMotion WORLD (pure motion of the bone relative to the clip's bind) ===")
         Dim sb = LoadAnimCand(skelPath) : If sb Is Nothing Then Console.WriteLine("  no skel") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(sb))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("  no anim skel") : Return
@@ -9541,7 +9554,7 @@ persist:
         Dim sb = LoadAnimCand(skelPath)
         If sb Is Nothing Then Console.WriteLine($"  skeleton not found: {skelPath}") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(sb))
-        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("  no animation skeleton") : Return
@@ -9714,7 +9727,7 @@ persist:
             Try
                 Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(skelBytes))
                 Dim sko = sg.GetObjectsByClassName("hkaSkeleton").FirstOrDefault()
-                Dim skel = sg.ParseSkeleton(sko)
+                Dim skel = Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, sko)
                 skelBoneCount = skel.Bones.Count
                 skelBoneNames = skel.Bones.Select(Function(b) b.Name).ToList()
                 Console.WriteLine($"  [SKEL] behavior skeleton '{havokSkelPath}' name='{skel.Name}' bones={skelBoneCount} bytes={skelBytes.Length}")
