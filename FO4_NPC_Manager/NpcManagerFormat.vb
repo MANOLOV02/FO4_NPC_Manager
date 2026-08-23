@@ -53,7 +53,10 @@ Friend NotInheritable Class NpcManagerFormat
 ''' el filtro. Leer un campo ya calculado es gratis.</para></summary>
     Public Shared Function AnimClipLabel(c As ResolvedAnimationClip) As String
         Dim nm = If(String.IsNullOrWhiteSpace(c.ClipName), System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile), c.ClipName)
-        Dim ins = If(c.IsAdditive, "⊕ ", "")
+        ' ⚠ = el crop declarado no se puede honrar y el clip se reproduce entero. Mismo lexico que el
+        ' picker (AnimationPicker_Form.Insignias). El guard de HkxFlagsKnown evita afirmar que esta bien
+        ' antes de que la pasada lazy haya leido el .hkx.
+        Dim ins = If(c.IsAdditive, "⊕ ", "") & If(c.HkxFlagsKnown AndAlso c.CropIgnorado, "⚠ ", "")
         Dim roles = If(c.Roles.Count > 0, $"  [{String.Join(",", c.Roles)}]", "")
         Dim fp = If(c.Is1stPersonOnly, "  · 1st-person", "")
         Return $"{ins}{nm}{c.VarianteSufijo}{roles}{fp}"

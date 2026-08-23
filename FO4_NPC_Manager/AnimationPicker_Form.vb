@@ -223,16 +223,23 @@ Public Class AnimationPicker_Form
     End Function
 ''' <summary>Insignias del clip, en un orden FIJO para que la columna quede alineada entre filas.
 ''' ⊕ aditivo (overlay, no pose standalone) · ° presente en la search-path pero no referenciado
-''' estaticamente (evento/dialogo en runtime) · ♀ solo para NPC femenino.
-''' <para>Las insignias que dependen de la REPRODUCCION (reversa, rebote, velocidad, crop) NO van aca:
-''' van en <see cref="ResolvedAnimationClip.VarianteSufijo"/>, que se calcula UNA vez por lista en el
-''' enumerador. Ponerlas aca las recalcularia en cada repintado y ademas darian distinto entre el combo
-''' y el picker, que ven listas distintas.</para></summary>
+''' estaticamente (evento/dialogo en runtime) · ♀ solo para NPC femenino · ⚠ el crop declarado NO se
+''' puede honrar y el clip se reproduce ENTERO.
+''' <para>Los PARAMETROS de reproduccion (reversa, rebote, velocidad, crop) NO van aca: van en
+''' <see cref="ResolvedAnimationClip.VarianteSufijo"/>, que se calcula UNA vez por lista en el
+''' enumerador. Ponerlos aca los recalcularia en cada repintado y ademas darian distinto entre el combo
+''' y el picker, que ven listas distintas.</para>
+''' <para>⛔ El ⚠ SI va aca y no contradice lo de arriba: no dice "hay crop" (eso lo dice el sufijo)
+''' sino "el crop no se pudo honrar", que es otro hecho y de otra fuente. Sale de la pasada LAZY que abre
+''' el .hkx — hace falta la Duration del archivo, que el behavior graph no tiene — y lo decide
+''' <c>HkxAnimationPlayer.RangoDeCrop</c>, la MISMA funcion que despues aplica el rango. El guard de
+''' <c>HkxFlagsKnown</c> evita afirmar que esta todo bien antes de haber leido el archivo.</para></summary>
     Private Shared Function Insignias(c As ResolvedAnimationClip) As String
         Dim b As New Text.StringBuilder(6)
         If c.IsAdditive Then b.Append("⊕ ")
         If Not c.FromBehaviorGraph Then b.Append("° ")
         If c.RequiresFemale Then b.Append("♀ ")
+        If c.HkxFlagsKnown AndAlso c.CropIgnorado Then b.Append("⚠ ")
         Return b.ToString()
     End Function
 

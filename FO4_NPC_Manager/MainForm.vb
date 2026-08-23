@@ -1497,7 +1497,7 @@ Public Class MainForm
             Dim clipsRef = model.Clips
             System.Threading.Tasks.Task.Run(Sub()
                                                 Try
-                                                    BehaviorClipEnumerator.DetectAdditiveFlags(clipsRef, AddressOf LoadAnimHkxBytes)
+                                                    BehaviorClipEnumerator.DetectHkxFlags(clipsRef, AddressOf LoadAnimHkxBytes)
                                                 Catch
                                                 End Try
                                             End Sub)
