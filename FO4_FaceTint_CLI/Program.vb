@@ -5408,7 +5408,7 @@ persist:
             Dim rb = RaceBehaviorResolver.ResolveRaceBehavior(race.FormID, pm)
             If rb Is Nothing Then Continue For
             Dim clips = BehaviorClipEnumerator.EnumerateClips(rb, loader)
-            Console.WriteLine($"===== {race.EditorID} [0x{race.FormID:X8}] | subgraphs={rb.Subgraphs.Count} | clips(dedup-file)={clips.Count} =====")
+            Console.WriteLine($"===== {race.EditorID} [0x{race.FormID:X8}] | subgraphs={rb.Subgraphs.Count} | clips(dedup-variante)={clips.Count} =====")
             ' Cobertura por FUENTE: behavior-walk vs IDLE-pattern (con Category) vs folder-scan (sin Category).
             Dim nBeh = clips.Where(Function(c) c.FromBehaviorGraph).Count()
             Dim nIdle = clips.Where(Function(c) Not c.FromBehaviorGraph AndAlso Not String.IsNullOrEmpty(c.Category)).Count()
@@ -8824,7 +8824,7 @@ persist:
             CompareNifHkxBoneSets(race.EditorID, havokSkel, rb.Skeleton)
             ComposeAndCompareSkeleton(race.EditorID, havokSkel, rb.Skeleton)
             Dim clips = BehaviorClipEnumerator.EnumerateClips(rb, loader)
-            Console.WriteLine($"  playable CLIPS (dedup by file): {clips.Count}")
+            Console.WriteLine($"  playable CLIPS (dedup por VARIANTE: archivo+crop+speed+pingpong): {clips.Count}")
             For Each rg In clips.SelectMany(Function(c) c.Roles).GroupBy(Function(r) r).OrderByDescending(Function(g) g.Count())
                 Console.WriteLine($"     role {rg.Key,-10} : {rg.Count()} clips")
             Next

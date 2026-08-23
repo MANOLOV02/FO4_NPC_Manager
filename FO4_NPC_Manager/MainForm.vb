@@ -1311,9 +1311,10 @@ Public Class MainForm
     Private _animSuppressMs As Boolean = False          ' al setear NumericAnimFrameMs programáticamente
     ''' <summary>hkbClipGenerator::m_playbackSpeed del clip seleccionado. Se RESUELVE al cargar el
     ''' clip (multiplica el FPS nativo) y desde ahí el usuario puede editar el numeric libremente.
-    ''' El SIGNO se guarda aparte: el numeric sólo admite FPS positivos, y ⛔ el REVÉS lo resuelve el
-    ''' CALLER — HkxAnimationPlayer.FrameForNow coacciona TargetFps &lt;= 0 a 1.0, así que un fps
-    ''' negativo NO reproduce al revés por sí solo. Medido: 17,1% de los clips SSE y 5,3% de los FO4 tienen
+    ''' El SIGNO se guarda aparte porque el numeric sólo admite FPS positivos, y se reinyecta en
+    ''' <see cref="SignedFpsFromNumeric"/>. ⛔ Desde el fix de la reversa, un TargetFps negativo SÍ
+    ''' reproduce al revés: HkxAnimationPlayer.FrameForNow conserva el signo y sólo coacciona el 0 y el
+    ''' no-finito. NO reponer un Math.Abs acá ni en ButtonAnimPlay_Click. Medido: 17,1% de los clips SSE y 5,3% de los FO4 tienen
     ''' playbackSpeed &lt;&gt; 1.0 (0,1x, 10x, 2x, -1x…): no es caso raro, hay que resolverlo siempre.</summary>
     Private _animClipSpeed As Double = 1.0
     Private _animOverBudget As Boolean = False          ' FPS en rojo = render no llega al target
@@ -1611,7 +1612,7 @@ Public Class MainForm
         End If
         Dim current = TryCast(If(ComboAnim.SelectedIndex > 0, _animComboClips(ComboAnim.SelectedIndex - 1), Nothing), ResolvedAnimationClip)
         Dim isFemale = _animCacheKey.EndsWith("|F", StringComparison.OrdinalIgnoreCase)   ' género del NPC actual (clave "raceFID|F/M")
-        Using dlg As New AnimationPicker_Form(_animClips, isFemale, If(current?.AnimationFile, ""))
+        Using dlg As New AnimationPicker_Form(_animClips, isFemale, current)
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.SelectedClip IsNot Nothing Then
                 Dim picked = dlg.SelectedClip
                 Dim pos = _animComboClips.IndexOf(picked)
@@ -1701,17 +1702,38 @@ Public Class MainForm
         ' Clip seleccionado = PAUSADO en frame 0 (no es "playing"). PlayingAnimation sigue la lógica
         ' del botón Play (True solo al reproducir), igual que WM — si no, el RenderTimer queda parado
         ' en pausa y no se puede rotar/zoom. Acá NO se setea True.
-        Dim maxFrame = Math.Max(0, _animSession.FrameCount - 1)
+        ' El motor NO reproduce el tramo que el hkbClipGenerator recorta (cropStart/cropEnd), ni loopea un
+        ' clip PING_PONG: rebota. Las dos cosas las resuelve el player; acá solo se le pasan los SEGUNDOS
+        ' declarados y se lee el rango que salga. ⛔ Este metodo NO divide: toda la aritmetica vive en
+        ' SetPlayableRange, para que el snap y el clamp esten en un solo lugar.
+        _animPlayer.SetPlayableRange(clip.CropStartLocalTime, clip.CropEndLocalTime)
+        _animPlayer.PingPong = clip.IsPingPong
+        Dim primerFrame = _animPlayer.FirstPlayableFrame
+        Dim ultimoFrame = _animPlayer.LastPlayableFrame
         _animSuppress = True
-        SliderAnimFrame.Minimum = 0 : SliderAnimFrame.Maximum = maxFrame : SliderAnimFrame.Value = 0
+        ' ⛔ Maximum PRIMERO: el setter de Minimum hace `If _maximum < _minimum Then _maximum = _minimum`
+        ' (TinySliderTextBox.vb:104), asi que subir el minimo con el maximo viejo abajo lo ARRASTRA. Y el
+        ' setter de Value levanta ValueChanged (:146): por eso las tres van dentro del mismo _animSuppress.
+        SliderAnimFrame.Maximum = ultimoFrame
+        SliderAnimFrame.Minimum = primerFrame
+        SliderAnimFrame.Value = primerFrame
         _animSuppress = False
-        SliderAnimFrame.Enabled = maxFrame > 0
-        NumericAnimFrameMs.Enabled = maxFrame > 0
-        ButtonAnimPlay.Enabled = maxFrame > 0
-        ' Velocidad AUTORADA del clip: se resuelve acá, una vez, y entra en el FPS por defecto.
-        _animClipSpeed = If(clip.PlaybackSpeed <> 0.0F AndAlso Single.IsFinite(clip.PlaybackSpeed), CDbl(clip.PlaybackSpeed), 1.0)
+        ' ⛔ > Minimum, no > 0: con crop el minimo deja de ser 0, y un clip cuyo rango honrado sea de UN
+        ' solo frame en un indice > 0 habilitaria Play sobre algo congelado (OnAppIdle girando en Sleep(1)).
+        ' Medido: 155 de 212 clips con crop dejan Minimum > 0, y hay 3 clips vanilla con rango de 1 frame
+        ' (Actors\LibertyPrime\Animations\Idle.hkx, clips Equip y Unequip). Que esos queden sin transporte
+        ' es engine-faithful: el motor tampoco tiene nada que reproducir ahi.
+        SliderAnimFrame.Enabled = ultimoFrame > primerFrame
+        NumericAnimFrameMs.Enabled = ultimoFrame > primerFrame
+        ButtonAnimPlay.Enabled = ultimoFrame > primerFrame
+        ' Velocidad AUTORADA del clip. ⛔ La ley de "que velocidad se reproduce de verdad" (0/NaN/Inf => x1,
+        ' el resto tal cual CON SIGNO) vive en UN solo lugar: BehaviorClipEnumerator.VelocidadEfectiva, que
+        ' deja el resultado en clip.VelocidadReproduccion. Es la MISMA que usa la clave del dedup. Repetirla
+        ' aca las acoplaba por convencion: el dia que una cambiara, el dedup separaria variantes que se
+        ' reproducen igual (o al reves) y ningun gate lo veria.
+        _animClipSpeed = CDbl(clip.VelocidadReproduccion)
         ApplyAnimPlaybackInterval()   ' FPS por defecto = FPS nativo × playbackSpeed (editable después)
-        ApplyAnimFrame(0)
+        ApplyAnimFrame(primerFrame)
         ' Al cambiar de clip, re-encuadra la cámara RESPETANDO los flags de cámara (Settings_Camara:
         ' FreezeCamera / ResetZoom / ResetAngles) — igual que WM/el pipeline en selección. ResetCamera()
         ' sin Force honra esos flags (si FreezeCamera está on, no toca la cámara).
@@ -2060,7 +2082,12 @@ Public Class MainForm
         Dim nm = If(clip Is Nothing, "", If(String.IsNullOrWhiteSpace(clip.ClipName),
                                             IO.Path.GetFileNameWithoutExtension(clip.AnimationFile), clip.ClipName))
         If String.IsNullOrWhiteSpace(nm) Then nm = "Imported HKX Pose"
-        Return $"{nm}_f{frame}"
+        ' ⛔ El sufijo de variante entra en el nombre: dos variantes del MISMO .hkx exportadas al mismo
+        ' frame proponian el MISMO nombre, y el XML de poses es COMPARTIDO con Wardrobe Manager ⇒ el prompt
+        ' de conflicto ofrecia pisar la anterior y las dos quedaban indistinguibles en el archivo.
+        ' Se limpian los caracteres que no sobreviven a un nombre de pose (la flecha y el punto medio).
+        Dim v = If(clip Is Nothing, "", clip.VarianteSufijo).Replace(" · ", " ").Replace("◀", "rev").Replace("↔", "pp").Trim()
+        Return If(v = "", $"{nm}_f{frame}", $"{nm} ({v})_f{frame}")
     End Function
 
     Private Sub ButtonExportPose_Click(sender As Object, e As EventArgs) Handles ButtonExportPose.Click
@@ -2166,13 +2193,18 @@ Public Class MainForm
     Private Sub ButtonAnimPlay_Click(sender As Object, e As EventArgs) Handles ButtonAnimPlay.Click
         If IsAnimPlayingNow() Then
             StopAnimPlayback()
-        ElseIf _animPlayer IsNot Nothing AndAlso SliderAnimFrame.Maximum > 0 Then
+        ElseIf _animPlayer IsNot Nothing AndAlso SliderAnimFrame.Maximum > SliderAnimFrame.Minimum Then
             SetPlayingAnimation(True)
             SetEditorBarEnabledForPlayback(True)   ' deshabilita la barra de botones del editor hasta el Stop
             ' Durante el playback el slider es solo indicador de progreso (OnAnimPlaybackFrame le sigue
             ' seteando .Value por código): se bloquea el scrub manual y se re-habilita en StopAnimPlayback.
             SliderAnimFrame.Enabled = False
-            Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
+            ' ⛔ SignedFpsFromNumeric, NO Math.Max: el Max tiraba el SIGNO que ApplyAnimPlaybackInterval y
+            ' NumericAnimFrameMs_ValueChanged si conservaban, asi que apretar Play reproducia hacia ADELANTE
+            ' un clip autorado para ir al reves. Medido: 108 clips con playbackSpeed negativo en los dos
+            ' juegos, y Bethesda lo usa como idioma (RifleIdle...ShuffleBackward apunta a ...ShuffleForward
+            ' con speed -1: no autoran la animacion hacia atras, reproducen la de adelante en reversa).
+            Dim fps = SignedFpsFromNumeric()
             _animPlayer.TargetFps = fps
             _animPlayer.Start(CInt(Math.Round(SliderAnimFrame.Value)))
             _animPlayer.BeginIdlePlayback(AddressOf OnAnimPlaybackFrame)
@@ -2190,7 +2222,7 @@ Public Class MainForm
         SetEditorBarEnabledForPlayback(False)
         ' Re-habilita el scrub del slider si hay clip cargado (lo deshabilitó el Play). Los callers que
         ' descartan el clip (RefreshAnimBarForCurrentNpc / ResetAnimToTPose) lo re-deshabilitan luego.
-        If SliderAnimFrame IsNot Nothing Then SliderAnimFrame.Enabled = SliderAnimFrame.Maximum > 0
+        If SliderAnimFrame IsNot Nothing Then SliderAnimFrame.Enabled = SliderAnimFrame.Maximum > SliderAnimFrame.Minimum
         If ButtonAnimPlay IsNot Nothing Then ButtonAnimPlay.Text = "▶"
         If _animOverBudget Then NumericAnimFrameMs.ForeColor = SystemColors.ControlText : _animOverBudget = False
         ' Pausa con clip cargado = el estado en el que SÍ se exporta (los callers que además descartan
@@ -2202,7 +2234,7 @@ Public Class MainForm
     ''' Recibe el frame ya elegido por reloj real (el player ya dedup-ea por _lastShownFrame);
     ''' actualiza el slider, mide el render y aplica. Reemplaza al viejo AnimPlayTimer_Tick.</summary>
     Private Sub OnAnimPlaybackFrame(frame As Integer)
-        If _animPlayer Is Nothing OrElse SliderAnimFrame.Maximum <= 0 Then StopAnimPlayback() : Return
+        If _animPlayer Is Nothing OrElse SliderAnimFrame.Maximum <= SliderAnimFrame.Minimum Then StopAnimPlayback() : Return
         _animSuppress = True : SliderAnimFrame.Value = frame : _animSuppress = False
 
         ' Medir el render del frame (InvalidateRender es síncrono) y, si excede el target (ms/frame =

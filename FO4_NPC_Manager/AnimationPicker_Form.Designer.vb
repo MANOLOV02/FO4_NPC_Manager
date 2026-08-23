@@ -119,6 +119,11 @@ Partial Class AnimationPicker_Form
         ' TreeClips
         '
         TreeClips.Dock = System.Windows.Forms.DockStyle.Fill
+        TreeClips.DrawMode = System.Windows.Forms.TreeViewDrawMode.OwnerDrawText
+        TreeClips.FullRowSelect = True
+        TreeClips.ItemHeight = 20
+        TreeClips.ShowLines = False
+        TreeClips.ShowRootLines = True
         TreeClips.HideSelection = False
         TreeClips.Location = New System.Drawing.Point(3, 39)
         TreeClips.Name = "TreeClips"

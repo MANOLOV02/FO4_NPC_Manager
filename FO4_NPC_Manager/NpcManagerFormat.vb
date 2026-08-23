@@ -43,11 +43,20 @@ Friend NotInheritable Class NpcManagerFormat
         Return $" ({warnings(0)})"
     End Function
 
+''' <summary>Etiqueta del clip para el combo de la barra de animacion.
+''' <para>⛔ El orden es: insignias → nombre → variante → roles → 1a persona. Las insignias y la variante
+''' van ANTES de los corchetes para que dos entradas del MISMO archivo se distingan sin tener que leer
+''' hasta el final de una linea larga — que es exactamente el caso que el dedup por variante crea.</para>
+''' <para>⛔ `VarianteSufijo` se calcula UNA vez por lista en el enumerador, no aca: esta funcion es Shared
+''' sobre UN clip y el combo y el picker ven listas DISTINTAS (el picker filtra por genero, 1a persona y
+''' texto), asi que calcularlo aca daria dos nombres para el mismo clip y ademas parpadearia al tipear en
+''' el filtro. Leer un campo ya calculado es gratis.</para></summary>
     Public Shared Function AnimClipLabel(c As ResolvedAnimationClip) As String
         Dim nm = If(String.IsNullOrWhiteSpace(c.ClipName), System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile), c.ClipName)
+        Dim ins = If(c.IsAdditive, "⊕ ", "")
         Dim roles = If(c.Roles.Count > 0, $"  [{String.Join(",", c.Roles)}]", "")
         Dim fp = If(c.Is1stPersonOnly, "  · 1st-person", "")
-        Return $"{nm}{roles}{fp}"
+        Return $"{ins}{nm}{c.VarianteSufijo}{roles}{fp}"
     End Function
 
     Public Shared Function GetTemplateCategoryLabel(category As NPC_TemplateCategory) As String

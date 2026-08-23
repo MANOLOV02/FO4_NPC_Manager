@@ -15,8 +15,23 @@ Imports FO4_Base_Library
 Public Class AnimationPicker_Form
 
     Private ReadOnly _all As List(Of ResolvedAnimationClip)
-    Private ReadOnly _initialFile As String
+''' <summary>Clip que estaba elegido al abrir. ⛔ Se guarda la REFERENCIA, no el path: desde que el
+''' enumerador separa variantes (mismo .hkx con distinto crop/speed/ping-pong), matchear por
+''' AnimationFile preseleccionaba la PRIMERA del arbol y el caller saltaba a otra variante sin que el
+''' usuario hubiera elegido nada.</summary>
+    Private ReadOnly _initialClip As ResolvedAnimationClip
     Private ReadOnly _isFemale As Boolean
+
+    ' Pinceles cacheados: el owner-draw corre por nodo VISIBLE en cada repintado, asi que no se asigna
+    ' nada por fila. (OwnerDrawText, no OwnerDrawAll: Windows sigue dibujando fondo y +/-.)
+    Private ReadOnly _brNombre As New Drawing.SolidBrush(Drawing.SystemColors.WindowText)
+    Private ReadOnly _brRuta As New Drawing.SolidBrush(Drawing.Color.FromArgb(140, 140, 140))
+    Private ReadOnly _brVariante As New Drawing.SolidBrush(Drawing.Color.FromArgb(196, 112, 0))
+    Private ReadOnly _brInsignia As New Drawing.SolidBrush(Drawing.Color.FromArgb(72, 128, 190))
+    Private ReadOnly _brConteo As New Drawing.SolidBrush(Drawing.Color.FromArgb(150, 150, 150))
+    Private ReadOnly _brSel As New Drawing.SolidBrush(Drawing.SystemColors.Highlight)
+    Private ReadOnly _brFondo As New Drawing.SolidBrush(Drawing.SystemColors.Window)
+    Private _fuenteNegrita As Drawing.Font
 
     ''' <summary>Clip elegido (Nothing si se canceló o si el nodo seleccionado es una categoría).</summary>
     Public ReadOnly Property SelectedClip As ResolvedAnimationClip
@@ -25,11 +40,33 @@ Public Class AnimationPicker_Form
         End Get
     End Property
 
-    Public Sub New(clips As IEnumerable(Of ResolvedAnimationClip), isFemale As Boolean, Optional currentFile As String = Nothing)
+    Public Sub New(clips As IEnumerable(Of ResolvedAnimationClip), isFemale As Boolean, Optional currentClip As ResolvedAnimationClip = Nothing)
         InitializeComponent()
         _all = If(clips, Enumerable.Empty(Of ResolvedAnimationClip)()).Where(Function(c) c IsNot Nothing).ToList()
         _isFemale = isFemale
-        _initialFile = If(currentFile, "")
+        _initialClip = currentClip
+        _fuenteNegrita = New Drawing.Font(TreeClips.Font, Drawing.FontStyle.Bold)
+    End Sub
+
+    ' ⛔ El TreeView NO expone DoubleBuffered (es Protected en Control) y en OwnerDraw eso se ve: la fila
+    ' de arriba queda con basura de colores hasta que algo la repinta. Se activa el doble buffer NATIVO del
+    ' control comun (TVS_EX_DOUBLEBUFFER), que es la via documentada y no toca miembros protegidos por
+    ' reflexion. Tiene que ir DESPUES de que exista el handle: antes, SendMessage no llega a ningun lado.
+    Private Const TVM_SETEXTENDEDSTYLE As Integer = &H112C   ' TV_FIRST (&H1100) + 44
+    Private Const TVS_EX_DOUBLEBUFFER As Integer = &H4
+
+    <Runtime.InteropServices.DllImport("user32.dll", CharSet:=Runtime.InteropServices.CharSet.Auto)>
+    Private Shared Function SendMessage(hWnd As IntPtr, msg As Integer, wParam As IntPtr, lParam As IntPtr) As IntPtr
+    End Function
+
+    Private Sub TreeClips_HandleCreated(sender As Object, e As EventArgs) Handles TreeClips.HandleCreated
+        SendMessage(TreeClips.Handle, TVM_SETEXTENDEDSTYLE, New IntPtr(TVS_EX_DOUBLEBUFFER), New IntPtr(TVS_EX_DOUBLEBUFFER))
+    End Sub
+
+    Private Sub AnimationPicker_Form_Load(sender As Object, e As EventArgs) Handles Me.Load
+        ' La forma entera tambien: el panel de filtros parpadeaba al abrir por el mismo motivo.
+        Me.SetStyle(ControlStyles.OptimizedDoubleBuffer Or ControlStyles.AllPaintingInWmPaint, True)
+        Me.UpdateStyles()
     End Sub
 
     Private Sub AnimationPicker_Form_Shown(sender As Object, e As EventArgs) Handles Me.Shown
@@ -112,7 +149,7 @@ Public Class AnimationPicker_Form
                     End If
                     Dim leaf As New TreeNode(LeafLabel(cl)) With {.Tag = cl}
                     parent.Nodes.Add(leaf)
-                    If toSelect Is Nothing AndAlso _initialFile <> "" AndAlso String.Equals(cl.AnimationFile, _initialFile, StringComparison.OrdinalIgnoreCase) Then toSelect = leaf
+                    If toSelect Is Nothing AndAlso _initialClip IsNot Nothing AndAlso cl Is _initialClip Then toSelect = leaf
                 Next
                 ' Orden alfabético de carpetas (las hojas ya vienen ordenadas por inserción) + sufijo (count) por nodo-carpeta.
                 SortAndCountFolders(roleNode)
@@ -128,7 +165,7 @@ Public Class AnimationPicker_Form
                     For Each cl In catGrp.OrderBy(Function(cc) ClipDisplayName(cc), StringComparer.OrdinalIgnoreCase)
                         Dim leaf As New TreeNode(LeafLabel(cl)) With {.Tag = cl}
                         catNode.Nodes.Add(leaf)
-                        If toSelect Is Nothing AndAlso _initialFile <> "" AndAlso String.Equals(cl.AnimationFile, _initialFile, StringComparison.OrdinalIgnoreCase) Then toSelect = leaf
+                        If toSelect Is Nothing AndAlso _initialClip IsNot Nothing AndAlso cl Is _initialClip Then toSelect = leaf
                     Next
                     gestureNode.Nodes.Add(catNode)
                 Next
@@ -146,6 +183,9 @@ Public Class AnimationPicker_Form
             End If
         Finally
             TreeClips.EndUpdate()
+            ' ⛔ Un Invalidate COMPLETO despues del EndUpdate: si no, el control repinta por bandas y las
+            ' primeras filas se dibujan antes de que el layout este resuelto.
+            TreeClips.Invalidate()
         End Try
         LabelCount.Text = $"{shown.Count} / {_all.Count} clips"
     End Sub
@@ -181,14 +221,99 @@ Public Class AnimationPicker_Form
         If Not String.IsNullOrWhiteSpace(c.ClipName) Then Return c.ClipName
         Return System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)
     End Function
+''' <summary>Insignias del clip, en un orden FIJO para que la columna quede alineada entre filas.
+''' ⊕ aditivo (overlay, no pose standalone) · ° presente en la search-path pero no referenciado
+''' estaticamente (evento/dialogo en runtime) · ♀ solo para NPC femenino.
+''' <para>Las insignias que dependen de la REPRODUCCION (reversa, rebote, velocidad, crop) NO van aca:
+''' van en <see cref="ResolvedAnimationClip.VarianteSufijo"/>, que se calcula UNA vez por lista en el
+''' enumerador. Ponerlas aca las recalcularia en cada repintado y ademas darian distinto entre el combo
+''' y el picker, que ven listas distintas.</para></summary>
+    Private Shared Function Insignias(c As ResolvedAnimationClip) As String
+        Dim b As New Text.StringBuilder(6)
+        If c.IsAdditive Then b.Append("⊕ ")
+        If Not c.FromBehaviorGraph Then b.Append("° ")
+        If c.RequiresFemale Then b.Append("♀ ")
+        Return b.ToString()
+    End Function
+
     Private Shared Function LeafLabel(c As ResolvedAnimationClip) As String
-        Dim g = If(c.RequiresFemale, " ♀", "")
-        Dim add = If(c.IsAdditive, "⊕ ", "")   ' insignia aditivo (overlay, no pose standalone)
-        Dim sp = If(c.FromBehaviorGraph, "", "° ")   ' °=presente en la search-path pero no referenciado estáticamente (evento/diálogo en runtime)
         ' Muestra el PATH resuelto en cada hoja para verificar que el clip es del actor correcto (no mis-resuelto).
-        ' (Sin marca de PlaybackSpeed: era 1.0F en casi todos los clips ⇒ "[1x]" ruido. El frame-count NO se muestra
-        '  acá porque exigiría cargar+parsear cada .hkx; el del clip activo ya se ve en el slider de la barra de anim.)
-        Return $"{sp}{add}{ClipDisplayName(c)}{g}   →   {c.AnimationFile}"
+        ' El frame-count NO se muestra aca porque exigiria cargar+parsear cada .hkx; el del clip activo ya se ve
+        ' en el slider de la barra de anim.
+        ' ⛔ Este texto es el del NODO: lo usan el ordenamiento y la busqueda incremental del TreeView, asi que
+        ' tiene que quedar en texto plano. El dibujo con color lo hace TreeClips_DrawNode a partir del Tag.
+        Return $"{Insignias(c)}{ClipDisplayName(c)}{c.VarianteSufijo}   →   {c.AnimationFile}"
+    End Function
+
+''' <summary>Dibuja la fila en tres colores: insignias, nombre + variante, y la ruta apagada. Asi el
+''' discriminador de variante (el que distingue dos entradas del MISMO archivo) salta a la vista, que es
+''' justo el problema que el dedup por variante crea.
+''' <para>⛔ Costo: OwnerDrawText solo se dispara para los nodos VISIBLES, no para el arbol entero — con
+''' 4.000 clips se dibujan las ~20 filas en pantalla. Los pinceles y la fuente negrita estan cacheados en
+''' campos: no se asigna nada por fila. El texto de cada tramo sale de <see cref="LeafParts"/>, que son
+''' operaciones de string sobre esas ~20 filas.</para></summary>
+    Private Sub TreeClips_DrawNode(sender As Object, e As DrawTreeNodeEventArgs) Handles TreeClips.DrawNode
+        ' ⛔ GUARDA OBLIGATORIA: DrawNode se dispara tambien para nodos cuyo layout todavia no existe, y
+        ' ahi e.Bounds viene degenerado ({0,0,0,0}). Sin este return, TODOS esos nodos se dibujan en (0,1),
+        ' uno encima del otro: es la "mancha" multicolor que quedaba en la primera fila hasta que algo
+        ' forzaba un repintado completo. Un nodo REAL y visible siempre tiene alto y ancho positivos.
+        If e.Bounds.Height <= 0 OrElse e.Bounds.Width <= 0 Then Return
+        If e.Node Is Nothing OrElse e.Node.TreeView Is Nothing Then Return
+
+        ' ⛔ El fondo se pinta SIEMPRE, no solo el de la fila seleccionada: con OwnerDrawText lo que no
+        ' pinto yo conserva lo que hubiera en el buffer.
+        Dim seleccionado = (e.State And TreeNodeStates.Selected) <> 0
+        Dim rFila = New Drawing.Rectangle(e.Bounds.Left, e.Bounds.Top,
+                                          Math.Max(e.Bounds.Width, TreeClips.ClientSize.Width - e.Bounds.Left),
+                                          e.Bounds.Height)
+        e.Graphics.FillRectangle(If(seleccionado, _brSel, _brFondo), rFila)
+        ' ⛔ Recorte a la fila: sin esto, un texto largo (las rutas lo son) puede pintar sobre la fila de
+        ' al lado cuando el control decide repintar solo una banda.
+        Dim clipPrevio = e.Graphics.Clip
+        e.Graphics.SetClip(rFila)
+        Try
+        Dim clip = TryCast(e.Node.Tag, ResolvedAnimationClip)
+        Dim x = e.Bounds.Left
+        Dim y = e.Bounds.Top + 1
+        Dim fuente = TreeClips.Font
+
+            If clip Is Nothing Then
+                ' Nodo de carpeta / rol: el nombre en negrita y el "(N)" apagado.
+                Dim txt = e.Node.Text
+                Dim iPar = txt.LastIndexOf(" (", StringComparison.Ordinal)
+                Dim nombre = If(iPar > 0, txt.Substring(0, iPar), txt)
+                Dim cuenta = If(iPar > 0, txt.Substring(iPar), "")
+                x = Pintar(e.Graphics, nombre, _fuenteNegrita, If(seleccionado, Drawing.SystemColors.HighlightText, Drawing.SystemColors.WindowText), x, y)
+                If cuenta <> "" Then Pintar(e.Graphics, cuenta, fuente, If(seleccionado, Drawing.SystemColors.HighlightText, _brConteo.Color), x, y)
+                e.Graphics.Clip = clipPrevio
+                Return
+            End If
+
+            Dim ins = Insignias(clip)
+            Dim nom = ClipDisplayName(clip)
+            Dim var = clip.VarianteSufijo
+            Dim ruta = "   →   " & clip.AnimationFile
+            Dim cNombre = If(seleccionado, Drawing.SystemColors.HighlightText, _brNombre.Color)
+            Dim cRuta = If(seleccionado, Drawing.SystemColors.HighlightText, _brRuta.Color)
+            Dim cVar = If(seleccionado, Drawing.SystemColors.HighlightText, _brVariante.Color)
+            Dim cIns = If(seleccionado, Drawing.SystemColors.HighlightText, _brInsignia.Color)
+
+            If ins <> "" Then x = Pintar(e.Graphics, ins, fuente, cIns, x, y)
+            x = Pintar(e.Graphics, nom, fuente, cNombre, x, y)
+            If var <> "" Then x = Pintar(e.Graphics, var, _fuenteNegrita, cVar, x, y)
+            Pintar(e.Graphics, ruta, fuente, cRuta, x, y)
+        Finally
+            e.Graphics.Clip = clipPrevio
+        End Try
+    End Sub
+
+    ' Dibuja un tramo y devuelve la X donde sigue el proximo. NoPrefix es OBLIGATORIO: las rutas pueden
+    ' tener "&" y TextRenderer lo interpretaria como mnemonico y se comeria el caracter siguiente.
+    Private Shared Function Pintar(g As Drawing.Graphics, txt As String, f As Drawing.Font,
+                                   color As Drawing.Color, x As Integer, y As Integer) As Integer
+        Const FLAGS As TextFormatFlags = TextFormatFlags.NoPrefix Or TextFormatFlags.NoPadding Or TextFormatFlags.SingleLine
+        TextRenderer.DrawText(g, txt, f, New Drawing.Point(x, y), color, FLAGS)
+        Return x + TextRenderer.MeasureText(g, txt, f, Drawing.Size.Empty, FLAGS).Width
     End Function
 
     ' Carpeta del clip relativa a "Animations\" (la taxonomía de assets de Bethesda: Weapon\Pistol, 1HM, MT\Neutral…).
