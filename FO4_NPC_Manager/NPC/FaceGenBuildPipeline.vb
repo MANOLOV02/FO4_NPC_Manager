@@ -117,6 +117,17 @@ Public Module FaceGenBuildPipeline
             End If
         End If
 
+        ' ⛔ EL BAKE NO LLEVA FÍSICA. `GetGlobalTransform` compone también la capa
+        ' `PhysicsDeltaTransform`, así que un esqueleto que ya hubiera simulado en el previewer
+        ' metería el último frame de tela en un bake que TIENE que ser determinista y byte-idéntico
+        ' (regla RENDER == BAKE: el render puede tener física, el bake no puede depender del reloj).
+        ' Limpiar acá es barato y hace que la garantía no dependa de en qué orden usó la app el
+        ' esqueleto. Si algún día el bake DEBE llevar física, es una decisión del usuario, no un
+        ' efecto colateral de haber dejado la capa puesta.
+        faceSkel?.ResetPhysics()
+        bodySkel?.ResetPhysics()
+        bwBindSkel?.ResetPhysics()
+
         ' 4) Skin shape with poseT resolved from faceSkel ∪ bodySkel ∪ shape-internal fallback.
         Dim resolver = BuildPoseResolver(faceSkel, bodySkel, facebonesNif)
         Dim vWorld = SkinBakeMath.SkinShapeWorldVerticesWithPose(facebonesShape, facebonesNif, resolver)

@@ -2366,6 +2366,7 @@ Public Class MainForm
         CheckBoxCatUnused.Checked = NPC_Config.Current.ShowCatUnused
 #If DEBUG Then
         AddSseFoldedRenderDebugToggle()   ' PROVISORIO (diagnóstico) — DEBUG ONLY: en Release ni siquiera se crea
+        AddHavokPhysicsDebugCombo()       ' DEBUG ONLY (misma ley que el de arriba): en Release ni se crea
 #End If
         LoadDataAsync()
     End Sub
@@ -2473,6 +2474,76 @@ Public Class MainForm
                 ReloadCurrentNpcFull()
             End Sub
         PanelActionsToolbar.Controls.Add(cbParity)
+    End Sub
+
+    ''' <summary>
+    ''' DEBUG ONLY — combo para conmutar la física Havok de cloth EN VIVO y ver el A/B con y sin ella.
+    ''' <para>Se construye EN RUNTIME (no está en el Designer) por la misma razón que los dos toggles de
+    ''' fold de arriba: es diagnóstico. La llamada vive dentro de un <c>#If DEBUG</c>, así que en Release
+    ''' el control NO EXISTE — no hay que acordarse de ocultarlo.</para>
+    ''' <para>⛔ FO4 ÚNICAMENTE, misma lógica que <c>GroupConvFold.Visible = isSse</c> en CharGenOptionsForm:
+    ''' Havok Cloth es exclusivo de Fallout 4 (SkyrimSE.exe no declara ni una sola clase <c>hcl</c>, medido
+    ''' sobre la reflexión del exe), y un control visible que no mueve nada es un defecto. El gate DURO de
+    ''' verdad sigue estando en <c>Config_App.ApplyHavokPhysicsSettings</c> — esto sólo evita ofrecer una
+    ''' perilla muerta.</para>
+    ''' </summary>
+    Private Sub AddHavokPhysicsDebugCombo()
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Fallout4 Then Return
+
+        Dim lbl As New Label With {
+            .Name = "LabelHavokPhysicsDebug",
+            .Text = "Cloth physics (debug):",
+            .AutoSize = True,
+            .Margin = New Padding(12, 12, 3, 3)
+        }
+
+        Dim cmb As New ComboBox With {
+            .Name = "ComboBoxHavokPhysicsDebug",
+            .DropDownStyle = ComboBoxStyle.DropDownList,
+            .Width = 150,
+            .Margin = New Padding(3, 8, 3, 3)
+        }
+        ' El orden de los ítems ES el valor de `HavokPhysicsMode` (0/1/2). No es coincidencia: el índice se
+        ' escribe tal cual en `Setting_HavokPhysicsMode`, que `ApplyHavokPhysicsSettings` castea al enum.
+        cmb.Items.AddRange(New Object() {"Off", "Follow only", "Full simulation"})
+
+        ' ⛔ El ÍNDICE INICIAL SE SIEMBRA ANTES DE ENGANCHAR EL HANDLER. Al revés, `SelectedIndex = ...`
+        ' dispararía SelectedIndexChanged durante el Load: guardaría la config y forzaría un render con
+        ' `_renderHost` todavía en Nothing.
+        Dim cfg = Config_App.Current
+        cmb.SelectedIndex = If(cfg.Setting_HavokPhysics, Math.Max(0, Math.Min(2, cfg.Setting_HavokPhysicsMode)), 0)
+
+        AddHandler cmb.SelectedIndexChanged,
+            Sub()
+                Dim idx = cmb.SelectedIndex
+                If idx < 0 Then Return
+                Dim c = Config_App.Current
+                If c Is Nothing Then Return
+
+                ' "Off" = apagar el interruptor. Los otros dos encienden y eligen hasta dónde llega.
+                ' Se guarda el MODO aunque sea Off para no perder la elección del usuario al volver a prender.
+                c.Setting_HavokPhysics = (idx > 0)
+                If idx > 0 Then c.Setting_HavokPhysicsMode = idx
+                ' La config es la FUENTE DE VERDAD (el pase de render la vuelca en cada frame). Volcarla
+                ' acá también hace que apagar limpie la capa YA — el setter de `Enabled` llama a
+                ' ClearAllTouchedSkeletons en la transición True→False — sin esperar a un frame de pose.
+                c.ApplyHavokPhysicsSettings()
+                Config_App.SaveConfig()
+
+                ' Tirar el estado vivo: al cambiar de modo la próxima pasada RESIEMBRA desde la piel posada
+                ' y corre los `SettleSteps` (10, el `uNumSimSettleSteps` del motor). Sin esto el combo
+                ' mostraría la tela a medio caer del modo anterior, que no es el A/B que se quiere ver.
+                Havok.Physics.HavokPhysicsSettings.ResetAll()
+
+                ' POSE dirty: el paso de física vive en la rama `needsPoseUpdate` del pipeline (Render.vb).
+                ' Con Morphs o Textures dirty el combo no movería NADA — medido al escribir esto.
+                If _renderHost Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
+                _renderHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _renderHost.LastRenderData.Shapes)
+                _renderHost.PreviewCtl.InvalidateRender()
+            End Sub
+
+        PanelActionsToolbar.Controls.Add(lbl)
+        PanelActionsToolbar.Controls.Add(cmb)
     End Sub
 
     ''' <summary>PROVISORIO (con <see cref="AddSseFoldedRenderDebugToggle"/>). Referencia al checkbox para poder
