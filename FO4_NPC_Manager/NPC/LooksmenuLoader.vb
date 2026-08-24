@@ -1156,6 +1156,29 @@ Public Module LooksmenuLoader
                     Dim ident = FormatFormIdentifier(fid, pluginManager)
                     If Not String.IsNullOrEmpty(ident) Then w.WriteStringValue(ident)
                 Next
+                ' ⛔ DIVERGENCIA DELIBERADA CON EL CANÓNICO, decidida por el usuario (24-ago-2026).
+                ' El motor NO conserva esto: `CharGenInterface.cpp:92-103` arma el array recorriendo las
+                ' partes que el ACTOR TIENE, y `:324-337` saltea con `continue` la que no resuelve al
+                ' aplicar — así que un ciclo cargar→aplicar→guardar dentro del propio LooksMenu pierde la
+                ' entrada igual. No es paridad lo que se busca acá: es que un EDITOR no tire en silencio
+                ' un dato que entró por la puerta. Es el MISMO criterio que esta clase ya aplica al color
+                ' de pelo unas líneas más arriba ("PRESERVACIÓN, no invención").
+                ' MEDIDO sobre los 368 presets del usuario: 236 identificadores de 12 mods no instalados,
+                ' en 201 de 368 archivos (MiscHairstyle.esp 86, Lots More Facial Hair.esp 46, Lots More
+                ' Male Hairstyles.esp 40, …). Sin esto, abrir uno de esos presets y guardarlo lo deja
+                ' CALVO para siempre: reinstalar el mod ya no lo recupera.
+                ' ⚠️ Van al FINAL del array, no en su posición original: el orden del canónico es el de las
+                ' partes del actor y una entrada que no resuelve no está en el actor, así que no hay
+                ' posición que preservar. El motor las vuelve a saltear al cargar, así que el orden es
+                ' inocuo para él.
+                ' ⚠️ SIN DEDUP, A PROPÓSITO: `UnresolvedHeadParts.Add` (:412) no comprueba repetidos —la
+                ' rama SSE sí lo hace— y `ClonePreset:803` acumula con `AddRange`. Si eso puede repetir un
+                ' identificador hay que medirlo antes de decidir qué hacer, no taparlo acá.
+                If preset.UnresolvedHeadParts IsNot Nothing Then
+                    For Each ident In preset.UnresolvedHeadParts
+                        If Not String.IsNullOrEmpty(ident) Then w.WriteStringValue(ident)
+                    Next
+                End If
                 w.WriteEndArray()
 
                 ' MRSV travels through the canonical Morphs.Values channel (positional 5-float

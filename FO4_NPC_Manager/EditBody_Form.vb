@@ -999,7 +999,110 @@ Public Class EditBody_Form
         Else
             p.BodyMorphSliders(sliderName) = v
         End If
+        SincronizarMorphKeyed(p, sliderName, v)
         ScheduleRefresh()
+    End Sub
+
+    ''' <summary>Refleja en <c>BodyMorphsKeyed</c> el total que el usuario dejó en el slider.
+    ''' <para>⛔ EL MODELO TIENE DOS CARRIERS Y HAY QUE MOVER LOS DOS. El PLANO
+    ''' (<c>BodyMorphSliders</c>) es el que renderiza el preview; el KEYED
+    ''' (<c>BodyMorphsKeyed</c>: morph → {autor → valor}) es el que leen los TRES emisores de SSE, y lo
+    ''' prefieren siempre que no esté vacío: <c>RaceMenuPresetMapper.BuildJslotBodyMorphs</c> (:511, el
+    ''' .jslot), <c>NpcApplyScriptEmitter.BuildMorphArrays</c> (:178, el .psc del ESP) y
+    ''' <c>NpcOverrideSaver.EmitSseBodyGenFromSidecar</c> (:2516, el BodyGen .ini). Sin esta
+    ''' sincronización el usuario movía el slider, el preview le mostraba el cambio y las tres vías
+    ''' emitían el valor VIEJO — la edición se descartaba en silencio, en cualquier NPC.</para>
+    ''' <para>LEY DEL MOTOR: skee SUMA las keys de un morph — <c>Impl_GetBodyMorphs</c> acumula
+    ''' <c>morphSum += morph.second</c> (BodyMorphInterface.cpp:212-243). El default es el literal
+    ''' <c>UInt16 g_bodyMorphMode = 0</c> (main.cpp:145), el INI sólo lo pisa si la clave existe
+    ''' (main.cpp:798) y el <c>skee64.ini</c> instalado trae <c>iBodyMorphMode=0</c> (:86). Como el
+    ''' slider ya muestra esa SUMA (<c>RaceMenuJslot.BodyMorphsToFlatSliderDict</c>), el total se escribe
+    ''' ENTERO bajo nuestra key y los nombres absorbidos quedan en cero: la suma vuelve a dar el número
+    ''' que el usuario puso.</para>
+    ''' <para>POR QUÉ NUESTRA KEY Y NUNCA LA AJENA: skee borra al cargar toda key que termine en
+    ''' .esp/.esm/.esl cuyo plugin no esté en el load order — <c>"If the keys were mapped by mod name,
+    ''' skip them if they arent in load order"</c> (PresetInterface.cpp:1232-1240) —, así que trata esa
+    ''' key como PROPIEDAD de ese plugin. Un valor que autoró el usuario metido ahí es destruible por un
+    ''' cambio de mod list ajeno a la edición. <c>"NPCM_Manolov"</c> no tiene punto, así que nunca entra
+    ''' en ese test y sobrevive siempre.</para>
+    ''' <para>UNIFICA EN UNA SOLA CONTRIBUCIÓN, que es la ley que la app YA aplica a los node transforms:
+    ''' "a preset that carried several contributors on one bone was composed into the single value the
+    ''' engine would produce, and that is what the app displays and what it writes — as one contribution,
+    ''' under its own label" (<c>PresetCompatibilityReport.vb:823-830</c>). El slider ya muestra la SUMA
+    ''' (<c>RaceMenuJslot.BodyMorphsToFlatSliderDict</c>), así que mostrar y escribir el valor efectivo es
+    ''' lo mismo que hace la app en el caso hermano.</para>
+    ''' <para>LOS NOMBRES ABSORBIDOS QUEDAN EN CERO, NO SE BORRAN — el otro refinamiento de esa misma ley:
+    ''' "the script also writes a neutral value to exactly the contributor names this preset carried… so
+    ''' that its own contributions cannot be counted twice". Importa en la vía del ESP, donde no hay un
+    ''' <c>ClearMorphs</c> global: si otro mod ya aplicó ese mismo morph a este NPC bajo su nombre, el
+    ''' neutro lo cancela en vez de sumarse. Una key en 0 aporta 0 igual que una ausente
+    ''' (<c>BodyMorphInterface.cpp:243</c>), así que no cambia la suma.</para>
+    ''' <para>POR QUÉ UNIFICAR Y NO REPARTIR: skee poda al cargar toda key <c>.esp/.esm/.esl</c> cuyo
+    ''' plugin no esté activo, y lo hace ANTES de sumar (<c>PresetInterface.cpp:1232-1240</c>, el
+    ''' <c>continue</c> está antes del <c>presetData-&gt;bodyMorphData[name][key] = value</c>). MEDIDO sobre
+    ''' los 48 .jslot instalados: las 2.029 contribuciones tienen nombre de plugin y <b>1.701 son de
+    ''' XPMSE.esp, que no está instalado</b> — o sea que hoy esos morphs no hacen nada en el juego.
+    ''' Repartir la edición entre nuestra key y la ajena la aplicaba a medias; unificarla la aplica
+    ''' entera, en cualquier máquina y sin depender del load order. <c>"NPCM_Manolov"</c> no tiene punto,
+    ''' así que nunca entra en ese filtro (<c>find_last_of(".")</c> da npos) y sobrevive siempre.</para>
+    ''' <para>SLIDER EN CERO: se quita nuestra contribución. Si el morph no arrastraba ningún nombre ajeno
+    ''' que neutralizar, la entrada queda vacía y se borra entera — que es lo que pidió el usuario
+    ''' (24-ago-2026). Si sí los arrastraba, los neutros quedan: son los que impiden que el morph del otro
+    ''' mod reviva por la vía del ESP.</para></summary>
+    Private Sub SincronizarMorphKeyed(p As LooksmenuLoader.LooksmenuPreset, morphName As String, total As Single)
+        If p Is Nothing OrElse String.IsNullOrEmpty(morphName) Then Return
+
+        ' ⛔ SÓLO cuando el keyed YA está poblado: ésa es exactamente la condición con la que los tres
+        ' emisores lo prefieren. Con keyed Nothing o vacío manda el plano y el llamador ya alcanza. Crear
+        ' acá la PRIMERA entrada volcaría el export a la rama keyed, que emitiría sólo este morph y
+        ' tiraría todos los demás sliders planos. Es también lo que mantiene FO4 idéntico: ahí
+        ' BodyMorphsKeyed es siempre Nothing (LooksmenuLoader.vb:245-247).
+        Dim keyed = p.BodyMorphsKeyed
+        If keyed Is Nothing OrElse keyed.Count = 0 Then Return
+
+        Dim inner As Dictionary(Of String, Single) = Nothing
+        If Not keyed.TryGetValue(morphName, inner) OrElse inner Is Nothing Then
+            ' No estaba y queda en cero: no hay nada que escribir ni que neutralizar.
+            If Math.Abs(total) < 0.001F Then
+                keyed.Remove(morphName)
+                Return
+            End If
+            inner = New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+            keyed(morphName) = inner
+        End If
+
+        ' Neutralizar los nombres absorbidos. Se itera sobre una COPIA de las claves: mutar el valor de
+        ' una entrada existente mientras se recorre el propio diccionario invalida el enumerador.
+        Dim ajenas As New List(Of String)(inner.Keys)
+        For Each k In ajenas
+            If Not String.Equals(k, RaceMenuJslot.AppOverrideKey, StringComparison.OrdinalIgnoreCase) Then
+                inner(k) = 0.0F
+            End If
+        Next
+
+        If Math.Abs(total) < 0.001F Then
+            inner.Remove(RaceMenuJslot.AppOverrideKey)
+        Else
+            inner(RaceMenuJslot.AppOverrideKey) = total
+        End If
+
+        If inner.Count = 0 Then keyed.Remove(morphName)
+    End Sub
+
+    ''' <summary>Sincroniza el keyed con el plano para TODOS los sliders visibles de la pestaña.
+    ''' <para>La necesitan los dos gestos que reescriben la tabla entera con <c>_suspendEvents = True</c>
+    ''' —elegir un preset de BodySlide y el Reset de la sección—, porque esa bandera es justo lo que
+    ''' impide que <c>OnBodySlideChanged</c> corra por cada barra.</para>
+    ''' <para>Recorre <c>_bodySlideBars</c> y no el keyed: un morph que el juego tiene pero que esta
+    ''' pestaña no muestra no es algo que el usuario haya editado, y un gesto de UI no debería
+    ''' destruirlo sin que se vea.</para></summary>
+    Private Sub SincronizarKeyedDesdeElPlano(p As LooksmenuLoader.LooksmenuPreset)
+        If p Is Nothing OrElse p.BodyMorphsKeyed Is Nothing OrElse p.BodyMorphsKeyed.Count = 0 Then Return
+        For Each nombre In _bodySlideBars.Keys
+            Dim v As Single = 0.0F
+            If p.BodyMorphSliders IsNot Nothing Then p.BodyMorphSliders.TryGetValue(nombre, v)
+            SincronizarMorphKeyed(p, nombre, v)
+        Next
     End Sub
 
     ''' <summary>Mark a refresh as pending and start the throttle timer if it isn't already
@@ -1277,6 +1380,10 @@ Public Class EditBody_Form
         Finally
             _suspendEvents = False
         End Try
+        ' `_suspendEvents` bloquea `OnBodySlideChanged`, así que el keyed —que es el que leen los tres
+        ' emisores de SSE— quedaba con los valores de antes y el preset elegido se descartaba entero al
+        ' exportar. Ver `SincronizarMorphKeyed`.
+        SincronizarKeyedDesdeElPlano(p)
         _refresh?.Invoke()
     End Sub
 
@@ -1410,6 +1517,10 @@ Public Class EditBody_Form
         Finally
             _suspendEvents = False
         End Try
+        ' Sin esto el Reset NO reseteaba nada en el archivo: vaciaba el plano (que es lo que ve el
+        ' preview) y dejaba el keyed intacto, y como los tres emisores de SSE prefieren el keyed, el NPC
+        ' salía igual de morfeado. El usuario veía que reseteaba. Ver `SincronizarMorphKeyed`.
+        SincronizarKeyedDesdeElPlano(p)
         _refresh?.Invoke()
     End Sub
 

@@ -197,7 +197,16 @@ Public Module RaceMenuPresetMapper
                 ' traduccion del lado de la carga), asi que un guardar-cargar vuelve a la misma capa en
                 ' cualquier raza.
                 Dim jslotIndex As Integer = TiniToJslotIndex(pluginManager, raceFid, isFemale, tini)
-                j.TintInfo.Add(New RaceMenuJslot.JslotTint With {.Color = col, .Index = jslotIndex, .Texture = If(texPath, "")})
+                ' ⛔ NUNCA UNA CADENA VACÍA EN UNA CAPA OPACA. RaceMenu pisa la textura de la capa con lo
+                ' que traiga el archivo cuando `alpha > 0` (PresetInterface.cpp:202-203), así que un ""
+                ' le BORRA al jugador la máscara que declaraba la raza. El canónico escribe siempre la
+                ' textura EFECTIVA (:426), no una vacía. Sin override propio se emite la de la RACE, que
+                ' es exactamente eso. Ver `TexturaDeLaCapaDeRaza`.
+                Dim textura As String = If(texPath, "")
+                If textura = "" AndAlso aCov > 0UI Then
+                    textura = TexturaDeLaCapaDeRaza(pluginManager, raceFid, isFemale, tini)
+                End If
+                j.TintInfo.Add(New RaceMenuJslot.JslotTint With {.Color = col, .Index = jslotIndex, .Texture = textura})
             Next
         End If
 
@@ -579,6 +588,27 @@ Public Module RaceMenuPresetMapper
             If layers(pos).Index = tini Then Return pos
         Next
         Return tini
+    End Function
+
+    ''' <summary>La máscara (TINT) que la RACE declara para esa capa. "" si no se puede resolver.
+    ''' <para>⛔ Hace falta porque RaceMenu, al aplicar un preset, PISA la textura de la capa con lo que
+    ''' venga en el archivo — pero sólo cuando la capa es opaca:
+    ''' <code>if (tintMask->alpha > 0) tintMask->texture->str = tint.name;</code>
+    ''' (<c>PresetInterface.cpp:202-203</c>). Así que emitir una cadena VACÍA en una capa con alpha &gt; 0
+    ''' le BORRA la máscara al jugador; con alpha 0 es inerte porque la asignación no corre.</para>
+    ''' <para>El canónico escribe siempre la textura EFECTIVA de la capa
+    ''' (<c>tint["texture"] = tmIt-&gt;second.second</c>, <c>:426</c>), no una vacía, así que un
+    ''' guardar-cargar suyo no pierde nada. MEDIDO sobre los 48 .jslot instalados: 48 entradas con
+    ''' textura vacía, TODAS en los 4 archivos que escribió esta app, y <b>20 con alpha &gt; 0</b> — que
+    ''' son las que hacen daño.</para></summary>
+    Private Function TexturaDeLaCapaDeRaza(pm As PluginManager, raceFid As UInteger, isFemale As Boolean, tini As Integer) As String
+        If pm Is Nothing OrElse raceFid = 0UI Then Return ""
+        Dim layers = SseFaceTintComposer.GetRaceLayersOrdered(pm, raceFid, isFemale)
+        If layers Is Nothing Then Return ""
+        For pos = 0 To layers.Count - 1
+            If layers(pos).Index = tini Then Return If(layers(pos).Path, "")
+        Next
+        Return ""
     End Function
 
 End Module

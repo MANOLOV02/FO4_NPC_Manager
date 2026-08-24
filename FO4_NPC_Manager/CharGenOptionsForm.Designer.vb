@@ -1739,7 +1739,12 @@ Partial Class CharGenOptionsForm
         CheckBoxRecalcTangentSpace.Name = "CheckBoxRecalcTangentSpace"
         CheckBoxRecalcTangentSpace.Size = New Size(392, 19)
         CheckBoxRecalcTangentSpace.TabIndex = 9
-        CheckBoxRecalcTangentSpace.Text = "Recalculate normals and tangent space in the preview (all shapes)"
+        ' ⛔ EL TEXTO DECIA "in the preview" Y ES FALSO: este ajuste es `Setting_RecalculateNormals`, y lo
+        ' leen CUATRO consumidores, no uno — el build de Wardrobe Manager (BuildingForm.vb:244), el morph
+        ' (MorphEngine.vb:551), el render (Render.vb:787/798) y el bake de NPC Manager (MainForm.vb:7287).
+        ' O sea que gobierna el archivo que va al juego. Destildarlo creyendo que sólo cambia lo que se ve
+        ' en pantalla cambia lo que se construye.
+        CheckBoxRecalcTangentSpace.Text = "Recalculate normals and tangent space (preview and built meshes)"
         CheckBoxRecalcTangentSpace.UseVisualStyleBackColor = True
         ' 
         ' CheckBoxMatchSubsurfaceFlag

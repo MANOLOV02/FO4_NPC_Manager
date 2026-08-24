@@ -234,6 +234,26 @@ Public Class VirtualTreeList
     ''' cuando la selección queda vacía — ese es justamente el valor que hay que reponer.</para></summary>
     Private _claveEnfocada As String
 
+    ''' <summary>True mientras <see cref="AplicarTamanio"/> REPONE el foco por clave.
+    ''' <para>⛔ <see cref="OnSelectedIndexChanged"/> interpreta "el foco está en algo que no está en la
+    ''' selección" como "el usuario navegó ahí", y por eso lo impone como selección única. Esa premisa
+    ''' vale para las flechas y para un click, pero NO para la reposición PROGRAMÁTICA que hace
+    ''' `AplicarTamanio`, que sólo restaura dónde estaba mirando el usuario.</para>
+    ''' <para>Sin distinguirlas, cualquier gesto que deje el foco recordado FUERA del conjunto la
+    ''' RESUCITABA en el siguiente repoblado y borraba el resto del lote — y ese lote es el que
+    ''' "Save Selected" escribe al ESP (<c>MainForm.vb:5007</c>). Son tres caminos, los tres medidos:
+    ''' Ctrl+click sobre la fila enfocada, un Shift+click cuyo rango no la incluya, y deseleccionar la
+    ''' última (que devolvía un NPC elegido cuando el usuario había dejado cero).</para>
+    ''' <para>⛔ NO alcanza con mover `_claveEnfocada` al sacar la fila: el guard de "sin Ctrl/Shift" de
+    ''' `OnSelectedIndexChanged` hace que el siguiente evento sin modificador la vuelva a derivar de
+    ''' `SelectedIndices` y pise el valor. MEDIDO: esa variante falla en 3 de cada 4 corridas. La bandera
+    ''' ataca la premisa falsa en vez de cada camino que la viola: 16/16 en 7 corridas.</para>
+    ''' <para>MEDIDO también que `SelectedIndices.Add` levanta `SelectedIndexChanged` de forma SÍNCRONA
+    ''' aunque esté entre `BeginUpdate`/`EndUpdate` — el evento llega DENTRO del Try —, así que el
+    ''' Try/Finally alcanza. El `SelectedIndices.Clear()` de la misma función también lo levanta, pero
+    ''' ahí `FilaEnfocadaActual()` devuelve Nothing y el handler sale temprano: no necesita la bandera.</para></summary>
+    Private _reponiendoFoco As Boolean
+
     ''' <summary>Lápices y pinceles del pintado, creados una vez.
     ''' <para>Estaban dentro del dibujo de CADA fila: con ~30 filas visibles y un repintado por cuadro de
     ''' scroll son cientos de objetos GDI por segundo, que es basura que el recolector después tiene que
@@ -446,7 +466,16 @@ Public Class VirtualTreeList
                 ' estuviera visible. MEDIDO: con el NPC visible en la fila 3, colapsar el grupo de la
                 ' otra copia dejaba `SelectedIndices(0) = -1`.
                 idxFoco = _modelo.Visibles.FindIndex(Function(f) String.Equals(f.Clave, _claveEnfocada, StringComparison.Ordinal))
-                If idxFoco >= 0 Then SelectedIndices.Add(idxFoco)
+                If idxFoco >= 0 Then
+                    ' Reposición PROGRAMÁTICA: ver `_reponiendoFoco`. El evento llega sincrónicamente
+                    ' dentro de este `Add`, así que el Finally lo apaga justo después.
+                    _reponiendoFoco = True
+                    Try
+                        SelectedIndices.Add(idxFoco)
+                    Finally
+                        _reponiendoFoco = False
+                    End Try
+                End If
             End If
         Finally
             EndUpdate()
@@ -1000,7 +1029,9 @@ Public Class VirtualTreeList
             ' elegidas `Count = 1` daba False ⇒ colapsaba a una. MEDIDO: 3 filas → colapsar OTRO grupo
             ' → quedaba 1. Y eso no es cosmético: `_selectedNpcFormIDs` decide qué NPC se escriben al
             ' ESP en el scope "Selected", así que "Save Selected" habría escrito 1 en vez de 3.
-            If Not EstaEnLaSeleccion(fila) Then
+            ' `Not _reponiendoFoco`: la reposición por clave de `AplicarTamanio` NO es navegación del
+            ' usuario, y tratarla como tal resucitaba la fila que un Ctrl+click acababa de sacar del lote.
+            If Not _reponiendoFoco AndAlso Not EstaEnLaSeleccion(fila) Then
                 _seleccionadas.Clear()
                 _seleccionadas.Add(fila.Clave)
                 _ancla = fila

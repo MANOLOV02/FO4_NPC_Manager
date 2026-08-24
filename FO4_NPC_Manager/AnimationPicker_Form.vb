@@ -48,6 +48,26 @@ Public Class AnimationPicker_Form
         _fuenteNegrita = New Drawing.Font(TreeClips.Font, Drawing.FontStyle.Bold)
     End Sub
 
+    ''' <summary>Libera los objetos GDI+ del owner-draw: los 7 <c>SolidBrush</c> de :27-33 y la
+    ''' <c>Font</c> de :48.
+    ''' <para>⛔ NO PUEDEN IR EN <c>components</c>: ni <c>SolidBrush</c> ni <c>Font</c> implementan
+    ''' <c>IComponent</c> (comprobado: <c>components.Add</c> ni compilaría), y el <c>Dispose</c> generado
+    ''' (<c>AnimationPicker_Form.Designer.vb:12-20</c>) sólo toca <c>components</c> — así que los ocho
+    ''' quedaban a merced del finalizador, uno por cada apertura del selector.</para>
+    ''' <para>⛔ Y TAMPOCO UN SEGUNDO <c>Dispose</c>: el Designer ya sobrescribe
+    ''' <c>Dispose(disposing As Boolean)</c> y dos <c>Overrides</c> con la misma firma dan
+    ''' <c>BC30269</c> (comprobado compilando). Un handler de cierre es el idioma del repo — lo mismo
+    ''' hace <c>MainForm</c> con <c>_multiSelectBrush</c> / <c>_dirtyNodeFont</c> / <c>_deleteNodeFont</c>.</para>
+    ''' <para>En <c>FormClosed</c> y NO en <c>FormClosing</c>: este último es CANCELABLE, y un cierre
+    ''' cancelado dejaría el formulario vivo con los pinceles muertos y <c>TreeClips_DrawNode</c> tirando
+    ''' <c>ArgumentException</c> en el primer repintado. Además el formulario se abre siempre con
+    ''' <c>Using</c> + <c>ShowDialog</c> y nunca se re-muestra.</para></summary>
+    Private Sub AnimationPicker_Form_FormClosed(sender As Object, e As FormClosedEventArgs) Handles Me.FormClosed
+        _brNombre.Dispose() : _brRuta.Dispose() : _brVariante.Dispose() : _brInsignia.Dispose()
+        _brConteo.Dispose() : _brSel.Dispose() : _brFondo.Dispose()
+        _fuenteNegrita?.Dispose()
+    End Sub
+
     ' ⛔ El TreeView NO expone DoubleBuffered (es Protected en Control) y en OwnerDraw eso se ve: la fila
     ' de arriba queda con basura de colores hasta que algo la repinta. Se activa el doble buffer NATIVO del
     ' control comun (TVS_EX_DOUBLEBUFFER), que es la via documentada y no toca miembros protegidos por
@@ -276,7 +296,13 @@ Public Class AnimationPicker_Form
         e.Graphics.FillRectangle(If(seleccionado, _brSel, _brFondo), rFila)
         ' ⛔ Recorte a la fila: sin esto, un texto largo (las rutas lo son) puede pintar sobre la fila de
         ' al lado cuando el control decide repintar solo una banda.
-        Dim clipPrevio = e.Graphics.Clip
+        ' ⛔ `Graphics.Clip` devuelve una Region NUEVA en CADA lectura —medido: `ReferenceEquals(g.Clip,
+        ' g.Clip)` da False y disponer una no toca la otra—, o sea un objeto GDI+ finalizable por cada
+        ' DrawNode, que corre por nodo VISIBLE y por repintado (cientos por segundo mientras se tipea en
+        ' el buscador). `Save`/`Restore` no reserva nada, restaura el clip EXACTAMENTE igual —medido con
+        ' el clip previo infinito Y con el clip de banda de un repintado parcial— y cubre además el
+        ' `Return` temprano de la rama de nodo-carpeta, que antes restauraba dos veces.
+        Dim estadoGraficos = e.Graphics.Save()
         e.Graphics.SetClip(rFila)
         Try
         Dim clip = TryCast(e.Node.Tag, ResolvedAnimationClip)
@@ -292,7 +318,6 @@ Public Class AnimationPicker_Form
                 Dim cuenta = If(iPar > 0, txt.Substring(iPar), "")
                 x = Pintar(e.Graphics, nombre, _fuenteNegrita, If(seleccionado, Drawing.SystemColors.HighlightText, Drawing.SystemColors.WindowText), x, y)
                 If cuenta <> "" Then Pintar(e.Graphics, cuenta, fuente, If(seleccionado, Drawing.SystemColors.HighlightText, _brConteo.Color), x, y)
-                e.Graphics.Clip = clipPrevio
                 Return
             End If
 
@@ -310,7 +335,7 @@ Public Class AnimationPicker_Form
             If var <> "" Then x = Pintar(e.Graphics, var, _fuenteNegrita, cVar, x, y)
             Pintar(e.Graphics, ruta, fuente, cRuta, x, y)
         Finally
-            e.Graphics.Clip = clipPrevio
+            e.Graphics.Restore(estadoGraficos)
         End Try
     End Sub
 

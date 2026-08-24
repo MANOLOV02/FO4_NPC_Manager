@@ -611,9 +611,12 @@ Public Class ArmoEditor_Form
         ' NonPlayable vive en la cabecera, que no sale del árbol de campos pero sí viaja en el
         ' contexto del record: un override sí puede heredarla de la fuente.
         rec.NonPlayable = a.NonPlayable
-        ' InstanceNaming/PreviewTransform(Pattern)/Value/Weight/Health/ArmorRating/BaseAddonIndex/
-        ' StaggerRating/Resistances/AttachParentSlots/Combinations/el material swap a nivel ARMO son
-        ' de Fallout 4 solamente — en Skyrim esos subrecords no están en el formato del ARMO.
+        ' InstanceNaming/PreviewTransform(Pattern)/Health/BaseAddonIndex/StaggerRating/Resistances/
+        ' AttachParentSlots/Combinations/el material swap a nivel ARMO son de Fallout 4 solamente — en
+        ' Skyrim esos subrecords no están en el formato del ARMO.
+        ' ⚠️ Value, Weight y ArmorRating NO entran en esa lista, aunque el comentario los incluía: los
+        ' tres existen en el ARMO de Skyrim y los tres son REQUIRED (wbDefinitionsTES5.pas:4085-4089).
+        ' Se copian en la rama de SSE, más abajo.
         Dim aFo4 = TryCast(a, Canon.ArmoFO4)
         Dim fo4 = TryCast(rec, Canon.ArmoFO4)
         If aFo4 IsNot Nothing AndAlso fo4 IsNot Nothing Then
@@ -635,6 +638,16 @@ Public Class ArmoEditor_Form
         Dim sse = TryCast(rec, Canon.ArmoSSE)
         If aSse IsNot Nothing AndAlso sse IsNot Nothing Then
             sse.ArmorRating = aSse.ArmorRating
+            ' ⛔ VALUE Y WEIGHT SÍ ESTÁN EN EL ARMO DE SKYRIM, y el comentario de arriba decía lo
+            ' contrario. xEdit los declara en `wbDefinitionsTES5.pas:4085-4088`:
+            '     wbStruct(DATA, 'Data', [wbInteger('Value', itS32), wbFloat('Weight')], cpNormal, True)
+            ' y ese `True` final es REQUIRED — igual que el del DNAM de la línea de arriba, que sí se
+            ' copiaba. Por eso van sin condición: MEDIDO sobre las 7.960 ARMO de Skyrim instaladas, 0
+            ' carecen de DATA o de DNAM, y 7.476 (el 93,9 %) traen Value o Weight distinto de cero.
+            ' Sin estas dos líneas, duplicar una armadura la dejaba con precio 0 y peso 0, contra lo que
+            ' promete el docstring de esta función ("a template starts identical to its source").
+            sse.DataValue = aSse.DataValue
+            sse.DataWeight = aSse.DataWeight
         End If
         d.IsOverride = asOverride
         d.IsNew = Not asOverride

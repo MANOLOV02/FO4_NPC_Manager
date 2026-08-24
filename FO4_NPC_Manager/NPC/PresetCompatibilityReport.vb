@@ -628,6 +628,59 @@ Public Module PresetCompatibilityReport
             r.Issues.Add(New PresetIssue(PresetIssueKind.NotApplied, "Body sliders", $"{n} BodySlide slider(s) won't show in-game",
                                    "No shape of this NPC's body NIF carries BODYTRI extra-data, so the engine has no morph data to drive. The values are still stored and the app's preview applies them."))
         End If
+        AuditBodyMorphAuthorship(ctx, r)
+    End Sub
+
+    ''' <summary>SSE only. Reports the body morphs this tool absorbed from other contributors.
+    ''' <para>Mirrors the node-transform note: a morph the engine sums from several contributor keys is
+    ''' composed into the single value the engine would produce, and that is what the slider shows and
+    ''' what gets written — as one contribution, under this tool's own label. The absorbed names are kept
+    ''' at a neutral zero so the same morph cannot be counted twice on an NPC some other mod already
+    ''' touched.</para>
+    ''' <para>Why absorbing is better than splitting the edit: skee drops any <c>.esp/.esm/.esl</c> key
+    ''' whose plugin is not in the load order, and it does so BEFORE summing
+    ''' (<c>PresetInterface.cpp:1232-1240</c>). A morph left under an absent plugin's name applies
+    ''' nothing at all, so an edit shared with it would only take partial effect.</para></summary>
+    Private Sub AuditBodyMorphAuthorship(ctx As PresetAuditContext, r As PresetAuditReport)
+        If Not ctx.IsSse Then Return
+        Dim keyed = ctx.Preset.BodyMorphsKeyed
+        If keyed Is Nothing OrElse keyed.Count = 0 Then Return
+
+        Dim absorbidos As New List(Of String)
+        Dim nombresAjenos As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each kv In keyed
+            If kv.Value Is Nothing Then Continue For
+            Dim tieneNuestra As Boolean = False
+            Dim ajenos As New List(Of String)
+            For Each ikv In kv.Value
+                If String.Equals(ikv.Key, RaceMenuJslot.AppOverrideKey, StringComparison.OrdinalIgnoreCase) Then
+                    tieneNuestra = True
+                Else
+                    ajenos.Add(ikv.Key)
+                End If
+            Next
+            If tieneNuestra AndAlso ajenos.Count > 0 Then
+                absorbidos.Add(kv.Key)
+                For Each a In ajenos : nombresAjenos.Add(a) : Next
+            End If
+        Next
+        If absorbidos.Count = 0 Then Return
+
+        r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Body sliders",
+            $"{absorbidos.Count} morph(s) composed under this tool's own label ({RaceMenuJslot.AppOverrideKey})",
+            "The value shown for these sliders is the EFFECTIVE one: the engine adds up every contributor " &
+            "of a morph, so a morph that arrived carrying other contributors was composed into the single " &
+            "value the engine would produce, and that is what the app displays and what it writes — as one " &
+            "contribution, under its own label. This is the same rule the tool applies to node transforms." &
+            ControlChars.Lf &
+            "So that the same morph cannot be counted twice, the absorbed contributor names are kept at a " &
+            "neutral zero rather than removed — it matters when some other mod has already applied this " &
+            "morph to this NPC, because there is no global reset on that path." & ControlChars.Lf &
+            "Absorbing is also what makes the edit take effect at all: the engine discards a contributor " &
+            "whose plugin is not in the load order before it adds anything up, so a value left under an " &
+            "absent mod's name applies nothing." & ControlChars.Lf &
+            "Absorbed from: " & String.Join(", ", nombresAjenos) & ControlChars.Lf &
+            "Morphs: " & String.Join(", ", absorbidos)))
     End Sub
 
     ' ---------------------------------------------------------------------------------------------

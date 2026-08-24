@@ -4533,10 +4533,15 @@ Public Class MainForm
         ' ellas su `Expandida`; sin esto, repoblar CIERRA el árbol entero. Antes casi no se notaba
         ' porque repoblar era raro; ahora el editor y el Save repueblan siempre, y el usuario perdía
         ' toda su navegación en cada OK.
+        ' ⛔ SE RECORRE EL ÁRBOL, NO LO VISIBLE. `AplanarDesde` (NpcTreeModel.vb:148-154) hace
+        ' `If Not fila.Expandida Then Return` ANTES de bajar, así que un nodo expandido DENTRO de un
+        ' ancestro colapsado no está en `Visibles` y su estado se perdía en cada repoblado sin filtro
+        ' (con filtro no se nota: `abrirGrupos` los abre igual). MEDIDO: un LVLN abierto dentro de un
+        ' grupo de plugin cerrado salía VACÍO de acá. Es el mismo motivo por el que `ModeloDeArbol.Indexar`
+        ' recorre el árbol entero: el índice describe el ÁRBOL, la expansión sólo decide qué se dibuja.
+        ' Costo medido del recorrido completo: 0,137 ms sobre 7.260 filas.
         Dim abiertosAntes As New HashSet(Of String)(StringComparer.Ordinal)
-        For Each f In modelo.Visibles
-            If f IsNot Nothing AndAlso f.Expandida AndAlso f.Clave IsNot Nothing Then abiertosAntes.Add(f.Clave)
-        Next
+        RecolectarExpandidas(modelo.Raices, abiertosAntes)
         modelo.Limpiar()
 
         ' === Sección 1: NPC agrupados por plugin ===
@@ -4681,6 +4686,22 @@ Public Class MainForm
         If abrirGrupos Then
             SetStatus($"Filter — {modelo.Raices.Count} plugin group(s), {modelo.Visibles.Count} row(s) in {_msUltimoRepoblado} ms")
         End If
+    End Sub
+
+    ''' <summary>Las claves de las filas EXPANDIDAS de TODO el árbol, mire o no la expansión de sus
+    ''' ancestros. Espejo de <c>ModeloDeArbol.Indexar</c>, que ya lo recorre entero por el mismo motivo:
+    ''' el índice describe el ÁRBOL, la expansión sólo decide qué se dibuja.
+    ''' <para>Las filas de NPC son hojas (<c>Alternar</c> exige <c>TieneHijos</c>), así que sólo entran
+    ''' claves de grupo y de LVLN, que son únicas. El mismo NPC cuelga de su plugin y de cada LVLN como
+    ''' objetos DISTINTOS, pero lo que se repite es la clave y el destino es un HashSet: idempotente.
+    ''' Tres niveles como máximo y sin ciclos.</para></summary>
+    Private Shared Sub RecolectarExpandidas(filas As IEnumerable(Of FilaDeArbol), destino As HashSet(Of String))
+        If filas Is Nothing Then Return
+        For Each f In filas
+            If f Is Nothing Then Continue For
+            If f.Expandida AndAlso f.Clave IsNot Nothing Then destino.Add(f.Clave)
+            If f.Hijos.Count > 0 Then RecolectarExpandidas(f.Hijos, destino)
+        Next
     End Sub
 
     ''' <summary>La etiqueta de un NPC, del caché; si no está, se arma Y SE GUARDA. Sin guardarla, un NPC
@@ -9809,6 +9830,21 @@ Public Class MainForm
                 End If
                 preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
                 preset.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
+                ' ⛔ SIN ESTA LÍNEA LA RED DE `ToJslot` NO SE ALCANZA. `RaceMenuPresetMapper.vb:90-95` ya
+                ' re-emite las partes de cabeza que no resolvieron, y su propio comentario dice que "HOY
+                ' ESTA RAMA NO SE ALCANZA… ese constructor NO copia SseUnresolvedHeadParts". Éste es ese
+                ' constructor. El clon de `LooksmenuLoader:806` y `PresetCategoryFilter:205` sí lo copian;
+                ' sólo faltaba acá, que es justo el camino de "Save RaceMenu Preset".
+                ' MEDIDO sobre los 48 .jslot del usuario: 49 entradas de 14 mods no instalados, en 33 de 48
+                ' archivos (SGEyebrows.esp 9, MikanEyes 5, Brows.esp 5, …). Sin esto, abrir uno de esos
+                ' presets y guardarlo lo deja sin esas cejas/ojos para siempre.
+                ' ⚠️ DIVERGENCIA DELIBERADA, decidida por el usuario (24-ago-2026): el canónico NO conserva
+                ' esto. `PresetInterface.cpp:355-365` arma el array recorriendo `npc->headparts` —lo que el
+                ' ACTOR tiene— y `:978-987` nunca mete en `presetData->headParts` la que no resuelve, así
+                ' que un cargar→aplicar→guardar dentro del propio RaceMenu la pierde igual. Acá se
+                ' preserva porque esto es un EDITOR, con el mismo criterio que la app ya aplica al color
+                ' de pelo ("PRESERVACIÓN, no invención", LooksmenuLoader.vb:1138-1150).
+                preset.SseUnresolvedHeadParts.AddRange(overlay.SseUnresolvedHeadParts)
                 ' Los elementos de primera persona del .jslot: no se modelan ni se editan, pero sin esta línea el
                 ' "Save RaceMenu preset" de una sesión posterior los emitía perdidos.
                 preset.SseFirstPersonTransformsRaw = If(overlay.SseFirstPersonTransformsRaw Is Nothing, Nothing,

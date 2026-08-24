@@ -687,6 +687,30 @@ Public Module BssliderSidecar
                     sk.TintR = t(0) : sk.TintG = t(1) : sk.TintB = t(2) : sk.TintA = t(3)
                     sk.HasTint = True
                 End If
+                ' `slots` es la fuente de verdad (ver el comentario del escritor). Opcional: los sidecars
+                ' escritos antes de este esquema no lo traen, y ahí `Slots` se reconstruye de las dos vistas
+                ' de abajo, que es exactamente lo que había antes.
+                Dim slotsEl As JsonElement
+                If so.TryGetProperty("slots", slotsEl) AndAlso slotsEl.ValueKind = JsonValueKind.Object Then
+                    For Each pr In slotsEl.EnumerateObject()
+                        Dim idx As Integer
+                        If Integer.TryParse(pr.Name, Globalization.NumberStyles.Integer,
+                                            Globalization.CultureInfo.InvariantCulture, idx) AndAlso
+                           pr.Value.ValueKind = JsonValueKind.String Then
+                            sk.Slots(idx) = pr.Value.GetString()
+                        End If
+                    Next
+                End If
+                If Not String.IsNullOrEmpty(sk.DiffusePath) AndAlso Not sk.Slots.ContainsKey(0) Then sk.Slots(0) = sk.DiffusePath
+                If Not String.IsNullOrEmpty(sk.NormalPath) AndAlso Not sk.Slots.ContainsKey(1) Then sk.Slots(1) = sk.NormalPath
+                Dim alphaEl As JsonElement
+                If so.TryGetProperty("alpha", alphaEl) AndAlso alphaEl.ValueKind = JsonValueKind.Number Then
+                    sk.Alpha = alphaEl.GetSingle()
+                    sk.HasAlpha = True
+                End If
+                If so.TryGetProperty("alphaIndex", alphaEl) AndAlso alphaEl.ValueKind = JsonValueKind.Number Then
+                    sk.AlphaIndex = alphaEl.GetInt32()
+                End If
                 list.Add(sk)
             Next
             If list.Count > 0 Then entry.SseSkinOverrides = list
@@ -991,6 +1015,28 @@ Public Module BssliderSidecar
                             w.WriteNumber("slotMask", CLng(sk.SlotMask))
                             w.WriteString("diffuse", If(sk.DiffusePath, ""))
                             If Not String.IsNullOrEmpty(sk.NormalPath) Then w.WriteString("normal", sk.NormalPath)
+                            ' ⛔ `Slots` ES LA FUENTE DE VERDAD, no `diffuse`/`normal`. El editor escribe
+                            ' `sk.Slots(indice)` para las CUATRO ranuras que expone (0 Diffuse, 1 Normal,
+                            ' 2 Subsurface, 7 Specular) y sólo espeja las 0 y 1 en DiffusePath/NormalPath
+                            ' (EditBody_Form.vb:1970-1973); y quienes leen de verdad son `Slots`: la vista
+                            ' previa (NpcMaterialResolver.vb:44-45), el propio editor (:1890) y el escritor
+                            ' del .jslot (RaceMenuJslot.vb:1570). Sin esto, Subsurface y Specular se perdían
+                            ' en cada reapertura. Se emite ENTERO —no "las que faltan"— justo porque es la
+                            ' única fuente de verdad: emitir un subconjunto la dejaría a medias al releer.
+                            If sk.Slots IsNot Nothing AndAlso sk.Slots.Count > 0 Then
+                                w.WriteStartObject("slots")
+                                For Each kvSlot In sk.Slots.OrderBy(Function(x) x.Key)
+                                    w.WriteString(kvSlot.Key.ToString(Globalization.CultureInfo.InvariantCulture),
+                                                  If(kvSlot.Value, ""))
+                                Next
+                                w.WriteEndObject()
+                            End If
+                            ' kParam_ShaderAlpha (key 8): override propio, independiente del tint. El índice
+                            ' viaja con él por la misma ley que el del tint (ver JslotSkinOverride.TintIndex).
+                            If sk.HasAlpha Then
+                                w.WriteNumber("alpha", sk.Alpha)
+                                w.WriteNumber("alphaIndex", sk.AlphaIndex)
+                            End If
                             If sk.HasTint Then
                                 w.WriteStartArray("tint")
                                 w.WriteNumberValue(sk.TintR) : w.WriteNumberValue(sk.TintG)
