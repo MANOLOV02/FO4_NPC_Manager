@@ -47,68 +47,17 @@ Public Module HeadPartResolver
         ' copiada a mano, asi que el dia que se corrija alla esta copia se queda vieja en silencio.
         Dim raceDefaults = Canon.CanonInterpretacion.HeadPartsDe(race, isFemale)
 
-        ' Build merged dict by PartType for main types (1..9).
-        Dim mergedByType As New Dictionary(Of Integer, UInteger)
-        Dim freestandingMisc As New List(Of UInteger)
-
-        ' Step 1: seed with RACE defaults
-        For Each defFID In raceDefaults
-            Dim defRec = pluginManager.GetRecord(defFID)
-            If defRec Is Nothing OrElse defRec.Header.Signature <> "HDPT" Then Continue For
-            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(defRec), Canon.CanonRecords.Hdpt(defRec, pluginManager))
-            If hdpt.TipoDeParte() = 0 Then
-                freestandingMisc.Add(defFID)
-            ElseIf hdpt.TipoDeParte() >= 1 AndAlso hdpt.TipoDeParte() <= 9 Then
-                mergedByType(hdpt.TipoDeParte()) = defFID
-            End If
-        Next
-
-        ' Step 2: override with NPC.PNAM (NPC wins per main type, or accumulates for misc)
-        ' El PNAM del NPC es una LISTA EXPLÍCITA, no un slot por tipo: puede traer VARIOS head parts del
-        ' MISMO PartType y el CK los hornea TODOS. El caso vanilla son las cicatrices (PartType=5 Scar): un
-        ' NPC con LeftGash + RightGash listaba dos HDPT tipo 5 y el `mergedByType(tipo) = fid` de acá se
-        ' quedaba SÓLO con el último ⇒ las demás nunca llegaban al hdptMap y no se clonaban nunca.
-        ' MEDIDO vanilla limpio (CK del BSA): 5 NPCs / 11 shapes 'PRESENT in CK, ABSENT in baked'
-        ' (ej. MarksFemaleHumanoid10LeftGash) + 6 NPCs con shape-count distinto, por esta misma línea.
-        ' Regla aplicada: el PRIMER part del NPC de un tipo PISA el default de la RACE (semántica de override
-        ' que este dict ya implementaba y que sigue siendo correcta); los ADICIONALES del mismo tipo se
-        ' ACUMULAN, como ya hacía freestandingMisc con los Misc(0).
-        Dim npcClaimedTypes As New HashSet(Of Integer)
-        Dim extraNpcParts As New List(Of UInteger)
-        For Each npcFID In safeNpcParts
-            Dim npcRec = pluginManager.GetRecord(npcFID)
-            If npcRec Is Nothing OrElse npcRec.Header.Signature <> "HDPT" Then Continue For
-            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(npcRec), Canon.CanonRecords.Hdpt(npcRec, pluginManager))
-            If hdpt.TipoDeParte() = 0 Then
-                freestandingMisc.Add(npcFID)
-            ElseIf hdpt.TipoDeParte() >= 1 AndAlso hdpt.TipoDeParte() <= 9 Then
-                If npcClaimedTypes.Add(hdpt.TipoDeParte()) Then
-                    mergedByType(hdpt.TipoDeParte()) = npcFID
-                ElseIf hdpt.TipoDeParte() = 5 Then
-                    ' La acumulacion es SOLO para PartType=5 (Scar). Medido sobre los 3158 FaceGeom del CK,
-                    ' contando NPCs cuyo PNAM trae dos head parts del mismo tipo: en tipo 5 el extra esta en el
-                    ' NIF del CK en 63 casos (los 52 ausentes tienen MODL vacio y no emiten shape en ninguno de
-                    ' los dos lados), y en tipo 3 (Hair) esta presente en 0 y ausente en 1. Ademas la
-                    ' distribucion de shapes PartType=3 por NIF del CK es 1 en 3044 archivos y 0 en 114, NUNCA 2:
-                    ' el CK admite UN solo head part de pelo y descarta el resto.
-                    ' No es filtro por raza ni por sexo: en el caso que lo fija, el RNAM es la misma FLST que la
-                    ' del pelo aceptado y el DATA incluye al genero del NPC.
-                    extraNpcParts.Add(npcFID)
-                End If
-            End If
-        Next
-
-        ' Step 3: build final list (main types sorted by type number + freestanding misc after)
-        Dim finalList As New List(Of UInteger)
-        For Each t In mergedByType.Keys.OrderBy(Function(k) k)
-            finalList.Add(mergedByType(t))
-        Next
-        ' Head parts adicionales del NPC que comparten PartType con otro ya emitido (p.ej. la 2a/3a cicatriz):
-        ' van después de los tipos principales, en el orden del PNAM (determinista).
-        finalList.AddRange(extraNpcParts)
-        finalList.AddRange(freestandingMisc)
-
-        Return finalList
+            Dim fuentes As New List(Of Canon.FuenteDePartes) From {
+                New Canon.FuenteDePartes("raza", raceDefaults, False),
+                New Canon.FuenteDePartes("npc", safeNpcParts, False)
+            }
+            Return Canon.ResolverPartesDeCabeza(
+                fuentes,
+                Function(fid As UInteger) As Canon.IHdpt
+                    Dim rec = pluginManager.GetRecord(fid)
+                    If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Return Nothing
+                    Return If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
+                End Function)
     End Function
 
     ''' <summary>Si <paramref name="hdptFormID"/> es valido para un NPC de <paramref name="raceFormID"/>. Pasa
@@ -328,51 +277,25 @@ Public Module HeadPartResolver
         Dim result As New HashSet(Of UInteger)
         If rawParts Is Nothing OrElse presetParts Is Nothing OrElse resolveHdpt Is Nothing Then Return result
 
-        Dim rawByType As New Dictionary(Of Integer, UInteger)
-        Dim mergedByType As New Dictionary(Of Integer, UInteger)
-        Dim miscList As New List(Of UInteger)
-        Dim seenMisc As New HashSet(Of UInteger)
-        Dim classify = Sub(fid As UInteger, isRaw As Boolean)
-                           If fid = 0UI Then Return
-                           Dim hd = resolveHdpt(fid)
-                           If hd Is Nothing Then Return
-                           If hd.TipoDeParte() = 0 Then
-                               If seenMisc.Add(fid) Then miscList.Add(fid)
-                           ElseIf hd.TipoDeParte() >= 1 AndAlso hd.TipoDeParte() <= 9 Then
-                               mergedByType(hd.TipoDeParte()) = fid   ' preset (classified 2nd) wins per type
-                               If isRaw Then rawByType(hd.TipoDeParte()) = fid
-                           End If
-                       End Sub
-        For Each fid In rawParts : classify(fid, True) : Next
-        For Each fid In presetParts : classify(fid, False) : Next
+            Dim fuentes As New List(Of Canon.FuenteDePartes) From {
+                New Canon.FuenteDePartes("crudo", rawParts.ToList(), False),
+                New Canon.FuenteDePartes("preset", presetParts.ToList(), False)
+            }
+            Dim finalFlat = Canon.ResolverPartesDeCabeza(fuentes, resolveHdpt)
+            Dim sobrevive As New HashSet(Of UInteger)(finalFlat)
 
-        ' Flat merged list the saver would persist (main types ordered, then Misc) — the context the
-        ' orphan check runs against so a Misc still claimed by a surviving parent is NOT suppressed.
-        Dim finalFlat As New List(Of UInteger)
-        For Each t In mergedByType.Keys.OrderBy(Function(k) k) : finalFlat.Add(mergedByType(t)) : Next
-        finalFlat.AddRange(miscList)
-
-        For Each kv In rawByType
-            Dim finalParent As UInteger = 0
-            If mergedByType.TryGetValue(kv.Key, finalParent) AndAlso finalParent <> kv.Value Then
-                ' This main-type parent was REPLACED by the preset with a different HDPT (hair→hair,
-                ' eyes→eyes, …). Drop its orphaned standalone Misc children, matching what the render
-                ' already shows: BuildShadow rebuilds head parts as race-defaults + preset (raw WIPED),
-                ' so a replaced parent's old raw extras never render — suppressing them just makes Save
-                ' agree with the preview. Two guards keep this from over-reaching:
-                '   • REPLACEMENT-gated (finalParent <> raw): a parent the preset didn't touch (e.g. a
-                '     plain re-save that keeps the NPC's own eyes) suppresses nothing — so this is NOT the
-                '     Cait-class regression, which came from UNCONDITIONALLY filtering raw extras.
-                '   • CascadeRemoveOrphanedHnamMisc keeps any extra still claimed by a surviving parent's
-                '     HNAM (vanilla new eyes re-declare the lashes → they stay; the old HAIR's hairline is
-                '     not claimed by the new hair → it goes). Diff before/after to collect exactly what dropped.
+            For Each fid In rawParts
+                If fid = 0UI Then Continue For
+                Dim hdRaw = resolveHdpt(fid)
+                If hdRaw Is Nothing Then Continue For
+                If hdRaw.ClasificarHeadPart(False).Clase <> Canon.ClaseDeHeadPart.Slot Then Continue For
+                If sobrevive.Contains(fid) Then Continue For
                 Dim before As New HashSet(Of UInteger)(finalFlat)
-                CascadeRemoveOrphanedHnamMisc(finalFlat, kv.Value, resolveHdpt)
+                CascadeRemoveOrphanedHnamMisc(finalFlat, fid, resolveHdpt)
                 before.ExceptWith(finalFlat)
                 result.UnionWith(before)
-            End If
-        Next
-        Return result
+            Next
+            Return result
     End Function
 
     ''' <summary>One yielded entry of <see cref="EnumerateHdptChain"/>: the parsed HDPT plus the

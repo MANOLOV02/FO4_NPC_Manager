@@ -2312,32 +2312,34 @@ Public Class EditFace_Form
                 ' AO, wet, hairlines, mouth shadow) directly into NPC.PNAM as freestanding
                 ' Misc, and those need to show up in the editor list so the user can see /
                 ' remove them.
-                Dim mergedByType As New Dictionary(Of Integer, UInteger)
-                Dim freestandingMisc As New List(Of UInteger)
-                Dim seenMisc As New HashSet(Of UInteger)
-
                 Dim raceDefaults = If(_isFemale, _raceFemaleHeadPartFormIDs, _raceMaleHeadPartFormIDs)
-                Dim seedFromList = Sub(list As IEnumerable(Of UInteger))
-                                       If list Is Nothing Then Return
-                                       For Each fid In list
-                                           If fid = 0UI Then Continue For
-                                           Dim hd As Canon.IHdpt = Nothing
-                                           If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
-                                           If hd.TipoDeParte() = 0 Then
-                                               If seenMisc.Add(fid) Then freestandingMisc.Add(fid)
-                                           ElseIf hd.TipoDeParte() >= 1 AndAlso hd.TipoDeParte() <= 9 Then
-                                               ' NPC.PNAM passes after RACE defaults, so its
-                                               ' assignment wins per type — last-write-wins.
-                                               mergedByType(hd.TipoDeParte()) = fid
-                                           End If
-                                       Next
-                                   End Sub
                 ' Lo que el overlay YA traía (preset cargado, Paste, bundle del LM template). Se saca de la
                 ' lista para reconstruirla y se re-siembra DESPUÉS del crudo, así el overlay GANA por
                 ' PartType — la precedencia que el usuario ya está viendo en el render — mientras los extras
                 ' crudos que le faltaban (pestañas, AO/wet, hairlines) entran igual y vuelven la lista un
                 ' superset de verdad. Vacío en el camino fresco ⇒ este bloque no cambia nada ahí.
-                Dim ownedParts As New List(Of UInteger)(p.HeadPartFormIDs)
+            ' ⛔ PRIMERO materializar: el marcador solo se puebla si Materialize corrio sobre ESTE
+            ' objeto, y hoy NO se llama desde Edit Face — su propio <summary> (NpcRecordOverlay.vb:609)
+            ' dice "Called by every path ... Edit Face seed" y es FALSO: los 3 call sites reales son
+            ' EditBody_Form:505, MainForm:9090 (Load LooksMenu) y MainForm:9639 (Copy Look). El sidecar
+            ' tampoco lo restaura (0 referencias en BssliderSidecar.vb).
+            ' Sin esta llamada, partir por el marcador dejaria lmParts VACIO en toda siembra que no
+            ' venga de esos 3 caminos => ganaria el headRear crudo y, como mas abajo se prende
+            ' IncludeRawExtras, se escribiria al PNAM: ESP != FaceGen, MAS ANCHO que el bug del filtro
+            ' de genero que este hunk viene a cerrar.
+            ' Es idempotente (NpcRecordOverlay.vb:616-624 guardea, AddHdptIfMissingPreset no duplica y
+            ' el marcador es un HashSet) y usa el resolver CIEGO AL GENERO, el mismo que el render.
+            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(p, _isFemale, AddressOf _mainForm.ResolveLmSkinTemplate_Friend)
+            Dim marcadosLm = p.LmTemplateInjectedHdptFormIDs
+            Dim ownedParts As New List(Of UInteger)
+            Dim lmParts As New List(Of UInteger)
+            For Each fid In p.HeadPartFormIDs
+                If marcadosLm IsNot Nothing AndAlso marcadosLm.Contains(fid) Then
+                    lmParts.Add(fid)
+                Else
+                    ownedParts.Add(fid)
+                End If
+            Next
                 p.HeadPartFormIDs.Clear()
 
                 ' WYSIWYG: LM SkinTemplate head/headRear HDPTs win over race defaults + raw NPC
@@ -2348,16 +2350,6 @@ Public Class EditFace_Form
                 ' any HeadParts control (the editor takes ownership via HasHeadPartFormIDs=True).
                 ' Se resuelve ACÁ ARRIBA y no al final: el bundle también PISA parents crudos, así que
                 ' también huerfaniza Misc crudos y tiene que entrar en el cómputo de abajo.
-                Dim lmParts As New List(Of UInteger)
-                If Not String.IsNullOrEmpty(p.SkinTemplateId) Then
-                    Dim tpl = _mainForm.GetLmSkinTemplateCandidates(_isFemale).
-                        FirstOrDefault(Function(t) String.Equals(t.Id, p.SkinTemplateId, StringComparison.Ordinal))
-                    If tpl IsNot Nothing Then
-                        Dim genderIdx As Integer = If(_isFemale, 1, 0)
-                        If tpl.HeadHdptFormID(genderIdx) <> 0UI Then lmParts.Add(tpl.HeadHdptFormID(genderIdx))
-                        If tpl.HeadRearHdptFormID(genderIdx) <> 0UI Then lmParts.Add(tpl.HeadRearHdptFormID(genderIdx))
-                    End If
-                End If
 
                 ' Misc crudos que ya están HUÉRFANOS antes de empezar: su padre de tipo principal lo
                 ' reemplazó el overlay/template (el hairline del pelo que pisó el preset). Sin esto la unión
@@ -2371,15 +2363,24 @@ Public Class EditFace_Form
                 Dim orphanedRawMisc = HeadPartResolver.ComputeReplacedParentOrphanMisc(
                     rawNpc.Record.PartesDeCabeza(), ownedForOrphanCheck, AddressOf ResolveHdptForCascade)
 
-                seedFromList(raceDefaults)
-                seedFromList(rawNpc.Record.PartesDeCabeza().Where(Function(f) Not orphanedRawMisc.Contains(f)))
-                seedFromList(ownedParts)
-                seedFromList(lmParts)
-
-                For Each t In mergedByType.Keys.OrderBy(Function(k) k)
-                    p.HeadPartFormIDs.Add(mergedByType(t))
-                Next
-                p.HeadPartFormIDs.AddRange(freestandingMisc)
+            Dim fuentes As New List(Of Canon.FuenteDePartes) From {
+                New Canon.FuenteDePartes("raza", raceDefaults, False),
+                New Canon.FuenteDePartes("crudo",
+                    rawNpc.Record.PartesDeCabeza().Where(Function(f) Not orphanedRawMisc.Contains(f)).ToList(), False),
+                New Canon.FuenteDePartes("overlay", ownedParts, False),
+                New Canon.FuenteDePartes("lmTemplate", lmParts, False)
+            }
+            ' ⛔ Esta linea NO puede faltar: QUITAR D borra `p.HeadPartFormIDs.Add(...)` y el
+            ' `AddRange(freestandingMisc)`, y `:2341` ya hizo `Clear()`. Sin repoblar, `:2390` marca una
+            ' lista VACIA como autoritativa (IncludeRawExtras + HasHeadPartFormIDs) y el saver escribe
+            ' el NPC SIN NINGUNA head part — en silencio, porque el render cae al fallback del record.
+            p.HeadPartFormIDs.AddRange(Canon.ResolverPartesDeCabeza(
+                fuentes,
+                Function(fid As UInteger) As Canon.IHdpt
+                    Dim hd As Canon.IHdpt = Nothing
+                    If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Return Nothing
+                    Return hd
+                End Function))
                 ' This list is a COMPLETE superset of the raw PNAM (extras included — see the
                 ' "We do NOT filter by IsExtra here" note above), menos los Misc que ya estaban huérfanos
                 ' antes de abrir el editor. Mark it so Save treats it as authoritative and does NOT union
@@ -2578,7 +2579,8 @@ Public Class EditFace_Form
             Dim overriddenTypes As New HashSet(Of Integer)
             For Each fid In p.HeadPartFormIDs
                 Dim hd As Canon.IHdpt = Nothing
-                If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.TipoDeParte() <> HdptTypeMisc Then
+                If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso
+                   hd.ClasificarHeadPart(False).Clase = Canon.ClaseDeHeadPart.Slot Then
                     overriddenTypes.Add(hd.TipoDeParte())
                     visibleParents.Add(fid)
                     visibleParentIsRaceDefault(fid) = False
@@ -2589,7 +2591,7 @@ Public Class EditFace_Form
                 For Each fid In raceDefaults
                     Dim hd As Canon.IHdpt = Nothing
                     If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
-                    If hd.TipoDeParte() = HdptTypeMisc Then Continue For
+                If hd.ClasificarHeadPart(False).Clase <> Canon.ClaseDeHeadPart.Slot Then Continue For
                     If overriddenTypes.Contains(hd.TipoDeParte()) Then Continue For
                     visibleParents.Add(fid)
                     visibleParentIsRaceDefault(fid) = True
@@ -2645,7 +2647,7 @@ Public Class EditFace_Form
                 For Each fid In raceDefaults
                     Dim hd As Canon.IHdpt = Nothing
                     If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
-                    If hd.TipoDeParte() = HdptTypeMisc Then Continue For
+                If hd.ClasificarHeadPart(False).Clase <> Canon.ClaseDeHeadPart.Slot Then Continue For
                     If overriddenTypes.Contains(hd.TipoDeParte()) Then Continue For
                     ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=True))
                     Dim extras As List(Of UInteger) = Nothing
@@ -2726,44 +2728,34 @@ Public Class EditFace_Form
             If newFid = 0UI Then Return
             Dim p = Preset
 
-            If partType = HdptTypeMisc Then
-                ' Misc = freestanding addons (lashes, AO, wet, mouth shadow, hairlines, etc.).
-                ' NpcMeshCollector.MergeHeadPartsWithRaceDefaults accumulates ALL
-                ' Misc entries from RACE + NPC without dedup-by-type — each contributes its own
-                ' shape to the head. So Add for Misc is a real Add, not a replace. The only
-                ' guard is exact-FormID dedup so the user can't add the SAME addon twice (the
-                ' render would draw it twice with z-fighting on the overlapping geometry).
-                If p.HeadPartFormIDs.Contains(newFid) Then
-                    MessageBox.Show(Me,
-                        "This Misc head part is already in the list. Misc entries can stack but the same FormID can only appear once.",
-                        "Add Head Part", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                Else
-                    p.HeadPartFormIDs.Add(newFid)
-                End If
+        If partType = HdptTypeMisc OrElse Canon.SlotAcumulaVarios(partType) Then
+            ' Misc(0) y los tipos que ACUMULAN (hoy solo Scar(5), medido contra los 3158 FaceGeom del
+            ' CK) son ADITIVOS: cada entrada aporta su propio shape, asi que "Add" es un Add de
+            ' verdad, no un reemplazo. El unico guard es el dedup por FormID exacto — la misma parte
+            ' dos veces se dibuja dos veces, con z-fighting sobre la geometria superpuesta.
+            ' ⛔ Antes el gate era `partType = HdptTypeMisc` a secas, asi que "Add Scar"
+            ' (ButtonAddScar, :2498) caia en la rama de REEMPLAZO: la ley declara que el tipo 5
+            ' acumula y la UI no dejaba construirlo. Es la decision 1 del usuario.
+            If p.HeadPartFormIDs.Contains(newFid) Then
+                MessageBox.Show(Me,
+                    "This head part is already in the list. It can stack with others of its type, but the same FormID can only appear once.",
+                    "Add Head Part", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Else
-                ' Non-Misc types 1..9: render's NpcMeshCollector.MergeHeadPartsWithRaceDefaults keeps exactly
-                ' ONE HDPT per type (last one wins). Adding "Eyes blue" when the
-                ' NPC already has "Eyes green" replaces the green entry. We do NOT re-ADD the new
-                ' parent's HNAM extras — the render's recursive HNAM walk in NpcMeshCollector.CollectHeadPartCandidate
-                ' is the single source of truth for which addons attach to which
-                ' parent, and duplicating that walk to add extras produced parent-swap bugs. But we
-                ' DO cascade-REMOVE the OLD parent's now-orphaned standalone Misc children below
-                ' (symmetric with OnRemoveHeadPart) — otherwise replacing a hair leaves its old
-                ' hairline as a Misc root with no palette.
-                Dim existingIdx = p.HeadPartFormIDs.FindIndex(Function(fid)
-                                                                  Dim hd As Canon.IHdpt = Nothing
-                                                                  Return _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.TipoDeParte() = partType
-                                                              End Function)
-                If existingIdx >= 0 Then
-                    Dim oldParentFid = p.HeadPartFormIDs(existingIdx)
-                    p.HeadPartFormIDs(existingIdx) = newFid
-                    ' Set the new parent FIRST so its own HNAM protects any Misc the old and new
-                    ' parent share (a hairline declared by both stays a live HNAM child).
-                    If oldParentFid <> newFid Then CascadeRemoveOrphanedHnamMisc(p.HeadPartFormIDs, oldParentFid)
-                Else
-                    p.HeadPartFormIDs.Add(newFid)
-                End If
+                p.HeadPartFormIDs.Add(newFid)
             End If
+        Else
+            Dim existingIdx = p.HeadPartFormIDs.FindIndex(Function(fid)
+                                                              Dim hd As Canon.IHdpt = Nothing
+                                                              Return _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.TipoDeParte() = partType
+                                                          End Function)
+            If existingIdx >= 0 Then
+                Dim oldParentFid = p.HeadPartFormIDs(existingIdx)
+                p.HeadPartFormIDs(existingIdx) = newFid
+                If oldParentFid <> newFid Then CascadeRemoveOrphanedHnamMisc(p.HeadPartFormIDs, oldParentFid)
+            Else
+                p.HeadPartFormIDs.Add(newFid)
+            End If
+        End If
 
             RefreshHeadPartsList()
             _refresh?.Invoke(FaceRefreshScope.FullReload)

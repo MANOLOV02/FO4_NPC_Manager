@@ -1261,60 +1261,40 @@ Public Module NpcOverrideSaver
         Dim presetHasHeadParts = (overlay IsNot Nothing AndAlso overlay.HasHeadPartFormIDs)
         If presetHasHeadParts Then
             Dim presetParts = overlay.HeadPartFormIDs
-            Dim mergedByType As New Dictionary(Of Integer, UInteger)
-            Dim freestandingMisc As New List(Of UInteger)
-            ' Per-FormID classification → PartType slot (1-9) or freestanding misc (0).
-            ' skipExtra drops IsExtraPart HDPTs (DATA flag 0x08 — lashes,
-            ' hairlines, AO/wet meshes that hang off another head part via HNAM). Applied to the PRESET
-            ' loop ONLY (its long-standing behaviour). The RAW loop keeps extras verbatim:
-            ' an empirical scan of the live load order (Tools/ExtraPartFilterProbe, 4473 NPCs) found ZERO
-            ' extra-parts with a 1-9 PartType — so a raw extra can never displace a main slot, the only
-            ' case a raw guard would help — while filtering the raw loop stripped FemaleEyesHumanLashes &
-            ' co. from 2147 NPCs, 43 of them (incl. CompanionCait) with NO retained HNAM parent to
-            ' regenerate the part → lost eyelashes on save. So we preserve the raw record's head parts.
-            Dim classifyHeadPart =
-                Sub(fid As UInteger, skipExtra As Boolean)
-                    If fid = 0UI Then Return
-                    Dim hpRec = ctx.PluginManager.GetRecord(fid)
-                    If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Return
-                    Dim hd = Canon.CanonRecords.Hdpt(hpRec, ctx.PluginManager)
-                    ' IsExtraPart flag = 0x08; same value used by MainForm.HeadPartFlagIsExtra.
-                    If skipExtra AndAlso (hd.Flags And 8US) <> 0 Then Return
-                    If hd.TipoDeParte() = 0 Then
-                        freestandingMisc.Add(fid)
-                    ElseIf hd.TipoDeParte() >= 1 AndAlso hd.TipoDeParte() <= 9 Then
-                        mergedByType(hd.TipoDeParte()) = fid
-                    End If
-                End Sub
-            ' A COMPLETE superset preset (Edit Face — seeded from the raw record's PNAM including its
-            ' IsExtraPart addons, then edited) is AUTHORITATIVE: it already carries every raw extra it
-            ' means to keep, so we must NOT union the raw record back in. Doing so would (a) resurrect
-            ' freestanding Misc parts the user explicitly deleted — the orphan-hairline bug — because a
-            ' raw Misc has no PartType slot to be overridden and always re-accumulates into
-            ' freestandingMisc, and (b) duplicate any Misc present in both lists (freestandingMisc is
-            ' not deduped). Filtered presets (LooksMenu JSON / SavePreset / Paste) DROP IsExtraPart
-            ' addons, so they still need the raw union to restore lashes/AO/wet the preset omitted.
             Dim presetIsCompleteSuperset As Boolean = overlay.HeadPartFormIDsIncludeRawExtras
+            Dim resolverHdpt = Function(fid As UInteger) As Canon.IHdpt
+                                   ' Misma resolucion que hacia el `classifyHeadPart` que este hunk
+                                   ' reemplaza (NpcOverrideSaver.vb:1278-1280).
+                                   Dim hpRec = ctx.PluginManager.GetRecord(fid)
+                                   If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Return Nothing
+                                   Return Canon.CanonRecords.Hdpt(hpRec, ctx.PluginManager)
+                               End Function
+            Dim fuentes As New List(Of Canon.FuenteDePartes)
             If Not presetIsCompleteSuperset Then
-                ' Skip raw parts the APPLY step flagged as orphaned by a parent replacement (an old
-                ' hairline / eye-lash left over after a preset/paste swapped that parent). Decided at Load/Paste
-                ' (HeadPartResolver.ComputeReplacedParentOrphanMisc → overlay.SuppressedRawHeadPartFormIDs);
-                ' the saver just obeys it. Empty set for any apply that didn't replace a parent.
                 Dim suppressedRaw = overlay.SuppressedRawHeadPartFormIDs
+                Dim crudoVivo As New List(Of UInteger)
                 For Each fid In rawHeadParts
                     If suppressedRaw IsNot Nothing AndAlso suppressedRaw.Contains(fid) Then Continue For
-                    classifyHeadPart(fid, False)   ' raw: keep extras (round-trip faithful)
+                    crudoVivo.Add(fid)
                 Next
+                fuentes.Add(New Canon.FuenteDePartes("crudo", crudoVivo, False))
             End If
+            ' El bundle del LM SkinTemplate es FUENTE PROPIA, de mas prioridad que el preset. La MISMA
+            ' particion la hace H3 con el MISMO conjunto marcador, para que no haya dos formas de
+            ' contestar "que puso el template".
+            Dim inyectadosLm = overlay.LmTemplateInjectedHdptFormIDs
+            Dim presetSinLm As New List(Of UInteger)
+            Dim lmDelPreset As New List(Of UInteger)
             For Each fid In presetParts
-                ' Complete superset already holds raw extras verbatim → keep them (skipExtra:=False).
-                ' Filtered preset keeps its long-standing extra filter (the raw union above restores them).
-                classifyHeadPart(fid, Not presetIsCompleteSuperset)
+                If inyectadosLm IsNot Nothing AndAlso inyectadosLm.Contains(fid) Then
+                    lmDelPreset.Add(fid)
+                Else
+                    presetSinLm.Add(fid)
+                End If
             Next
-            For Each t In mergedByType.Keys.OrderBy(Function(k) k)
-                headParts.Add(mergedByType(t))
-            Next
-            headParts.AddRange(freestandingMisc)
+            fuentes.Add(New Canon.FuenteDePartes("preset", presetSinLm, Not presetIsCompleteSuperset))
+            fuentes.Add(New Canon.FuenteDePartes("lmTemplate", lmDelPreset, False))
+            headParts.AddRange(Canon.ResolverPartesDeCabeza(fuentes, resolverHdpt))
         Else
             headParts.AddRange(rawHeadParts)
         End If

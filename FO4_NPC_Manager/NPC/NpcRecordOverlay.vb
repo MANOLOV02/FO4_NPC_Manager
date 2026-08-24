@@ -582,15 +582,22 @@ Public Module NpcRecordOverlay
             End Try
         Next
 
-        If replaceIdx >= 0 Then
-            headParts(replaceIdx) = newHdptFormID
-            ' Remove duplicates back-to-front so indices stay valid.
-            For j = removalIndices.Count - 1 To 0 Step -1
-                headParts.RemoveAt(removalIndices(j))
-            Next
-        Else
-            headParts.Add(newHdptFormID)
-        End If
+            If replaceIdx >= 0 Then
+                headParts(replaceIdx) = newHdptFormID
+                ' Remove back-to-front so indices stay valid.
+                For j = removalIndices.Count - 1 To 0 Step -1
+                    Dim idx = removalIndices(j)
+                    ' El duplicado EXACTO del que acabamos de poner se saca SIEMPRE (decision 2:
+                    ' colapsar repetidos, como el CK). Si no, saltear el borrado para un tipo que
+                    ' acumula dejaria el MISMO FormID dos veces, y es PUNTO FIJO: una segunda pasada
+                    ' tampoco lo colapsa, y MismaLista da False => se escribe el PNAM duplicado.
+                    If headParts(idx) = newHdptFormID OrElse Not Canon.SlotAcumulaVarios(targetPartType) Then
+                        headParts.RemoveAt(idx)
+                    End If
+                Next
+            Else
+                headParts.Add(newHdptFormID)
+            End If
     End Sub
 
     ''' <summary>Single source of truth for "the preset must reflect the LM template's bundle,
