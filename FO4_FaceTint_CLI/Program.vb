@@ -5480,11 +5480,9 @@ persist:
                     Dim hint As Integer = -99
                     Try
                         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hb))
-                        Dim b = g.GetObjectsByClassName("hkaAnimationBinding").FirstOrDefault()
-                        If b IsNot Nothing Then
-                            Dim ab = Havok.Canon.Objects.HkObj_HkaAnimationBinding.Read(g, b)
-                            If ab IsNot Nothing Then hint = ab.BlendHint
-                        End If
+                        ' ⛔ El binding sale de `hkaAnimationContainer.bindings`, no del primer bloque serializado.
+                        Dim ab = g.BindingPrincipal()
+                        If ab IsNot Nothing Then hint = ab.BlendHint
                     Catch
                     End Try
                     If hint = -99 Then Continue For
