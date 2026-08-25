@@ -4952,8 +4952,8 @@ persist:
                     If keys.Count <= 2 Then Console.WriteLine($"     ALL bones [{sk.Bones.Count}]: {String.Join(", ", sk.Bones.Select(Function(b) b.Name))}")
                 Next
                 For Each o In sg.GetObjectsByClassName("hkbCharacterStringData")
-                    Dim csd = sg.ParseCharacterStringData(o)
-                    If csd IsNot Nothing Then tags.Add($"character '{csd.CharacterName}' rig='{csd.RigName}'")
+                    Dim csd = Havok.Canon.Objects.HkObj_HkbCharacterStringData.Read(sg, o)
+                    If csd IsNot Nothing Then tags.Add($"character '{csd.Name}' rig='{csd.RigName}'")
                 Next
             Catch ex As Exception
                 tags.Add("(parse fail: " & ex.GetType().Name & ")")
@@ -4998,7 +4998,7 @@ persist:
         Dim b = LoadAnimCand(hkxPath)
         If b Is Nothing Then Console.WriteLine($"[hkxbone] '{hkxPath}' does not load") : Return
         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
-        Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) g.ParseSkeleton(o)).Where(Function(s) s IsNot Nothing).ToList()
+        Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(g, o)).Where(Function(s) s IsNot Nothing).ToList()
         Dim skel = skels.FirstOrDefault(Function(s) Not If(s.Name, "").Contains("Ragdoll", StringComparison.OrdinalIgnoreCase))
         If skel Is Nothing Then Console.WriteLine("[hkxbone] no animation hkaSkeleton") : Return
         Console.WriteLine($"[hkxbone] '{hkxPath}' skel='{skel.Name}' bones={skel.Bones.Count} | filter='{boneSubstr}'")
@@ -5482,7 +5482,7 @@ persist:
                         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hb))
                         Dim b = g.GetObjectsByClassName("hkaAnimationBinding").FirstOrDefault()
                         If b IsNot Nothing Then
-                            Dim ab = g.ParseAnimationBinding(b)
+                            Dim ab = Havok.Canon.Objects.HkObj_HkaAnimationBinding.Read(g, b)
                             If ab IsNot Nothing Then hint = ab.BlendHint
                         End If
                     Catch
@@ -5559,11 +5559,11 @@ persist:
                 Try
                     Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bb))
                     For Each o In g.GetObjectsByClassName("hkbClipGenerator")
-                        Dim an = g.ParseClipGenerator(o)?.AnimationName
+                        Dim an = Havok.Canon.Objects.HkObj_HkbClipGenerator.Read(g, o)?.AnimationName
                         If Not String.IsNullOrWhiteSpace(an) Then refBases.Add(System.IO.Path.GetFileNameWithoutExtension(an)) : nClip += 1
                     Next
                     For Each o In g.GetObjectsByClassName("BGSGamebryoSequenceGenerator")
-                        Dim gn = g.ResolveLocalString(o.RelativeOffset + &H88)
+                        Dim gn = If(Havok.Canon.Objects.HkObj_HkbBehaviorReferenceGenerator.Read(g, o)?.BehaviorName, "")
                         If Not String.IsNullOrWhiteSpace(gn) Then refBases.Add(System.IO.Path.GetFileNameWithoutExtension(gn)) : nGamebryo += 1
                     Next
                 Catch
@@ -7655,7 +7655,7 @@ persist:
                 If bindings.Count = 0 Then noBinding += 1 : Continue For
                 Dim anyRead = False
                 For Each b In bindings
-                    Dim ab = g.ParseAnimationBinding(b)
+                    Dim ab = Havok.Canon.Objects.HkObj_HkaAnimationBinding.Read(g, b)
                     If ab Is Nothing Then Continue For
                     anyRead = True
                     Dim h = ab.BlendHint
@@ -7732,8 +7732,7 @@ persist:
         Dim cbts = LoadAnimCand(clipPath)
         If cbts Is Nothing Then Console.WriteLine($"[animsync] clip '{clipPath}' does not load") : Return
         Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbts))
-        Dim anim = cg.ParseAnimations().FirstOrDefault()
-        If anim Is Nothing Then anim = cg.ParseLosslessAnimations().FirstOrDefault()
+        Dim anim = cg.Animaciones().FirstOrDefault()
         If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[animsync] clip without readable animation") : Return
         Dim idxArr = If(anim.Binding?.TransformTrackToBoneIndices, New List(Of Short)())
         Dim frame As Integer
@@ -7749,28 +7748,29 @@ persist:
         ' relleno; el uso real gatea por 'maskOf'). Fallback app-faithful (bind) se aplica en buildLocal.
         Dim clipLocal As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
         Dim maskOf As New Dictionary(Of String, (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean))(StringComparer.OrdinalIgnoreCase)
-        For t = 0 To anim.NumTransformTracks - 1
+        For t = 0 To anim.Animacion.NumberOfTransformTracks - 1
             Dim bi = If(idxArr.Count > 0 AndAlso t < idxArr.Count, CInt(idxArr(t)), t)
             If bi < 0 OrElse bi >= nBk Then Continue For
             Dim nm = If(skel.Bones(bi).Name, "")
             If nm = "" OrElse clipLocal.ContainsKey(nm) Then Continue For
-            Dim ht = anim.GetTransform(frame, t) : If ht Is Nothing Then Continue For
+            Dim ht = anim.GetTransform(frame, t) : Dim mskT = anim.GetMask(frame, t) : If ht Is Nothing Then Continue For
             Dim refp = skel.ReferencePose(bi)
             ' `ReferencePose` son los 12 floats CRUDOS del `hkQsTransform` que declara la reflexion:
             ' translation 0..3, rotation 4..7, scale 8..11. Se leen por indice, sin objeto intermedio.
             Dim rp = If(refp IsNot Nothing AndAlso refp.Length >= 12, refp, New Single(11) {})
-            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), rp(0))
-            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), rp(1))
-            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), rp(2))
-            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), rp(8))
-            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), rp(9))
-            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), rp(10))
-            If ht.RotationAnimated AndAlso ht.Rotation IsNot Nothing Then
-                clipLocal(nm) = HkxTransformConventionHelper.ToTransform(tx, ty, tz, ht.Rotation, sx, sy, sz)
+            Dim tx = If(((mskT And 1) <> 0), If(ht IsNot Nothing, ht(0), 0.0F), rp(0))
+            Dim ty = If(((mskT And 2) <> 0), If(ht IsNot Nothing, ht(1), 0.0F), rp(1))
+            Dim tz = If(((mskT And 4) <> 0), If(ht IsNot Nothing, ht(2), 0.0F), rp(2))
+            Dim sx = If(((mskT And 16) <> 0), If(ht IsNot Nothing, ht(8), 1.0F), rp(8))
+            Dim sy = If(((mskT And 32) <> 0), If(ht IsNot Nothing, ht(9), 1.0F), rp(9))
+            Dim sz = If(((mskT And 64) <> 0), If(ht IsNot Nothing, ht(10), 1.0F), rp(10))
+            If ((mskT And 8) <> 0) AndAlso ht IsNot Nothing Then
+
+                clipLocal(nm) = HkxTransformConventionHelper.ToTransformRaw(tx, ty, tz, ht(4), ht(5), ht(6), ht(7), sx, sy, sz)
             Else
                 clipLocal(nm) = HkxTransformConventionHelper.ToTransformRaw(tx, ty, tz, rp(4), rp(5), rp(6), rp(7), sx, sy, sz)
             End If
-            maskOf(nm) = (ht.TranslationXAnimated, ht.TranslationYAnimated, ht.TranslationZAnimated, ht.RotationAnimated, ht.ScaleXAnimated OrElse ht.ScaleYAnimated OrElse ht.ScaleZAnimated)
+            maskOf(nm) = (((mskT And 1) <> 0), ((mskT And 2) <> 0), ((mskT And 4) <> 0), ((mskT And 8) <> 0), ((mskT And 16) <> 0) OrElse ((mskT And 32) <> 0) OrElse ((mskT And 64) <> 0))
         Next
 
         Console.WriteLine($"[animsync] chunk='{chunkPath}'  frame={frame}/{anim.NumFrames - 1}  nodes={order.Count}  clipBones={clipLocal.Count}")
@@ -7915,14 +7915,13 @@ persist:
         Dim cbts = LoadAnimCand(clipPath)
         If cbts Is Nothing Then Console.WriteLine($"[clipbase] clip '{clipPath}' does not load") : Return
         Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbts))
-        Dim anim = cg.ParseAnimations().FirstOrDefault()
-        If anim Is Nothing Then anim = cg.ParseLosslessAnimations().FirstOrDefault()
+        Dim anim = cg.Animaciones().FirstOrDefault()
         If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[clipbase] clip without readable animation") : Return
-        Dim embSkels = cg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) cg.ParseSkeleton(o)).
+        Dim embSkels = cg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(cg, o)).
                           Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.Bones.Count > 0).ToList()
         Dim idxArr = If(anim.Binding?.TransformTrackToBoneIndices, New List(Of Short)())
         Console.WriteLine($"[clipbase] rig='{rigPath}' skel='{skel.Name}' bones={nB}")
-        Console.WriteLine($"[clipbase] clip='{clipPath}' frames={anim.NumFrames} tracks={anim.NumTransformTracks} bindingTracks={idxArr.Count} blendHint={If(anim.Binding Is Nothing, "?", anim.Binding.BlendHint.ToString())} origSkel='{If(anim.Binding?.OriginalSkeletonName, "")}' embeddedSkeletons={embSkels.Count}{If(embSkels.Count > 0, " (" & String.Join(",", embSkels.Select(Function(s) $"'{s.Name}'×{s.Bones.Count}")) & ")", "")}")
+        Console.WriteLine($"[clipbase] clip='{clipPath}' frames={anim.NumFrames} tracks={anim.Animacion.NumberOfTransformTracks} bindingTracks={idxArr.Count} blendHint={If(anim.Binding Is Nothing, "?", anim.Binding.BlendHint.ToString())} origSkel='{If(anim.Binding?.OriginalSkeletonName, "")}' embeddedSkeletons={embSkels.Count}{If(embSkels.Count > 0, " (" & String.Join(",", embSkels.Select(Function(s) $"'{s.Name}'×{s.Bones.Count}")) & ")", "")}")
 
         ' ── CHUNKS: por chunk NIF, world ensamblado por bone vía skin binds (inv(bind)) + node tree ──
         Dim chunkData As New List(Of (Name As String, SkinW As Dictionary(Of String, Transform_Class), NodeW As Dictionary(Of String, Transform_Class)))
@@ -7978,28 +7977,29 @@ persist:
         Dim cntRig = 0, cntAsm = 0, cntBoth = 0, cntNeither = 0, cntNoAsm = 0
         Dim neitherList As New List(Of String)
         Console.WriteLine("   track bone                       mask        rig.T                clip0.T              dT_rig θ_rig | asm.T (src)            dT_asm θ_asm | verdict")
-        For t = 0 To anim.NumTransformTracks - 1
+        For t = 0 To anim.Animacion.NumberOfTransformTracks - 1
             Dim bi = If(idxArr.Count > 0 AndAlso t < idxArr.Count, CInt(idxArr(t)), t)
             If bi < 0 OrElse bi >= nB Then Continue For
             Dim nm = If(skel.Bones(bi).Name, "")
             If nm = "" Then Continue For
             Dim ht = anim.GetTransform(0, t)
+            Dim mskT = anim.GetMask(0, t)
             If ht Is Nothing Then Continue For
             Dim refp = skel.ReferencePose(bi)
             ' Componentes no animados → refPose del rig (misma semántica que BuildFrameLocalTransform).
             ' `ReferencePose` son los 12 floats CRUDOS del `hkQsTransform` que declara la reflexion:
             ' translation 0..3, rotation 4..7, scale 8..11. Se leen por indice, sin objeto intermedio.
             Dim rp = If(refp IsNot Nothing AndAlso refp.Length >= 12, refp, New Single(11) {})
-            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), rp(0))
-            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), rp(1))
-            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), rp(2))
-            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), rp(8))
-            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), rp(9))
-            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), rp(10))
-            Dim clip0 = If(ht.RotationAnimated AndAlso ht.Rotation IsNot Nothing,
-                           HkxTransformConventionHelper.ToTransform(tx, ty, tz, ht.Rotation, sx, sy, sz),
-                           HkxTransformConventionHelper.ToTransformRaw(tx, ty, tz, rp(4), rp(5), rp(6), rp(7), sx, sy, sz))
-            Dim mask = $"T:{If(ht.TranslationXAnimated, "x", "-")}{If(ht.TranslationYAnimated, "y", "-")}{If(ht.TranslationZAnimated, "z", "-")} R:{If(ht.RotationAnimated, "a", "-")} S:{If(ht.ScaleXAnimated OrElse ht.ScaleYAnimated OrElse ht.ScaleZAnimated, "a", "-")}"
+            Dim tx = If(((mskT And 1) <> 0), If(ht IsNot Nothing, ht(0), 0.0F), rp(0))
+            Dim ty = If(((mskT And 2) <> 0), If(ht IsNot Nothing, ht(1), 0.0F), rp(1))
+            Dim tz = If(((mskT And 4) <> 0), If(ht IsNot Nothing, ht(2), 0.0F), rp(2))
+            Dim sx = If(((mskT And 16) <> 0), If(ht IsNot Nothing, ht(8), 1.0F), rp(8))
+            Dim sy = If(((mskT And 32) <> 0), If(ht IsNot Nothing, ht(9), 1.0F), rp(9))
+            Dim sz = If(((mskT And 64) <> 0), If(ht IsNot Nothing, ht(10), 1.0F), rp(10))
+            Dim rq2 = If(((mskT And 8) <> 0) AndAlso ht IsNot Nothing AndAlso ht.Length >= 4,
+                         ht, rp)
+            Dim clip0 = HkxTransformConventionHelper.ToTransformRaw(tx, ty, tz, rq2(4), rq2(5), rq2(6), rq2(7), sx, sy, sz)
+            Dim mask = $"T:{If(((mskT And 1) <> 0), "x", "-")}{If(((mskT And 2) <> 0), "y", "-")}{If(((mskT And 4) <> 0), "z", "-")} R:{If(((mskT And 8) <> 0), "a", "-")} S:{If(((mskT And 16) <> 0) OrElse ((mskT And 32) <> 0) OrElse ((mskT And 64) <> 0), "a", "-")}"
 
             Dim rigL = rigLocal(bi)
             Dim dTr = (clip0.Translation - rigL.Translation).Length()
@@ -8131,23 +8131,24 @@ persist:
         Dim b = LoadAnimCand(path)
         If b Is Nothing Then Console.WriteLine($"[dumpbeh] '{path}' does not load") : Return
         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
-        ' hkaAnimationBinding crudo (si el archivo es una ANIMACIÓN): el blendHint canónico vive acá.
+        ' ⛔ `hkaAnimationBinding` POR NOMBRE. Antes esto volcaba 80 bytes en hexa porque el
+        ' `blendHint` no estaba declarado en ningun lado y habia que buscarlo a ojo. La reflexion lo
+        ' declara, asi que el volcado lo lee por su nombre y ya no hay nada que adivinar.
         For Each o In g.GetObjectsByClassName("hkaAnimationBinding")
-            Dim bytes As New System.Text.StringBuilder()
-            For off = 0 To Math.Min(o.Size - 1, &H4F)
-                If off Mod 16 = 0 Then bytes.Append($"{Environment.NewLine}       +{off:X2}: ")
-                bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
-            Next
-            Console.WriteLine($"   [hkaAnimationBinding] size={o.Size}{bytes}")
+            Dim ab = Havok.Canon.Objects.HkObj_HkaAnimationBinding.Read(g, o)
+            If ab Is Nothing Then Continue For
+            Console.WriteLine($"   [hkaAnimationBinding] originalSkeletonName='{ab.OriginalSkeletonName}'" &
+                              $" blendHint={ab.BlendHint} tracks={If(ab.TransformTrackToBoneIndices Is Nothing, 0, ab.TransformTrackToBoneIndices.Count)}" &
+                              $" floats={If(ab.FloatTrackToFloatSlotIndices Is Nothing, 0, ab.FloatTrackToFloatSlotIndices.Count)}")
         Next
-        Dim cgs = g.GetObjectsByClassName("hkbClipGenerator").Select(Function(o) g.ParseClipGenerator(o)).Where(Function(c) c IsNot Nothing).ToList()
-        Dim refs = g.GetObjectsByClassName("hkbBehaviorReferenceGenerator").Select(Function(o) g.ResolveLocalString(o.RelativeOffset + &H88)).Where(Function(s) Not String.IsNullOrEmpty(s)).Distinct().ToList()
+        Dim cgs = g.GetObjectsByClassName("hkbClipGenerator").Select(Function(o) Havok.Canon.Objects.HkObj_HkbClipGenerator.Read(g, o)).Where(Function(c) c IsNot Nothing).ToList()
+        Dim refs = g.GetObjectsByClassName("hkbBehaviorReferenceGenerator").Select(Function(o) If(Havok.Canon.Objects.HkObj_HkbBehaviorReferenceGenerator.Read(g, o)?.BehaviorName, "")).Where(Function(s) Not String.IsNullOrEmpty(s)).Distinct().ToList()
         Console.WriteLine($"[dumpbeh] {path}: clipGenerators={cgs.Count} behaviorRefs={refs.Count}")
         For Each r In refs
             Console.WriteLine($"   behaviorRef→ {r}")
         Next
         For Each c In cgs.Take(80)
-            Console.WriteLine($"   clipGen '{c.Name}' anim='{c.AnimationName}' mode={c.PlaybackMode} flags=0x{c.FlagsRaw:X2}")
+            Console.WriteLine($"   clipGen '{c.Name}' anim='{c.AnimationName}' mode={c.Mode} flags=0x{c.Flags:X2}")
         Next
         ' Histograma de clases del grafo + QUIÉN referencia a cada clip generator (jerarquía:
         ' la aditividad puede declararla el PADRE — layer/blender — no el clip generator).
@@ -8156,67 +8157,46 @@ persist:
         For Each grp In classHist
             Console.WriteLine($"     {grp.Count(),4}x {grp.Key}")
         Next
-        ' Generators DINÁMICOS (DATG/BSiState/ManualSelector): qué generan (DescribeGenerator recursa a las hojas-clip)
-        ' + clases referenciadas. Para ver si LISTAN estáticamente los variantes (to_<mood>/alt_) o los arman en runtime.
-        For Each cls In {"DynamicAnimationTaggingGenerator", "BSiStateTaggingGenerator", "hkbManualSelectorGenerator"}
+        ' ⛔ LOS CAMPOS POR SU NOMBRE, NO EN HEXA.
+        ' Esto volcaba hexa y ASCII de seis clases para encontrar "el tag" y "el campo ADDITIVE"
+        ' a ojo. MEDIDO contra la tabla: las seis estan declaradas en la reflexion de FO4
+        ' (`DynamicAnimationTaggingGenerator`, `BSiStateTaggingGenerator`,
+        ' `hkbManualSelectorGenerator`, `hkbBlenderGenerator`, `hkbLayerGenerator`, `hkbLayer`),
+        ' incluidas las dos de Bethesda. Se leen por nombre con el objeto canonico.
+        For Each cls In {"DynamicAnimationTaggingGenerator", "BSiStateTaggingGenerator", "hkbManualSelectorGenerator",
+                         "hkbBlenderGenerator", "hkbLayerGenerator", "hkbLayer"}
             For Each o In g.GetObjectsByClassName(cls)
                 Dim nm = g.ReadNodeName(o)
-                Dim refClasses As New List(Of String)
-                For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
-                    Dim t = g.GetObject(gf.TargetRelativeOffset) : If t IsNot Nothing Then refClasses.Add(t.ClassName)
-                Next
-                Dim strs As New List(Of String)
-                For Each lf In g.GetLocalFixupsInRange(o.RelativeOffset, o.Size)
-                    Dim s = g.ReadNullTerminatedString(lf.DestinationRelativeOffset)
-                    If Not String.IsNullOrWhiteSpace(s) AndAlso s.Length < 80 AndAlso s.All(Function(ch) AscW(ch) >= 32 AndAlso AscW(ch) <= 126) Then strs.Add(s)
-                Next
-                Console.WriteLine($"   [{cls}] '{nm}' → {g.DescribeGenerator(o)} | strings=[{String.Join(" | ", strs.Distinct())}] | refs=[{String.Join(",", refClasses.Distinct())}]")
-                ' Decode COMPLETO del DATG (para hallar el tag): todos los global-fixups (offset→target), int32/float por offset.
-                If cls = "DynamicAnimationTaggingGenerator" Then
-                    For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
-                        Dim t = g.GetObject(gf.TargetRelativeOffset)
-                        Console.WriteLine($"        +{gf.SourceRelativeOffset - o.RelativeOffset:X2} → {If(t Is Nothing, "?", t.ClassName & " '" & g.ReadNodeName(t) & "'")}")
-                    Next
-                    Dim ascii As New System.Text.StringBuilder()
-                    For off = &H40 To o.Size - 1
-                        Dim bb = g.ReadByte(o.RelativeOffset + off)
-                        ascii.Append(If(bb >= 32 AndAlso bb <= 126, ChrW(bb), "."c))
-                    Next
-                    Console.WriteLine($"        ASCII +40..: {ascii}")
+                Console.WriteLine($"   [{cls}] '{nm}' size={o.Size} → {g.DescribeGenerator(o)}")
+                Dim campos = Havok.Canon.HavokObjetoGenerico.Leer(g, o)
+                If campos Is Nothing Then
+                    Console.WriteLine("        (la clase no esta en la tabla de este juego)")
+                    Continue For
                 End If
-            Next
-        Next
-        ' hkbBlenderGenerator / hkbLayerGenerator / hkbLayer: hex + qué clips alcanza cada uno
-        ' (vía sus children) — para ubicar el campo ADDITIVE binario por diff additive-vs-normal.
-        Dim describeReach = Function(o As HkxVirtualObjectGraph_Class) As String
-                                Dim reach As New List(Of String)
-                                For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
-                                    Dim t1 = g.GetObject(gf.TargetRelativeOffset)
-                                    If t1 Is Nothing Then Continue For
-                                    If t1.ClassName = "hkbClipGenerator" Then reach.Add(g.ReadNodeName(t1))
-                                    For Each gf2 In g.GetGlobalFixupsInRange(t1.RelativeOffset, t1.Size)
-                                        Dim t2 = g.GetObject(gf2.TargetRelativeOffset)
-                                        If t2 IsNot Nothing AndAlso t2.ClassName = "hkbClipGenerator" Then reach.Add(g.ReadNodeName(t2))
-                                    Next
-                                Next
-                                Return String.Join(",", reach.Distinct().Take(6))
-                            End Function
-        For Each cls In {"hkbBlenderGenerator", "hkbLayerGenerator", "hkbLayer"}
-            For Each o In g.GetObjectsByClassName(cls)
-                Dim nm = g.ReadNodeName(o)
-                Dim bytes As New System.Text.StringBuilder()
-                For off = &H30 To Math.Min(o.Size - 1, &H9F)
-                    If (off - &H30) Mod 16 = 0 Then bytes.Append($"{Environment.NewLine}       +{off:X2}: ")
-                    bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
+                For Each kv In campos
+                    Dim v = kv.Value
+                    Dim txt As String
+                    If v Is Nothing Then
+                        txt = "Nothing"
+                    ElseIf TypeOf v Is System.Collections.ICollection Then
+                        txt = $"[{DirectCast(v, System.Collections.ICollection).Count} elementos]"
+                    Else
+                        txt = v.ToString()
+                        If txt.Length > 70 Then txt = txt.Substring(0, 70) & "…"
+                    End If
+                    Console.WriteLine($"        {kv.Key,-38} {txt}")
                 Next
-                Console.WriteLine($"   [{cls}] '{nm}' size={o.Size} reach=[{describeReach(o)}]{bytes}")
             Next
         Next
+        ' ⛔ BUSQUEDA INVERSA: el unico caso donde el objeto canonico NO puede servir.
+        ' La reflexion declara los punteros HACIA ADELANTE (este nodo apunta a aquel). "Quien
+        ' apunta a este clip" no es un campo de ninguna clase: es una propiedad del GRAFO, y se
+        ' contesta recorriendo los fixups globales, que es justo para lo que esta el sustrato.
         Console.WriteLine("   ── clip generator referencers (parent → clip) ──")
-        Dim cgByOffset = cgs.Where(Function(x) x.SourceObject IsNot Nothing).ToDictionary(Function(x) x.SourceObject.RelativeOffset, Function(x) x)
+        Dim cgByOffset = cgs.Where(Function(x) x.Source IsNot Nothing).ToDictionary(Function(x) x.Source.RelativeOffset, Function(x) x)
         For Each o In g.Objects
             For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
-                Dim tgt As HkbClipGeneratorGraph_Class = Nothing
+                Dim tgt As Havok.Canon.Objects.HkObj_HkbClipGenerator = Nothing
                 If cgByOffset.TryGetValue(gf.TargetRelativeOffset, tgt) Then
                     Dim parentName = g.ReadNodeName(o)
                     Console.WriteLine($"     {o.ClassName} '{parentName}' → clipGen '{tgt.Name}'")
@@ -8224,9 +8204,9 @@ persist:
             Next
         Next
         For Each o In g.GetObjectsByClassName("hkbCharacterStringData")
-            Dim csd = g.ParseCharacterStringData(o)
+            Dim csd = Havok.Canon.Objects.HkObj_HkbCharacterStringData.Read(g, o)
             If csd Is Nothing Then Continue For
-            Console.WriteLine($"   [character] name='{csd.CharacterName}' rig='{csd.RigName}' behaviorFile='{csd.BehaviorFilename}' animNames={csd.AnimationFilenames.Count}")
+            Console.WriteLine($"   [character] name='{csd.Name}' rig='{csd.RigName}' behaviorFile='{csd.BehaviorFilename}' animNames={csd.AnimationFilenames.Count}")
             For Each an In csd.AnimationFilenames.Take(40)
                 Console.WriteLine($"      animName: {an}")
             Next
@@ -8376,7 +8356,7 @@ persist:
         Try
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
             For Each o In g.GetObjectsByClassName("hkbProjectStringData")
-                Dim psd = g.ParseProjectStringData(o)
+                Dim psd = Havok.Canon.Objects.HkObj_HkbProjectStringData.Read(g, o)
                 If psd Is Nothing Then Continue For
                 For Each cf In psd.CharacterFilenames
                     If String.IsNullOrWhiteSpace(cf) Then Continue For
@@ -8387,7 +8367,7 @@ persist:
                     If cb Is Nothing Then Continue For
                     Dim gc = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
                     For Each co In gc.GetObjectsByClassName("hkbCharacterStringData")
-                        Dim csd = gc.ParseCharacterStringData(co)
+                        Dim csd = Havok.Canon.Objects.HkObj_HkbCharacterStringData.Read(gc, co)
                         If csd Is Nothing Then Continue For
                         AddRefC(referenced, CombineC(actorRoot, csd.RigName))
                         AddRefC(referenced, CombineC(actorRoot, csd.BehaviorFilename))
@@ -8412,7 +8392,7 @@ persist:
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bb))
             Dim behRoot = ActorRootC(behFile)
             For Each refObj In g.GetObjectsByClassName("hkbBehaviorReferenceGenerator")
-                Dim refName = g.ResolveLocalString(refObj.RelativeOffset + &H88)
+                Dim refName = If(Havok.Canon.Objects.HkObj_HkbBehaviorReferenceGenerator.Read(g, refObj)?.BehaviorName, "")
                 If Not String.IsNullOrWhiteSpace(refName) Then CollectBehaviorRefs(CombineC(behRoot, refName), referenced, visited, depth + 1)
             Next
         Catch
@@ -8678,13 +8658,13 @@ persist:
         Try
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
             For Each o In g.GetObjectsByClassName("hkbProjectStringData")
-                Dim psd = g.ParseProjectStringData(o) : If psd Is Nothing Then Continue For
+                Dim psd = Havok.Canon.Objects.HkObj_HkbProjectStringData.Read(g, o) : If psd Is Nothing Then Continue For
                 For Each cf In psd.CharacterFilenames
                     Dim cb = LoadAnimCand(CombineC(actorRoot, cf)) : If cb Is Nothing Then cb = LoadAnimCand(cf)
                     If cb Is Nothing Then Continue For
                     Dim gc = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
                     For Each co In gc.GetObjectsByClassName("hkbCharacterStringData")
-                        Dim csd = gc.ParseCharacterStringData(co)
+                        Dim csd = Havok.Canon.Objects.HkObj_HkbCharacterStringData.Read(gc, co)
                         If csd IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(csd.BehaviorFilename) Then Return NormHkx(CombineC(actorRoot, csd.BehaviorFilename))
                     Next
                 Next
@@ -8708,12 +8688,12 @@ persist:
         End If
         If graph Is Nothing Then Return
         For Each o In graph.GetObjectsByClassName("hkbClipGenerator")
-            Dim cg = graph.ParseClipGenerator(o)
+            Dim cg = Havok.Canon.Objects.HkObj_HkbClipGenerator.Read(graph, o)
             If cg IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(cg.AnimationName) Then outAnims.Add(cg.AnimationName)
         Next
         Dim behRoot = ActorRootC(behFile)
         For Each ro In graph.GetObjectsByClassName("hkbBehaviorReferenceGenerator")
-            Dim refName = graph.ResolveLocalString(ro.RelativeOffset + &H88)
+            Dim refName = If(Havok.Canon.Objects.HkObj_HkbBehaviorReferenceGenerator.Read(graph, ro)?.BehaviorName, "")
             If Not String.IsNullOrWhiteSpace(refName) Then CollectClipAnims(NormHkx(CombineC(behRoot, refName)), loader, graphCache, visited, outAnims, depth + 1)
         Next
     End Sub
@@ -9135,7 +9115,7 @@ persist:
             Dim cpf As HkxPackfile_Class = Nothing
             If HkxPackfileParser_Class.TryParse(clothBlk, cpf) Then
                 Dim csk = HkxObjectGraphParser_Class.BuildGraph(cpf).GetObjectsByClassName("hkaSkeleton").
-                            Select(Function(o) HkxObjectGraphParser_Class.BuildGraph(cpf).ParseSkeleton(o)).FirstOrDefault()
+                            Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(HkxObjectGraphParser_Class.BuildGraph(cpf), o)).FirstOrDefault()
                 If csk IsNot Nothing AndAlso csk.Bones IsNot Nothing Then
                     clothBones = csk.Bones.Select(Function(b) b.Name).Where(Function(s) Not String.IsNullOrEmpty(s) AndAlso Not aSet.Contains(s) AndAlso Not nWorld.ContainsKey(s)).Distinct().ToList()
                 End If
@@ -9162,7 +9142,7 @@ persist:
         Dim nPsd = 0
         For Each o In g.GetObjectsByClassName("hkbProjectStringData")
             nPsd += 1
-            Dim psd = g.ParseProjectStringData(o)
+            Dim psd = Havok.Canon.Objects.HkObj_HkbProjectStringData.Read(g, o)
             If psd IsNot Nothing Then charFiles.AddRange(psd.CharacterFilenames)
         Next
         Console.WriteLine($"  [CHAIN] project='{proj}' | hkbProjectStringData x{nPsd} | CharacterFilenames={charFiles.Count}: {String.Join(", ", charFiles)}")
@@ -9176,8 +9156,8 @@ persist:
             Dim nCsd = 0
             For Each o In gc.GetObjectsByClassName("hkbCharacterStringData")
                 nCsd += 1
-                Dim csd = gc.ParseCharacterStringData(o)
-                If csd IsNot Nothing Then Console.WriteLine($"     character '{cf}' [hkbCharacterStringData x{nCsd}] → name='{csd.CharacterName}' rigName='{csd.RigName}'")
+                Dim csd = Havok.Canon.Objects.HkObj_HkbCharacterStringData.Read(gc, o)
+                If csd IsNot Nothing Then Console.WriteLine($"     character '{cf}' [hkbCharacterStringData x{nCsd}] → name='{csd.Name}' rigName='{csd.RigName}'")
             Next
         Next
     End Sub
@@ -9366,9 +9346,9 @@ persist:
         Dim clipBytes = LoadAnimCand("Actors\CreateABot\Animations\Protectron\CombatWalkBackwardRight.hkx")
         If clipBytes Is Nothing Then clipBytes = LoadAnimCand("Actors\CreateABot\Animations\Assaultron\PairedKillAssaultronRaiderLiftStab_AttackerLead.hkx")
         If clipBytes Is Nothing Then Console.WriteLine("Assaultron clip NOT found") : Return
-        Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(clipBytes)).ParseAnimations().FirstOrDefault()
+        Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(clipBytes)).Animaciones().FirstOrDefault()
         If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("anim without binding") : Return
-        Console.WriteLine($"clip frames={anim.NumFrames} tracks={anim.NumTransformTracks}")
+        Console.WriteLine($"clip frames={anim.NumFrames} tracks={anim.Animacion.NumberOfTransformTracks}")
         Dim idxArr = anim.Binding.TransformTrackToBoneIndices
 
         ' ── CONTAMINACIÓN-CHECK: delta = inv(CreateABot.O)·frameLocal (igual que HkxPoseImport línea 276,
@@ -9390,7 +9370,7 @@ persist:
             Dim bi = skel.Bones.FindIndex(Function(b) String.Equals(b.Name, bn, StringComparison.OrdinalIgnoreCase))
             If bi < 0 Then Continue For
             Dim tr2 = -1
-            For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1
+            For t = 0 To Math.Min(anim.Animacion.NumberOfTransformTracks, idxArr.Count) - 1
                 If idxArr(t) = bi Then tr2 = t : Exit For
             Next
             If tr2 < 0 Then Console.WriteLine($"  {bn,-16} (not animated in this clip)") : Continue For
@@ -9399,7 +9379,7 @@ persist:
             For Each frame In framesP
                 Dim ht = anim.GetTransform(frame, tr2)
                 If ht Is Nothing Then Continue For
-                Dim fl = HkxTransformConventionHelper.ToTransform(ht.Translation, ht.Rotation, ht.Scale)
+                Dim fl = HkxTransformConventionHelper.ToTransform(ht)
                 Dim d = O0.Inverse().ComposeTransforms(fl)
                 Dim trc = CDbl(d.Rotation.M11) + CDbl(d.Rotation.M22) + CDbl(d.Rotation.M33)
                 Dim th = Math.Acos(Math.Max(-1.0, Math.Min(1.0, (trc - 1.0) / 2.0))) * 180.0 / Math.PI
@@ -9418,7 +9398,7 @@ persist:
             Dim boneIdx = skel.Bones.FindIndex(Function(b) String.Equals(b.Name, m.Name, StringComparison.OrdinalIgnoreCase))
             If boneIdx < 0 Then Console.WriteLine($"--- {m.Name}: not in the skeleton") : Continue For
             Dim track = -1
-            For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1
+            For t = 0 To Math.Min(anim.Animacion.NumberOfTransformTracks, idxArr.Count) - 1
                 If idxArr(t) = boneIdx Then track = t : Exit For
             Next
             If track < 0 Then Console.WriteLine($"--- {m.Name}: not animated in this clip") : Continue For
@@ -9432,7 +9412,7 @@ persist:
             For Each frame In {0, nf \ 6, nf \ 3, nf \ 2, (2 * nf) \ 3, (5 * nf) \ 6, nf - 1}.Distinct()
                 Dim ht = anim.GetTransform(frame, track)
                 If ht Is Nothing Then Continue For
-                Dim frameLocal = HkxTransformConventionHelper.ToTransform(ht.Translation, ht.Rotation, ht.Scale)
+                Dim frameLocal = HkxTransformConventionHelper.ToTransform(ht)
                 Dim delta = Oinv.ComposeTransforms(frameLocal)
                 Dim R = delta.Rotation
                 Dim trace = CDbl(R.M11) + CDbl(R.M22) + CDbl(R.M33)
@@ -9486,7 +9466,7 @@ persist:
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
         If skel Is Nothing Then Console.WriteLine("  no anim skel") : Return
         Dim cb = LoadAnimCand(clipPath) : If cb Is Nothing Then Console.WriteLine("  no clip") : Return
-        Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb)).ParseAnimations().FirstOrDefault()
+        Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb)).Animaciones().FirstOrDefault()
         If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("  no binding") : Return
         Dim idxArr = anim.Binding.TransformTrackToBoneIndices
         Dim nB = skel.Bones.Count
@@ -9500,7 +9480,7 @@ persist:
         Next
         ' track por bone idx
         Dim trackOfBone As New Dictionary(Of Integer, Integer)
-        For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1 : trackOfBone(idxArr(t)) = t : Next
+        For t = 0 To Math.Min(anim.Animacion.NumberOfTransformTracks, idxArr.Count) - 1 : trackOfBone(idxArr(t)) = t : Next
         Dim nf = Math.Max(1, anim.NumFrames)
 
         ' ── VERIFICACIÓN FINAL: bindWorld de CreateABot (E) en ROTACIÓN COMPLETA, para comparar con
@@ -9520,7 +9500,7 @@ persist:
             For i = 0 To nB - 1
                 If trackOfBone.ContainsKey(i) Then
                     Dim ht = anim.GetTransform(frame, trackOfBone(i))
-                    frLocal(i) = If(ht IsNot Nothing, HkxTransformConventionHelper.ToTransform(ht.Translation, ht.Rotation, ht.Scale), bindLocal(i))
+                    frLocal(i) = If(ht IsNot Nothing, HkxTransformConventionHelper.ToTransform(ht), bindLocal(i))
                 Else
                     frLocal(i) = bindLocal(i)
                 End If
@@ -9560,25 +9540,25 @@ persist:
         If skel Is Nothing Then Console.WriteLine("  no animation skeleton") : Return
         Dim cb = LoadAnimCand(clipPath)
         If cb Is Nothing Then Console.WriteLine($"  clip not found: {clipPath}") : Return
-        Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb)).ParseAnimations().FirstOrDefault()
+        Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb)).Animaciones().FirstOrDefault()
         If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("  anim without binding") : Return
         Dim idxArr = anim.Binding.TransformTrackToBoneIndices
         Dim maxIdx = -1
         For t = 0 To idxArr.Count - 1
             If idxArr(t) > maxIdx Then maxIdx = idxArr(t)
         Next
-        Console.WriteLine($"skeleton='{skel.Name}' bones={skel.Bones.Count} | tracks={anim.NumTransformTracks} | binding idx max={maxIdx}")
+        Console.WriteLine($"skeleton='{skel.Name}' bones={skel.Bones.Count} | tracks={anim.Animacion.NumberOfTransformTracks} | binding idx max={maxIdx}")
         If maxIdx >= skel.Bones.Count Then Console.WriteLine($"  ⛔ ANOMALY: binding idx ({maxIdx}) >= bones ({skel.Bones.Count}) → clip NOT bound against this skeleton.")
 
         Dim midF = Math.Max(0, anim.NumFrames \ 2)
         Dim rows = New List(Of (Bone As String, Theta As Double, TMag As Double))()
-        For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1
+        For t = 0 To Math.Min(anim.Animacion.NumberOfTransformTracks, idxArr.Count) - 1
             Dim bi = idxArr(t)
             If bi < 0 OrElse bi >= skel.Bones.Count Then rows.Add(($"<idx {bi} out-of-range>", 0, 9999)) : Continue For
             Dim ht = anim.GetTransform(midF, t)
             If ht Is Nothing Then Continue For
             Dim O2 = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(bi))
-            Dim fl = HkxTransformConventionHelper.ToTransform(ht.Translation, ht.Rotation, ht.Scale)
+            Dim fl = HkxTransformConventionHelper.ToTransform(ht)
             Dim d = O2.Inverse().ComposeTransforms(fl)
             Dim tr = CDbl(d.Rotation.M11) + CDbl(d.Rotation.M22) + CDbl(d.Rotation.M33)
             Dim th = Math.Acos(Math.Max(-1.0, Math.Min(1.0, (tr - 1.0) / 2.0))) * 180.0 / Math.PI
@@ -9601,7 +9581,7 @@ persist:
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
             Dim actorRoot = ActorRootOf(rb.Project)
             For Each o In g.GetObjectsByClassName("hkbProjectStringData")
-                Dim psd = g.ParseProjectStringData(o)
+                Dim psd = Havok.Canon.Objects.HkObj_HkbProjectStringData.Read(g, o)
                 If psd Is Nothing Then Continue For
                 For Each cf In psd.CharacterFilenames
                     r.Add(If(cf.StartsWith("Actors\", StringComparison.OrdinalIgnoreCase), cf, actorRoot & "\" & cf.TrimStart("\"c)))
@@ -9619,7 +9599,7 @@ persist:
         If b Is Nothing Then Return ("<no file>", False)
         Try
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
-            Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) g.ParseSkeleton(o)).
+            Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(g, o)).
                           Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.Bones.Count > 0).
                           Select(Function(s) (Name:=If(s.Name, ""), Count:=s.Bones.Count)).ToList()
             If skels.Count = 0 Then Return ("<no skel>", False)
@@ -9643,15 +9623,22 @@ persist:
                 Console.WriteLine($"        x{h.Count(),4}  {h.Key}")
             Next
             For Each o In g.GetObjectsByClassName("hkaSkeleton")
-                Dim sk = g.ParseSkeleton(o)
+                Dim sk = Havok.Canon.Objects.HkObj_HkaSkeleton.Read(g, o)
                 If sk IsNot Nothing Then Console.WriteLine($"        ► hkaSkeleton name='{sk.Name}' bones={If(sk.Bones IsNot Nothing, sk.Bones.Count, 0)}")
             Next
             For Each o In g.GetObjectsByClassName("hkaSkeletonMapper")
-                Dim m = g.ParseSkeletonMapper(o)
-                If m Is Nothing Then Continue For
-                Console.WriteLine($"        ►► hkaSkeletonMapper A='{m.SkeletonAName}' B='{m.SkeletonBName}' simple={m.SimpleMappings.Count} chain={m.ChainMappings.Count}")
-                For Each mm In m.SimpleMappings.Take(6)
-                    Console.WriteLine($"             {mm.BoneAName} → {mm.BoneBName}")
+                ' ⛔ DEL OBJETO GENERADO: `mapping` trae los dos esqueletos ya leidos y los mapeos.
+                ' El nombre del hueso es ANALISIS (indice + esqueleto), se cruza aca.
+                Dim m = Havok.Canon.Objects.HkObj_HkaSkeletonMapper.Read(g, o)
+                If m Is Nothing OrElse m.Mapping Is Nothing Then Continue For
+                Dim md = m.Mapping
+                Dim skA = md.SkeletonAObj
+                Dim skB = md.SkeletonBObj
+                Console.WriteLine($"        ►► hkaSkeletonMapper A='{If(skA Is Nothing, "", skA.Name)}' B='{If(skB Is Nothing, "", skB.Name)}' simple={md.SimpleMappings.Count} chain={md.ChainMappings.Count}")
+                For Each mm In md.SimpleMappings.Take(6)
+                    Dim nA = If(skA Is Nothing OrElse skA.Bones Is Nothing OrElse mm.BoneA < 0 OrElse mm.BoneA >= skA.Bones.Count, "", skA.Bones(mm.BoneA).Name)
+                    Dim nB = If(skB Is Nothing OrElse skB.Bones Is Nothing OrElse mm.BoneB < 0 OrElse mm.BoneB >= skB.Bones.Count, "", skB.Bones(mm.BoneB).Name)
+                    Console.WriteLine($"             {nA} → {nB}")
                 Next
             Next
         Catch ex As Exception
@@ -9684,8 +9671,7 @@ persist:
             If cb Is Nothing Then missing += 1 : notFound.Add(c.AnimationFile) : Continue For
             Try
                 Dim ag = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
-                Dim anim = ag.ParseAnimations().FirstOrDefault()
-                If anim Is Nothing Then anim = ag.ParseLosslessAnimations().FirstOrDefault()
+                Dim anim = ag.Animaciones().FirstOrDefault()
                 If anim Is Nothing Then missing += 1 : parseFail.Add(c.AnimationFile) : Continue For
                 Dim idxs = anim.Binding?.TransformTrackToBoneIndices
                 If idxs Is Nothing OrElse idxs.Count = 0 Then ok += 1 : Continue For
@@ -9752,10 +9738,9 @@ persist:
                 Dim ot = -1, of_ = -1
                 Try
                     Dim oa = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(ownBytes))
-                    Dim oanim = oa.ParseAnimations().FirstOrDefault()
-                    If oanim Is Nothing Then oanim = oa.ParseLosslessAnimations().FirstOrDefault()
+                    Dim oanim = oa.Animaciones().FirstOrDefault()
                     If oanim IsNot Nothing Then
-                        ot = oanim.NumTransformTracks
+                        ot = oanim.Animacion.NumberOfTransformTracks
                         Dim oi = oanim.Binding?.TransformTrackToBoneIndices
                         of_ = If(oi IsNot Nothing AndAlso oi.Count > 0, CInt(oi.Max()), -1)
                     End If
@@ -9773,8 +9758,7 @@ persist:
             End If
             Try
                 Dim ag = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
-                Dim anim = ag.ParseAnimations().FirstOrDefault()
-                If anim Is Nothing Then anim = ag.ParseLosslessAnimations().FirstOrDefault()
+                Dim anim = ag.Animaciones().FirstOrDefault()
                 If anim Is Nothing Then
                     Console.WriteLine($"    NOANIM    {c.AnimationFile}")
                     Continue For
@@ -9784,7 +9768,7 @@ persist:
                 Dim origSkel = If(anim.Binding IsNot Nothing, anim.Binding.OriginalSkeletonName, "")
                 Dim flag = ""
                 If skelBoneCount >= 0 AndAlso maxIdx >= skelBoneCount Then flag = "  <<< MISMATCH" : mismatch += 1 Else ok += 1
-                Console.WriteLine($"    OK f={anim.NumFrames,3} t={anim.NumTransformTracks,3} maxBone={maxIdx,3} origSkel='{origSkel}'  {c.AnimationFile}{flag}{ownTag}")
+                Console.WriteLine($"    OK f={anim.NumFrames,3} t={anim.Animacion.NumberOfTransformTracks,3} maxBone={maxIdx,3} origSkel='{origSkel}'  {c.AnimationFile}{flag}{ownTag}")
             Catch ex As Exception
                 Console.WriteLine($"    PARSEERR  {ex.Message}  {c.AnimationFile}")
             End Try
@@ -9848,7 +9832,7 @@ persist:
                 Dim pg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(projBytes))
                 Dim charFiles As New List(Of String)
                 For Each o In pg.GetObjectsByClassName("hkbProjectStringData")
-                    Dim psd = pg.ParseProjectStringData(o)
+                    Dim psd = Havok.Canon.Objects.HkObj_HkbProjectStringData.Read(pg, o)
                     If psd IsNot Nothing Then charFiles.AddRange(psd.CharacterFilenames)
                 Next
                 Console.WriteLine($"    project='{rb.Project}'  characterFiles=[{String.Join(", ", charFiles)}]")
@@ -9858,10 +9842,10 @@ persist:
                     If cbytes Is Nothing Then Console.WriteLine($"    character '{cfp}' NOT FOUND") : Continue For
                     Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbytes))
                     For Each co In cg.GetObjectsByClassName("hkbCharacterStringData")
-                        Dim csd = cg.ParseCharacterStringData(co)
+                        Dim csd = Havok.Canon.Objects.HkObj_HkbCharacterStringData.Read(cg, co)
                         If csd Is Nothing Then Continue For
                         charAnimNames = csd.AnimationFilenames.ToList()
-                        Console.WriteLine($"    character='{cfp}'  animationNames(filtered)={charAnimNames.Count}  allStrings={csd.AllStrings.Count}")
+                        Console.WriteLine($"    character='{cfp}'  animationFilenames={charAnimNames.Count}  allStrings={cg.ReadAllReferencedStrings(csd.Source).Count}")
                         For i = 0 To Math.Min(charAnimNames.Count, 60) - 1
                             Console.WriteLine($"        [{i,3}] {charAnimNames(i)}")
                         Next
@@ -9893,7 +9877,7 @@ persist:
                 Console.WriteLine($"    behavior='{bf}'  clipGenerators={gens.Count}")
                 Dim shown = 0
                 For Each o In gens
-                    Dim c = bg.ParseClipGenerator(o)
+                    Dim c = Havok.Canon.Objects.HkObj_HkbClipGenerator.Read(bg, o)
                     If c Is Nothing Then Continue For
                     Dim resolved = If(c.AnimationBindingIndex >= 0 AndAlso c.AnimationBindingIndex < charAnimNames.Count, charAnimNames(c.AnimationBindingIndex), "<idx out of range>")
                     Console.WriteLine($"        clip='{c.Name}' bindIdx={c.AnimationBindingIndex} rawAnimName='{c.AnimationName}'  →animNames[idx]='{resolved}'")
@@ -9933,7 +9917,7 @@ persist:
         If b Is Nothing Then Return Nothing
         Try
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
-            Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) g.ParseSkeleton(o)).
+            Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) Havok.Canon.Objects.HkObj_HkaSkeleton.Read(g, o)).
                           Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.Bones.Count > 0).ToList()
             If skels.Count = 0 Then Return Nothing
             ' El de ANIMACIÓN = el que NO es ragdoll (el ragdoll siempre se llama con 'Ragdoll').
