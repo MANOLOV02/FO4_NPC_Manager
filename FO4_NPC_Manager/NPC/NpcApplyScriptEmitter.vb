@@ -224,9 +224,26 @@ Public Module NpcApplyScriptEmitter
     End Function
 
     ''' <summary>Upsert (or remove) our script on <paramref name="npcSpec"/>'s VMAD.
-    ''' <paramref name="enabled"/> = False removes ours and keeps every other script — so unchecking the
-    ''' option in Save ESP actually strips a previously-emitted script instead of leaving it stale.
-    ''' Returns True when a script was written (the caller uses that to decide whether to install the .pex).</summary>
+    ''' Returns True when a script was written (the caller uses that to decide whether to install the .pex).
+    '''
+    ''' <para>⚠️ <b>ALCANCE EXACTO de <paramref name="enabled"/> = False, corregido.</b> Saca el script
+    ''' llamado <c>ScriptNameFor(game, pluginFileName)</c> y el LEGADO — o sea, el de ESTE nombre de
+    ''' plugin. El docstring anterior decía "strips a previously-emitted script" a secas, y eso es falso
+    ''' en el caso que importa: si el plugin se guardó antes con OTRO nombre (Save As), el script viejo se
+    ''' llama distinto y esta función NO lo toca. Quedan DOS apply-scripts nuestros sobre el mismo actor,
+    ''' cada uno con su payload, y el <c>RemovePrevious()</c> de uno deshace lo que el otro acaba de
+    ''' aplicar — el orden entre dos <c>OnLoad</c> no está garantizado.</para>
+    ''' <para>⛔ El guard de instancia huérfana del <c>.psc</c> (<c>NPCM_Manolov_ApplySSE.psc:327-341</c>)
+    ''' NO cubre este caso: dispara con <c>Length == 0</c>, o sea cuando el VMAD <b>no nombra</b> al
+    ''' script. Acá el VMAD nombra a los dos, los dos reciben properties y los dos corren.</para>
+    ''' <para>Huella medida en el disco del usuario: <b>11 <c>.pex</c> instalados</b> (3 en FO4, 8 en SSE),
+    ''' de los cuales <b>9 llevan nombre por plugin</b> y 2 son los legados.</para>
+    ''' <para>ABIERTO — <b>no está arreglado y la app NO puede deducir el nombre anterior</b>: es
+    ''' stateless respecto de eso (<c>ctx.ApplyScriptPluginFile</c> es el nombre de AHORA, y
+    ''' <c>existingRecords</c> viene del plugin DESTINO, que en un Save As a un archivo nuevo está
+    ''' vacío). Sacar el viejo exige o bien recordar el nombre anterior, o bien decidir que en un record
+    ''' que escribe ESTA app sobrevive sólo NUESTRO script — y eso último borra bytes del ESP, así que lo
+    ''' decide el usuario.</para></summary>
     ''' <param name="ownBodyMorphs">True ⇒ el script es el DUEÑO de los body morphs de BodySlide: los emite y
     ''' además barre los suyos antes de aplicar. False ⇒ los entrega el par BodyGen .ini y el script no toca
     ''' morphs en absoluto. NO es un simple "no emitir": viaja al `.psc` como <c>MorphsOwned</c> porque en
@@ -252,9 +269,27 @@ Public Module NpcApplyScriptEmitter
             spec = BuildSpec(preset, game, isFemale, generation, salt, ownBodyMorphs, warnings)
         End If
 
+        ' El nombre de NUESTRO script en ESTE plugin. Se calcula acá arriba —y no junto al upsert— porque
+        ' es lo que decide `hadOurs`.
+        Dim ourName = ScriptNameFor(game, pluginFileName)
+
         ' TRUE NO-OP para el caso comun: no hay nada que escribir Y no hay nada nuestro que sacar. El VMAD
         ' del record no se toca, asi que la salida de un NPC vanilla queda byte a byte igual.
-        Dim hadOurs = NpcVmadBuilder.HasAppScript(npcSpec.Record)
+        '
+        ' ⛔ LA DETECCION VA ACOTADA A `ourName`, IGUAL QUE EL BORRADO. Con el prefijo generico
+        ' (`NPCM_Manolov_`, el default de HasAppScript) el script de OTRO plugin hecho con esta app daba
+        ' True, y entonces —con todas las opciones apagadas— se fabricaba un spec de LIMPIEZA y se escribia
+        ' con NUESTRO nombre sobre un NPC que este plugin nunca scripteo. In-game ese script corre
+        ' `RemovePrevious()`: `ClearOverlayGroup` + `PurgeOverlayGroup` sobre CADA zona de overlays, mas
+        ' `RemoveAllMorphs`/`ClearMorphs` y `RemoveSkinOverride`. O sea que le BORRABA AL ACTOR el trabajo
+        ' del otro mod y despues no aplicaba nada.
+        ' La asimetria estaba escrita en el propio comentario del upsert ("el borrado por prefijo se acota
+        ' a lo nuestro") y la deteccion se habia quedado ancha.
+        ' MEDIDO en el Data de hoy, con descompresion de records: 1 NPC_ (Manolo_Replacer_NPCs.esp).
+        ' El legado (`NPCM_Manolov_ApplySSE/FO4`, sin stem de plugin) SI cuenta como nuestro: es el nombre
+        ' que esta misma app emitia antes del esquema por plugin, y el paso 1 del upsert lo saca.
+        Dim hadOurs = NpcVmadBuilder.HasAppScript(npcSpec.Record, ourName) OrElse
+                      NpcVmadBuilder.HasAppScript(npcSpec.Record, LegacyScriptFor(game))
         If spec Is Nothing AndAlso Not hadOurs Then Return False
 
         ' CLEANUP SCRIPT. The user cleared every option on an NPC we had previously scripted. Simply
@@ -280,10 +315,21 @@ Public Module NpcApplyScriptEmitter
         '   2) upsert del nuestro, acotado a NUESTRO nombre completo.
         ' Que el stem del plugin vaya ANTES de 'ApplySSE' es lo que hace posible el paso 1 sin tocar la
         ' lib: asi el nombre legado NPCM_Manolov_ApplySSE no es prefijo de ningun nombre nuevo.
-        Dim ourName = ScriptNameFor(game, pluginFileName)
+        ' (`ourName` se calculó al principio del método: es lo que decide `hadOurs`.)
         If spec IsNot Nothing Then spec.Name = ourName
         NpcVmadBuilder.UpsertScript(npcSpec.Record, Nothing, game, LegacyScriptFor(game))
         NpcVmadBuilder.UpsertScript(npcSpec.Record, spec, game, ourName)
+
+        ' ⭐ PASO 3: UN SOLO APPLY-SCRIPT NUESTRO POR RECORD. Todo lo que no lleva el prefijo reservado
+        ' queda intacto. Ver el doc de `DejarSoloNuestroApplyScript` para el mecanismo y la medición.
+        ' Sin esto, un "Save As" con otro nombre de plugin dejaba el script del nombre VIEJO adentro del
+        ' record nuevo —porque se llama distinto y el upsert lo conserva— y el actor terminaba con dos,
+        ' cada uno deshaciendo lo que el otro aplica.
+        Dim sacados = NpcVmadBuilder.DejarSoloNuestroApplyScript(npcSpec.Record, game, ourName)
+        If sacados.Count > 0 AndAlso warnings IsNot Nothing Then
+            warnings.Add($"Removed {sacados.Count} stale apply-script(s) left by an earlier plugin name: " &
+                         String.Join(", ", sacados) & ". Only this plugin's script applies to the actor.")
+        End If
         Return spec IsNot Nothing
     End Function
 

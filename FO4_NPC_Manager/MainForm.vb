@@ -3107,7 +3107,10 @@ Public Class MainForm
     Friend Function ResolveEffectiveHairColorFormID(npcFormID As UInteger) As UInteger
         If npcFormID = 0UI Then Return 0UI
         Dim warnings As New List(Of String)
-        Dim traits = _stateResolver.ResolveTraitsStateFromNPC(npcFormID, New HashSet(Of UInteger)(), warnings)
+        ' Lo llama EditFace_Form para pre-seleccionar el combo de color. Sin el ancla hacia su PROPIO
+        ' sorteo de la LVLN y el swatch mostraba el pelo de una hoja distinta a la del preview.
+        Dim traits = _stateResolver.ResolveTraitsStateFromNPC(npcFormID, New HashSet(Of UInteger)(), warnings,
+                                                              ResolveShownTraitsLeaf(npcFormID, Nothing))
         If traits Is Nothing Then Return 0UI
         If traits.HairColorFormID <> 0UI Then Return traits.HairColorFormID
 
@@ -5195,7 +5198,8 @@ Public Class MainForm
         TreeViewNPCs.Invalidate()
         PopulateRecordDetails(npc)
         Dim reqVersion = Interlocked.Increment(_previewRequestVersion)
-        LoadNPCOnDemandAsync(npc, reqVersion)
+        ' Gesto de azar: re-sortea tambien la LVLN de su cadena. Ver el param `rerollLeveled`.
+        LoadNPCOnDemandAsync(npc, reqVersion, rerollLeveled:=True)
     End Sub
 
     ''' <summary>Refresh controls that depend on the multi-selection: when 2+ NPCs are selected the
@@ -5449,7 +5453,13 @@ Public Class MainForm
         End Try
     End Sub
 
-    Private Async Sub LoadNPCOnDemandAsync(npc As NPC_Data, requestVersion As Integer)
+    ''' <param name="rerollLeveled">True SOLO para los gestos que el usuario entiende como "sortea de
+    ''' nuevo": <c>ButtonRandomNPC</c> y <see cref="RerollFromSelection"/>. El resto ANCLA a la hoja que
+    ''' esta en pantalla. NO se implementa borrando <c>LastRenderedState</c>: ese campo lo leen el
+    ''' fast-path de tints, el swatch de pelo, ComputeBodyEditAvailability, ReloadCurrentNpcFull y
+    ''' ButtonEditFace_Click.</param>
+    Private Async Sub LoadNPCOnDemandAsync(npc As NPC_Data, requestVersion As Integer,
+                                           Optional rerollLeveled As Boolean = False)
         Try
             Dim _swL As System.Diagnostics.Stopwatch = If(Logger.Enabled, System.Diagnostics.Stopwatch.StartNew(), Nothing)
             SetStatus($"Loading assets for {npc}...")
@@ -5460,8 +5470,10 @@ Public Class MainForm
             SetStatus($"Resolving {npc}...")
             Dim baseState As NPCVisualState = Nothing
             Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
+            ' Nothing = el resolver deduce el ancla del propio host. `Reroll` sólo en los dos gestos de azar.
+            Dim pin As NpcStateResolver.LeveledLeafPin = If(rerollLeveled, NpcStateResolver.LeveledLeafPin.Reroll, Nothing)
             Await Task.Run(Sub()
-                               baseState = _stateResolver.ResolveNPCBaseState(npc, _renderHost)
+                               baseState = _stateResolver.ResolveNPCBaseState(npc, _renderHost, pin)
                                outfitEntries = BuildOutfitComboEntries(baseState)
                            End Sub)
             Logger.LogLazy(Function() $"[PERF-L] ResolveNPCBaseState+outfit @ {_swL.ElapsedMilliseconds}ms")
@@ -5556,7 +5568,11 @@ Public Class MainForm
             Dim baseState As NPCVisualState = Nothing
             Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             Await Task.Run(Sub()
-                               baseState = _stateResolver.ResolveNPCBaseState(npc, _renderHost)
+                               ' Reroll: llegar aca YA fue un sorteo (PickWeightedRandomFromLVLN, mas
+                               ' arriba) y los tres gestos que lo alcanzan —elegir el nodo LVLN, el boton
+                               ' de azar y el combo de genero— son gestos de azar.
+                               baseState = _stateResolver.ResolveNPCBaseState(npc, _renderHost,
+                                                                              NpcStateResolver.LeveledLeafPin.Reroll)
                                outfitEntries = BuildOutfitComboEntries(baseState)
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
@@ -5688,7 +5704,8 @@ Public Class MainForm
         If npc Is Nothing Then Return
 
         Dim requestVersion2 = Interlocked.Increment(_previewRequestVersion)
-        LoadNPCOnDemandAsync(npc, requestVersion2)
+        ' El boton de azar SI re-sortea: es su unico trabajo. Sin este True el ancla lo dejaria mudo.
+        LoadNPCOnDemandAsync(npc, requestVersion2, rerollLeveled:=True)
     End Sub
 
     ''' <summary>Changing the gender filter re-rolls the pick: from the multi-selection (ad-hoc
@@ -8959,23 +8976,13 @@ Public Class MainForm
         ' Nothing to re-apply or re-render — just mark the NPC changed (bold) and log the commit.
         MarkNpcDirty(npcFormID)
 
-        ' Per-HeadPart breakdown so we can spot when the preset actually declared Eyes/Hair but the
-        ' merger discarded them (meaning we're losing them somewhere) vs. when the JSON simply
-        ' didn't have those types (so the merger fell back to RACE defaults — expected).
-        Dim hpTypeNames = New String() {"Misc", "Face", "Eyes", "Hair", "FacialHair", "Scar", "Eyebrows", "Meatcaps", "Teeth", "HeadRear"}
-        For Each fid In selected.HeadPartFormIDs
-            Dim rec = _pluginManager.GetRecord(fid)
-            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then
-                Continue For
-            End If
-            Dim hd = _ctx.ParseHdptCached(rec)
-            Dim typeLabel = If(hd.TipoDeParte() >= 0 AndAlso hd.TipoDeParte() < hpTypeNames.Length, hpTypeNames(hd.TipoDeParte()), $"type={hd.TipoDeParte()}")
-        Next
-        If selected.UnresolvedHeadParts.Count > 0 Then
-            For Each raw In selected.UnresolvedHeadParts
-            Next
-        End If
-
+        ' ⛔ ACÁ VIVÍAN DOS BUCLES CON EL CUERPO VACÍO: uno recorría HeadPartFormIDs resolviendo el HDPT y
+        ' calculando un `typeLabel` que no usaba, y el otro recorría UnresolvedHeadParts sin hacer nada.
+        ' Eran un log al que alguien le sacó el contenido y le dejó el esqueleto. Además de costar un
+        ' GetRecord + ParseHdptCached por parte en cada carga de preset, hacían PARECER que existía un
+        ' camino que trataba lo no resuelto — me mandó a buscarlo a mí. Lo que un lector necesita saber
+        ' está en la ListView del editor (ver EditFace_Form.BuildUnresolvedHeadPartRow) y en el auditor
+        ' de compatibilidad (PresetCompatibilityReport.AuditMissingMasters), que sí lo muestran.
     End Sub
 
     ''' <summary>SSE counterpart of <see cref="ButtonLoadLooksmenu_Click"/>: pick a RaceMenu <c>.jslot</c>,
@@ -9188,8 +9195,15 @@ Public Class MainForm
         If host Is Nothing Then host = _renderHost
         Dim baseState As NPCVisualState = Nothing
         Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
+        ' NINGUNO de los llamadores de este camino es un gesto de azar (Reset NPC, RenderInHostAsync de
+        ' los dos editores y del picker de outfit, cancel de Load LooksMenu/RaceMenu, preview de overlay,
+        ' NPC Editor OK, Edit Outfit, ReloadCurrentNpcFull, Paste Look, readback del Save): todos ANCLAN.
+        ' El ancla se calcula ACA y no dentro del resolver porque un host de EDITOR nace con
+        ' LastRenderedState = Nothing y hay que caer al del MainForm — que es lo que el usuario tenia en
+        ' pantalla al apretar Edit.
+        Dim pin As New NpcStateResolver.LeveledLeafPin(ResolveShownTraitsLeaf(npc.FormID, host))
         Await Task.Run(Sub()
-                           baseState = _stateResolver.ResolveNPCBaseState(npc, host)
+                           baseState = _stateResolver.ResolveNPCBaseState(npc, host, pin)
                            outfitEntries = BuildOutfitComboEntries(baseState)
                        End Sub)
         If requestVersion <> _previewRequestVersion Then Return
@@ -9277,6 +9291,28 @@ Public Class MainForm
     ''' they would edit face A and get face B. When there is no live pick to honour, the first stable leaf is
     ''' used. This delegate can be called independently for several template categories and again at save time;
     ''' a fresh random roll on each call would combine unrelated leaves in one NPC.</para></summary>
+    ''' <summary>La hoja de LVLN que esta EN PANTALLA para <paramref name="rootNpcFormID"/>, o 0 si no
+    ''' hay ninguna. UNICA implementacion de la ley "gana la hoja que esta en pantalla": la consumen
+    ''' <see cref="ResolveLvlnPick_Friend"/> (editor de NPC + apply del Save) y el RENDER
+    ''' (LoadNPCOnDemandAsyncFromExisting -> NpcStateResolver.ResolveNPCBaseState). Antes la ley existia
+    ''' solo en el primero y el render volvia a sortear.
+    ''' <para>Prefiere el host que se esta renderizando; cae al del MainForm porque un host de EDITOR
+    ''' nace con <c>LastRenderedState = Nothing</c> (EditFace_Form lo crea en Shown y renderiza justo
+    ''' despues), y lo que el usuario tenia en pantalla al apretar Edit es el preview principal.</para></summary>
+    Friend Function ResolveShownTraitsLeaf(rootNpcFormID As UInteger, host As NpcRenderHost) As UInteger
+        If rootNpcFormID = 0UI Then Return 0UI
+        Dim hoja = HojaMostradaEn(host, rootNpcFormID)
+        If hoja = 0UI Then hoja = HojaMostradaEn(_renderHost, rootNpcFormID)
+        Return hoja
+    End Function
+
+    Private Shared Function HojaMostradaEn(h As NpcRenderHost, rootNpcFormID As UInteger) As UInteger
+        If h Is Nothing OrElse h.IsDisposed Then Return 0UI
+        Dim st = h.LastRenderedState
+        If st Is Nothing OrElse st.RootNpcFormID <> rootNpcFormID Then Return 0UI
+        Return st.TraitsSourceFormID
+    End Function
+
     Friend Function ResolveLvlnPick_Friend(lvlnFormID As UInteger) As UInteger
         If lvlnFormID = 0UI Then Return 0UI
 
@@ -9284,9 +9320,26 @@ Public Class MainForm
         If leaves Is Nothing OrElse leaves.Count = 0 Then Return 0UI
         If leaves.Count = 1 Then Return leaves(0)
 
-        Dim shown = _renderHost?.LastRenderedState
-        If shown IsNot Nothing AndAlso shown.TraitsSourceFormID <> 0UI AndAlso leaves.Contains(shown.TraitsSourceFormID) Then
-            Return shown.TraitsSourceFormID
+        Dim raiz As UInteger = 0UI
+        If _renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing Then raiz = _renderHost.LastRenderedState.RootNpcFormID
+        Dim shown = ResolveShownTraitsLeaf(raiz, _renderHost)
+        If shown <> 0UI AndAlso leaves.Contains(shown) Then
+            Return shown
+        End If
+
+        ' ⛔ SEGUNDA MITAD DEL ANCLA — MUEVE BYTES DEL ESP (aplicada por decision expresa del usuario,
+        ' 25-ago-2026). La hoja en pantalla puede NO ser entrada directa de esta lista
+        ' (LVLN -> hoja B -> Use Traits -> C, con C lo que el render muestra): MEDIDO 69 NPC en FO4 y 235
+        ' en SSE. Para esos, el `leaves(0)` de abajo materializa un actor que el usuario NUNCA vio — 47
+        ' (FO4) y 189 (SSE) cambian de actor con esta rama, y en 18 y 185 el actor difiere en PNAM,
+        ' genero, raza o DOFT. Es EXACTO porque en el corpus ninguna cadena de Traits encadena dos LVLN
+        ' (hops max = 1 en los dos juegos), asi que el tramo posterior a la lista es DETERMINISTA.
+        ' Misma ley que el paso (2b) de NpcStateResolver.ResolveSingleLeveledTemplate — se CONSUME de
+        ' ahi, no se re-escribe: sin esta rama, RENDER y SAVE discrepan para esos 304 NPC.
+        If shown <> 0UI AndAlso _stateResolver IsNot Nothing Then
+            For Each hoja In leaves
+                If _stateResolver.TerminalDeTraitsPublico(hoja) = shown Then Return hoja
+            Next
         End If
 
         Return leaves(0)
@@ -9844,7 +9897,8 @@ Public Class MainForm
                 ' que un cargar→aplicar→guardar dentro del propio RaceMenu la pierde igual. Acá se
                 ' preserva porque esto es un EDITOR, con el mismo criterio que la app ya aplica al color
                 ' de pelo ("PRESERVACIÓN, no invención", LooksmenuLoader.vb:1138-1150).
-                preset.SseUnresolvedHeadParts.AddRange(overlay.SseUnresolvedHeadParts)
+                ' (La copia de SseUnresolvedHeadParts se mudo a CopyUnresolvedHeadPartsToSnapshot, que
+                ' corre FUERA de este gate: el agujero era de los DOS juegos y la ley vive en un solo lado.)
                 ' Los elementos de primera persona del .jslot: no se modelan ni se editan, pero sin esta línea el
                 ' "Save RaceMenu preset" de una sesión posterior los emitía perdidos.
                 preset.SseFirstPersonTransformsRaw = If(overlay.SseFirstPersonTransformsRaw Is Nothing, Nothing,
@@ -9871,6 +9925,11 @@ Public Class MainForm
                 End If
             End If
         End If
+
+        ' ⭐ LO QUE NO SE PUDO RESOLVER, SE PRESERVA — FUERA del gate de juego a proposito: FO4 no
+        ' poblaba NINGUNO de los campos (236 identificadores en 201 de 368 presets se perdian al guardar)
+        ' y SSE solo poblaba el suyo dentro del bloque de arriba. Ver el doc del helper.
+        LooksmenuLoader.CopyUnresolvedHeadPartsToSnapshot(overlay, preset)
 
         ' BuildPresetFromState produces a complete snapshot of the rendered NPC. By definition
         ' every overlay-replaceable field is "present" in this snapshot, so all Has* flags are

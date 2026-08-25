@@ -2555,10 +2555,19 @@ Public Class EditFace_Form
     ''' <para>IsHnamExtra=True: la fila es un sub-part derivado de los ExtraPartFormIDs del HDPT padre
     ''' (hairlines, pestanas, AO/wet, sombra de boca). El render camina la cadena HNAM y los trae solo, asi que
     ''' no se guardan en el preset; se muestran indentados bajo el padre, sin ser removibles por separado.</para></summary>
+    ''' <para>UnresolvedIndex &gt;= 0: la fila NO es un HDPT — es una entrada que la app no pudo resolver
+    ''' (el mod que la trae no está en el load order) y que se PRESERVA verbatim para no destruirla al
+    ''' guardar. El número es su posición en <c>Preset.UnresolvedHeadParts</c>.
+    ''' <para>⛔ POR QUÉ TIENE FILA. Preservar sin poder borrar es peor que perder: la entrada queda
+    ''' pegada al preset para siempre, invisible, y se re-emite en cada guardado. El color de pelo ya
+    ''' tenía su salida (elegir otro color limpia <c>UnresolvedHairColor</c>, ver OnHairColorChanged);
+    ''' las head parts no tenían ninguna, porque la lista sólo sabía dibujar HDPT resueltos. Estas filas
+    ''' son esa salida, y son la ÚNICA de las tres clases grises que sí acepta Remove.</para></summary>
     Private Class HeadPartRowTag
         Public FormID As UInteger
         Public IsRaceDefault As Boolean
         Public IsHnamExtra As Boolean
+        Public UnresolvedIndex As Integer = -1
     End Class
 
     Private Sub RefreshHeadPartsList()
@@ -2658,10 +2667,49 @@ Public Class EditFace_Form
                     End If
                 Next
             End If
+
+            ' LO QUE NO RESOLVIÓ, al final y en gris — pero SELECCIONABLE. Ver el doc de HeadPartRowTag:
+            ' sin esto la entrada preservada no tiene ninguna representación en la UI y no hay forma de
+            ' sacarla. MEDIDO: FO4 236 identificadores en 201 de 368 presets, SSE 49 en 33 de 48.
+            If p.UnresolvedHeadParts IsNot Nothing Then
+                For i = 0 To p.UnresolvedHeadParts.Count - 1
+                    ListViewHeadParts.Items.Add(BuildUnresolvedHeadPartRow(p, i))
+                Next
+            End If
         Finally
             ListViewHeadParts.EndUpdate()
         End Try
     End Sub
+
+    ''' <summary>Fila para una head part que no resolvió: muestra el plugin que falta y el FormID crudo,
+    ''' y —cuando el <c>.jslot</c> lo trae— el tipo de parte, que es lo que le dice al usuario QUÉ le falta
+    ''' ("me falta el pelo" vs "me faltan las cejas"). Gris como las otras read-only, pero su tag lleva
+    ''' <c>UnresolvedIndex</c>, que es lo que <see cref="OnRemoveHeadPart"/> usa para dejarla borrar.</summary>
+    Private Function BuildUnresolvedHeadPartRow(p As LooksmenuLoader.LooksmenuPreset, idx As Integer) As ListViewItem
+        Dim ident As String = If(p.UnresolvedHeadParts(idx), "")
+        ' El identificador es "Plugin.esp|HEX"; la rama legacy del mapper de SSE emite "#XXXXXXXX" cuando
+        ' el .jslot no traía id portable y su tabla `mods` no alcanzó para traducirlo.
+        Dim pipe = ident.IndexOf("|"c)
+        Dim plugin As String = If(pipe > 0, ident.Substring(0, pipe).Trim(), "(unknown plugin)")
+        Dim hex As String = If(pipe > 0 AndAlso pipe < ident.Length - 1, ident.Substring(pipe + 1).Trim(), ident)
+        ' El tipo sólo existe del lado SSE, donde se guardó la entrada COMPLETA del .jslot. Las dos listas
+        ' se llenan en paralelo (RaceMenuPresetMapper las hace Add juntas), así que el índice sirve para
+        ' las dos; el guard de Count es por si alguna vez dejaran de estarlo.
+        Dim tipo As String = "(missing mod)"
+        If p.SseUnresolvedHeadParts IsNot Nothing AndAlso idx < p.SseUnresolvedHeadParts.Count Then
+            Dim hp = p.SseUnresolvedHeadParts(idx)
+            If hp IsNot Nothing Then tipo = HdptTypeName(hp.Type) & " (missing mod)"
+        End If
+        Dim row As New ListViewItem(tipo)
+        row.SubItems.Add("")
+        row.SubItems.Add(ident)
+        row.SubItems.Add(plugin)
+        row.SubItems.Add(hex)
+        row.ForeColor = SystemColors.GrayText
+        row.Tag = New HeadPartRowTag With {.FormID = 0UI, .IsRaceDefault = False,
+                                           .IsHnamExtra = False, .UnresolvedIndex = idx}
+        Return row
+    End Function
 
     ''' <summary>Build a 5-column ListViewItem for a head-part FormID. Columns mirror the picker
     ''' layout (Type / Editor ID / Name / Plugin / FormID) so the eye doesn't have to translate
@@ -2766,6 +2814,22 @@ Public Class EditFace_Form
         If ListViewHeadParts.SelectedItems.Count = 0 Then Return
         Dim tag = TryCast(ListViewHeadParts.SelectedItems(0).Tag, HeadPartRowTag)
         If tag Is Nothing Then Return
+        ' NO RESUELTA: es la ÚNICA fila gris que sí se borra. Va PRIMERO porque no tiene FormID —
+        ' el `IndexOf(tag.FormID)` de abajo buscaría 0 en HeadPartFormIDs y devolvería −1 en silencio.
+        If tag.UnresolvedIndex >= 0 Then
+            Dim pu = Preset
+            If pu.UnresolvedHeadParts Is Nothing OrElse tag.UnresolvedIndex >= pu.UnresolvedHeadParts.Count Then Return
+            ' Las dos listas se llenan en paralelo. Se sacan por el MISMO índice y sólo si los largos
+            ' coinciden: si algún día divergieran, borrar por índice en la otra sacaría la entrada
+            ' equivocada, y perder la de al lado es exactamente el daño que este arreglo evita.
+            Dim parejas As Boolean = pu.SseUnresolvedHeadParts IsNot Nothing AndAlso
+                                     pu.SseUnresolvedHeadParts.Count = pu.UnresolvedHeadParts.Count
+            pu.UnresolvedHeadParts.RemoveAt(tag.UnresolvedIndex)
+            If parejas Then pu.SseUnresolvedHeadParts.RemoveAt(tag.UnresolvedIndex)
+            RefreshHeadPartsList()
+            _refresh?.Invoke(FaceRefreshScope.FullReload)
+            Return
+        End If
         ' Race defaults are read-only — they come from RACE.{Male,Female}HeadParts and aren't
         ' part of NPC.HeadPartFormIDs. The user can override them via Add (which will replace
         ' the default in the merge) but can't outright "remove" them from this view.

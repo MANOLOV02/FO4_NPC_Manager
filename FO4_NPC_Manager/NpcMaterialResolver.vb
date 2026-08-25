@@ -1491,7 +1491,11 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' are all-SkinTint so this is a no-op there (no FO4 regression). HeadPart candidates are
                 ' unaffected: their HDPT.TNAM legitimately applies to the head part regardless of shader.
                 Dim isSkinCand As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin)
-                Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint)
+                ' ⛔ `IsEngineSkinTint()`, NO `NifShaderType = SkinTint`: con archivo de material el motor
+                ' pisa el bit 21 desde el .bgsm y descarta el enum inline (FUN_142163560 + FUN_142163BE0).
+                ' Ver el doc de esa función. Sin archivo de material devuelve el enum inline, o sea que
+                ' SSE —que no tiene .bgsm— no se mueve un bit.
+                Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.IsEngineSkinTint())
                 ' SYNC: RENDER == BAKE (el bake entra por este mismo Sub vía delegate).
                 ' Gate engine-faithful de cara, RE en los dos binarios: el motor aplica el texture set de cara
                 ' (NPC.FTST / RACE.DFTM-DFTF) SOLO a shapes con material shader-type Face(4) — SSE 0x14042BF0C,
@@ -1590,9 +1594,13 @@ Friend NotInheritable Class NpcMaterialResolver
             ' Shape con piel expuesta (shader=SkinTint): sustituir SÓLO sus texturas (diffuse +
             ' normal + spec) por las del body skin del actor (race-specific). Material params
             ' (specular, smoothness, subsurface, etc.) NO se tocan — vienen del NIF original.
-            ' Decisión per-shape via material.NifShaderType porque un mismo .nif suele tener shapes
+            ' Decisión per-shape via material.IsEngineSkinTint() porque un mismo .nif suele tener shapes
             ' mixtos. El render lee el path desde relatedMaterial.material (Render.vb, DiffuseTexture_ID).
-            If actorBodySkinTxst IsNot Nothing AndAlso material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint Then
+            ' ⛔ EL PREDICADO ES EL DEL MOTOR, NO EL ENUM DEL NIF. Un outfit body-replacer hereda
+            ' `enum = SkinTint` del cuerpo sobre el que se autoró, y su .bgsm dice `bSkinTint = false`:
+            ' el motor apaga el bit 21 en el merge y esa ROPA no es piel. Con el enum crudo, la app le
+            ' ponía las texturas del cuerpo — 20 shapes en 9 NIF del corpus, todas de AWNOveralls.
+            If actorBodySkinTxst IsNot Nothing AndAlso material.IsEngineSkinTint() Then
                 Dim diffuseBefore = material.Diffuse_or_Base_Texture
                 ' Si el TXST trae MaterialPath (MNAM .bgsm), las texturas viven dentro del BGSM —
                 ' cargar el BGSM para extraer sus paths. NO copiamos otros params del BGSM (sólo
@@ -1628,7 +1636,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' como model-space o tangent (materialBase.ModelSpaceNormals) + la normal que quedó. Cubre
             ' también el caso en que la piel del actor no resolvió (skinSubstituted=False).
             If logEnabled AndAlso candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit _
-               AndAlso material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint Then
+               AndAlso material.IsEngineSkinTint() Then
                 Dim shN = shape.ShapeName
                 Dim msnF = material.ModelSpaceNormals
                 Dim stF = material.SkinTint
@@ -1677,7 +1685,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' FaceGen) whose worn biped SlotMask intersects the override's slotMask. Faithful to skee's
             ' NIOVTaskUpdateTexture (replace only the override's slots; key 7 tint → SkinTintColor; key 8 → Alpha).
             If sseSkinOverrides IsNot Nothing AndAlso candidate IsNot Nothing _
-               AndAlso (material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint OrElse material.SkinTint) Then
+               AndAlso (material.IsEngineSkinTint() OrElse material.SkinTint) Then
                 For Each sk In sseSkinOverrides
                     If sk Is Nothing OrElse sk.SlotMask = 0UI Then Continue For
                     ' skee SkinOverrideApplicator (OverrideInterface.cpp:1080): the shape's biped slot mask must

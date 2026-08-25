@@ -14,12 +14,69 @@ import struct, zlib, re, os, sys
 # (<repo>\FO4_NPC_Manager\Papyrus\tools\), y se puede pisar con la variable de entorno FO4_REPO.
 REPO = os.environ.get("FO4_REPO") or os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
-TARGETS = [
-    ("SSE", r"F:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data\NPC_Manager.esp",
+# Los targets se DESCUBREN: se barre el Data de cada juego buscando plugins que nombren un script
+# NPCM_ (con descompresion de records, porque casi todos los NPC_ vienen comprimidos).
+#
+# Antes eran DOS RUTAS FIJAS a "NPC_Manager.esp". Hoy la de FO4 no existe y la de SSE existe pero no
+# tiene ni un script nuestro, asi que el gate miraba CERO records y salia PASS. Su propio encabezado
+# documenta que esto ya habia pasado una vez. Ver 81-gates-que-pasaban-en-vacio.
+DATA_DIRS = [
+    ("SSE", r"F:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data",
              os.path.join(REPO, r"FO4_NPC_Manager\Papyrus\src_sse\NPCM_Manolov_ApplySSE.psc")),
-    ("FO4", r"F:\SteamLibrary\steamapps\common\Fallout 4\Data\NPC_Manager.esp",
+    ("FO4", r"F:\SteamLibrary\steamapps\common\Fallout 4\Data",
              os.path.join(REPO, r"FO4_NPC_Manager\Papyrus\src_fo4\NPCM_Manolov_ApplyFO4.psc")),
 ]
+
+_PREFIJO = re.compile(rb"NPCM_Manolov_[A-Za-z0-9_]{0,64}")
+
+def _hay_en_comprimidos(b):
+    """Los NPC_ suelen venir COMPRIMIDOS (flag 0x00040000): un grep crudo no los ve."""
+    def walk(off, end):
+        while off + 24 <= end:
+            sig = b[off:off+4]
+            if sig == b"GRUP":
+                size = struct.unpack_from("<I", b, off+4)[0]
+                if size < 24:
+                    return False
+                if walk(off+24, min(off+size, end)):
+                    return True
+                off += size
+                continue
+            size, flags = struct.unpack_from("<II", b, off+4)
+            data = b[off+24:off+24+size]
+            if flags & 0x00040000:
+                try:
+                    data = zlib.decompress(data[4:])
+                except Exception:
+                    pass
+                if _PREFIJO.search(data):
+                    return True
+            off += 24 + size
+        return False
+    try:
+        return walk(0, len(b))
+    except Exception:
+        return False
+
+def descubrir_targets():
+    """(label, esp, psc) por cada plugin del Data que NOMBRE un script NPCM_."""
+    out = []
+    for label, data, psc in DATA_DIRS:
+        if not os.path.isdir(data):
+            continue
+        for fn in sorted(os.listdir(data)):
+            if not fn.lower().endswith((".esp", ".esm", ".esl")):
+                continue
+            ruta = os.path.join(data, fn)
+            try:
+                b = open(ruta, "rb").read()
+            except Exception:
+                continue
+            if _PREFIJO.search(b) or _hay_en_comprimidos(b):
+                out.append((label, ruta, psc))
+    return out
+
+TARGETS = descubrir_targets()
 
 # tipo VMAD -> tipo Papyrus
 VMAD_T = {1:"object",2:"string",3:"int",4:"float",5:"bool",
@@ -132,6 +189,7 @@ def subs(b):
         yield s.decode(), b[i+6:i+6+sz]; i+=6+sz
 
 fails = 0
+vistos = []
 for label, esp, psc in TARGETS:
     print(f"########## {label}")
     if not os.path.exists(esp):
@@ -159,6 +217,7 @@ for label, esp, psc in TARGETS:
                     if mine: props[pn] = (t, n)
                 if not mine: continue
                 found_any = True
+                vistos.append((label, esp))
                 print(f"\n  NPC_ {fid:08X}  script '{name}'  ({pc} props, VMAD ver={ver})")
                 errs = []
                 # ⛔⛔ ESTO COMPARABA CON EL SUFIJO DE GENERACION PUESTO, y el comentario de abajo lo defendia
@@ -212,5 +271,15 @@ for label, esp, psc in TARGETS:
         print("  (ningun script NPCM_ en el plugin)")
     print()
 
+# NO CONCLUYENTE != PASS. Un gate que no miro ningun record no puede afirmar nada, y salir 0 ahi es
+# exactamente como este archivo se quedo verde mientras el defecto vivia. Codigo 5, la misma ley que
+# ya sigue SamAditivoGate.
+if not TARGETS:
+    print("=== RESULT: NO CONCLUYENTE (ningun plugin del Data nombra un script NPCM_) ===")
+    sys.exit(5)
+if not vistos:
+    print(f"=== RESULT: NO CONCLUYENTE ({len(TARGETS)} plugin(s) mirados, 0 records con script) ===")
+    sys.exit(5)
+print(f"records con script NPCM_ mirados: {len(vistos)}  en {len(TARGETS)} plugin(s)")
 print("=== RESULT:", "PASS" if fails == 0 else f"FAIL ({fails} problema(s))", "===")
 sys.exit(1 if fails else 0)

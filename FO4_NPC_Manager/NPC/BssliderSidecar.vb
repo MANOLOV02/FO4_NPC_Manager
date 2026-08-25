@@ -43,7 +43,14 @@ Public Module BssliderSidecar
     ' `sseFirstPersonTransforms`. Se sube el número aunque la lectura sea tolerante en las dos direcciones
     ' (ausente ⇒ comportamiento viejo): sin subirlo no había forma EN DISCO de distinguir un v12 con `raw` de
     ' uno sin, y este archivo se distribuye a usuarios que ya tienen sidecars escritos.
-    Public Const SchemaVersion As Integer = 14
+    ''' <summary>15 (2026-08-25): agrega `unresolvedHeadParts` / `sseUnresolvedHeadParts` /
+    ''' `unresolvedHairColor`, lo que la app no pudo resolver y preserva verbatim.
+    ''' <para>Subirla es GRATIS y esta medido: el lector es tolerante en las DOS direcciones — cada campo
+    ''' entra por su propio `TryGetProperty`, asi que un sidecar v15 lo lee una app vieja (ignora los tres
+    ''' campos nuevos) y uno v14 lo lee esta (los deja vacios). No hay rama por version que mantener.
+    ''' ⛔ NO confundir con `RecalcTBN.VersionDeOpcionesTBN`, cuya subida SI tiene precio: repone los 13
+    ''' defaults del TBN de todo usuario. Son dos versiones con leyes de migracion opuestas.</para></summary>
+    Public Const SchemaVersion As Integer = 15
 
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
@@ -126,6 +133,20 @@ Public Module BssliderSidecar
         ''' RaceMenu co-save data with no vanilla NPC record home (TINI/TINC/TINV/TIAS carry no path) → persisted here
         ''' so a custom warpaint/tattoo mask survives a reload. Serialized under <c>sseTintTextures</c> (schema v7).</summary>
         Public SseTintTexOverride As Dictionary(Of Integer, String) = Nothing
+        ''' <summary>Lo que la app NO pudo resolver y preserva verbatim, para que sobreviva al Save ESP.
+        ''' <para>⛔ POR QUÉ ESTÁ EN EL SIDECAR: <c>MainForm.StripEspFieldsFromOverlay</c> reconstruye el
+        ''' overlay DESDE ACÁ después de guardar el ESP, y esta lista de campos es CERRADA. Sin estos
+        ''' tres, la preservación funcionaba en el flujo de presets y se moría en el primer Save ESP.</para>
+        ''' <para><see cref="UnresolvedHeadParts"/> son los identificadores crudos ("Plugin.esp|HEX"), la
+        ''' lista que comparten los dos juegos; <see cref="SseUnresolvedHeadParts"/> es la entrada COMPLETA
+        ''' del <c>.jslot</c> que <c>ToJslot</c> re-emite (sólo SSE). MEDIDO: FO4 236 identificadores en
+        ''' 201 de 368 presets, SSE 49 entradas de 14 mods en 33 de 48 archivos.</para></summary>
+        Public UnresolvedHeadParts As List(Of String) = Nothing
+        ''' <summary>Ver <see cref="UnresolvedHeadParts"/>.</summary>
+        Public SseUnresolvedHeadParts As List(Of RaceMenuJslot.JslotHeadPart) = Nothing
+        ''' <summary>El identificador crudo del HairColor que no resolvió. "" = resolvió, o no hay.
+        ''' MEDIDO: 70 de 368 presets de FO4 traen un HairColor de un mod ausente.</summary>
+        Public UnresolvedHairColor As String = ""
         ''' <summary>Optional gender hint: <c>"male"</c>, <c>"female"</c>, or empty (unknown).
         ''' Persisted alongside the sliders because the BodyGen emitter needs the gender to
         ''' filter <c>morphs.ini</c> rows, and at re-emit time the NPC's master plugin may not
@@ -151,6 +172,9 @@ Public Module BssliderSidecar
                 If SseSculptHead IsNot Nothing AndAlso SseSculptHead.Count > 0 Then Return True
                 If SseSculptParts IsNot Nothing AndAlso SseSculptParts.Count > 0 Then Return True
                 If SseTintTexOverride IsNot Nothing AndAlso SseTintTexOverride.Count > 0 Then Return True
+                If UnresolvedHeadParts IsNot Nothing AndAlso UnresolvedHeadParts.Count > 0 Then Return True
+                If SseUnresolvedHeadParts IsNot Nothing AndAlso SseUnresolvedHeadParts.Count > 0 Then Return True
+                If Not String.IsNullOrEmpty(UnresolvedHairColor) Then Return True
                 Return False
             End Get
         End Property
@@ -301,6 +325,21 @@ Public Module BssliderSidecar
         If entry.SseTintTexOverride IsNot Nothing AndAlso entry.SseTintTexOverride.Count > 0 Then
             preset.SseTintTexOverride = New Dictionary(Of Integer, String)(entry.SseTintTexOverride)
         End If
+        ' LO NO RESUELTO. Merge-not-clobber como el resto del método: se limpia SÓLO cuando esta entry
+        ' declara algo, así dos sidecars pueden aportar y uno que no lo trae no borra lo que ya hay.
+        If entry.UnresolvedHeadParts IsNot Nothing AndAlso entry.UnresolvedHeadParts.Count > 0 Then
+            preset.UnresolvedHeadParts.Clear()
+            preset.UnresolvedHeadParts.AddRange(entry.UnresolvedHeadParts)
+        End If
+        If entry.SseUnresolvedHeadParts IsNot Nothing AndAlso entry.SseUnresolvedHeadParts.Count > 0 Then
+            preset.SseUnresolvedHeadParts.Clear()
+            For Each hp In entry.SseUnresolvedHeadParts
+                If hp Is Nothing Then Continue For
+                preset.SseUnresolvedHeadParts.Add(New RaceMenuJslot.JslotHeadPart With {
+                    .FormId = hp.FormId, .FormIdentifier = hp.FormIdentifier, .Type = hp.Type})
+            Next
+        End If
+        If Not String.IsNullOrEmpty(entry.UnresolvedHairColor) Then preset.UnresolvedHairColor = entry.UnresolvedHairColor
     End Sub
 
     ''' <summary>Build a sidecar <see cref="NpcEntry"/> from an in-memory overlay preset (deep copies —
@@ -410,6 +449,21 @@ Public Module BssliderSidecar
         If overlay.SseTintTexOverride IsNot Nothing AndAlso overlay.SseTintTexOverride.Count > 0 Then
             entry.SseTintTexOverride = New Dictionary(Of Integer, String)(overlay.SseTintTexOverride)
         End If
+        ' LO NO RESUELTO → sidecar. Copia PROFUNDA de las entradas del .jslot: el overlay sigue vivo
+        ' después de esto y compartir los objetos dejaría dos dueños del mismo estado.
+        If overlay.UnresolvedHeadParts IsNot Nothing AndAlso overlay.UnresolvedHeadParts.Count > 0 Then
+            entry.UnresolvedHeadParts = New List(Of String)(overlay.UnresolvedHeadParts)
+        End If
+        If overlay.SseUnresolvedHeadParts IsNot Nothing AndAlso overlay.SseUnresolvedHeadParts.Count > 0 Then
+            Dim hps As New List(Of RaceMenuJslot.JslotHeadPart)(overlay.SseUnresolvedHeadParts.Count)
+            For Each hp In overlay.SseUnresolvedHeadParts
+                If hp Is Nothing Then Continue For
+                hps.Add(New RaceMenuJslot.JslotHeadPart With {
+                    .FormId = hp.FormId, .FormIdentifier = hp.FormIdentifier, .Type = hp.Type})
+            Next
+            If hps.Count > 0 Then entry.SseUnresolvedHeadParts = hps
+        End If
+        entry.UnresolvedHairColor = If(overlay.UnresolvedHairColor, "")
         Return entry
     End Function
 
@@ -657,6 +711,37 @@ Public Module BssliderSidecar
         If el.TryGetProperty("sseHairColor", hairEl) AndAlso hairEl.ValueKind = JsonValueKind.Number Then
             entry.SseHairColorRgb = hairEl.GetInt32()
         End If
+        ' unresolvedHeadParts / sseUnresolvedHeadParts / unresolvedHairColor — opcionales (esquema v15).
+        ' Cada uno entra por su propio TryGetProperty, que es lo que hace GRATIS subir la versión: un
+        ' sidecar v14 simplemente no los trae y los campos quedan en su default.
+        Dim uhpEl As JsonElement
+        If el.TryGetProperty("unresolvedHeadParts", uhpEl) AndAlso uhpEl.ValueKind = JsonValueKind.Array Then
+            Dim lst As New List(Of String)
+            For Each it In uhpEl.EnumerateArray()
+                If it.ValueKind <> JsonValueKind.String Then Continue For
+                Dim v = it.GetString()
+                If Not String.IsNullOrWhiteSpace(v) Then lst.Add(v)
+            Next
+            If lst.Count > 0 Then entry.UnresolvedHeadParts = lst
+        End If
+        Dim suhpEl As JsonElement
+        If el.TryGetProperty("sseUnresolvedHeadParts", suhpEl) AndAlso suhpEl.ValueKind = JsonValueKind.Array Then
+            Dim lst As New List(Of RaceMenuJslot.JslotHeadPart)
+            For Each it In suhpEl.EnumerateArray()
+                If it.ValueKind <> JsonValueKind.Object Then Continue For
+                Dim hp As New RaceMenuJslot.JslotHeadPart()
+                Dim c As JsonElement
+                If it.TryGetProperty("formId", c) AndAlso c.ValueKind = JsonValueKind.Number Then hp.FormId = CUInt(c.GetInt64() And &HFFFFFFFFL)
+                If it.TryGetProperty("formIdentifier", c) AndAlso c.ValueKind = JsonValueKind.String Then hp.FormIdentifier = c.GetString()
+                If it.TryGetProperty("type", c) AndAlso c.ValueKind = JsonValueKind.Number Then hp.Type = c.GetInt32()
+                lst.Add(hp)
+            Next
+            If lst.Count > 0 Then entry.SseUnresolvedHeadParts = lst
+        End If
+        Dim uhcEl As JsonElement
+        If el.TryGetProperty("unresolvedHairColor", uhcEl) AndAlso uhcEl.ValueKind = JsonValueKind.String Then
+            entry.UnresolvedHairColor = If(uhcEl.GetString(), "")
+        End If
         ' sseSkinOverrides — SSE-only, optional (schema v5). Array of { slotMask, diffuse?, normal?, tint?[r,g,b,a] }.
         ' Tolerant of absence (FO4 / v1-v4 files) — left Nothing.
         ' skinToneOffset: ajuste manual del QNAM del cuerpo (schema v14, los dos juegos). Objeto { r, g, b, i }
@@ -710,6 +795,12 @@ Public Module BssliderSidecar
                 End If
                 If so.TryGetProperty("alphaIndex", alphaEl) AndAlso alphaEl.ValueKind = JsonValueKind.Number Then
                     sk.AlphaIndex = alphaEl.GetInt32()
+                End If
+                ' Compañero de `alphaIndex`. Opcional: un sidecar viejo no lo trae y `TintIndex` queda en su
+                ' default, que es exactamente el comportamiento de antes.
+                Dim tintIdxEl As JsonElement
+                If so.TryGetProperty("tintIndex", tintIdxEl) AndAlso tintIdxEl.ValueKind = JsonValueKind.Number Then
+                    sk.TintIndex = tintIdxEl.GetInt32()
                 End If
                 list.Add(sk)
             Next
@@ -995,6 +1086,31 @@ Public Module BssliderSidecar
                     End If
                     ' sseHairColor — SSE-only, emitted when present. Packed 0xRRGGBB int (RaceMenu absolute hair tint).
                     If kv.Value.SseHairColorRgb.HasValue Then w.WriteNumber("sseHairColor", kv.Value.SseHairColorRgb.Value)
+                    ' unresolvedHeadParts / sseUnresolvedHeadParts / unresolvedHairColor (esquema v15) — lo que la
+                    ' app no pudo resolver, para que la preservación sobreviva al Save ESP (ver NpcEntry).
+                    ' Los tres se emiten sólo cuando hay algo: un sidecar de un NPC sano no crece un byte.
+                    If kv.Value.UnresolvedHeadParts IsNot Nothing AndAlso kv.Value.UnresolvedHeadParts.Count > 0 Then
+                        w.WriteStartArray("unresolvedHeadParts")
+                        For Each uid In kv.Value.UnresolvedHeadParts
+                            If Not String.IsNullOrWhiteSpace(uid) Then w.WriteStringValue(uid)
+                        Next
+                        w.WriteEndArray()
+                    End If
+                    If kv.Value.SseUnresolvedHeadParts IsNot Nothing AndAlso kv.Value.SseUnresolvedHeadParts.Count > 0 Then
+                        w.WriteStartArray("sseUnresolvedHeadParts")
+                        For Each hp In kv.Value.SseUnresolvedHeadParts
+                            If hp Is Nothing Then Continue For
+                            w.WriteStartObject()
+                            w.WriteNumber("formId", hp.FormId)
+                            If Not String.IsNullOrEmpty(hp.FormIdentifier) Then w.WriteString("formIdentifier", hp.FormIdentifier)
+                            w.WriteNumber("type", hp.Type)
+                            w.WriteEndObject()
+                        Next
+                        w.WriteEndArray()
+                    End If
+                    If Not String.IsNullOrEmpty(kv.Value.UnresolvedHairColor) Then
+                        w.WriteString("unresolvedHairColor", kv.Value.UnresolvedHairColor)
+                    End If
                     ' sseSkinOverrides — SSE-only, emitted when non-empty. Array of { slotMask, diffuse, normal?, tint? }.
                     ' skinToneOffset: ajuste manual del QNAM del cuerpo. Se emiten los deltas CANONICOS
                     ' (fracciones), no las unidades de la UI.
@@ -1042,6 +1158,13 @@ Public Module BssliderSidecar
                                 w.WriteNumberValue(sk.TintR) : w.WriteNumberValue(sk.TintG)
                                 w.WriteNumberValue(sk.TintB) : w.WriteNumberValue(sk.TintA)
                                 w.WriteEndArray()
+                                ' ⛔ ESTA LÍNEA FALTABA Y EL COMENTARIO DE `alphaIndex` AFIRMABA QUE ESTABA
+                                ' ("el índice viaja con él por la misma ley que el del tint"). `alphaIndex` sí
+                                ' se emitía y `tintIndex` no, así que el tint volvía del sidecar con el índice
+                                ' en su default (−1) en vez del que traía el `.jslot` — y `RaceMenuJslot`
+                                ' documenta que el value se re-emite EN SU ÍNDICE, no en −1 cableado.
+                                ' LATENTE: 0 de los 48 `.jslot` del usuario traen `skinOverrides` ⇒ 0 bytes hoy.
+                                w.WriteNumber("tintIndex", sk.TintIndex)
                             End If
                             w.WriteEndObject()
                         Next

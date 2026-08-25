@@ -284,6 +284,18 @@ Public Module RaceMenuPresetMapper
         ' the verbatim entry (SseUnresolvedHeadParts) lets ToJslot re-emit it on save without loss. Only when
         ' there is NO identifier (an old .jslot with no portable id) do we use h.FormId — it's all we have.
         If pluginManager IsNot Nothing AndAlso j.HeadParts IsNot Nothing AndAlso j.HeadParts.Count > 0 Then
+            ' ⛔ IDEMPOTENCIA: las DOS listas se vacian ACA, adentro del mismo `If` que gobierna la lista
+            ' resuelta. `preset.HeadPartFormIDs` ya se REEMPLAZA mas abajo (Clear + AddRange), pero las de
+            ' NO resueltas solo se AGREGABAN, asi que aplicar un segundo .jslot sobre el mismo objeto
+            ' —cargar A y despues B— dejaba las de A pegadas y `ToJslot` las re-emitia al guardar B.
+            ' MEDIDO: 49 entradas de 14 mods, en 33 de 48 archivos del corpus.
+            ' El `Clear` va adentro del `If` y no arriba a proposito: un .jslot SIN bloque `headParts` no
+            ' declara nada sobre head parts y no tiene por que borrar lo que el preset ya traia.
+            ' Con esto, el dedup por string que habia en las dos ramas de abajo sobra: era la compensacion
+            ' de este mismo defecto, y un dedup no puede distinguir "repetida de esta carga" de
+            ' "sobrante de la carga anterior".
+            preset.UnresolvedHeadParts.Clear()
+            preset.SseUnresolvedHeadParts.Clear()
             Dim hp As New List(Of UInteger)
             For Each h In j.HeadParts
                 If h Is Nothing Then Continue For
@@ -292,12 +304,11 @@ Public Module RaceMenuPresetMapper
                     fid = LooksmenuLoader.ResolveFormIdentifier(h.FormIdentifier, pluginManager)
                     If fid = 0UI Then
                         ' Unresolved: skip + preserve verbatim (both the diagnostic string and the full entry).
-                        ' Dedup like the `hp` list below: ApplyJslotToPreset can run more than once against the same
-                        ' preset object (preview re-apply), and ToJslot would then emit the part twice.
-                        If Not preset.UnresolvedHeadParts.Contains(h.FormIdentifier, StringComparer.OrdinalIgnoreCase) Then
-                            preset.UnresolvedHeadParts.Add(h.FormIdentifier)
-                            preset.SseUnresolvedHeadParts.Add(h)
-                        End If
+                        ' Sin dedup: las listas se vaciaron al entrar al bloque, asi que lo unico que puede
+                        ' repetirse es una entrada repetida DENTRO de este mismo .jslot — y esa la queremos
+                        ' re-emitir tal cual vino, que es lo que significa "preservar verbatim".
+                        preset.UnresolvedHeadParts.Add(h.FormIdentifier)
+                        preset.SseUnresolvedHeadParts.Add(h)
                         If Logger.Enabled Then
                             Dim srcName As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))
                             Dim ident As String = h.FormIdentifier
@@ -322,10 +333,8 @@ Public Module RaceMenuPresetMapper
                         ' identifier que no resuelve — se SALTEA y se PRESERVA verbatim, para no borrarle al
                         ' usuario el pelo/ojos al guardar en una máquina que no tiene ese mod.
                         Dim legacyKey As String = "#" & h.FormId.ToString("X8", Globalization.CultureInfo.InvariantCulture)
-                        If Not preset.UnresolvedHeadParts.Contains(legacyKey, StringComparer.OrdinalIgnoreCase) Then
-                            preset.UnresolvedHeadParts.Add(legacyKey)
-                            preset.SseUnresolvedHeadParts.Add(h)
-                        End If
+                        preset.UnresolvedHeadParts.Add(legacyKey)
+                        preset.SseUnresolvedHeadParts.Add(h)
                         If Logger.Enabled Then
                             Dim srcName2 As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))
                             Dim rawFid As UInteger = h.FormId

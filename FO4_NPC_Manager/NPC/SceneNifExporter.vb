@@ -729,6 +729,17 @@ Public NotInheritable Class SceneNifExporter
                 SkinningHelper.ApplyShapeGeometry(cloneAdapter, newTris, arrays,
                                                   If(provenance Is Nothing, Nothing, TriangleRemap.SameShape(provenance)))
 
+                ' LOCKEDNORM al espacio nuevo. TERCER sitio que compacta vértices (los otros dos son el
+                ' zap del build y el split del editor), y el clon se trae el `NiIntegersExtraData` del NIF
+                ' fuente intacto: sin esto sale apuntando a los números del espacio VIEJO, o sea a otros
+                ' vértices. Lo consume skee64 al recalcular normales tras un body morph.
+                ' `oldToNew` YA es el `indexCollapse` del canónico (nifly NifFile.cpp:4328-4353): se
+                ' dimensiona sobre el espacio viejo entero y los caídos valen −1.
+                ' Corre incondicional —igual que UpdateBounds— y no sólo bajo `needsCompaction`: con 0
+                ' zapeados el mapa es la identidad y el re-mapeo es un no-op exacto, así que no hay una
+                ' rama que se pueda olvidar. LATENTE hoy: 3 shapes de los 10.071 NIF sueltos de SSE.
+                cloneAdapter.RemapLockedNormalIndices(oldToNew)
+
                 ' Bounds. El clon traía los del NIF fuente y ninguno de los dos caminos los deja
                 ' válidos: unskinned reescribe los vértices en WORLD y cualquier compactación cambia
                 ' la extensión. Un bounding mal puesto se paga con culling raro en el juego.

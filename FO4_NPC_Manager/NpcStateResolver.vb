@@ -26,6 +26,24 @@ Friend NotInheritable Class NpcStateResolver
     ''' is returned. This is how FO4 works: one random pick per LVLN per spawn.</summary>
     <ThreadStatic> Private Shared _lvlnPickCache As Dictionary(Of UInteger, UInteger)
 
+    ''' <summary>Ancla de la hoja de LVLN para UNA resolucion. NO es una cache: no tiene vida mas alla
+    ''' de la llamada, no es Shared y no es ThreadStatic — viaja por parametro porque
+    ''' <see cref="ResolveNPCBaseState"/> corre bajo <c>Task.Run</c> (MainForm:5463, :5558, :9191) y el
+    ''' preview principal y el de un editor pueden resolver a la vez.
+    ''' <para>TRES estados: <b>Nothing</b> (el default del parametro) = deducir el ancla del host ·
+    ''' <b><see cref="Reroll"/></b> (hoja en 0) = RE-SORTEAR · instancia con hoja = anclar.
+    ''' Se modela con una CLASE y no con <c>UInteger?</c> a proposito: el ternario sobre Nullable
+    ''' colapsa Nothing con 0, y 0 es un valor VALIDO ("no hay hoja") distinto de "no vino ancla".
+    ''' Ver 00-reglas-vb-trampas-que-me-comi.</para></summary>
+    Friend NotInheritable Class LeveledLeafPin
+        Public ReadOnly TraitsLeaf As UInteger
+        Public Sub New(traitsLeaf As UInteger)
+            Me.TraitsLeaf = traitsLeaf
+        End Sub
+        ''' <summary>El gesto de azar: la cadena vuelve a sortear.</summary>
+        Public Shared ReadOnly Reroll As New LeveledLeafPin(0UI)
+    End Class
+
     Public Sub New(ctx As NpcRenderContext, materialResolver As NpcMaterialResolver,
                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                    lvlnDataCache As Dictionary(Of UInteger, Canon.ILvln),
@@ -43,12 +61,40 @@ Friend NotInheritable Class NpcStateResolver
     ''' <param name="host">The render host this resolution feeds. Supplies the host-scoped outfit
     ''' preview override (Edit Outfit picker) so the preview never mutates the shared overlay. Pass the
     ''' host being rendered into (<c>_renderHost</c> for the main preview).</param>
-    Friend Function ResolveNPCBaseState(npc As NPC_Data, host As NpcRenderHost) As MainForm.NPCVisualState
+    ''' <param name="pin">Ancla de la hoja de LVLN. <c>Nothing</c> = deducirla del propio
+    ''' <paramref name="host"/> · <see cref="LeveledLeafPin.Reroll"/> = re-sortear (boton de azar, nodo
+    ''' LVLN) · instancia con hoja = anclar a esa (un host de editor nace vacio, asi que el llamador le
+    ''' pasa la hoja del preview principal). Ver <see cref="LeveledLeafPin"/>.</param>
+    Friend Function ResolveNPCBaseState(npc As NPC_Data, host As NpcRenderHost,
+                                        Optional pin As LeveledLeafPin = Nothing) As MainForm.NPCVisualState
         ' Fresh LVLN pick cache for this resolution — ensures consistent picks across categories
         _lvlnPickCache = New Dictionary(Of UInteger, UInteger)()
 
+        ' ⛔ LA HOJA QUE ESTA EN PANTALLA GANA. La ley ya existia y estaba escrita en UN solo lugar
+        ' (MainForm.ResolveLvlnPick_Friend, :9270-9292: "the leaf currently ON SCREEN wins ... rolling
+        ' AGAIN would pin the actor to a DIFFERENT leaf -- they would edit face A and get face B"), pero
+        ' solo la consumia NpcTemplateMaterializer.MakeCategoryOwn: el RENDER volvia a sortear, y el
+        ' editor abria sobre una hoja distinta a la que el usuario estaba mirando (EditFace_Form:4841 al
+        ' mostrarse y :4763 en cada FullReload -> MainForm:9192 -> aca).
+        ' MEDIDO sobre el corpus real: 1134 NPC de FO4 y 1306 de SSE tienen 2+ resultados posibles en su
+        ' cadena de Traits; de esos, 565/993 cambian de PNAM, 424/548 de GENERO y 75/447 de RAZA entre
+        ' una resolucion y la siguiente.
+        ' Se lee de `host.LastRenderedState`, que es el estado del ULTIMO render terminado de ESTE host:
+        ' no es una cache nueva, es el mismo dato que ya alimenta ResolveLvlnPick_Friend.
+        Dim pinnedTraitsLeaf As UInteger = 0UI
+        If pin IsNot Nothing Then
+            pinnedTraitsLeaf = pin.TraitsLeaf
+        Else
+            ' If/Else explicito, NO ternario: ver el doc de LeveledLeafPin.
+            Dim mostrado As MainForm.NPCVisualState = Nothing
+            If host IsNot Nothing Then mostrado = host.LastRenderedState
+            If mostrado IsNot Nothing AndAlso mostrado.RootNpcFormID = npc.FormID Then
+                pinnedTraitsLeaf = mostrado.TraitsSourceFormID
+            End If
+        End If
+
         Dim warnings As New List(Of String)
-        Dim traits = ResolveTraitsStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
+        Dim traits = ResolveTraitsStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings, pinnedTraitsLeaf)
         Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
 
         If traits Is Nothing Then traits = NpcStateFactory.CreateOwnTraitsState(npc)
@@ -457,7 +503,11 @@ Friend NotInheritable Class NpcStateResolver
         Return dictionaryKey
     End Function
 
-    Friend Function ResolveTraitsStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.TraitsState
+    ''' <param name="pinnedTraitsLeaf">Hoja de LVLN que esta EN PANTALLA (0 = sortear). Viaja por
+    ''' parametro y NO por un campo: <see cref="ResolveNPCBaseState"/> corre bajo <c>Task.Run</c>
+    ''' (MainForm:5463, :5558, :9191) y dos previews pueden resolver a la vez.</param>
+    Friend Function ResolveTraitsStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
+                                              Optional pinnedTraitsLeaf As UInteger = 0UI) As MainForm.TraitsState
         Dim npc = _ctx.GetParsedNpc(formID)
         If npc Is Nothing Then Return Nothing
 
@@ -474,7 +524,7 @@ Friend NotInheritable Class NpcStateResolver
         Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Traits)
         Dim sourceRec = _ctx.PluginManager.GetRecord(sourceFormID)
 
-        Dim resolved = ResolveTraitsStateFromTemplateSource(sourceFormID, visited, warnings)
+        Dim resolved = ResolveTraitsStateFromTemplateSource(sourceFormID, visited, warnings, pinnedTraitsLeaf)
         visited.Remove(formID)
 
         If resolved IsNot Nothing Then Return resolved
@@ -508,19 +558,26 @@ Friend NotInheritable Class NpcStateResolver
     ' Model/Animation — so it now rides the Traits chain (ResolveTraitsStateFromNPC). Measured across
     ' all 4365 load-order NPC_: 225 fixes, 0 regressions (GutsyTemplateProbe).
 
-    Private Function ResolveTraitsStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.TraitsState
-        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Traits", visited, warnings)
+    Private Function ResolveTraitsStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
+                                                          pinnedTraitsLeaf As UInteger) As MainForm.TraitsState
+        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Traits", visited, warnings, pinnedTraitsLeaf)
         If sourceRecord Is Nothing Then Return Nothing
-        Return ResolveTraitsStateFromNPC(sourceRecord.Header.FormID, visited, warnings)
+        Return ResolveTraitsStateFromNPC(sourceRecord.Header.FormID, visited, warnings, pinnedTraitsLeaf)
     End Function
 
     Private Function ResolveInventoryStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.InventoryState
-        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Inventory", visited, warnings)
+        ' 0UI a proposito: el ancla es de la cadena de Traits. La de Inventory sigue sorteando (frente
+        ' declarado y NO arreglado: 181 NPC de FO4 y 281 de SSE cambian de outfit entre resoluciones,
+        ' porque `NPCVisualState.InventorySourceFormID` esta declarado y nunca se asigna).
+        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Inventory", visited, warnings, 0UI)
         If sourceRecord Is Nothing Then Return Nothing
         Return ResolveInventoryStateFromNPC(sourceRecord.Header.FormID, visited, warnings)
     End Function
 
-    Private Function ResolveTemplateSourceRecord(sourceFormID As UInteger, categoryName As String, visited As HashSet(Of UInteger), warnings As List(Of String)) As PluginRecord
+    ''' <param name="pinnedLeaf">Ancla de la categoria que se esta caminando (0 = sortear). Ver
+    ''' <see cref="ResolveSingleLeveledTemplate"/>.</param>
+    Private Function ResolveTemplateSourceRecord(sourceFormID As UInteger, categoryName As String, visited As HashSet(Of UInteger),
+                                                 warnings As List(Of String), pinnedLeaf As UInteger) As PluginRecord
         If sourceFormID = 0UI Then Return Nothing
 
         Dim sourceRecord = _ctx.PluginManager.GetRecord(sourceFormID)
@@ -533,10 +590,10 @@ Friend NotInheritable Class NpcStateResolver
             Case "NPC_"
                 Return sourceRecord
             Case "LVLN"
-                Dim resolvedFormID = ResolveSingleLeveledTemplate(sourceRecord, warnings)
+                Dim resolvedFormID = ResolveSingleLeveledTemplate(sourceRecord, warnings, pinnedLeaf, categoryName)
                 If resolvedFormID = 0UI Then Return Nothing
                 If visited.Contains(resolvedFormID) Then Return Nothing
-                Return ResolveTemplateSourceRecord(resolvedFormID, categoryName, visited, warnings)
+                Return ResolveTemplateSourceRecord(resolvedFormID, categoryName, visited, warnings, pinnedLeaf)
             Case Else
                 warnings.Add($"Unsupported {categoryName} template source {sourceRecord.Header.Signature} [{sourceFormID:X8}]")
                 Return Nothing
@@ -659,7 +716,10 @@ Friend NotInheritable Class NpcStateResolver
 
     ''' <summary>Pick a single NPC from a LVLN for template resolution. Uses Count as weight.
     ''' Results are cached per NPC resolution to ensure consistent picks across categories.</summary>
-    Private Function ResolveSingleLeveledTemplate(lvlnRec As PluginRecord, warnings As List(Of String)) As UInteger
+    ''' <remarks>Precedencia: (1) el pick que YA hizo esta misma resolucion para esta lista ·
+    ''' (2) la hoja que esta EN PANTALLA · (3) el sorteo ponderado de siempre.</remarks>
+    Private Function ResolveSingleLeveledTemplate(lvlnRec As PluginRecord, warnings As List(Of String),
+                                                  pinnedLeaf As UInteger, categoryName As String) As UInteger
         Dim lvlnFormID = lvlnRec.Header.FormID
 
         ' Check cache first — same LVLN must return same pick within one NPC resolution
@@ -670,7 +730,40 @@ Friend NotInheritable Class NpcStateResolver
             End If
         End If
 
-        Dim picked = PickWeightedRandomFromLVLN(lvlnFormID, New HashSet(Of UInteger)())
+        ' El ancla y el sorteo van DENTRO DE UNA SOLA ventana de lock de lectura: el censo de hojas y el
+        ' sorteo tienen que ver el MISMO juego de records. `PickWeightedRandomFromLVLN` vuelve a entrar
+        ' al lock, cosa legal porque el RWLS es recursivo (PluginManager.vb:37,
+        ' LockRecursionPolicy.SupportsRecursion). Es lectura pura: no se llama a ningun camino de
+        ' ESCRITURA teniendo el de lectura.
+        Dim picked As UInteger = _ctx.PluginManager.RunUnderRecordsReadLock(
+            Function() As UInteger
+                If pinnedLeaf <> 0UI Then
+                    Dim hojas = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFormID, _ctx.PluginManager)
+                    If hojas IsNot Nothing AndAlso hojas.Count > 0 Then
+                        ' (2a) la hoja en pantalla es entrada DIRECTA de esta lista. Ley identica a
+                        ' MainForm.ResolveLvlnPick_Friend (:9288); `CollectLvlnLeafNpcFormIDs` ya devuelve
+                        ' el conjunto APLANADO (NpcTemplateHelpers.vb:74-75 recursa en las anidadas), asi
+                        ' que las LVLN anidadas entran aca.
+                        If hojas.Contains(pinnedLeaf) Then Return pinnedLeaf
+                        ' (2b) la hoja en pantalla es el TERMINAL de la cadena Use-Traits de alguna hoja
+                        ' de esta lista (LVLN -> hoja B -> Use Traits -> C). Sin esto el ancla se degrada
+                        ' en silencio al sorteo en 69 NPC de FO4 y 235 de SSE — MEDIDO. Es EXACTO porque
+                        ' ese tramo es DETERMINISTA: en el corpus NINGUNA cadena de Traits encadena dos
+                        ' LVLN (hops max = 1 en los dos juegos).
+                        ' Se devuelve la hoja B y NO el terminal C: el terminal iria al `_lvlnPickCache` y
+                        ' la cadena de Inventory que comparta la lista se llevaria el actor equivocado.
+                        ' SOLO para Traits: `TerminalDeTraits` camina el bit Traits, y aplicarlo a
+                        ' Inventory buscaria en la cadena equivocada.
+                        If categoryName = "Traits" Then
+                            For Each hoja In hojas
+                                If TerminalDeTraits(hoja) = pinnedLeaf Then Return hoja
+                            Next
+                        End If
+                    End If
+                End If
+                ' (3) sin ancla utilizable: el sorteo de siempre, intacto.
+                Return PickWeightedRandomFromLVLN(lvlnFormID, New HashSet(Of UInteger)())
+            End Function)
 
         If picked = 0UI Then
             warnings.Add($"Leveled template {NpcManagerFormat.DescribeRecord(lvlnRec)} has no usable entries")
@@ -679,6 +772,35 @@ Friend NotInheritable Class NpcStateResolver
 
         If _lvlnPickCache IsNot Nothing Then _lvlnPickCache(lvlnFormID) = picked
         Return picked
+    End Function
+
+    ''' <summary>Final de la cadena "Use Traits" de <paramref name="formID"/> SIN pasar por ninguna LVLN
+    ''' (si aparece una, se rinde y devuelve 0: no se sortea aca). Solo lo usa el paso (2b) de
+    ''' <see cref="ResolveSingleLeveledTemplate"/>. Corre con el lock de lectura YA TOMADO — por eso usa
+    ''' <c>GetRecordNoLock</c>, igual que el resto del walk.</summary>
+    Private Function TerminalDeTraits(formID As UInteger) As UInteger
+        Dim actual = formID
+        Dim vistos As New HashSet(Of UInteger)()
+        For paso = 0 To 31
+            If Not vistos.Add(actual) Then Return 0UI
+            Dim npc = _ctx.GetParsedNpc(actual)
+            If npc Is Nothing Then Return 0UI
+            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then Return actual
+            Dim siguiente = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Traits)
+            If siguiente = 0UI Then Return actual
+            Dim rec = _ctx.PluginManager.GetRecordNoLock(siguiente)
+            If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Return 0UI
+            actual = siguiente
+        Next
+        Return 0UI
+    End Function
+
+    ''' <summary>Costura Friend de <see cref="TerminalDeTraits"/> para
+    ''' <c>MainForm.ResolveLvlnPick_Friend</c>: la ley del ancla vive en UN solo sitio y el Save la
+    ''' CONSUME, no la re-escribe. Toma el lock de lectura porque, a diferencia del llamador interno,
+    ''' aca no esta tomado.</summary>
+    Friend Function TerminalDeTraitsPublico(formID As UInteger) As UInteger
+        Return _ctx.PluginManager.RunUnderRecordsReadLock(Function() TerminalDeTraits(formID))
     End Function
 
 End Class

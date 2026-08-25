@@ -788,6 +788,58 @@ Public Module LooksmenuLoader
         Return pluginManager.GlobalFormIDFromIdentifierLocal(pluginName, localFormID)
     End Function
 
+    ''' <summary>⭐ ÚNICA LEY de "lo que la app no pudo resolver, se preserva", del overlay al snapshot
+    ''' que arma <c>MainForm.BuildPresetFromState</c>. Se llama FUERA del gate de juego: el agujero era
+    ''' de los DOS lados y por eso vive en una sola función.
+    '''
+    ''' <para><b>Qué preserva y por qué.</b> Un preset nombra head parts y color de pelo por
+    ''' <c>Plugin.esp|FORMID</c>. Si ese mod no está instalado la app no puede resolverlo, y la ley —que
+    ''' el resto del código ya sigue— es guardarlo VERBATIM para que un cargar→guardar no lo destruya.
+    ''' <c>BuildPresetFromState</c> no poblaba ninguno de los tres campos, así que el escritor los
+    ''' recibía vacíos.</para>
+    '''
+    ''' <para><b>MEDIDO sobre el disco del usuario:</b> FO4 pierde <b>236 identificadores de head part en
+    ''' 201 de 368 presets</b>, y <b>70 de 368</b> traen un HairColor de un mod ausente. El agujero del
+    ''' color de pelo deja además <c>HairColorFormID = 0</c> en <b>322 de 4.474 NPC de FO4</b> (7,2 %) y
+    ''' <b>2.248 de 7.206 de SSE</b>, donde "no resolvió" se vuelve indistinguible de "no trae color".</para>
+    '''
+    ''' <para>⛔ <b>POR QUÉ NO ES `ClonePreset` + pisar.</b> La refactorización obvia está MEDIDA y
+    ''' RECHAZADA: <c>BuildPresetFromState</c> llena sus colecciones con <c>.Add</c>/<c>.AddRange</c>, así
+    ''' que clonar primero duplicaría head parts, el MRSV (5→10 floats), cada capa de tinte y cada
+    ''' tatuaje; y arrastraría <c>HeadPartFormIDsIncludeRawExtras = True</c>, que hace que el saver deje
+    ''' de unir el PNAM crudo (40/40 NPC de FO4 perdían lashes/AO/wet/hairlines en su día).</para>
+    '''
+    ''' <para>⚠️ <b>Límite conocido, declarado y NO cerrado por esta función.</b>
+    ''' <c>MainForm.StripEspFieldsFromOverlay</c> reconstruye el overlay DESDE EL SIDECAR después de un
+    ''' Save ESP. Los tres campos viajan en el sidecar (ver <c>BssliderSidecar</c> esquema 15), así que
+    ''' la preservación sobrevive a ese paso; lo que no sobrevive es un overlay que nunca pasó por el
+    ''' sidecar.</para>
+    '''
+    ''' <para><b>DIVERGENCIA DELIBERADA del canónico, decidida por el usuario (24-ago-2026):</b> ni
+    ''' RaceMenu ni LooksMenu preservan esto — <c>PresetInterface.cpp:355-365</c> arma el array desde
+    ''' <c>npc-&gt;headparts</c> (lo que el ACTOR tiene) y <c>:978-987</c> nunca mete la que no resuelve.
+    ''' Acá se preserva porque esto es un EDITOR, con el mismo criterio que la app ya aplicaba al color de
+    ''' pelo ("PRESERVACIÓN, no invención").</para></summary>
+    Public Sub CopyUnresolvedHeadPartsToSnapshot(overlay As LooksmenuPreset, snapshot As LooksmenuPreset)
+        If overlay Is Nothing OrElse snapshot Is Nothing Then Return
+        ' Idempotente: el snapshot es recién construido, pero si algún día se llamara dos veces sobre el
+        ' mismo objeto no puede duplicar. Misma razón que el Clear de RaceMenuPresetMapper.
+        snapshot.UnresolvedHeadParts.Clear()
+        snapshot.SseUnresolvedHeadParts.Clear()
+        If overlay.UnresolvedHeadParts IsNot Nothing Then
+            snapshot.UnresolvedHeadParts.AddRange(overlay.UnresolvedHeadParts)
+        End If
+        If overlay.SseUnresolvedHeadParts IsNot Nothing Then
+            snapshot.SseUnresolvedHeadParts.AddRange(overlay.SseUnresolvedHeadParts)
+        End If
+        ' El color de pelo NO se pisa si el snapshot ya resolvió uno: el control negativo está medido —
+        ' con `HairColorFormID <> 0` el `ElseIf` de SerializePreset NO emite el identificador crudo, así
+        ' que copiarlo igual sería cargar un campo que nadie va a leer.
+        If snapshot.HairColorFormID = 0UI AndAlso Not String.IsNullOrEmpty(overlay.UnresolvedHairColor) Then
+            snapshot.UnresolvedHairColor = overlay.UnresolvedHairColor
+        End If
+    End Sub
+
     ''' <summary>Deep-clone a LooksmenuPreset. Single source of truth for preset cloning across
     ''' the codebase — EditFace_Form, EditBody_Form and MainForm.BuildPresetFromState used to
     ''' have their own near-identical copies that drifted (e.g. one missed copying Has* flags).
