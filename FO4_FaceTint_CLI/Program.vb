@@ -9712,8 +9712,8 @@ persist:
         Else
             Try
                 Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(skelBytes))
-                Dim sko = sg.GetObjectsByClassName("hkaSkeleton").FirstOrDefault()
-                Dim skel = Havok.Canon.Objects.HkObj_HkaSkeleton.Read(sg, sko)
+                ' ⛔ El esqueleto sale de `hkaAnimationContainer.skeletons`, no del primer bloque.
+                Dim skel = sg.EsqueletoPrincipal()
                 skelBoneCount = skel.Bones.Count
                 skelBoneNames = skel.Bones.Select(Function(b) b.Name).ToList()
                 Console.WriteLine($"  [SKEL] behavior skeleton '{havokSkelPath}' name='{skel.Name}' bones={skelBoneCount} bytes={skelBytes.Length}")
