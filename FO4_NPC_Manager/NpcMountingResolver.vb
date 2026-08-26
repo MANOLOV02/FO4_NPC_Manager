@@ -467,13 +467,8 @@ Friend NotInheritable Class NpcMountingResolver
                 If String.IsNullOrEmpty(ndName) Then Continue For
                 Dim hbN As HierarchiBone_class = Nothing
                 If Not inst.SkeletonDictionary.TryGetValue(ndName, hbN) OrElse hbN Is Nothing Then Continue For
-                Dim f = ndn.Flags_ui
-                Dim m As Byte = 0
-                If (f And &H10000UI) <> 0 Then m = CByte(m Or 1)
-                If (f And &H20000UI) <> 0 Then m = CByte(m Or 2)
-                If (f And &H40000UI) <> 0 Then m = CByte(m Or 4)
-                If (f And &H80000UI) <> 0 Then m = CByte(m Or 8)
-                hbN.NoAnimSyncMask = m
+                ' ⛔ LOS BITS 16..19 LOS DECLARA `HkxPoseImportSession.BitDeNoAnimSync`, no un literal.
+                hbN.NoAnimSyncMask = HkxPoseImportSession.MascaraNoAnimSync(ndn.Flags_ui)
             Next
         Next
     End Sub

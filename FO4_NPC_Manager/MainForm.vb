@@ -1807,7 +1807,10 @@ Public Class MainForm
     Private Sub ApplyAnimFrame(frame As Integer)
         If _animPlayer Is Nothing OrElse _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
         Try
-            ' El player cachea la pose por frame → scrub/play barato. La pose es por nombre de bone
+            ' La pose la memoiza `HkxPoseImportSession.BuildPose`, por (frame, nombre) → scrub/play
+            ' barato. ⛔ El player NO tiene cache propia: tenia una SEGUNDA sobre la misma llamada, con
+            ' otra clave, y por eso una devolvia la pose renombrada y la otra la vieja.
+            ' La pose es por nombre de bone
             ' → se aplica igual al skeleton base y a los clones per-ARMA (sculpt). ApplyPose toca SOLO
             ' la capa DeltaTransform → el morph (MorphDelta) y el mount sobreviven.
             Dim pose = _animPlayer.PoseForFrame(frame)
@@ -2253,6 +2256,7 @@ Public Class MainForm
         End If
     End Sub
 
+    ' (los nombres de los tipos de HDPT PNAM que la region de arriba declara)
 #End Region
 
 
@@ -2536,7 +2540,7 @@ Public Class MainForm
                 ' Tirar el estado vivo: al cambiar de modo la próxima pasada RESIEMBRA desde la piel posada
                 ' y corre los `SettleSteps` (10, el `uNumSimSettleSteps` del motor). Sin esto el combo
                 ' mostraría la tela a medio caer del modo anterior, que no es el A/B que se quiere ver.
-                Havok.Physics.HavokPhysicsSettings.ResetAll()
+                FO4_Base_Library.Havok.Physics.HavokClothSimulation.ResetAll()
 
                 ' POSE dirty: el paso de física vive en la rama `needsPoseUpdate` del pipeline (Render.vb).
                 ' Con Morphs o Textures dirty el combo no movería NADA — medido al escribir esto.
@@ -6017,8 +6021,8 @@ Public Class MainForm
         Logger.LogLazy(Function() $"[PERF-R] ========== RenderCurrentStateAsync TOTAL = {_swR.ElapsedMilliseconds}ms ==========")
     End Function
 
-    '' <summary>Output of <see cref="BuildRenderPlan"/>: the CPU-computed render data + skeleton/mount
-    '' state that the UI-thread tail of RenderCurrentStateAsync submits to GL.</summary>
+    ''' <summary>Output of <see cref="BuildRenderPlan"/>: the CPU-computed render data + skeleton/mount
+    ''' state that the UI-thread tail of RenderCurrentStateAsync submits to GL.</summary>
     Private NotInheritable Class RenderPlanResult
         Public RenderData As PreviewResolutionResult
         Public Inst As SkeletonInstance
@@ -6029,12 +6033,12 @@ Public Class MainForm
         Public Request As RenderRequest
     End Class
 
-    '' <summary>CPU compute half of RenderCurrentStateAsync (Finding 2-core): resolves the preview
-    '' variant, builds the merged pose + per-ARMA skeletons, runs the robot-chunk/socket mounting, and
-    '' assembles the RenderRequest. PURE CPU — no WinForms controls, no GL/host.PreviewCtl — so the caller
-    '' runs it on Task.Run, keeping only the GL submission (RenderShapes) + UI gating on the UI thread.
-    '' Returns Nothing if the request was superseded; a result whose RenderData has no shapes signals 'no
-    '' meshes' to the caller (which shows the status + returns).</summary>
+    ''' <summary>CPU compute half of RenderCurrentStateAsync (Finding 2-core): resolves the preview
+    ''' variant, builds the merged pose + per-ARMA skeletons, runs the robot-chunk/socket mounting, and
+    ''' assembles the RenderRequest. PURE CPU — no WinForms controls, no GL/host.PreviewCtl — so the caller
+    ''' runs it on Task.Run, keeping only the GL submission (RenderShapes) + UI gating on the UI thread.
+    ''' Returns Nothing if the request was superseded; a result whose RenderData has no shapes signals 'no
+    ''' meshes' to the caller (which shows the status + returns).</summary>
     Private Function BuildRenderPlan(previewVariant As PreviewVariantDefinition, host As NpcRenderHost, state As NPCVisualState, requestVersion As Integer) As RenderPlanResult
         Dim _swBrp As System.Diagnostics.Stopwatch = If(Logger.Enabled, System.Diagnostics.Stopwatch.StartNew(), Nothing)
         Dim renderData = _meshCollector.ResolvePreviewVariant(previewVariant)
@@ -8754,7 +8758,6 @@ Public Class MainForm
         Return $"{edid}  [{formID:X8}]{pluginSuffix}"
     End Function
 
-    ''' <summary>HDPT PNAM Type enum names.</summary>
 #End Region
 
     Private Sub MainForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
@@ -10252,14 +10255,22 @@ Public Class MainForm
         End Using
     End Sub
 
-    ''' <summary>Open the Edit Outfit picker (NPC.DOFT override) for the current NPC. The picker renders
-    ''' its WYSIWYG preview through the SAME pipeline as this viewer (<see cref="PreviewOutfitInHostAsync"/>)
-    ''' but into ITS OWN host with a host-scoped override — it never touches the shared overlay
-    ''' (_appliedPresets) nor the main preview, so cancel is inherently non-destructive (nothing to undo).
-    ''' On OK the chosen value is committed to the overlay and the MAIN preview reloads. Picker return:
-    '''   Nothing → "(record default)" (clear override, preserve raw NPC.DOFT)
-    '''   Some(0) → "(no outfit)"
-    '''   Some(fid) → OTFT / draft override.</summary>
+    ' ⛔ NOTA HISTORICA, no la doc del handler de abajo. El boton "ARMA Editor" se RETIRO (lo dice
+    ' el propio texto): el miembro que esto describia no existe.
+    ' Open the standalone ARMA Editor (Armor Addon authoring). The editor mutates the MainForm
+    ' ARMA/MSWP draft lists only; the existing Save ESP flow persists them. Passes the currently-rendered
+    ' NPC as the preview context (or 0 = no preview) plus its race/gender so a new ARMA pre-fills the right
+    ' race and the WYSIWYG preview equips on the right body. After close, the drafts are already registered;
+    ' the OutfitPicker's item list reads ARMO drafts LIVE so nothing to rebuild here.
+
+    ' Open the Edit Outfit picker (NPC.DOFT override) for the current NPC. The picker renders
+    ' its WYSIWYG preview through the SAME pipeline as this viewer (<see cref="PreviewOutfitInHostAsync"/>)
+    ' but into ITS OWN host with a host-scoped override — it never touches the shared overlay
+    ' (_appliedPresets) nor the main preview, so cancel is inherently non-destructive (nothing to undo).
+    ' On OK the chosen value is committed to the overlay and the MAIN preview reloads. Picker return:
+    '   Nothing → "(record default)" (clear override, preserve raw NPC.DOFT)
+    '   Some(0) → "(no outfit)"
+    '   Some(fid) → OTFT / draft override.
     Private Async Sub ButtonEditOutfit_Click(sender As Object, e As EventArgs) Handles ButtonEditOutfit.Click
         If _renderHost.LastRenderedState Is Nothing Then Return
         Dim st = _renderHost.LastRenderedState
@@ -10330,11 +10341,6 @@ Public Class MainForm
         End Using
     End Sub
 
-    ''' <summary>Open the standalone ARMA Editor (Armor Addon authoring). The editor mutates the MainForm
-    ''' ARMA/MSWP draft lists only; the existing Save ESP flow persists them. Passes the currently-rendered
-    ''' NPC as the preview context (or 0 = no preview) plus its race/gender so a new ARMA pre-fills the right
-    ''' race and the WYSIWYG preview equips on the right body. After close, the drafts are already registered;
-    ''' the OutfitPicker's item list reads ARMO drafts LIVE so nothing to rebuild here.</summary>
     ' (The standalone "ARMA Editor" / "ARMO Editor" toolbar buttons were removed — armor authoring is now reached
     ' from the Edit Outfit dialog's "Edit armor" button, and ARMA via the ARMO editor's addon "Edit ARMA…".)
 

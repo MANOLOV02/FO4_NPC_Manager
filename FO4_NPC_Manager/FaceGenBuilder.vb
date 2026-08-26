@@ -146,7 +146,6 @@ Public Module FaceGenBuilder
         Next
     End Sub
 
-    ''' <summary>Desglose legible. "resto" = Total − (las fases medidas): records, morphs, skinning, clonado.</summary>
     ' ===================================================================================
     ' GATE SIMD: los self-tests de paridad, UNA sola vez por proceso, antes del primer bake.
     ' ===================================================================================
@@ -297,6 +296,7 @@ Public Module FaceGenBuilder
         Return sb.ToString()
     End Function
 
+    ''' <summary>Desglose legible. "resto" = Total − (las fases medidas): records, morphs, skinning, clonado.</summary>
     Public Function PhaseReport() As String
         Dim f = CDbl(Stopwatch.Frequency)
         Dim tot = _phaseTicks(CInt(BakePhase.Total)) / f
@@ -1769,7 +1769,8 @@ Public Module FaceGenBuilder
                             ' Es seguro: el FaceGeom NO es el esqueleto de animación — el motor re-skinea con el
                             ' del personaje. Si el flag hiciera algo acá, el CK lo estaría destruyendo en TODAS
                             ' las cabezas vanilla. En FO4 es no-op medido: el bit no existe.
-                            Const NoAnimSyncSBit As UInteger = &H80000UI
+                            ' ⛔ EL BIT LO DECLARA `HkxPoseImportSession.BitDeNoAnimSync`, no una Const local.
+                            Dim NoAnimSyncSBit As UInteger = HkxPoseImportSession.BitDeNoAnimSync.S
                             If (boneNode.Flags_ui And NoAnimSyncSBit) <> 0UI Then
                                 boneNode.Flags_ui = boneNode.Flags_ui And (Not NoAnimSyncSBit)
                                 normalizedNoAnimSync += 1
