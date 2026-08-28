@@ -365,6 +365,25 @@ Public Module LooksmenuLoader
         Public ScaleUV As Single()            ' JSON "scaleUV" [x,y]; Nothing = default (1,1) (:608-611)
     End Class
 
+    ''' <summary>EL ORDEN DE DIBUJO de los overlays de LooksMenu: de ABAJO hacia ARRIBA, o sea prioridad
+    ''' DESCENDENTE — la prioridad MÁS BAJA se dibuja última y queda ARRIBA. Es el análogo FO4 de
+    ''' <c>SseOverlayCompositor.OrderForDraw</c> y, como aquélla, es LA ÚNICA implementación: la consume el
+    ''' resolver del render y la fija el gate.
+    ''' <para><b>DE DÓNDE SALE.</b> La CITA (f4ee OverlayInterface.cpp:124-152) da el orden de ENGANCHE:
+    ''' <c>ForEachOverlayBySlot</c> recorre el <c>PriorityMap</c> —un <c>std::multimap&lt;SInt32,…&gt;</c>, o sea
+    ''' prioridad ASCENDENTE (OverlayInterface.h:123)— y por cada entrada clona la shape de piel y hace
+    ''' <c>AttachChild</c>. La MEDICIÓN es un reporte in-game (2026-08-28) que dice que se ve encima el PRIMER
+    ''' nodo enganchado ⇒ el motor dibuja los hermanos coplanares al revés del enganche. Enganchar NO es dibujar:
+    ''' ese paso lo decide el acumulador del motor, que f4ee no toca (no hay un solo <c>reverse</c>/<c>rbegin</c>
+    ''' en el plugin), y NO está leído del binario. Si algún día se lee y dice otra cosa, cambia ESTA función.</para>
+    ''' <para><c>OrderByDescending</c> es estable ⇒ entradas con la misma prioridad conservan el orden del preset,
+    ''' que es lo que hace el multimap dentro de un bucket. Tolera <c>Nothing</c> en la lista (el resolver filtra
+    ''' recién adentro del loop); un nulo ordena al fondo.</para></summary>
+    Public Function OrderOverlaysForDraw(entries As IEnumerable(Of OverlayEntry)) As List(Of OverlayEntry)
+        If entries Is Nothing Then Return New List(Of OverlayEntry)()
+        Return entries.OrderByDescending(Function(e) If(e IsNot Nothing, e.Priority, Integer.MaxValue)).ToList()
+    End Function
+
     ''' <summary>Parse a LooksMenu preset JSON file. Returns Nothing if the file is unreadable
     ''' or not valid JSON. Form-identifier strings ("Plugin.esp|XXXXXX") are resolved against
     ''' <paramref name="pluginManager"/> at parse time — entries from plugins not in the active

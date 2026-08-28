@@ -1415,22 +1415,22 @@ Public Class EditFace_Form
 
     ''' <summary>Face overlays (nodos <c>Face [Ovl{n}]</c> y <c>Face [SOvl{n}]</c>) en ORDEN DE DIBUJO — el de arriba
     ''' de la lista es el que se ve encima.
-    ''' <para>La clave es <see cref="SseOverlayCompositor.CompositeOrderKey"/>, no el índice pelado: el pool magic
-    ''' se dibuja ENCIMA de todo el pool normal (skee instala el primario y después el secundario), así que un
-    ''' <c>[SOvl0]</c> va sobre un <c>[Ovl5]</c>. Con el índice pelado la lista mostraba un orden que no era el que se
-    ''' ve, y Up/Down parecían no funcionar.</para></summary>
+    ''' <para>La clave es <see cref="SseOverlayCompositor.DrawOrderKey"/>, no el índice pelado: el motor dibuja al
+    ''' revés de como skee engancha, así que dentro del pool normal el <c>[Ovl0]</c> es el de más ARRIBA y el pool
+    ''' magic entero queda DEBAJO del normal (un <c>[Ovl5]</c> va sobre un <c>[SOvl0]</c>). Con el índice pelado la
+    ''' lista mostraba un orden que no era el que se ve, y Up/Down parecían no funcionar.</para></summary>
     Private Function FaceOverlaysList() As List(Of RaceMenuJslot.JslotOverlayNode)
         Dim p = Preset
         If p Is Nothing OrElse p.SseBodyOverlays Is Nothing Then Return New List(Of RaceMenuJslot.JslotOverlayNode)
         Return p.SseBodyOverlays.
             Where(Function(o) o IsNot Nothing AndAlso SseCatalogs.ZoneOfNode(o.NodeName).HasValue AndAlso
                               SseCatalogs.ZoneOfNode(o.NodeName).Value = SseCatalogs.OverlayZone.Face).
-            OrderByDescending(Function(o) SseOverlayCompositor.CompositeOrderKey(o.NodeName)).ToList()
+            OrderByDescending(Function(o) SseOverlayCompositor.DrawOrderKey(o.NodeName)).ToList()
     End Function
 
     ''' <summary>Reorder face paint by swapping two overlays' <c>Ovl{n}</c> node indices (RaceMenu's draw order).
     ''' <para>SÓLO DENTRO DEL MISMO POOL: normal y magic son stacks independientes (numeración propia, y el magic
-    ''' va entero encima), así que intercambiar índices entre pools no reordena — CONVIERTE los dos overlays de pool,
+    ''' va entero DEBAJO del normal), así que intercambiar índices entre pools no reordena — CONVIERTE los dos overlays de pool,
     ''' que es justo lo que el checkbox "Magic" hace explícito.</para></summary>
     Private Sub OnFaceOvUpClick(sender As Object, e As EventArgs) Handles ButtonSseFaceOvUp.Click
         OnFaceOvMove(-1)

@@ -987,8 +987,9 @@ Public Module BssliderSidecar
                     End If
                     ' sseBodyOverlays — SSE-only, emitted when non-empty. node + diffuse always; normal/tint
                     ' only when present. Insertion order preserved — aunque el orden de DIBUJO no sale de la lista
-                    ' sino del nombre del nodo (SseOverlayCompositor.CompositeOrderKey: pool normal ascendente y
-                    ' encima el pool magic ascendente), así que preservarlo es fidelidad del archivo, no semántica.
+                    ' sino del nombre del nodo (SseOverlayCompositor.DrawOrderKey: pool normal descendente —[Ovl0]
+                    ' arriba— y el pool magic entero DEBAJO), así que preservarlo es fidelidad del archivo, no
+                    ' semántica.
                     If kv.Value.SseBodyOverlays IsNot Nothing AndAlso kv.Value.SseBodyOverlays.Count > 0 Then
                         w.WriteStartArray("sseBodyOverlays")
                         For Each ov In kv.Value.SseBodyOverlays

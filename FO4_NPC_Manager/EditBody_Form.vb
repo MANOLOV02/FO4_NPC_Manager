@@ -2198,7 +2198,8 @@ Public Class EditBody_Form
         AddHandler ListBoxOverlayApplied.DrawItem, AddressOf DrawSseAppliedOverlayItem
         ' Hide the UV offset/scale rows — RaceMenu overlays have no UV-offset/scale override (those are LooksMenu-
         ' only). Up/Down STAY: they reorder the overlay stack, which in RaceMenu is the Ovl{n} node index (skee64
-        ' attaches Ovl0..N in order, higher index on top) — SseMoveOverlay swaps that index.
+        ' attaches Ovl0..N in order y el motor dibuja al revés ⇒ índice MÁS BAJO arriba; ver
+        ' SseOverlayCompositor.DrawOrderKey) — SseMoveOverlay swaps that index.
         For Each c As Control In New Control() {LabelOverlayOffsetU, SliderOverlayOffsetU, LabelOverlayOffsetV, SliderOverlayOffsetV,
                                                 LabelOverlayScaleU, SliderOverlayScaleU, LabelOverlayScaleV, SliderOverlayScaleV}
             If c IsNot Nothing Then c.Visible = False
@@ -2388,15 +2389,16 @@ Public Class EditBody_Form
                 If p IsNot Nothing AndAlso p.SseBodyOverlays IsNot Nothing Then
                     ' Show in DRAW ORDER so Up/Down are intuitive: group by zone (Body, Hands, Feet), and within a
                     ' zone list the topmost-drawn first. Face overlays are edited on the Face Paint tab, excluded here.
-                    ' EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE COMPOSICIÓN (CompositeOrderKey), no el índice
-                    ' numérico del nodo: el pool magic va ENCIMA de TODO el pool normal (skee instala el pool
-                    ' primario y después el secundario), así que un [SOvl0] se dibuja sobre un [Ovl5]. Ordenar
-                    ' por índice numérico invertiría el orden visual real.
+                    ' EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE DIBUJO (DrawOrderKey), no el índice numérico del
+                    ' nodo: descendente = el topmost primero. Con la clave de dibujo el pool magic va DEBAJO de
+                    ' todo el pool normal (el motor dibuja al revés de como skee engancha), así que un [Ovl5] se
+                    ' dibuja sobre un [SOvl0] y esta lista lo muestra en ese orden. Ordenar por índice numérico
+                    ' pelado invertiría el orden visual real.
                     Dim shown = p.SseBodyOverlays.
                         Where(Function(o) o IsNot Nothing AndAlso SseCatalogs.ZoneOfNode(o.NodeName).HasValue AndAlso
                                           SseCatalogs.ZoneOfNode(o.NodeName).Value <> SseCatalogs.OverlayZone.Face).
                         OrderBy(Function(o) CInt(SseCatalogs.ZoneOfNode(o.NodeName).Value)).
-                        ThenByDescending(Function(o) SseOverlayCompositor.CompositeOrderKey(o.NodeName)).ToList()
+                        ThenByDescending(Function(o) SseOverlayCompositor.DrawOrderKey(o.NodeName)).ToList()
                     For Each ov In shown
                         _sseShownOverlays.Add(ov)
                         ListBoxOverlayApplied.Items.Add(SseOverlayLabel(ov))
@@ -2471,7 +2473,7 @@ Public Class EditBody_Form
                    "so this value is what the preview shows, not what the game holds steady.",
                    "skee64 kParam_ShaderAlpha (key 8): the overlay's opacity, independent of the tint colour."))
             ' Up/Down sólo tienen sentido entre vecinos del MISMO pool (los stacks son independientes y el magic va
-            ' entero encima). Se DESHABILITAN en vez de ignorar el click: un botón que no hace nada al apretarlo es
+            ' entero DEBAJO del normal; ver SseOverlayCompositor.DrawOrderKey). Se DESHABILITAN en vez de ignorar el click: un botón que no hace nada al apretarlo es
             ' el mismo defecto que este editor ya arrastró con "Up/Down parecían no funcionar".
             UpdateSseOverlayMoveEnabled()
             CheckBoxOverlayTint.Checked = has AndAlso ov.HasTint
@@ -2582,9 +2584,11 @@ Public Class EditBody_Form
     End Function
 
     ''' <summary>Reorder the overlay stack by SWAPPING the two overlays' <c>Ovl{n}</c> node indices — that index IS
-    ''' RaceMenu's draw order (skee64 attaches Ovl0..N in order, higher index on top). Only reorders within the
-    ''' same zone (Body/Hands/Feet stacks are independent). Moving list-Up = toward the top of the stack (higher
-    ''' index); the shown list is sorted highest-index-first so the row math matches.</summary>
+    ''' RaceMenu's draw order (skee64 attaches Ovl0..N in order y el motor dibuja al revés ⇒ índice MÁS BAJO
+    ''' arriba; ver <see cref="SseOverlayCompositor.DrawOrderKey"/>). Only reorders within the same zone
+    ''' (Body/Hands/Feet stacks are independent). Moving list-Up = toward the top of the stack (índice MENOR);
+    ''' la lista se muestra ordenada por DrawOrderKey descendente = topmost primero, así que la aritmética de
+    ''' filas sigue valiendo: <c>row + delta</c> es siempre el vecino visual, sin importar qué índice tenga.</summary>
     Private Async Function SseMoveOverlay(delta As Integer) As Task
         Dim p = Preset
         Dim ov = SelectedSseOverlay()
@@ -2597,7 +2601,7 @@ Public Class EditBody_Form
         Dim zB = SseCatalogs.ZoneOfNode(neighbour.NodeName)
         If Not zA.HasValue OrElse Not zB.HasValue OrElse zA.Value <> zB.Value Then Return   ' different zone → no cross-stack move
         ' Y TAMPOCO ENTRE POOLS. Los stacks normal y magic son independientes (numeración propia, y el magic va
-        ' entero encima), así que "intercambiar los índices" entre un [Ovl] y un [SOvl] no reordena nada: MUEVE de
+        ' entero DEBAJO del normal), así que "intercambiar los índices" entre un [Ovl] y un [SOvl] no reordena nada: MUEVE de
         ' pool a los dos overlays, que es una conversión silenciosa — justo lo que el checkbox Magic hace explícito.
         If SseCatalogs.IsSpellNode(ov.NodeName) <> SseCatalogs.IsSpellNode(neighbour.NodeName) Then Return
         Dim ni = SseCatalogs.IndexOfNode(ov.NodeName)
@@ -2624,11 +2628,17 @@ Public Class EditBody_Form
     ' per-overlay properties (offset/scale/tint) live against the embedded preview.
     '
     ' Order/priority convention (load-bearing — must match NpcMorphPoseResolver.ResolveOverlayLayers
-    ' which sorts ascending by Priority so the HIGHEST Priority is drawn LAST = on top):
+    ' which sorts DESCENDING by Priority so the LOWEST Priority is drawn LAST = on top):
     '   ListBoxOverlayApplied index 0 = TOP of list = drawn ON TOP.
     '   Preset.Overlays is stored in the SAME order as the list (index 0 = top).
-    '   After every add/remove/reorder we renumber: Priority(i) = (n-1) - i, so index 0 gets the
-    '   highest Priority value. The resolver's ascending sort then puts index 0 last = on top.
+    '   After every add/remove/reorder we renumber: Priority(i) = i, so index 0 gets the
+    '   LOWEST Priority value. The resolver's descending sort then puts index 0 last = on top.
+    '
+    ' EL SENTIDO DE "PRIORITY" SE INVIRTIÓ (era (n-1)-i + orden ascendente). Motivo: lo que f4ee prueba
+    ' (OverlayInterface.cpp:124-152) es el orden de ENGANCHE — recorre el multimap de prioridad ascendente y
+    ' hace AttachChild — y enganchar no es dibujar. Medición in-game: se ve encima el primero enganchado ⇒
+    ' prioridad más BAJA = arriba. Las dos mitades (renumber + resolver) se movieron juntas, así que el
+    ' preview no cambia y lo que cambia es el número que viaja al juego.
     '
     ' Refresh path: overlay changes need the render plan to re-run ResolveOverlayLayers, which only
     ' happens on a FULL preview reload — so overlays use TriggerSkinChangeReload (NOT the lightweight
@@ -2650,6 +2660,15 @@ Public Class EditBody_Form
         _hasOverlayTemplates = _overlayCandidates.Count > 0
 
         RefreshAvailableList()
+        ' ⛔ LA INVARIANTE DE ESTE TAB ("Preset.Overlays guardado en el MISMO orden que la lista, índice 0 =
+        ' arriba") se mantenía después de cada add/remove/move y en el Reset, pero NUNCA AL ABRIR — así que un
+        ' preset que llega del disco con el array en un orden y las prioridades en otro mostraba una lista que no
+        ' era la que el preview dibuja. Era un agujero preexistente (un .json de LooksMenu o de otra herramienta
+        ' no tiene por qué traerlos en orden), y al invertir el sentido de Priority pasaría a morder SIEMPRE en
+        ' los presets que escribió la versión anterior de la app: ahí el índice 0 tenía la prioridad más ALTA,
+        ' que ahora es la de más ABAJO. Sincronizar acá con el MISMO helper del Reset cierra las dos cosas.
+        ' No cambia qué overlay va arriba: reordena el array y compacta los números para que digan lo mismo.
+        SortOverlaysForDisplay()
         RefreshAppliedList(-1)
         ' No selection yet → property controls disabled, label shows the placeholder.
         UpdateOverlayPropsForSelection()
@@ -2739,14 +2758,22 @@ Public Class EditBody_Form
         Return _mainForm.ResolveOverlayTemplate_Friend(ov.TemplateId, _npcIsFemale)
     End Function
 
-    ''' <summary>Renumber Preset.Overlays so list index 0 = highest Priority = drawn on top.
-    ''' Priority(i) = (n-1) - i. Keeps the stored list in display order (index 0 = top).</summary>
+    ''' <summary>Renumber Preset.Overlays so list index 0 = LOWEST Priority = drawn on top.
+    ''' <c>Priority(i) = i</c>. Keeps the stored list in display order (index 0 = top).
+    ''' <para>ERA <c>(n-1) - i</c> (índice 0 = prioridad más ALTA). Cambió con la corrección del orden de
+    ''' dibujo: f4ee engancha los clones recorriendo el multimap de prioridad ASCENDENTE
+    ''' (OverlayInterface.cpp:124-152) y el motor dibuja al revés del enganche, así que la prioridad más BAJA
+    ''' es la que queda ARRIBA. Ver NpcMorphPoseResolver.ResolveOverlayLayers, que ordena descendente y es
+    ''' quien consume esto.</para>
+    ''' <para>Las dos mitades tienen que moverse JUNTAS: invertir sólo el resolver dejaría el índice 0 de la
+    ''' lista dibujándose al fondo y la etiqueta "top" mintiendo. Con las dos, el preview no se mueve y lo que
+    ''' cambia es el número que viaja al juego — que es donde estaba el defecto.</para></summary>
     Private Sub RenumberOverlayPriorities()
         Dim p = Preset
         If p Is Nothing Then Return
         Dim n = p.Overlays.Count
         For i = 0 To n - 1
-            p.Overlays(i).Priority = (n - 1) - i
+            p.Overlays(i).Priority = i
         Next
     End Sub
 
@@ -3110,19 +3137,19 @@ Public Class EditBody_Form
             p.HasOverlays = False
         End If
         ' Keep stored order = display order (snapshot is already priority-sorted from its own
-        ' lifetime, but re-sort defensively so index 0 = highest Priority = top).
+        ' lifetime, but re-sort defensively so index 0 = LOWEST Priority = top).
         SortOverlaysForDisplay()
         RefreshAppliedList(If(p.Overlays.Count > 0, 0, -1))
         Await TriggerOverlayReload()
     End Function
 
-    ''' <summary>Order Preset.Overlays so index 0 = highest Priority (= top = on top), matching the
-    ''' applied-list convention, then renumber to compact the priorities. Used after a Reset where
-    ''' the snapshot's priorities may be sparse/arbitrary.</summary>
+    ''' <summary>Order Preset.Overlays so index 0 = LOWEST Priority (= top = on top), matching the
+    ''' applied-list convention (ver <see cref="RenumberOverlayPriorities"/>), then renumber to compact the
+    ''' priorities. Used after a Reset where the snapshot's priorities may be sparse/arbitrary.</summary>
     Private Sub SortOverlaysForDisplay()
         Dim p = Preset
         If p Is Nothing Then Return
-        Dim ordered = p.Overlays.OrderByDescending(Function(o) o.Priority).ToList()
+        Dim ordered = p.Overlays.OrderBy(Function(o) o.Priority).ToList()
         p.Overlays.Clear()
         p.Overlays.AddRange(ordered)
         RenumberOverlayPriorities()

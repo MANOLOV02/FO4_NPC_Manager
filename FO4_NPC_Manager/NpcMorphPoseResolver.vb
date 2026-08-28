@@ -274,11 +274,13 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Return
         End If
 
-        ' Iterate overlays by Priority ASCENDING so a higher-priority overlay ends up LAST in each shape's
-        ' layer list = drawn on top (the lib draws layers in list order; OverlayMaterialLayer.vb:53-57).
-        ' OrderBy is a stable sort, so equal-priority entries keep preset/insertion order — matching the
-        ' engine multimap, which also preserves insertion order within a priority bucket.
-        Dim orderedOverlays = overlays.OrderBy(Function(e) e.Priority).ToList()
+        ' ORDEN DE DIBUJO = abajo→arriba. La ley vive en UN solo lugar (LooksmenuLoader.OrderOverlaysForDraw,
+        ' el análogo FO4 de SseOverlayCompositor.OrderForDraw) y ahí está de dónde sale: prioridad DESCENDENTE,
+        ' o sea la MÁS BAJA arriba. El lib dibuja layers en orden de lista, así que el último agregado gana
+        ' (OverlayMaterialLayer.vb:53-57).
+        ' ⛔ ANTES ERA ASCENDENTE ACÁ MISMO, a mano, Y ESO ERA EL DEFECTO: se tomaba el orden de ENGANCHE de f4ee
+        ' por orden de dibujo. Ver la nota de OrderOverlaysForDraw.
+        Dim orderedOverlays = LooksmenuLoader.OrderOverlaysForDraw(overlays)
 
         For Each shape In renderData.Shapes
             If shape Is Nothing Then Continue For
@@ -473,9 +475,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <see cref="OverlayMaterialLayer"/> por cada shape skin-tinted que matchee.
     ''' <para>La pertenencia de shape usa el mismo gate que el camino FO4, pero el match de slot es
     ''' SSE-especifico: el nombre del nodo de overlay (Body/Hands/Feet) mapea a los bits de slot biped que cubre
-    ''' y el overlay cae en cualquier shape skin-tinted cuyo SlotMask los intersecte. El orden de dibujo es el de
-    ''' <see cref="SseOverlayCompositor.CompositeOrderKey"/>: el pool normal ascendente y ENCIMA el pool magic
-    ''' ascendente (skee instala el primario y despues el secundario). NO es el orden de la lista ni el indice pelado.</para>
+    ''' y el overlay cae en cualquier shape skin-tinted cuyo SlotMask los intersecte. El orden de dibujo lo da
+    ''' <see cref="SseOverlayCompositor.OrderForDraw"/> (clave <see cref="SseOverlayCompositor.DrawOrderKey"/>) =
+    ''' el INVERSO del orden de instalacion de skee: [Ovl0] arriba de todo y el pool magic entero al fondo. NO es
+    ''' el orden de la lista ni el indice pelado.</para>
     ''' <para>El blend es el MISMO decal coplanar alpha-over que en FO4: el modo de blend no esta en el .jslot.
     ''' Sin preset o con carrier vacio, todas las shapes se limpian.</para></summary>
     Private Sub ResolveSseOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult,
@@ -515,17 +518,16 @@ Friend NotInheritable Class NpcMorphPoseResolver
             End If
 
             Dim layers As New List(Of OverlayMaterialLayer)
-            ' Overlays ON TOP, en el ORDEN DE COMPOSICIÓN DE skee: primero TODO el pool normal por índice
-            ' ascendente ([Ovl0] abajo → [OvlN]) y ENCIMA todo el pool magic por índice ascendente
-            ' ([SOvl0]…[SOvlM]) — SetupOverlay corre el loop primario completo y después el secundario, y cada
-            ' InstallOverlay termina en AttachChild (OverlayInterface.cpp:659-668, :257). NO es la posición en la
-            ' lista (el jslot puede venir en cualquier orden) y NO es el índice pelado: ordenar por índice sin mirar
-            ' el pool empataba [SOvl0] con [Ovl0] y podía dejar el magic DEBAJO de [Ovl1]. La clave única está en
-            ' SseOverlayCompositor.CompositeOrderKey y la comparten render y bake.
-            ' El lib dibuja layers en orden de lista (primero=abajo), así que se agrega el de clave más baja primero.
+            ' Overlays ON TOP, en el ORDEN DE DIBUJO de skee — que es el INVERSO del de instalación: primero todo
+            ' el pool MAGIC ([SOvl], que skee engancha último) y ENCIMA el pool normal con [Ovl0] arriba de todo.
+            ' NO es la posición en la lista (el jslot puede venir en cualquier orden) y NO es el índice pelado.
+            ' La clave única es SseOverlayCompositor.DrawOrderKey y el ordenamiento es OrderForDraw — LA MISMA
+            ' función que usa el pliegue (CPU y GPU), así que render y bake no pueden discrepar. Acá había una
+            ' SEGUNDA implementación del mismo orden (un OrderBy propio): se fue.
+            ' El lib dibuja layers en orden de lista (primero=abajo), así que OrderForDraw ya entrega abajo→arriba.
             ' Body/Hands/Feet van en el shape de slot; Face en el head FaceTint.
             If overlays IsNot Nothing Then
-                For Each ov In overlays.OrderBy(Function(o) SseOverlayCompositor.CompositeOrderKey(If(o IsNot Nothing, o.NodeName, Nothing)))
+                For Each ov In SseOverlayCompositor.OrderForDraw(overlays)
                     ' Skip an overlay with no texture OR whose texture is not in the load order (loose+BSA): with no
                     ' resolvable diffuse there is nothing to composite, and rendering it would flat-fill the skin
                     ' with the "missing texture" placeholder. Same rule for face and body overlays.
