@@ -101,24 +101,46 @@ Public NotInheritable Class EstiloDeFila
     Public Property Fuente As Font
     Public Property Texto As Color
     ''' <summary>Fondo propio, o Nothing para el que corresponda por estado. Lo usa el resaltado de la
-    ''' multi-selección, que no es el de Windows. La selección del sistema le gana.</summary>
+    ''' multi-selección, que no es el de Windows. <see cref="ResaltadoDelSistema"/> le gana.</summary>
     Public Property Fondo As Color?
+    ''' <summary>Si esta fila lleva el RESALTADO DEL SISTEMA: el par Highlight/HighlightText, o su
+    ''' variante sin foco. El control lo trae puesto en la fila enfocada que además está en el lote, y el
+    ''' consumidor puede moverlo.
+    ''' <para>⛔ SE PIDE EL PAR, NO EL COLOR. Los colores del sistema vienen de a dos y se usan de a dos;
+    ''' si el consumidor pintara el fondo por su cuenta tendría que acertar también el del texto, que es
+    ''' exactamente el defecto que dejó texto oscuro sobre azul saturado (ver <c>PintarSeleccion</c>).</para>
+    ''' <para>El árbol de NPC lo mueve al NPC que se está RENDERIZANDO: con una multi-selección ése no es
+    ''' el enfocado, y es la señal de "cuál del lote estoy viendo" que describe <c>MainForm.vb:95-98</c>
+    ''' y que hasta ahora no se pintaba nunca.</para></summary>
+    Public Property ResaltadoDelSistema As Boolean
 End Class
 
 Public NotInheritable Class PintarFilaEventArgs
     Inherits EventArgs
     Public ReadOnly Property Fila As FilaDeArbol
     Public ReadOnly Property Estilo As New EstiloDeFila
-    ''' <summary>Si Windows considera seleccionada a esta fila.</summary>
-    Public ReadOnly Property SeleccionadaPorElSistema As Boolean
+    ''' <summary>Si esta fila está en el LOTE: el conjunto propio del control, el que sobrevive por clave
+    ''' y con el que trabaja "Save Selected". Puede haber muchas.
+    ''' <para>⛔ ESTO SE LLAMABA `SeleccionadaPorElSistema` Y DECÍA "si Windows considera seleccionada a
+    ''' esta fila". Era mentira: <see cref="OnDrawItem"/> lo alimentaba con <c>EstaEnLaSeleccion</c>, o sea
+    ''' con el LOTE. Y como el formulario deriva su conjunto de FormID de ESE MISMO lote
+    ''' (<c>MainForm.vb:5036-5039</c>), su condición <c>enElConjunto AndAlso Not e.SeleccionadaPorElSistema</c>
+    ''' no podía dar True NUNCA: el fondo suave de la multi-selección era código MUERTO y los N NPC de un
+    ''' lote salían los N en azul pleno.</para></summary>
+    Public ReadOnly Property EnElLote As Boolean
+    ''' <summary>Si es LA fila enfocada — la que tiene la selección de Windows, siempre una sola. Es lo
+    ''' que distingue "dónde estoy parado" de "qué está en el lote".</summary>
+    Public ReadOnly Property EsLaEnfocada As Boolean
     ''' <summary>Si el CONTROL tiene el foco. Una fila seleccionada se ve distinta cuando el foco está en
     ''' otro lado, y esa diferencia es la que le dice al usuario dónde va a ir lo que teclee.</summary>
     Public ReadOnly Property ControlConFoco As Boolean
     ''' <summary>Si el puntero está sobre esta fila.</summary>
     Public ReadOnly Property Caliente As Boolean
-    Public Sub New(fila As FilaDeArbol, seleccionada As Boolean, conFoco As Boolean, caliente As Boolean)
+    Public Sub New(fila As FilaDeArbol, enElLote As Boolean, esLaEnfocada As Boolean,
+                   conFoco As Boolean, caliente As Boolean)
         _Fila = fila
-        _SeleccionadaPorElSistema = seleccionada
+        _EnElLote = enElLote
+        _EsLaEnfocada = esLaEnfocada
         _ControlConFoco = conFoco
         _Caliente = caliente
     End Sub
@@ -197,6 +219,65 @@ Public Class VirtualTreeList
     ''' se pierde —otra ventana toma la activación— la bandera quedaría encendida y se comería un UP
     ''' huérfano posterior.</para></summary>
     Private _glifoEnCurso As Boolean
+
+    ''' <summary>Fila y punto donde EMPEZÓ el gesto de mouse en curso.
+    '''
+    ''' <para>⛔ EL CLICK SE APLICA A LA FILA DEL DOWN, NO A LA DEL UP. `OnMouseUp` resolvía la fila con
+    ''' `FilaEn(e.Location)`, o sea la que estuviera bajo el cursor AL SOLTAR: apretar en la fila 5,
+    ''' arrastrar a la 9 y soltar dejaba `_seleccionadas` en la 9 mientras la selección del sistema —que
+    ''' la mueve `DefWndProc` en el DOWN— seguía en la 5.</para>
+    '''
+    ''' <para>⛔ VAN JUNTOS, y no es cosmético: el menú contextual se ABRE en el punto y ACTÚA sobre la
+    ''' fila (`MainForm.vb:5049-5075`). Con la fila del DOWN y el punto del UP, un click derecho apretado
+    ''' en la 5 y soltado en la 9 abriría el menú encima de la 9 y le pegaría a la 5 — y de ahí salen
+    ''' "Mark to delete" y "Build CharGen", que escriben el plugin.</para>
+    '''
+    ''' <para>⚠️ ESTO NO ESTÁ GATEADO, y está dicho en vez de fingido: el arnés NO puede alcanzar el
+    ''' camino. MEDIDO posteando DOWN en la fila 2 y UP en la 5: el lote y la selección del sistema
+    ''' quedaron las DOS en la 2, porque el ListView entra en su bucle modal en el DOWN y se come el UP
+    ''' posteado (lo mismo que ya documenta `Tools/ArbolFocoGate/Program.vb:168-171`).</para>
+    '''
+    ''' <para>⛔ NO SE LIMPIA EN `OnMouseCaptureChanged`. Lo intenté y ROMPE TODO: `WM_CAPTURECHANGED` se
+    ''' ENVÍA —es síncrono— cuando comctl32 suelta la captura, y eso pasa ANTES de que llegue el
+    ''' `WM_LBUTTONUP` que dispara `OnMouseUp`. La fila quedaría en Nothing antes de que nadie la lea:
+    ''' ningún click cambiaría la selección y el menú contextual no abriría nunca. Alcanza con que
+    ''' `OnMouseDown` la pise en CADA DOWN y `OnLostFocus` la limpie.</para></summary>
+    Private _filaDelDown As FilaDeArbol
+    Private _puntoDelDown As Point
+
+    ''' <summary>CONTADOR de movimientos PROGRAMÁTICOS del foco en curso.
+    '''
+    ''' <para>⛔ MIENTRAS ESTÁ EN ALTO, `OnSelectedIndexChanged` NO ANUNCIA. Todo lo que reacomoda el foco
+    ''' por su cuenta hace `SelectedIndices.Clear()` y después `Add`, y cada `Add` levantaba
+    ''' `FilaEnfocada` con el MISMO foco de antes. Ese aviso no describe nada que el formulario deba ver y
+    ''' le cuesta reconstruir el árbol de detalles ENTERO —`PopulateRecordDetails` hace `Nodes.Clear()` y
+    ''' lo rearma— perdiendo lo que el usuario tuviera desplegado ahí. MEDIDO: expandir un grupo AJENO
+    ''' levantaba 1 anuncio con el foco quieto.</para>
+    '''
+    ''' <para>El aviso lo da EL GESTO, una sola vez, cuando terminó de mover el foco: `Refrescar` siempre
+    ''' —las filas son objetos NUEVOS con el texto nuevo, y el readback del Save depende de ese aviso para
+    ''' redibujar el panel con el record limpio (`MainForm.vb:11206-11216`)—, `AlternarFila` sólo si subió
+    ''' el foco al ancestro, y `EnfocarClave`/`EnfocarFila` al aterrizar. Lo que queda para
+    ''' `OnSelectedIndexChanged` es exactamente lo que mueve el USUARIO: el click que pasó por
+    ''' `DefWndProc`, las flechas y la búsqueda por teclado.</para>
+    '''
+    ''' <para>⛔ EL CLICK DERECHO NO SE ENVUELVE. Su `Clear`+`Add` de `OnMouseDown` mueve el foco a la
+    ''' fila que el usuario acaba de clickear y el panel TIENE que seguirlo: envolverlo dejaba el menú
+    ''' actuando sobre B con el panel mostrando A, que es la ley contraria a la que este campo defiende.</para>
+    '''
+    ''' <para>⛔ NO ES UN DETECTOR, y eso es a propósito. Comparar "la clave que anuncié la última vez" es
+    ''' lo que este repo ya enterró DOS VECES (`MainForm.vb:11192-11198`): la misma clave describe N filas
+    ''' —el mismo NPC cuelga de su plugin y de cada LVLN— así que la comparación es falsa por diseño y
+    ''' encima falla MUDA. Acá no se recuerda nada entre llamadas.</para>
+    '''
+    ''' <para>⛔ CONTADOR y no bandera: `EnfocarClave` lo levanta y adentro llama a `AplicarTamanio`, que
+    ''' lo levanta otra vez. Con un Boolean el `Finally` del anidado apagaría el del que lo contiene. Este
+    ''' anidamiento EXISTE, no es hipotético. (`_reponiendoFoco` sigue siendo Boolean: su región no anida
+    ''' y está medido que el Try/Finally alcanza.)</para>
+    '''
+    ''' <para>⚠️ ALCANCE: esto saca el anuncio espurio del ALTERNAR. El REPOBLADO sigue anunciando en cada
+    ''' tick del buscador, porque ahí el texto de las filas sí pudo cambiar. Dicho, no tapado.</para></summary>
+    Private _focoProgramatico As Integer
 
     ''' <summary>Las filas seleccionadas, POR CLAVE. El control las gobierna —incluido el rango con
     ''' Shift— porque es mecanica del control, no del formulario: sin esto cada consumidor reimplementa
@@ -347,7 +428,14 @@ Public Class VirtualTreeList
     ''' completa llegue de borde a borde y que no aparezca una barra horizontal falsa.</summary>
     Private Sub AjustarColumna()
         If _columna Is Nothing OrElse Not IsHandleCreated Then Return
-        Dim ancho = ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4
+        ' ⛔ `ClientSize.Width` YA EXCLUYE LA BARRA VERTICAL. MEDIDO: 682 sin barra y 665 con ella, o sea
+        ' los 17 px justos de `VerticalScrollBarWidth`. Restarla otra vez dejaba 21 px MUERTOS a la
+        ' derecha de cada fila: fuera del ítem, así que `GetItemAt` no encontraba nada y un click ahí era
+        ' "click en el vacío" — ni selección ni menú contextual. MEDIDO: el último X con ítem era 643 con
+        ' el cliente en 665.
+        ' ⛔ Y NO SE DEJA MARGEN. MEDIDO con 0, 1, 2 y 4 px: en los cuatro `nMax < nPage`, o sea que la
+        ' barra HORIZONTAL no aparece en ninguno. Un margen sería un número elegido a dedo.
+        Dim ancho = ClientSize.Width
         If ancho < 32 Then ancho = 32
         If _columna.Width <> ancho Then _columna.Width = ancho
     End Sub
@@ -446,13 +534,68 @@ Public Class VirtualTreeList
     Public Sub Refrescar()
         _modelo.Aplanar()
         AplicarTamanio()
+        ' ⛔ EL REPOBLADO RE-ANUNCIA EL FOCO AUNQUE LA CLAVE SEA LA MISMA: las filas son objetos NUEVOS
+        ' con el texto nuevo, y el readback del Save cuenta con este aviso para redibujar el panel con el
+        ' record limpio (MainForm.vb:11206-11216). `AnunciarFoco` se calla solo si no quedó fila.
+        AnunciarFoco()
     End Sub
 
-    ''' <summary>Publica el tamaño nuevo y restablece el foco por clave. Único sitio que toca
-    ''' <c>VirtualListSize</c>: hacerlo en varios lados es como se llega a pedirle a Windows una fila que
-    ''' el modelo ya no tiene.</summary>
-    Private Sub AplicarTamanio()
+    ''' <summary>Le avisa al formulario dónde quedó el foco. Lo llaman los GESTOS, no el mecanismo: ver
+    ''' <see cref="_focoProgramatico"/>.
+    ''' <para>⛔ NUNCA SE ANUNCIA EL VACÍO. Que el árbol se quede sin fila enfocada —el filtro escondió al
+    ''' NPC— no significa que se haya dejado de trabajar con él: el lote lo sigue conteniendo
+    ''' (`_selectedNpcFormIDs`, que sólo escribe `SeleccionCambiada`), el visor lo sigue mostrando y el
+    ''' título de la ventana sigue diciendo cuántos hay. Vaciar SÓLO el panel de detalles cambiaría dos
+    ''' verdades coherentes por tres incoherentes.</para></summary>
+    Private Sub AnunciarFoco()
+        Dim fila = FilaEnfocadaActual()
+        If fila Is Nothing Then Return
+        RaiseEvent FilaEnfocada(Me, New FilaEventArgs(fila, MouseButtons.None, Point.Empty, ModifierKeys))
+    End Sub
+
+    ''' <summary>Publica el tamaño nuevo, restablece el foco por clave y deja la vista donde el GESTO
+    ''' manda. Único sitio que toca <c>VirtualListSize</c>: hacerlo en varios lados es como se llega a
+    ''' pedirle a Windows una fila que el modelo ya no tiene.
+    '''
+    ''' <para>⛔ EL ANCLA DE LA VISTA LA DECIDE EL GESTO, NO EL FOCO. Esta función sirve a dos cosas
+    ''' distintas: al REPOBLADO (filtro, Save, editor), donde lo correcto es volver a donde el usuario
+    ''' estaba mirando, y al ALTERNAR, donde lo correcto es mostrar lo que se acaba de abrir. Estaba
+    ''' escrita sólo para la primera y su `EnsureVisible(idxFoco)` era también el camino de la segunda.
+    ''' MEDIDO: con el foco en la fila 0 y la vista en la fila 67, expandir un grupo que se veía en la
+    ''' fila 94 tiraba la vista de vuelta al 0 y lo expandido quedaba FUERA DE PANTALLA. Es el defecto
+    ''' que reportó el usuario.</para>
+    '''
+    ''' <para><paramref name="anclaDeVista"/> = la fila de la que trata el gesto (la alternada, la que se
+    ''' pidió enfocar), o Nothing para un repoblado.</para>
+    '''
+    ''' <para>⛔ NO ANUNCIA EL FOCO. Sus dos eventos —el del `Clear` y el del `Add`— son mecanismo, no
+    ''' gesto: ver <see cref="_focoProgramatico"/>.</para></summary>
+    Private Sub AplicarTamanio(Optional anclaDeVista As FilaDeArbol = Nothing)
         Dim idxFoco As Integer = -1
+
+        ' ⛔⛔ SE VA AL TOPE **ANTES** DE ACHICAR LA LISTA, Y ESTO ES EL ARREGLO DEL ÁRBOL EN BLANCO.
+        ' Síntoma reportado por el usuario: *"cuando filtro queda en blanco, tengo que pasar el mouse
+        ' por arriba para que pinte"*, *"lo que se repinta no arranca de arriba"*.
+        ' MEDIDO, con la vista al fondo (nPos = 4463) y un repoblado que baja de 4.500 filas a 5:
+        '   · el control PINTA las filas, y las pinta BIEN — `OnDrawItem` las dibuja con Top 0..76,
+        '     dentro del área cliente de 719 px — y recibe sus WM_PAINT;
+        '   · pero la pantalla queda EN BLANCO: las ocho bandas del área en 0,0 % de tinta;
+        '   · y NO la recupera ni un `Refresh()` ni un `EnsureVisible(0)` POSTERIOR. Sólo la arregla un
+        '     scroll de verdad, o pasar el mouse — que invalida fila por fila vía `InvalidarFila`, y por
+        '     eso lo que reaparece "no arranca de arriba".
+        ' Con este `EnsureVisible(0)` ANTES del `LVM_SETITEMCOUNT`, el MISMO gesto pinta y SE VE.
+        ' O sea: al achicarse de golpe con la vista lejos, el ListView se queda con el origen de scroll
+        ' viejo y dibuja contra una superficie que ya no está a la vista. Hay que sacarlo de ahí antes.
+        ' ⛔ VA FUERA DEL `BeginUpdate`: con el redibujo suspendido el scroll no se reacomoda, que es
+        ' justamente lo que hay que conseguir acá.
+        If VirtualListSize > 0 AndAlso _modelo.Visibles.Count < VirtualListSize AndAlso PosicionDeScroll() > 0 Then
+            EnsureVisible(0)
+        End If
+
+        ' ⛔ EL CONTADOR SUBE ANTES DEL Try. Si `BeginUpdate` tirara, un `+= 1` adentro dejaría el
+        ' contador desbalanceado PARA SIEMPRE y el árbol no volvería a anunciar en toda la sesión.
+        _focoProgramatico += 1
+        Try
         BeginUpdate()
         Try
             SelectedIndices.Clear()
@@ -480,34 +623,48 @@ Public Class VirtualTreeList
         Finally
             EndUpdate()
         End Try
+        Finally
+            _focoProgramatico -= 1
+        End Try
+
+        ' ⛔ DESPUÉS de `EndUpdate`, NO adentro. La barra vertical aparece o se va al cambiar la CANTIDAD
+        ' de filas, sin tocar el `Size` del control -así que `OnSizeChanged` no se entera y hay que
+        ' recalcular acá-, pero `ClientSize` no consulta `GetClientRect` en el getter: devuelve lo que
+        ' WinForms refrescó desde `WM_WINDOWPOSCHANGED`, y con `WM_SETREDRAW` en falso ese refresco está
+        ' DIFERIDO. MEDIDO: adentro del `BeginUpdate` devolvía 682 y después del `EndUpdate`, 665.
+        AjustarColumna()
 
         ' ⛔ Y SE REPONE LA POSICIÓN DEL SCROLL. Cambiar `VirtualListSize` NO la corrige: Windows
         ' conserva el desplazamiento anterior, así que si la lista se acortó -lo que pasa en CADA tecla
         ' del buscador- el scroll queda apuntando más allá del final y arriba queda una franja EN BLANCO,
         ' que recién se llena cuando algo fuerza el repintado. `Invalidate()` no alcanza: el área está
         ' bien pintada, lo que está mal es DÓNDE mira la vista.
-        ' Se lleva a la fila enfocada, que es lo que el usuario espera seguir viendo; si el filtro la dejo
-        ' afuera, al principio.
         If VirtualListSize > 0 Then
-            If idxFoco >= 0 Then
+            Dim idxAncla = If(anclaDeVista Is Nothing, -1, _modelo.IndiceVisible(anclaDeVista))
+            If idxAncla >= 0 Then
+                ' El gesto manda: se muestra la fila alternada y lo que se acaba de abrir debajo.
+                MostrarRango(idxAncla, UltimoDescendienteVisible(idxAncla))
+            ElseIf idxFoco >= 0 Then
+                ' Repoblado: se vuelve a donde el usuario estaba mirando.
                 EnsureVisible(idxFoco)
-            Else
-                ' Sin fila enfocada en la lista nueva, la vista vuelve al principio. ⛔ `EnsureVisible(0)`
-                ' SOLO no alcanza: si la fila 0 quedo dentro del area cliente -aunque sea pegada al borde
-                ' de abajo, con toda la franja de arriba EN BLANCO- Windows concluye que ya esta visible y
-                ' no mueve nada. MEDIDO: tras acortar la lista, `GetItemRect(0).Top` daba 532 con el
-                ' cliente de 559 px de alto, que es exactamente la franja blanca que se ve al filtrar.
-                ' Ir al FINAL y volver al principio fuerza a Windows a recalcular el desplazamiento; es
-                ' API publica y no depende de la semantica del dy de LVM_SCROLL, que cambia con la vista.
-                ' El desplazamiento se lee del SISTEMA y se deshace exactamente. `EnsureVisible(0)` no
-                ' sirve cuando el contenido nuevo ENTRA entero -- Windows concluye que la fila 0 ya esta
-                ' visible aunque este dibujada abajo de una franja en blanco- y `GetItemRect`/`GetItemAt`
-                ' no son fiables en modo virtual, asi que tampoco se pueden usar para decidir.
-                Dim pos = PosicionDeScroll()
-                If pos > 0 Then SendMessage(Handle, LVM_SCROLL, IntPtr.Zero, New IntPtr(-pos))
+            ElseIf PosicionDeScroll() > 0 Then
+                ' Sin ancla y sin foco, la vista vuelve al principio -- pero SÓLO si estaba desplazada:
+                ' preguntarle al sistema es más barato que mover la vista para nada en cada tecla.
+                ' ⛔ Y ALCANZA CON `EnsureVisible(0)`. Acá había un `LVM_SCROLL(dy := -nPos)` con el
+                ' argumento de que `EnsureVisible(0)` "no sirve cuando la fila 0 ya está dentro del área
+                ' cliente". Esa afirmación se había medido con `GetItemRect`, que es justo el instrumento
+                ' que este archivo declara no fiable para posición. RE-MEDIDO con la SCROLLINFO del
+                ' sistema sobre cuatro tamaños de lista (186, 62, 41 y 32 filas, con nPos 157/33/12/3):
+                ' `EnsureVisible(0)` deja nPos en 0 en los CUATRO. Y el `LVM_SCROLL` que estaba acá ni
+                ' siquiera funcionaba -- ver `MostrarRango`.
+                EnsureVisible(0)
             End If
         End If
 
+        ' La fila caliente ya no significa nada: cambió lo que hay en cada índice. La repone el próximo
+        ' WM_MOUSEMOVE, y el gesto del glifo la repone él mismo con el punto de SU mensaje (ver `WndProc`).
+        ' ⚠️ Por eso el hover queda apagado hasta que el usuario mueva el mouse en los otros caminos
+        ' (filtrar, flechas, doble click). Dicho, no cerrado.
         _filaCaliente = -1
         ' ⛔ `Invalidate()` SOLO MARCA el area como sucia: el repintado queda para cuando Windows
         ' procese el WM_PAINT, y en un ListView OWNER-DRAW en modo virtual eso puede no pasar hasta que
@@ -519,6 +676,42 @@ Public Class VirtualTreeList
         Invalidate()
         Update()
     End Sub
+
+    ''' <summary>Deja a la vista el rango [desde..hasta], priorizando que <paramref name="desde"/> quede
+    ''' arriba.
+    '''
+    ''' <para>⛔ ES LA ÚNICA MANIOBRA QUE FUNCIONA, Y ESTÁ MEDIDA. `EnsureVisible(desde)` a secas no
+    ''' alcanza: si esa fila ya está dentro del área cliente Windows no mueve nada, aunque arriba quede
+    ''' una franja EN BLANCO. Y el `LVM_SCROLL(dy := -nPos)` que había acá TAMPOCO: `nPos` viene en FILAS
+    ''' y `LVM_SCROLL` interpreta el `dy` en PÍXELES. MEDIDO: con `nPos = 157` y `dy = -157` la vista bajó
+    ''' 8 filas y quedó en 149 — la reposición "al tope" NUNCA llegó al tope, y el gate lo daba por bueno
+    ''' porque en su caso la lista quedaba más corta que la página y Windows clampeaba solo. Con esto:
+    ''' 157 → 0.</para>
+    '''
+    ''' <para>Ir al final y volver fuerza a Windows a recalcular el desplazamiento, es API PÚBLICA y no
+    ''' depende de la semántica del `dy`, que cambia con la vista.</para>
+    '''
+    ''' <para>Al COLAPSAR, `hasta` es la fila misma y corre un solo `EnsureVisible`.</para></summary>
+    Private Sub MostrarRango(desde As Integer, hasta As Integer)
+        If hasta > desde Then EnsureVisible(hasta)
+        EnsureVisible(desde)
+    End Sub
+
+    ''' <summary>Índice del último descendiente VISIBLE de esa fila, o la fila misma si está colapsada o
+    ''' no tiene hijos.
+    ''' <para>Se mide por <see cref="FilaDeArbol.Nivel"/>, que <c>PopulateNPCTree</c> pasa LITERAL al
+    ''' construir cada fila (0/1 en la sección de plugins, 0/1/2 en la de leveled lists) y no deriva de
+    ''' `Padre`: no hay niveles salteados.</para></summary>
+    Private Function UltimoDescendienteVisible(indice As Integer) As Integer
+        Dim nivel = _modelo.Visibles(indice).Nivel
+        Dim ultimo = indice
+        Dim i = indice + 1
+        While i < _modelo.Visibles.Count AndAlso _modelo.Visibles(i).Nivel > nivel
+            ultimo = i
+            i += 1
+        End While
+        Return ultimo
+    End Function
 
     ''' <summary>Si esa fila es la seleccionada. Ver el comentario de OnDrawItem: `e.State` no sirve en
     ''' modo virtual.</summary>
@@ -539,22 +732,62 @@ Public Class VirtualTreeList
     Public Function EnfocarClave(clave As String) As Boolean
         Dim fila = _modelo.PorClave(clave)
         If fila Is Nothing Then Return False
-        If _modelo.AbrirAncestros(fila) Then
-            _modelo.Aplanar()
-            AplicarTamanio()
-        End If
-        Dim idx = _modelo.IndiceVisible(fila)
-        If idx < 0 Then Return False
-        SelectedIndices.Clear()
-        SelectedIndices.Add(idx)
-        EnsureVisible(idx)
+        ' ⛔ TODO EL GESTO VA BAJO EL CONTADOR, y de ahí sale el anidamiento REAL que obliga a que sea un
+        ' contador y no una bandera: `AplicarTamanio` lo levanta otra vez adentro. Lo que se suprime son
+        ' los avisos del MECANISMO; el aviso de verdad lo da esta función al final, una sola vez.
+        ' ⛔ Pero NO se toca `_reponiendoFoco`: el colapso de la selección a esta fila es justamente lo
+        ' que hace que "re-seleccionar el NPC después de guardar" funcione (MainForm.vb:11210-11216).
+        _focoProgramatico += 1
+        Try
+            If _modelo.AbrirAncestros(fila) Then
+                _modelo.Aplanar()
+                AplicarTamanio(fila)
+            End If
+            Dim idx = _modelo.IndiceVisible(fila)
+            ' ⛔ NADA se escribe antes de este punto. Anotar `_claveEnfocada` "por adelantado" dejaba al
+            ' control apuntando a una fila que no está en `Visibles` cuando esto devuelve False —y el
+            ' llamador SIGUE por otro camino con ese False (MainForm.vb:11212-11217)—: el próximo
+            ' `AplicarTamanio` no la encontraría y el foco se perdería sin que nadie lo pidiera.
+            If idx < 0 Then Return False
+            SelectedIndices.Clear()
+            SelectedIndices.Add(idx)
+            EnsureVisible(idx)
+        Finally
+            _focoProgramatico -= 1
+        End Try
+        AnunciarFoco()
         Return True
     End Function
 
+    ''' <summary>Expande o colapsa una fila y deja la vista mostrando ESA fila.</summary>
     Public Sub AlternarFila(fila As FilaDeArbol)
+        If fila Is Nothing OrElse Not fila.TieneHijos Then Return
+        ' ⛔ COLAPSAR NO PUEDE DEJAR EL FOCO ADENTRO DE LO QUE SE CIERRA. Si la fila enfocada cuelga de
+        ' `fila`, al aplanar desaparece de `Visibles` y `AplicarTamanio` se queda sin dónde reponerla.
+        ' MEDIDO: `SelectedIndices.Count` pasaba de 1 a 0, `Seleccionadas` de 1 a 0, la vista se corría
+        ' sola (nPos 49 → 35) y el formulario no se enteraba de nada. Y peor con la clave repetida: el
+        ' MISMO NPC cuelga de su plugin Y de cada LVLN, así que si la otra copia estaba visible el foco se
+        ' TELETRANSPORTABA a la sección 2 — MEDIDO: quedaba en una fila de Nivel 2, Tipo NpcDeLvln, y la
+        ' vista se iba con él.
+        ' La regla es la de cualquier árbol: el foco sube al ancestro que queda a la vista, que es el que
+        ' el usuario acaba de cerrar. Se decide ANTES de aplanar, que es cuando todavía se puede saber
+        ' quién colgaba de quién.
+        Dim subiElFoco = False
+        If fila.Expandida Then
+            Dim enfocada = FilaEnfocadaActual()
+            If enfocada IsNot Nothing AndAlso enfocada.CuelgaDe(fila) Then
+                _claveEnfocada = fila.Clave
+                subiElFoco = True
+            End If
+        End If
         If Not _modelo.Alternar(fila) Then Return
         _modelo.Aplanar()
-        AplicarTamanio()
+        AplicarTamanio(fila)
+        ' ⛔ SE ANUNCIA SÓLO SI EL FOCO SE MOVIÓ. Alternar un grupo AJENO no mueve nada, y anunciarlo igual
+        ' es exactamente el defecto que este cambio saca: el formulario reconstruiría el árbol de detalles
+        ' ENTERO —`Nodes.Clear()` y de cero— y se llevaría puesto lo que el usuario tenga desplegado ahí,
+        ' por un gesto que no cambió qué NPC está mirando. MEDIDO: expandir otro grupo levantaba 1 aviso.
+        If subiElFoco Then AnunciarFoco()
     End Sub
 
     ' ============================================================================================
@@ -603,23 +836,33 @@ Public Class VirtualTreeList
         ' ⛔ NO se usa `e.State`. En modo virtual llega con el bit de selección puesto para TODAS las
         ' filas: el gate de render lo mostró de una — la lista entera pintada de azul. La verdad la tiene
         ' el conjunto del control, que además soporta Ctrl y Shift.
-        Dim seleccionada = EstaEnLaSeleccion(fila)
+        Dim enElLote = EstaEnLaSeleccion(fila)
         Dim esLaDelFoco = EstaSeleccionada(e.ItemIndex)
         Dim conFoco = Focused
         Dim caliente = (e.ItemIndex = _filaCaliente)
 
-        Dim args As New PintarFilaEventArgs(fila, seleccionada, conFoco, caliente)
+        Dim args As New PintarFilaEventArgs(fila, enElLote, esLaDelFoco, conFoco, caliente)
         args.Estilo.Fuente = Font
         args.Estilo.Texto = ForeColor
+        ' ⛔ EL DEFAULT DEL PAR DEL SISTEMA ES "LA ENFOCADA **QUE ADEMÁS ESTÉ EN EL LOTE**". Sin el segundo
+        ' término, un Ctrl+click que SACA la fila enfocada la dejaba pintada de azul pleno —el estado más
+        ' fuerte de la pantalla— justo sobre la que el usuario acababa de excluir de "Save Selected". Ese
+        ' estado está medido y documentado en `OnSelectedIndexChanged` y el gate lo construye a mano.
+        args.Estilo.ResaltadoDelSistema = esLaDelFoco AndAlso enElLote
         RaiseEvent PintarFila(Me, args)
 
         Dim fuente = If(args.Estilo.Fuente, Font)
         Dim colorTexto = args.Estilo.Texto
 
         ' --- fondo, por prioridad de estado ---------------------------------------------------
-        ' La selección del sistema le gana al fondo propio: es la misma precedencia que tenía el
-        ' owner-draw del árbol viejo (primero el resaltado, después el celeste de la multi-selección).
-        If seleccionada Then
+        ' El par del sistema le gana al fondo propio: es la misma precedencia que tenía el owner-draw del
+        ' árbol viejo (primero el resaltado, después el celeste de la multi-selección).
+        ' ⛔ ANTES ACÁ DECÍA `If seleccionada`, o sea que el `Highlight` PLENO iba a TODAS las filas del
+        ' lote. Por eso el fondo suave que pide el formulario no se pintaba NUNCA: su condición
+        ' `Not e.SeleccionadaPorElSistema` era imposible cuando ese campo llevaba el lote y no el foco.
+        ' Con 30 NPC elegidos salían los 30 en azul pleno y no había forma de ver cuál se estaba viendo
+        ' en el visor, que es justo lo que `_currentRandomPickFormID` existe para señalar.
+        If args.Estilo.ResaltadoDelSistema Then
             colorTexto = PintarSeleccion(e.Graphics, e.Bounds, conFoco)
         ElseIf args.Estilo.Fondo.HasValue Then
             Using b As New SolidBrush(args.Estilo.Fondo.Value)
@@ -826,6 +1069,9 @@ Public Class VirtualTreeList
     Protected Overrides Sub OnMouseDown(e As MouseEventArgs)
         Dim indice = IndiceEn(e.Location)
         Dim fila = If(indice >= 0, _modelo.Visibles(indice), Nothing)
+        ' La fila Y el punto del gesto se fijan ACÁ, y el UP los usa: ver `_filaDelDown`.
+        _filaDelDown = fila
+        _puntoDelDown = e.Location
 
         ' ⛔ ACÁ NO HAY RAMA DE GLIFO, y no es un olvido: el click en el glifo lo resuelve `WndProc` y
         ' este handler NO CORRE para ese gesto. La rama que había acá no servía —`DefWndProc` corre
@@ -833,6 +1079,10 @@ Public Class VirtualTreeList
 
         ' El botón derecho SELECCIONA primero. Es lo que espera cualquiera: el menú contextual tiene que
         ' actuar sobre la fila que se clickeó, no sobre la que quedó seleccionada antes.
+        ' ⛔ ESTE Clear+Add NO VA BAJO `_focoProgramatico`. Mueve el foco a la fila que el usuario acaba de
+        ' clickear, y el panel de detalles TIENE que seguirlo: suprimir el aviso dejaba el menú contextual
+        ' actuando sobre B con el panel mostrando A — y de ese menú salen "Mark to delete" y
+        ' "Build CharGen", que escriben el plugin.
         If fila IsNot Nothing AndAlso e.Button = MouseButtons.Right Then
             SelectedIndices.Clear()
             SelectedIndices.Add(indice)
@@ -844,14 +1094,27 @@ Public Class VirtualTreeList
     Protected Overrides Sub OnMouseUp(e As MouseEventArgs)
         MyBase.OnMouseUp(e)
         ' El UP del gesto de glifo lo suprime `WndProc`, así que acá no llega y no hace falta guarda.
-        Dim fila = FilaEn(e.Location)
+        ' ⛔ LA FILA Y EL PUNTO SON LOS DEL DOWN: ver `_filaDelDown`.
+        Dim fila = _filaDelDown
+        Dim punto = _puntoDelDown
+        _filaDelDown = Nothing
         If fila Is Nothing Then Return
+        ' ⛔ EL GESTO SÓLO CUENTA SI SE SUELTA ADENTRO. El ListView captura el mouse en el DOWN, así que el
+        ' UP llega igual con el puntero fuera del control. Hoy eso abortaba solo porque la fila se
+        ' resolvía por `e.Location`; al pasar a la del DOWN hay que exigirlo explícito, o un arrastre
+        ' accidental hacia afuera colapsa el lote entero a una fila — y ese lote es lo que
+        ' "Save Selected" escribe.
+        If Not ClientRectangle.Contains(e.Location) Then Return
         ' El botón derecho no rearma la selección si la fila YA estaba dentro: es lo que permite abrir
         ' el menú sobre una multi-selección sin perderla.
-        If e.Button = MouseButtons.Left OrElse Not EstaEnLaSeleccion(fila) Then
+        ' ⛔ Y SÓLO IZQUIERDO O DERECHO. Con `e.Button = Left OrElse Not EstaEnLaSeleccion(fila)`, un click
+        ' con la RUEDA sobre una fila que no estaba en el lote lo reemplazaba entero. La rueda no es un
+        ' gesto de selección en ninguna lista de Windows.
+        If e.Button = MouseButtons.Left OrElse
+           (e.Button = MouseButtons.Right AndAlso Not EstaEnLaSeleccion(fila)) Then
             AplicarClick(fila, ModifierKeys)
         End If
-        RaiseEvent FilaClickeada(Me, New FilaEventArgs(fila, e.Button, e.Location, ModifierKeys))
+        RaiseEvent FilaClickeada(Me, New FilaEventArgs(fila, e.Button, punto, ModifierKeys))
     End Sub
 
     Protected Overrides Sub OnDoubleClick(e As EventArgs)
@@ -895,9 +1158,16 @@ Public Class VirtualTreeList
     Private Sub EnfocarFila(fila As FilaDeArbol)
         Dim idx = _modelo.IndiceVisible(fila)
         If idx < 0 Then Return
-        SelectedIndices.Clear()
-        SelectedIndices.Add(idx)
-        EnsureVisible(idx)
+        ' El Clear+Add es MECANISMO; el aviso lo da este gesto, una sola vez. Ver `_focoProgramatico`.
+        _focoProgramatico += 1
+        Try
+            SelectedIndices.Clear()
+            SelectedIndices.Add(idx)
+            EnsureVisible(idx)
+        Finally
+            _focoProgramatico -= 1
+        End Try
+        AnunciarFoco()
     End Sub
 
     ' El resaltado de la selección cambia con el foco, así que hay que repintar cuando entra y sale.
@@ -911,13 +1181,15 @@ Public Class VirtualTreeList
         ' Si el gesto del glifo se corta a la mitad —otra ventana toma la activación antes del UP— la
         ' bandera quedaría encendida y se comería el próximo UP huérfano. Acá se cierra el gesto.
         _glifoEnCurso = False
+        ' Y por lo mismo, la fila del DOWN no puede quedar esperando un UP que ya no va a llegar.
+        _filaDelDown = Nothing
         Invalidate()
     End Sub
 
-    ''' <summary>Desplaza el contenido del ListView. Es la unica forma de reponer el scroll: `EnsureVisible`
-    ''' no sirve cuando la fila 0 YA esta dentro del area cliente -aunque sea abajo de todo- porque
-    ''' Windows concluye que no hay nada que hacer.</summary>
-    Private Const LVM_SCROLL As Integer = &H1014
+    ' ⛔ ACÁ VIVÍA `LVM_SCROLL`, y se fue. Se usaba para reponer el scroll al tope con `dy := -nPos`, y
+    ' eso estaba MAL POR UNIDADES: `nPos` viene en FILAS y `LVM_SCROLL` interpreta el `dy` en PÍXELES.
+    ' MEDIDO: con `nPos = 157` y `dy = -157` la vista bajó 8 filas y quedó en 149 — nunca llegaba al tope.
+    ' Lo reemplaza `MostrarRango`, que es API pública y está medida (157 → 0).
 
     <Runtime.InteropServices.StructLayout(Runtime.InteropServices.LayoutKind.Sequential)>
     Private Structure SCROLLINFO
@@ -937,8 +1209,14 @@ Public Class VirtualTreeList
     Private Const SB_VERT As Integer = 1
     Private Const SIF_POS As Integer = &H4
 
-    ''' <summary>Posicion REAL del scroll vertical, la que reporta el sistema. `GetItemRect` y
-    ''' `GetItemAt` no sirven en modo virtual: devuelven valores que no corresponden a lo que se ve.</summary>
+    ''' <summary>Posición REAL del scroll vertical —la primera fila visible—, la que reporta el sistema.
+    ''' Es la guarda de <see cref="AplicarTamanio"/>: sin ella, cada repoblado que deje al árbol sin foco
+    ''' barrería la lista entera de ida y de vuelta aunque la vista ya estuviera arriba.
+    ''' <para>⛔ LA AFIRMACIÓN VIEJA ERA DEMASIADO ANCHA. Decía que `GetItemRect`/`GetItemAt` "no sirven
+    ''' en modo virtual", y sin embargo la producción los usa para TODO el hit-test (`IndiceEn`) y para
+    ''' invalidar una fila (`InvalidarFila`). Lo cierto es más angosto: no sirven para decidir DÓNDE MIRA
+    ''' LA VISTA después de cambiar el tamaño —ahí devuelven coordenadas de un layout que Windows todavía
+    ''' no recalculó—, y para eso está esto.</para></summary>
     Friend Function PosicionDeScroll() As Integer
         Dim si As New SCROLLINFO()
         si.cbSize = Runtime.InteropServices.Marshal.SizeOf(GetType(SCROLLINFO))
@@ -991,8 +1269,21 @@ Public Class VirtualTreeList
                 Dim fila = FilaEn(p)
                 If fila IsNot Nothing AndAlso EsElGlifo(fila, p) Then
                     _glifoEnCurso = True
+                    ' Este gesto no pasa por `OnMouseDown`, así que la fila del DOWN de un gesto anterior
+                    ' no puede quedar viva esperando el UP que acá se suprime.
+                    _filaDelDown = Nothing
                     If Not Focused Then Focus()
-                    If m.Msg = WM_LBUTTONDOWN Then AlternarFila(fila)
+                    If m.Msg = WM_LBUTTONDOWN Then
+                        AlternarFila(fila)
+                        ' La fila caliente se repone con EL PUNTO DE ESTE MENSAJE. `AplicarTamanio` la
+                        ' apaga porque tras cambiar el tamaño el índice viejo ya no significa nada, y sin
+                        ' esto el glifo que el usuario acaba de tocar quedaba apagado hasta que moviera el
+                        ' mouse.
+                        ' ⛔ NO con `Cursor.Position`: para un mensaje ENCOLADO el cursor pudo moverse
+                        ' entre el post y el despacho, y además dejaría el camino intesteable. Es la misma
+                        ' razón por la que existe `PuntoDeLParam` — ver su ⛔.
+                        CambiarFilaCaliente(IndiceEn(p))
+                    End If
                     Return
                 End If
                 _glifoEnCurso = False
@@ -1039,7 +1330,10 @@ Public Class VirtualTreeList
                 RaiseEvent SeleccionCambiada(Me, EventArgs.Empty)
             End If
         End If
-        RaiseEvent FilaEnfocada(Me, New FilaEventArgs(fila, MouseButtons.None, Point.Empty, ModifierKeys))
+        ' ⛔ SÓLO SE ANUNCIA LO QUE MOVIÓ EL USUARIO. Cuando el foco lo reacomoda el mecanismo —el
+        ' Clear+Add de `AplicarTamanio`, `EnfocarClave` o `EnfocarFila`— el aviso lo da el GESTO, una sola
+        ' vez y cuando terminó. Ver `_focoProgramatico`.
+        If _focoProgramatico = 0 Then AnunciarFoco()
     End Sub
 
 End Class

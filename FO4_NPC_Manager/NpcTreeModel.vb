@@ -72,6 +72,20 @@ Public NotInheritable Class FilaDeArbol
         Return hija
     End Function
 
+    ''' <summary>Si esta fila cuelga de <paramref name="posible"/>, a cualquier profundidad.
+    ''' <para>Lo necesita el colapso: cerrar un grupo no puede dejar el foco ADENTRO de lo que se cierra,
+    ''' y eso hay que decidirlo ANTES de aplanar, que es cuando todavía se puede saber quién colgaba de
+    ''' quién. El árbol tiene tres niveles, así que subir por <see cref="Padre"/> no necesita caché.</para></summary>
+    Public Function CuelgaDe(posible As FilaDeArbol) As Boolean
+        If posible Is Nothing Then Return False
+        Dim p = Padre
+        While p IsNot Nothing
+            If p Is posible Then Return True
+            p = p.Padre
+        End While
+        Return False
+    End Function
+
     ''' <summary>El NPC de esta fila, o Nothing. Las dos clases de fila que llevan NPC
     ''' (<see cref="TipoDeFila.Npc"/> y <see cref="TipoDeFila.NpcDeLvln"/>) se preguntan igual, para que
     ''' nadie tenga que acordarse de mirar las dos.</summary>

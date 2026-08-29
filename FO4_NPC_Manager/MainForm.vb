@@ -102,9 +102,10 @@ Public Class MainForm
     ''' <see cref="RenderFromCurrentSelection"/> so it suppresses ONLY the one render that follows
     ''' a selection — any later re-render of the same NPC still repopulates fresh.</summary>
     Private _detailsAfterSelectFormID As UInteger = 0UI
-    ''' <summary>Pale highlight brush for non-picked members of a multi-selection. Lazily created,
-    ''' disposed in <see cref="MainForm_FormClosing"/>.</summary>
-    Private _multiSelectBrush As System.Drawing.SolidBrush = Nothing
+    ' ⛔ ACA VIVIA `_multiSelectBrush`, "pale highlight brush for non-picked members of a
+    ' multi-selection". Se DECLARABA y se LIBERABA en MainForm_FormClosing, pero no se le asignaba nada
+    ' en todo el archivo: resto del owner-draw del TreeView viejo. El tono suave de la multi-seleccion
+    ' lo da `ColoresDelArbol.SeleccionSuave` via `EstiloDeFila.Fondo`.
     ''' <summary>FormIDs the tree context menu acts on (the multi-selection when the right-click
     ''' lands inside it, else just the clicked NPC). Set in <see cref="TreeViewNPCs_FilaClickeada"/>.</summary>
     Private ReadOnly _contextMenuTargets As New List(Of UInteger)()
@@ -4999,13 +5000,27 @@ Public Class MainForm
         End If
         e.Estilo.Fuente = fuente
 
-        ' Resaltado propio de la multi-selección. El que SE ESTÁ renderizando
-        ' (_currentRandomPickFormID) no lleva éste: se lo queda la selección del sistema, que el control
-        ' pinta aparte, y así se distingue cuál de los elegidos es el que se ve en el visor.
-        Dim enElConjunto = (npc IsNot Nothing AndAlso _selectedNpcFormIDs.Contains(npc.FormID))
-        Dim esElRenderizado = (npc IsNot Nothing AndAlso _currentRandomPickFormID <> 0UI AndAlso
-                               npc.FormID = _currentRandomPickFormID)
-        If enElConjunto AndAlso Not esElRenderizado AndAlso Not e.SeleccionadaPorElSistema Then
+        ' ⛔ EL RESALTADO FUERTE ES DEL QUE SE ESTÁ VIENDO EN EL VISOR, no del enfocado. Con una
+        ' multi-selección el visor muestra un sorteado (`_currentRandomPickFormID`) que NO es la fila
+        ' enfocada; con selección simple los dos son el mismo. Es la ley que declara la doc de ese campo
+        ' —"painted with the full highlight; the rest of the set gets a paler one so the user can see
+        ' which member was rolled"— y que hasta ahora no se cumplía.
+        ' Se pide el PAR del sistema, no un color: los colores del sistema vienen de a dos y el control
+        ' los aplica juntos. Ver `EstiloDeFila.ResaltadoDelSistema`.
+        ' Como el resaltado va por FormID, las DOS copias del mismo NPC —la de su plugin y la de cada
+        ' LVLN que lo lista— se marcan juntas, que es la misma semántica que ya tiene `_selectedNpcFormIDs`
+        ' ("an NPC that appears under several nodes highlights everywhere at once").
+        If npc IsNot Nothing AndAlso _currentRandomPickFormID <> 0UI Then
+            e.Estilo.ResaltadoDelSistema = (npc.FormID = _currentRandomPickFormID)
+        End If
+        ' Y el resto del lote, el tono suave.
+        ' ⛔ ANTES ESTA RAMA ERA INALCANZABLE. La condición era
+        '   `enElConjunto AndAlso Not esElRenderizado AndAlso Not e.SeleccionadaPorElSistema`,
+        ' y `SeleccionadaPorElSistema` traía el LOTE y no el foco —el mismo conjunto del que sale
+        ' `_selectedNpcFormIDs`, MainForm.vb:5036-5039—, así que el primer término implicaba el tercero y
+        ' el `And` daba False SIEMPRE. `SeleccionSuave` no se pintó nunca y los N NPC de un lote salían
+        ' los N en azul pleno, sin forma de ver cuál estaba en el visor.
+        If e.EnElLote AndAlso Not e.Estilo.ResaltadoDelSistema Then
             e.Estilo.Fondo = ColoresDelArbol.SeleccionSuave
         End If
     End Sub
@@ -5337,8 +5352,9 @@ Public Class MainForm
 
     ''' <summary>Restaura el estado "sin NPC seleccionado" de los controles de acción por-NPC
     ''' (el mismo baseline que fija el Designer al arrancar, en MainForm.Designer.vb
-    ''' InitializeComponent). Se llama desde <see cref="TreeViewNPCs_FilaEnfocada"/> cuando la selección del
-    ''' árbol cae en un nodo NO accionable: un root de plugin / grupo "[LVLN]" (Tag = Nothing) o
+    ''' InitializeComponent). ⛔ El único llamador es <see cref="RenderFromCurrentSelection"/>, NO el
+    ''' handler del foco: el doc decía otra cosa y eso hacía creer que suprimir un aviso de foco apagaba
+    ''' estos botones. Corre cuando la selección del árbol cae en un nodo NO accionable: un root de plugin / grupo "[LVLN]" (Tag = Nothing) o
     ''' ausencia de nodo. Sin esto los botones quedaban habilitados apuntando vía
     ''' <c>_renderHost.LastRenderedState</c> / <c>CurrentBaseState</c> al NPC cargado previamente
     ''' (ButtonEditBody/EditFace/CopyLook/SavePlugin/… leen ese estado), de modo que la acción
@@ -5694,9 +5710,14 @@ Public Class MainForm
         Dim selectedNode = TreeViewNPCs.FilaEnfocadaActual()
         If selectedNode Is Nothing Then Return
 
-        ' If selected node is a LVLN, re-pick a random NPC from it
+        ' If selected node is a LVLN, re-pick a random NPC from it.
+        ' ⛔ SÓLO CON EL LOTE VACÍO. Antes alcanzaba con que la fila enfocada fuera un LVLN, y eso era
+        ' inalcanzable con un lote no vacío porque elegir una fila de LVLN vacía `_selectedNpcFormIDs`.
+        ' Ahora el foco puede llegar a un LVLN por un COLAPSO (ver `VirtualTreeList.AlternarFila`) con el
+        ' lote intacto, y sin esta guarda el botón sortearía otro NPC de la lista y lo renderizaría
+        ' mientras el lote sigue apuntando al que el usuario eligió.
         Dim lvlnData = TryCast(selectedNode.Tag, Canon.ILvln)
-        If lvlnData IsNot Nothing Then
+        If lvlnData IsNot Nothing AndAlso _selectedNpcFormIDs.Count = 0 Then
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
             LoadLVLNOnDemandAsync(lvlnData, requestVersion)
             Return
@@ -5720,8 +5741,10 @@ Public Class MainForm
             RerollFromSelection()
             Return
         End If
+        ' Misma guarda que ButtonRandomNPC_Click: el foco puede quedar en un LVLN por un colapso con el
+        ' lote intacto, y ahí el que manda es el lote.
         Dim lvln = TryCast(TreeViewNPCs.FilaEnfocadaActual()?.Tag, Canon.ILvln)
-        If lvln IsNot Nothing Then
+        If lvln IsNot Nothing AndAlso _selectedNpcFormIDs.Count = 0 Then
             Dim v = Interlocked.Increment(_previewRequestVersion)
             LoadLVLNOnDemandAsync(lvln, v)
         End If
@@ -8189,6 +8212,12 @@ Public Class MainForm
         _detailsLvlnCache.Clear()
 
         If npc Is Nothing Then
+            ' ⛔ Y EL TÍTULO TAMBIÉN. Se escribe unas líneas más abajo, DESPUÉS de este guard, así que al
+            ' entrar acá quedaba el encabezado del NPC anterior sobre un árbol de detalles VACÍO:
+            ' "Fulano [Mod.esp] FormID:0001A2B3" y cero nodos debajo. Se repone el baseline que fija el
+            ' Designer, no la cadena vacía: el label es una banda de 24 px con `BackColor = ControlDark`
+            ' y dejarla muda es una franja oscura sin explicación.
+            LabelRecordTitle.Text = "  Record Details"
             TreeViewRecordDetails.EndUpdate()
             TreeViewRecordDetails.ResumeLayout()
             Return
@@ -8818,10 +8847,6 @@ Public Class MainForm
         Catch
         End Try
 
-        If _multiSelectBrush IsNot Nothing Then
-            _multiSelectBrush.Dispose()
-            _multiSelectBrush = Nothing
-        End If
     End Sub
 
     Private Sub PanelNpcList_Paint(sender As Object, e As PaintEventArgs) Handles PanelNpcList.Paint

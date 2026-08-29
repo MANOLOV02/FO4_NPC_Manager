@@ -1361,9 +1361,10 @@ Public Class EditFace_Form
     ''' <summary>Banner de aviso arriba de todo el flujo de filas. No es un header de categoría: NO entra en
     ''' <c>_sseRaceMenuGroups</c>, así que el filtro de búsqueda no lo esconde junto con un grupo — un aviso que
     ''' desaparece cuando filtrás es un aviso que no se leyó.
-    ''' <para>Se dimensiona solo con <c>MaximumSize</c> + <c>AutoSize</c> para que el texto envuelva al ancho de
-    ''' la fila en vez de recortarse; <see cref="OnSseRaceMenuFlowResize"/> ya reajusta el resto de las filas y
-    ''' este control sigue el mismo ancho.</para></summary>
+    ''' <para>Se dimensiona con <c>AutoSize</c> + <c>MaximumSize</c>: el alto lo pone el texto (son cinco
+    ''' renglones, no una fila de 30 px) y el ancho máximo decide dónde envuelve. Por eso
+    ''' <see cref="OnSseRaceMenuFlowResize"/> tiene una rama para los AutoSize — asignarle <c>Width</c> a este
+    ''' control no haría nada, el layout lo recalcula desde el contenido.</para></summary>
     Private Function AddSseRaceMenuNotice(text As String) As Control
         Dim w = SseRaceMenuRowWidth()
         Dim box As New Label With {
@@ -1425,7 +1426,12 @@ Public Class EditFace_Form
         FlowSseRaceMenu.SuspendLayout()
         Try
             For Each c As Control In FlowSseRaceMenu.Controls
-                c.Width = w
+                ' ⛔ EN UN CONTROL AutoSize, `Width` NO HACE NADA: el layout lo recalcula desde el contenido y
+                ' pisa lo que se asigne. Lo que gobierna dónde envuelve el texto es `MaximumSize.Width`. El
+                ' banner de aviso es el único AutoSize de este flujo (las filas y los headers son AutoSize=False
+                ' por la razón que explica AddSseRaceMenuRow), y sin esta rama se quedaba con el ancho que tenía
+                ' al construirse: al angostar el panel, el aviso sobresalía y se recortaba.
+                If c.AutoSize Then c.MaximumSize = New Size(w, 0) Else c.Width = w
             Next
         Finally
             FlowSseRaceMenu.ResumeLayout()
