@@ -4,7 +4,7 @@ Imports FO4_Base_Library
 
 ''' <summary>F4SE LooksMenu body-overlay template ("tattoo" definition) — id + display name +
 ''' gender + sort + playable/transformable/tintable flags + a per-biped-slot material map. Mirrors
-''' the C++ struct <c>OverlayTemplate</c> in <c>F4SEPlugins-master/f4ee/OverlayInterface.h</c> and the
+''' the C++ struct <c>OverlayTemplate</c> in <c>Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/OverlayInterface.h</c> and the
 ''' loader in <c>OverlayInterface::LoadOverlayTemplates</c> (OverlayInterface.cpp:1055-1136).
 '''
 ''' Templates are NOT records: they are loaded from on-disk JSON files under

@@ -4,7 +4,7 @@ Imports FO4_Base_Library
 
 ''' <summary>F4SE LooksMenu skin template — bundle of (skin ARMO + per-gender face TXST + per-gender
 ''' head HDPT + per-gender rear HDPT + sort + gender). Mirrors the C++ struct
-''' <c>SkinTemplate</c> in <c>F4SEPlugins-master/f4ee/SkinInterface.h:18-44</c>.
+''' <c>SkinTemplate</c> in <c>Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/SkinInterface.h:18-44</c>.
 '''
 ''' Templates are NOT records: they are loaded from on-disk JSON files at
 ''' <c>Data\F4SE\Plugins\F4EE\Skin\&lt;plugin&gt;\skin.json</c> and

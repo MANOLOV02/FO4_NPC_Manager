@@ -9,7 +9,7 @@ Imports NiflySharp.Blocks
 ' NpcMorphResolver. The two formats and pipelines are intentionally separate.
 '
 ' Path resolution mirrors LooksMenu's BodyMorphProcessor::Process exactly
-' (F4SEPlugins-master/f4ee/BodyMorphInterface.cpp:1350-1396):
+' (Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/BodyMorphInterface.cpp:1350-1396):
 '   • Read NiStringExtraData with name "BODYTRI" from the NIF's ROOT NiNode.
 '   • Prefix with "meshes\" and use that path verbatim.
 '   • If the root has no BODYTRI extra-data → no BodySlide morphs apply, period.

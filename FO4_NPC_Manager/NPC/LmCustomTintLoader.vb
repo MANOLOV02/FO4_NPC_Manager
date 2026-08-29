@@ -10,7 +10,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' applies against a mod-added template (stored in the LM preset as a "Tints"/"TintOrder" index that
 ''' has no vanilla RACE option) resolve to real textures/colours and compose + bake like any other.
 '''
-''' Faithful to f4ee (F4SEPlugins-master):
+''' Faithful to f4ee (Script extenders, Racemenu y Looksmenu/F4SEPlugins):
 '''  - Disk layout + two-pass load order = <c>CharGenInterface::LoadTintTemplateMods</c>
 '''    (CharGenInterface.cpp:647-660): ALL <c>categories.json</c> first (every plugin, load order),
 '''    THEN all <c>templates.json</c>, because a template can reference (by <c>Category</c> id or

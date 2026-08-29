@@ -4,7 +4,7 @@ Imports System.Text.Json
 Imports FO4_Base_Library
 
 ''' <summary>Parser of the LooksMenu CharGen preset JSON format. Schema verified against
-''' F4SEPlugins-master/f4ee/CharGenInterface.cpp:60-256 (SavePreset) and 259-620 (LoadPreset).
+''' Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:49-256 (SavePreset) and 259-620 (LoadPreset).
 '''
 ''' Maps every JSON field that has a vanilla NPC_ subrecord equivalent. The F4SE-only Overlays
 ''' field (body tattoos) is now fully parsed + round-tripped (see <see cref="LooksmenuPreset.Overlays"/>);
@@ -234,7 +234,7 @@ Public Module LooksmenuLoader
         ''' <summary>BodySlide vertex morph sliders ("BodyMorphs" in JSON). Dict keyed by slider
         ''' name (e.g. "BigBelly", "ChubbyButt"); the resolver looks each name up in the PIRT .tri
         ''' of every shape and applies wherever defined. Empty = no overlay; the NPC's body renders
-        ''' with no BodySlide morphs. Schema: F4SEPlugins-master/f4ee/CharGenInterface.cpp:204-215
+        ''' with no BodySlide morphs. Schema: Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:204-215
         ''' (Save) and 560-570 (Load). NOT a vanilla record — lives only in the JSON.</summary>
         Public BodyMorphSliders As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
 
@@ -250,7 +250,7 @@ Public Module LooksmenuLoader
         ''' Render-only F4SE field, same shape as <see cref="BodyMorphSliders"/> (lives only in the JSON,
         ''' no vanilla NPC_ subrecord equivalent). Each entry references an <see cref="OverlayTemplate"/>
         ''' by id plus per-instance priority and optional tint/UV transform. Schema:
-        ''' F4SEPlugins-master/f4ee/CharGenInterface.cpp:217-244 (Save) and 578-619 (Load).</summary>
+        ''' Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:217-244 (Save) and 578-619 (Load).</summary>
         Public Overlays As New List(Of OverlayEntry)
 
         ''' <summary>Overlays presence — SAME semantics as the other Has* flags above. True = "this
@@ -319,7 +319,7 @@ Public Module LooksmenuLoader
         Public SleepOutfitFormIDOverride As UInteger?
 
         ''' <summary>F4SE LM Skin override — the string id of a SkinTemplate registered via
-        ''' <c>F4SEPlugins-master/f4ee/SkinInterface.cpp</c>. The template bundles ARMO + face TXST +
+        ''' <c>Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/SkinInterface.cpp</c>. The template bundles ARMO + face TXST +
         ''' head/headRear HDPT (see <see cref="LmSkinTemplate"/> for the full layout) and is applied
         ''' at runtime by LooksMenu's <c>ApplyOverride</c> on top of whatever NPC.WNAM/RACE.WNAM
         ''' resolved to. Nothing / empty = no LM override; non-empty = the id to apply. Serialized
@@ -353,7 +353,7 @@ Public Module LooksmenuLoader
 
     ''' <summary>One applied body overlay (a LooksMenu "tattoo") on an NPC. References an
     ''' <see cref="OverlayTemplate"/> by id; carries per-instance priority and optional tint/UV
-    ''' transform. Schema verified against F4SEPlugins-master/f4ee/CharGenInterface.cpp:217-244
+    ''' transform. Schema verified against Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:217-244
     ''' (Save) and :578-619 (Load). The float arrays are kept at the JSON's native width (tint=4,
     ''' UV=2) so a round-trip is byte-faithful; Nothing means the JSON key was absent (the engine
     ''' load supplies a default — tint 0,0,0,0 / offsetUV 0,0 / scaleUV 1,1).</summary>
@@ -688,7 +688,7 @@ Public Module LooksmenuLoader
                     ' permanente, en vez de dejarla como estaba.
                     ' CANÓNICO: f4ee saltea el form que no resuelve y no toca al actor —
                     ' `TESForm * form = GetFormFromIdentifier(...); if(!form) continue;`
-                    ' (F4SEPlugins-master/f4ee/CharGenInterface.cpp:328-330).
+                    ' (Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:328-330).
                     If resolved <> 0UI Then
                         preset.SkinFormIDOverride = resolved
                     ElseIf Logger.Enabled Then
@@ -1433,7 +1433,7 @@ Public Module LooksmenuLoader
                 ' Prefix "_npcm_" marca extensions específicas de NPC_Manager fuera del namespace
                 ' LM. CharGenInterface.cpp LoadPreset accede a keys conocidas por nombre via
                 ' root["Key"]; no itera el objeto root → unknown keys son ignoradas silenciosamente
-                ' por LM in-game. Verificado contra F4SEPlugins-master/f4ee/CharGenInterface.cpp.
+                ' por LM in-game. Verificado contra Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp.
                 ' Independientes entre sí; la precedencia en aplicación la resuelve
                 ' NpcRecordOverlay (orden: NPC.WNAM primero, luego LM SkinTemplate pisa si está
                 ' set), mismo orden que el overlay aplica a render.

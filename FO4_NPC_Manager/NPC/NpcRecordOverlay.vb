@@ -148,7 +148,7 @@ Public Module NpcRecordOverlay
         If preset.SkinFormIDOverride.HasValue Then sr.Skin = preset.SkinFormIDOverride.Value
 
         ' LM SkinTemplate (F4SE bundle) wins over NPC.WNAM at preview time, mirroring
-        ' SkinInterface.cpp:250-332 in F4SEPlugins-master/f4ee — ApplyOverride applies the
+        ' SkinInterface.cpp:250-332 in Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee — ApplyOverride applies the
         ' template's `skin` ARMO + face[gender] TXST + head[gender] HDPT + rear[gender] HDPT.
         ' Skin and face TXST are applied here; head / headRear HDPT replacement is applied below
         ' after the preset HeadParts merge so the bundle sits on top of preset overrides.

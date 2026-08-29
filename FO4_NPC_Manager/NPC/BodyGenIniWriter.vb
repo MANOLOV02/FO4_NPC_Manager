@@ -3,8 +3,8 @@ Imports System.Text
 
 ''' <summary>Emits the F4SE/LooksMenu BodyGen .ini pair (<c>templates.ini</c> +
 ''' <c>morphs.ini</c>) so the engine applies BodySlide sliders to NPCs on first-load. Format
-''' verified against <c>F4SEPlugins-master/f4ee/BodyGenInterface.cpp:42-158</c>
-''' (<c>ReadBodyGenTemplates</c>) and <c>:185-426</c> (<c>ReadBodyMorphs</c>).
+''' verified against <c>Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/BodyGenInterface.cpp:21-158</c>
+''' (<c>ReadBodyMorphTemplates</c>) and <c>:185-426</c> (<c>ReadBodyMorphs</c>).
 '''
 ''' <para>Convention chosen for NPC_Manager (single owner of these files): one template per NPC
 ''' named <c>NPCM_&lt;EditorID&gt;</c> (sanitized), one row in <c>morphs.ini</c> per NPC. Values
