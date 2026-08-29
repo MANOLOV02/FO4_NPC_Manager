@@ -67,21 +67,27 @@ Friend Module SseCatalogs
 
     Private ReadOnly _lock As New Object()
     Private _overlayCounts As Integer()
-    Private _overlayStamp As String
-    Private _overlaySource As String
+    Private _skeeIniStamp As String
+    Private _skeeIniSource As String
     Private _overlayLimitWarned As Integer
     Private _spellLimitWarned As Integer
     Private _faceDisabledByFlag As Boolean
+    ' Los dos knobs de [FaceGen] viajan con los contadores: MISMA lectura, MISMO stamp, MISMO cache. Separarlos
+    ' habría dado un segundo lector del mismo par de archivos que puede quedar desfasado del primero.
+    Private _faceSliderMultiplier As Double = DefaultSliderMultiplier
+    Private _faceSliderInterval As Double = DefaultSliderInterval
+    ''' <summary>Default HARDCODEADO de skee: <c>g_extendedMorphs = true</c> (main.cpp:150).</summary>
+    Private _faceExtendedMorphs As Boolean = True
 
     ''' <summary>True cuando el cero de la cara NO viene de <c>iNumOverlays</c> sino de
     ''' <c>[Features] bEnableFaceOverlays=0</c>. Es la diferencia entre mandar al usuario a la key correcta o a
     ''' una que ya tiene puesta en 6.</summary>
     Friend Function FaceOverlaysDisabledByIni() As Boolean
-        EnsureOverlayCounts()
+        EnsureSkeeIniValues()
         Return _faceDisabledByFlag
     End Function
 
-    Private ReadOnly OverlayIniNames As String() = {"skee64.ini", "skee64_custom.ini"}
+    Private ReadOnly SkeeIniNames As String() = {"skee64.ini", "skee64_custom.ini"}
 
     ''' <summary>Number of overlay slots the engine will instantiate for <paramref name="zone"/>, i.e. the
     ''' valid range of <c>[Ovl{n}]</c> indices skee64 CREATES is <c>0 .. count-1</c>. Read from
@@ -91,7 +97,7 @@ Friend Module SseCatalogs
     ''' is absent), so it is inert in-game and becomes live the day the count is raised. The editors therefore
     ''' warn once instead of refusing.</para></summary>
     Friend Function OverlayCount(zone As OverlayZone) As Integer
-        EnsureOverlayCounts()
+        EnsureSkeeIniValues()
         Return _overlayCounts(CInt(zone))
     End Function
 
@@ -103,7 +109,7 @@ Friend Module SseCatalogs
     ''' RaceMenu crea". Ese techo se fue (ver el bloque donde vivía la constante): el apply-script pregunta el
     ''' contador real con <c>GetNumSpell*Overlays</c>, así que no hay una segunda pregunta que responder.</para></summary>
     Friend Function SpellOverlayCount(zone As OverlayZone) As Integer
-        EnsureOverlayCounts()
+        EnsureSkeeIniValues()
         Return _overlayCounts(SpellSlotBase + CInt(zone))
     End Function
 
@@ -133,22 +139,22 @@ Friend Module SseCatalogs
     ''' <summary>Which file the counts actually came from, for the warning text. It is the whole point of the
     ''' message: "I raised iNumOverlays and nothing changed" is almost always a DIFFERENT copy of the ini (a mod
     ''' manager's virtual Data, another install), and naming the path we read settles it without guessing.</summary>
-    Friend Function OverlayCountSource() As String
-        EnsureOverlayCounts()
-        Return _overlaySource
+    Friend Function SkeeIniSource() As String
+        EnsureSkeeIniValues()
+        Return _skeeIniSource
     End Function
 
     ''' <summary>The counts are re-read whenever an ini's timestamp/size changes. They used to be read ONCE per
     ''' process, so editing skee64.ini while the app was open changed nothing and the editor still told the user to
     ''' "reopen the editor" — which re-entered the same cached value. A stat of two files per Add click is free.</summary>
-    Private Sub EnsureOverlayCounts()
+    Private Sub EnsureSkeeIniValues()
         SyncLock _lock
             ' EL STAMP SE SACA DENTRO DEL LOCK. Afuera, entre el stat y la lectura hay una ventana: si el ini
             ' se reemplaza ahí en el medio y después vuelve con su mtime y su largo originales (swap de perfil de
             ' un mod manager, robocopy /COPY:DT, extraer un 7z — todos preservan mtime), el cache se quedaba con
             ' los números del intruso bajo el stamp del archivo bueno, y ya no relee nunca.
-            Dim stamp = OverlayIniStamp()
-            If _overlayCounts IsNot Nothing AndAlso String.Equals(_overlayStamp, stamp, StringComparison.Ordinal) Then Return
+            Dim stamp = SkeeIniStamp()
+            If _overlayCounts IsNot Nothing AndAlso String.Equals(_skeeIniStamp, stamp, StringComparison.Ordinal) Then Return
             ' SE MERGEAN LOS STRINGS CRUDOS, NO LOS NÚMEROS. skee no parsea por archivo: junta el VALOR
             ' TEXTUAL de la key —base, y encima el custom si trae algo (main.cpp:258-282, "Only take custom if
             ' we have it")— y recién ahí corre UN sscanf sobre el resultado. La diferencia se ve con
@@ -156,13 +162,13 @@ Friend Module SseCatalogs
             ' el valor queda en el DEFAULT HARDCODEADO (3) — el 6 lo destruyó la línea basura del custom. Si se
             ' parsea por archivo, en cambio, el 6 sobrevive. Diríamos 6 donde el motor da 3, que es justo el
             ' error de "te ofrezco un slot que el motor no crea".
-            Dim raw = NewRawOverlayValues()
+            Dim raw = NewRawSkeeValues()
             Dim read As New List(Of String), failed As New List(Of String)
-            For Each iniPath In OverlayIniPaths()
+            For Each iniPath In SkeeIniPaths()
                 If Not File.Exists(iniPath) Then Continue For
                 Try
-                    ' El todo-o-nada por archivo vive DENTRO de MergeOverlayIni, pegado a la mutación.
-                    MergeOverlayIni(File.ReadLines(iniPath), raw)
+                    ' El todo-o-nada por archivo vive DENTRO de MergeSkeeIni, pegado a la mutación.
+                    MergeSkeeIni(File.ReadLines(iniPath), raw)
                     read.Add(iniPath)
                 Catch ex As Exception
                     ' El archivo EXISTE y no se pudo leer: eso va al mensaje, no se calla como "no está".
@@ -172,45 +178,50 @@ Friend Module SseCatalogs
             Next
             Dim faceOff As Boolean
             Dim counts = ResolveOverlayCounts(raw, faceOff)
+            Dim knobs = ResolveFaceGenSliderKnobs(raw)
+            Dim extended = ResolveExtendedMorphsEnabled(raw)
             _faceDisabledByFlag = faceOff
-            Dim folder = OverlayIniFolder()
+            _faceSliderMultiplier = knobs.Multiplier
+            _faceSliderInterval = knobs.Interval
+            _faceExtendedMorphs = extended
+            Dim folder = SkeeIniFolder()
             If read.Count > 0 OrElse failed.Count > 0 Then
-                _overlaySource = String.Join(" + ", read.Concat(failed))
-                If failed.Count > 0 Then _overlaySource &= " — the unreadable one contributed NOTHING"
+                _skeeIniSource = String.Join(" + ", read.Concat(failed))
+                If failed.Count > 0 Then _skeeIniSource &= " — the unreadable one contributed NOTHING"
             ElseIf folder = "" Then
-                _overlaySource = "no game folder configured — RaceMenu's built-in defaults"
+                _skeeIniSource = "no game folder configured — RaceMenu's built-in defaults"
             Else
-                _overlaySource = $"no skee64.ini in {folder} — RaceMenu's built-in defaults"
+                _skeeIniSource = $"no skee64.ini in {folder} — RaceMenu's built-in defaults"
             End If
             _overlayCounts = counts
             ' UNA LECTURA FALLIDA NO SE CACHEA. El stamp sale de FileInfo (Exists/mtime/Length), que son
             ' consultas de METADATO: funcionan igual sobre un archivo abierto con FileShare.None. O sea que sólo
             ' falla el ReadLines — y guardar el stamp igual dejaba los defaults pegados PARA TODA LA SESIÓN bajo
             ' un stamp válido que nunca vuelve a cambiar. Es el mismo bug que vino a arreglar todo esto ("reabrí
-            ' el editor y sigue igual"), entrando por el camino de error. Con _overlayStamp = Nothing el próximo
+            ' el editor y sigue igual"), entrando por el camino de error. Con _skeeIniStamp = Nothing el próximo
             ' click reintenta, que es lo que el comentario del stamp siempre dijo y no hacía.
-            _overlayStamp = If(failed.Count = 0, stamp, Nothing)
+            _skeeIniStamp = If(failed.Count = 0, stamp, Nothing)
         End SyncLock
     End Sub
 
-    Private Function OverlayIniFolder() As String
+    Private Function SkeeIniFolder() As String
         Dim data = Config_App.Current?.DataPath
         If String.IsNullOrEmpty(data) Then Return ""
         Return Path.Combine(data, "SKSE", "Plugins")
     End Function
 
-    Private Iterator Function OverlayIniPaths() As IEnumerable(Of String)
-        Dim folder = OverlayIniFolder()
+    Private Iterator Function SkeeIniPaths() As IEnumerable(Of String)
+        Dim folder = SkeeIniFolder()
         If folder = "" Then Return
-        For Each name In OverlayIniNames
+        For Each name In SkeeIniNames
             Yield Path.Combine(folder, name)
         Next
     End Function
 
     ''' <summary>Identity of the ini pair on disk: path + write time + length. Any edit moves it.</summary>
-    Private Function OverlayIniStamp() As String
+    Private Function SkeeIniStamp() As String
         Dim sb As New Text.StringBuilder()
-        For Each iniPath In OverlayIniPaths()
+        For Each iniPath In SkeeIniPaths()
             sb.Append(iniPath).Append("|"c)
             Try
                 Dim fi As New FileInfo(iniPath)
@@ -285,22 +296,32 @@ Friend Module SseCatalogs
                "ever built it, so it never " &
                "gets stuck in a save. (Within a running game a magic overlay's alpha is driven by the effect's own " &
                "animation, so it can keep showing until the actor's 3D reloads.)" & vbCrLf & vbCrLf &
-               $"Counts read from: {OverlayCountSource()}" & vbCrLf &
+               $"Counts read from: {SkeeIniSource()}" & vbCrLf &
                "(Shown once per session, for every zone.)"
     End Function
 
-    ''' <summary>Los NUEVE valores CRUDOS (sin parsear) que deciden los contadores: índices 0-3 = el
-    ''' <c>iNumOverlays</c> de cada zona, índice 4 = <c>[Features] bEnableFaceOverlays</c>, índices 5-8 = el
-    ''' <c>iSpellOverlays</c> de cada zona (el pool MAGIC). <c>""</c> = ausente, que es lo que devuelve
-    ''' <c>GetPrivateProfileString</c> cuando la key no está.
+    ''' <summary>Los ONCE valores CRUDOS (sin parsear) que la app necesita del <c>skee64.ini</c>: índices 0-3 =
+    ''' el <c>iNumOverlays</c> de cada zona, índice 4 = <c>[Features] bEnableFaceOverlays</c>, índices 5-8 = el
+    ''' <c>iSpellOverlays</c> de cada zona (el pool MAGIC), índices 9-10 = <c>[FaceGen] fSliderMultiplier</c> y
+    ''' <c>fSliderInterval</c>. <c>""</c> = ausente, que es lo que devuelve <c>GetPrivateProfileString</c>
+    ''' cuando la key no está.
     ''' <para>El flag de la cara se queda en el índice 4 y los nuevos van DESPUÉS a propósito: así el layout
-    ''' viejo (0-4) no se corre ni un lugar y ningún lector existente cambia de significado.</para></summary>
+    ''' viejo (0-4) no se corre ni un lugar y ningún lector existente cambia de significado. Los dos de FaceGen
+    ''' siguen la misma regla y por eso van al final.</para></summary>
     Private Const RawFaceFlagSlot As Integer = 4
     ''' <summary>Primer índice del <c>iSpellOverlays</c> crudo: <c>RawSpellSlotBase + zona</c>.</summary>
     Private Const RawSpellSlotBase As Integer = 5
+    ''' <summary><c>[FaceGen] fSliderMultiplier</c> crudo — el ANCHO de los sliders extendidos de cara
+    ''' (main.cpp:842).</summary>
+    Private Const RawSliderMultiplierSlot As Integer = 9
+    ''' <summary><c>[FaceGen] fSliderInterval</c> crudo — el PASO de esos sliders (main.cpp:843).</summary>
+    Private Const RawSliderIntervalSlot As Integer = 10
+    ''' <summary><c>[FaceGen] bExtendedMorphs</c> crudo — el interruptor que decide si RaceMenu aplica
+    ''' SUS morphs de cara o ninguno (main.cpp:854).</summary>
+    Private Const RawExtendedMorphsSlot As Integer = 11
 
-    Private Function NewRawOverlayValues() As String()
-        Return {"", "", "", "", "", "", "", "", ""}
+    Private Function NewRawSkeeValues() As String()
+        Return {"", "", "", "", "", "", "", "", "", "", "", ""}
     End Function
 
     ''' <summary>Mergea UN archivo sobre <paramref name="raw"/> con la regla de skee: el valor de este archivo
@@ -313,24 +334,26 @@ Friend Module SseCatalogs
     ''' <c>StreamReader</c> a medida que se enumera, así que la excepción del medio llega ACÁ. Recibir el
     ''' enumerable en vez de abrir el archivo adentro es lo que deja al gate reproducir ese fallo exacto sin
     ''' ningún hook de test en el binario.</param>
-    Friend Sub MergeOverlayIni(lines As IEnumerable(Of String), raw As String())
-        Dim fileValues = CollectOverlayIniValues(lines)
+    Friend Sub MergeSkeeIni(lines As IEnumerable(Of String), raw As String())
+        Dim fileValues = CollectSkeeIniValues(lines)
         For i = 0 To raw.Length - 1
             If fileValues(i) <> "" Then raw(i) = fileValues(i)
         Next
     End Sub
 
     ''' <summary>Minimal INI reader for the keys that decide how many overlay nodes skee builds:
-    ''' <c>[Overlays/*] iNumOverlays</c> y <c>[Features] bEnableFaceOverlays</c>. Deliberately not a general INI
-    ''' parser — sólo hacen falta esos NUEVE valores, y SIN parsear: el número sale después, de una sola pasada
+    ''' <c>[Overlays/*] iNumOverlays</c>, <c>[Features] bEnableFaceOverlays</c> y los dos de <c>[FaceGen]</c>.
+    ''' Deliberately not a general INI parser — sólo hacen falta esos ONCE valores, y SIN parsear: el número sale después, de una sola pasada
     ''' sobre el string ya mergeado, que es como lo hace skee.
     ''' <para>Sin modelar: <c>GetPrivateProfileString</c> saca las comillas de <c>"6"</c>. Acá un valor
     ''' entrecomillado no parsea y la zona queda en su default. Nadie entrecomilla un entero en skee64.ini.</para>
-    ''' <para>(Eran CINCO hasta que se modeló el pool magic; ahora son nueve — <c>iSpellOverlays</c> por zona.
-    ''' Ver <see cref="RawSpellSlotBase"/>.)</para>
+    ''' <para>(Eran CINCO hasta que se modeló el pool magic, nueve con él, y ONCE desde que entraron
+    ''' <c>fSliderMultiplier</c>/<c>fSliderInterval</c>. Ver <see cref="RawSpellSlotBase"/> y
+    ''' <see cref="RawSliderMultiplierSlot"/> — el literal del array vive en <see cref="NewRawSkeeValues"/> y el
+    ''' gate tiene su gemelo, que YA se cayó una vez por no actualizarlo.)</para>
     ''' </summary>
-    Private Function CollectOverlayIniValues(lines As IEnumerable(Of String)) As String()
-        Dim values = NewRawOverlayValues()
+    Private Function CollectSkeeIniValues(lines As IEnumerable(Of String)) As String()
+        Dim values = NewRawSkeeValues()
         Dim seen(values.Length - 1) As Boolean
         Dim section As String = ""
         ' GetPrivateProfileString entra a la PRIMERA sección con ese nombre y no sale de ahí: si el archivo
@@ -378,6 +401,16 @@ Friend Module SseCatalogs
                 For z = 0 To IniSectionByZone.Length - 1
                     If section.Equals(IniSectionByZone(z), StringComparison.OrdinalIgnoreCase) Then slot = RawSpellSlotBase + z
                 Next
+            ElseIf section.Equals("FaceGen", StringComparison.OrdinalIgnoreCase) Then
+                ' Los dos knobs de los sliders EXTENDIDOS de cara (main.cpp:842-843). Van por el mismo camino
+                ' crudo que los contadores: se juntan los strings de los dos ini y se parsea UNA sola vez.
+                If key.Equals("fSliderMultiplier", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawSliderMultiplierSlot
+                ElseIf key.Equals("fSliderInterval", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawSliderIntervalSlot
+                ElseIf key.Equals("bExtendedMorphs", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawExtendedMorphsSlot
+                End If
             End If
             If slot < 0 Then Continue For
             ' GetPrivateProfileString devuelve la PRIMERA aparición de una key repetida, no la última.
@@ -462,6 +495,136 @@ Friend Module SseCatalogs
         If negate Then acc = (&H100000000UL - acc) And &HFFFFFFFFUL
         result = CUInt(acc)
         Return True
+    End Function
+
+    ''' <summary>Defaults HARDCODEADOS de skee para los dos knobs de <c>[FaceGen]</c> (main.cpp:156-157). Es lo
+    ''' que vale sin ini, con la key ausente, o con un valor que no parsea — los tres casos en que
+    ''' <c>SKEE64GetConfigValue</c> devuelve false y no asigna (main.cpp:301-310).</summary>
+    Private Const DefaultSliderMultiplier As Double = 1.0R
+    Private Const DefaultSliderInterval As Double = 0.01R
+
+    ''' <summary>Lo que hace <c>sscanf(s, "%f", &amp;out)</c>, que es <c>strtof</c> (C11 7.22.1.3): saltea espacios,
+    ''' acepta signo opcional, dígitos con punto decimal opcional y un exponente opcional. Es PREFIJO —
+    ''' <c>"3.0 ; tres veces"</c> da 3.0— y devuelve False sólo si no llegó a leer ni un dígito, que es el
+    ''' <c>res = false</c> de skee (deja el default).
+    ''' <para>⛔ EL PUNTO ES SIEMPRE EL SEPARADOR DECIMAL, y esto SE PUEDE CITAR en vez de suponerlo: un
+    ''' programa C arranca en la locale <c>"C"</c> (C11 7.11.1.1 §4) y sólo se mueve de ahí con
+    ''' <c>setlocale</c> — y en todo <c>skee64</c> hay <b>CERO</b> llamadas a <c>setlocale</c> (y cero
+    ''' <c>std::locale</c>/<c>imbue</c>), o sea que el CRT del plugin nunca sale de "C". Por lo tanto en un
+    ''' Windows es-AR <c>3,5</c> NO vale 3,5 para el motor: <c>strtof</c> corta en la coma y devuelve <b>3</b>.
+    ''' Por eso acá se parsea con <c>InvariantCulture</c> y SIN <c>AllowThousands</c>; usar la locale del
+    ''' usuario nos daría 3,5 donde el juego usa 3 — el mismo modo de falla que documenta
+    ''' <c>TinySliderTextBox.ParseInvariantOrLocal</c>, pero al revés y contra el motor.</para>
+    ''' <para>⚠️ HUECOS DECLARADOS, los dos por lo mismo (se reconoce sólo la gramática decimal):
+    ''' <c>strtof</c> del UCRT acepta además <c>inf</c>/<c>nan</c> y <b>hexadecimales</b> (<c>0x10</c> ⇒ 16).
+    ''' Acá los tres devuelven False y dejan el default, donde skee tomaría el número. Ningún
+    ''' <c>skee64.ini</c> real escribe un multiplicador así, y propagar un infinito a la UI sería peor que
+    ''' declarar el hueco — pero es un hueco, no una equivalencia.</para>
+    ''' <para>El resultado se estrecha a <c>Single</c> porque las dos globales de skee son <c>float</c>
+    ''' (main.cpp:156-157): comparar en Double lo que el motor guarda en Single haría que la app y el juego
+    ''' difieran justo en el borde del clamp.</para></summary>
+    Private Function ScanFloatLike(s As String, ByRef result As Double) As Boolean
+        result = 0.0R
+        If String.IsNullOrEmpty(s) Then Return False
+        Dim i = 0
+        While i < s.Length AndAlso Char.IsWhiteSpace(s(i)) : i += 1 : End While
+        Dim start = i
+        If i < s.Length AndAlso (s(i) = "-"c OrElse s(i) = "+"c) Then i += 1
+        Dim digits = 0
+        While i < s.Length AndAlso s(i) >= "0"c AndAlso s(i) <= "9"c : digits += 1 : i += 1 : End While
+        If i < s.Length AndAlso s(i) = "."c Then
+            i += 1
+            While i < s.Length AndAlso s(i) >= "0"c AndAlso s(i) <= "9"c : digits += 1 : i += 1 : End While
+        End If
+        If digits = 0 Then Return False
+        ' El exponente sólo cuenta si trae al menos un dígito; si no, `strtof` retrocede y se queda con la
+        ' mantisa (`"1e"` es 1, no un error). Por eso el índice sólo avanza cuando el exponente está completo.
+        If i < s.Length AndAlso (s(i) = "e"c OrElse s(i) = "E"c) Then
+            Dim j = i + 1
+            If j < s.Length AndAlso (s(j) = "-"c OrElse s(j) = "+"c) Then j += 1
+            Dim expDigits = 0
+            While j < s.Length AndAlso s(j) >= "0"c AndAlso s(j) <= "9"c : expDigits += 1 : j += 1 : End While
+            If expDigits > 0 Then i = j
+        End If
+        Dim parsed As Double
+        If Not Double.TryParse(s.Substring(start, i - start),
+                               Globalization.NumberStyles.AllowLeadingSign Or Globalization.NumberStyles.AllowDecimalPoint Or Globalization.NumberStyles.AllowExponent,
+                               Globalization.CultureInfo.InvariantCulture, parsed) Then Return False
+        result = CDbl(CSng(parsed))
+        ' ⛔ NO FINITO ⇒ FALSE, IGUAL QUE UN "inf" ESCRITO A MANO. Un `fSliderMultiplier=1e40` es finito para
+        ' Double pero el estrechamiento a Single —que es el que hace el motor— lo vuelve +∞. Devolverlo
+        ' propagaba el infinito hasta `BoundsOf`, y ahí `TinySliderTextBox` DESCARTA en silencio un Minimum o
+        ' Maximum no finito (`IsUsableNumber` hace Return sin asignar, :754-756): la pista se quedaba con los
+        ' defaults del constructor —0..100— o sea un rango que no es ni el del ini ni el de skee, en TODAS las
+        ' filas de la pestaña y sin un solo aviso. Con False queda el default de skee (1,0), que es la misma
+        ' salida que ya se declara arriba para "inf"/"nan".
+        If Double.IsNaN(result) OrElse Double.IsInfinity(result) Then Return False
+        Return True
+    End Function
+
+    ''' <summary>Del string mergeado a los dos números, en el orden EXACTO de skee (main.cpp:842-850): primero
+    ''' se leen las dos keys, y RECIÉN DESPUÉS corren los tres clamps. El orden importa porque los clamps de
+    ''' <c>fSliderInterval</c> no dependen de si <c>fSliderMultiplier</c> se leyó o no.
+    ''' <para>⛔ <c>fSliderMultiplier</c> NO TIENE TOPE SUPERIOR — el único ajuste es <c>&lt;= 0 ⇒ 0.01</c>
+    ''' (:845-846). Ponerle un techo propio sería inventar una ley que el motor no tiene.</para>
+    ''' <para>Privada a propósito: su único llamador es <see cref="EnsureSkeeIniValues"/>. Hacerla Friend
+    ''' "para que el gate la vea" sería el ensanche gratuito que prohíbe el comentario de
+    ''' <see cref="ResolveOverlayCounts"/> — el gate entra por <see cref="FaceSliderKnobs"/>, que es la puerta
+    ''' que usa el producto.</para></summary>
+    Private Function ResolveFaceGenSliderKnobs(raw As String()) As (Multiplier As Double, Interval As Double)
+        Dim mult As Double = DefaultSliderMultiplier
+        Dim interval As Double = DefaultSliderInterval
+        Dim v As Double
+        If ScanFloatLike(raw(RawSliderMultiplierSlot), v) Then mult = v
+        If ScanFloatLike(raw(RawSliderIntervalSlot), v) Then interval = v
+        If mult <= 0.0R Then mult = 0.01R
+        If interval <= 0.0R Then interval = 0.01R
+        If interval > 1.0R Then interval = 1.0R
+        Return (mult, interval)
+    End Function
+
+    ''' <summary>El bool de <c>bExtendedMorphs</c>, con la ley del bool de skee: <c>sscanf("%u")</c> y
+    ''' <c>tmp &gt; 0</c> (main.cpp:313-326). Una key ausente o que no parsea deja el default <c>True</c>
+    ''' (main.cpp:150), que es el <c>res = false</c> que no asigna.</summary>
+    Private Function ResolveExtendedMorphsEnabled(raw As String()) As Boolean
+        Dim n As UInteger
+        If Not ScanUInt32Like(raw(RawExtendedMorphsSlot), n) Then Return True
+        Return n > 0UI
+    End Function
+
+    ''' <summary>Los dos knobs que dimensionan un slider extendido de cara, EN UNA SOLA LLAMADA:
+    ''' <c>fSliderMultiplier</c> (el ANCHO: la ventana que RaceMenu dibuja es <c>±1 × mult</c>,
+    ''' FaceMorphInterface.cpp:1321-1322 + :1354) y <c>fSliderInterval</c> (el PASO, :1320). Salen del ini
+    ''' INSTALADO, no de una constante: con el ini de fábrica valen 1,0 y 0,01, y en la máquina de al lado 3,0 —
+    ''' las dos respuestas son correctas.
+    ''' <para>⛔ UNA PUERTA Y NO DOS. Con dos accessors independientes cada uno re-evalúa el stamp por su cuenta,
+    ''' así que un ini reemplazado entre las dos llamadas arma la pestaña con el multiplicador de un archivo y el
+    ''' intervalo del otro. El cache era uno solo; la API tenía que serlo también.</para>
+    ''' <para>⛔ EL INTERVALO ES SÓLO PARA EL PASO DEL CONTROL. Ningún camino de guardado, carga ni aplicación de
+    ''' skee64 lee <c>g_sliderInterval</c> —su único uso en todo el plugin es el argumento <c>interval</c> del
+    ''' ctor de <c>RaceMenuSlider</c>— así que la app NO debe cuantizar valores a múltiplos del intervalo:
+    ''' movería números que el motor no mueve.</para></summary>
+    Friend Function FaceSliderKnobs() As RaceMenuSliderCatalog.SliderKnobs
+        EnsureSkeeIniValues()
+        SyncLock _lock
+            Return New RaceMenuSliderCatalog.SliderKnobs(_faceSliderMultiplier, _faceSliderInterval)
+        End SyncLock
+    End Function
+
+    ''' <summary><c>[FaceGen] bExtendedMorphs</c>: si está en 0, RaceMenu <b>NO APLICA NI UNO</b> de sus morphs
+    ''' de cara extendidos — <c>ApplyMorphs</c> corta antes del bucle del ValueSet con
+    ''' <c>if (!g_extendedMorphs) return;</c> (FaceMorphInterface.cpp:1126 y :1204) y <c>ReadSliders</c> ni
+    ''' siquiera registra las líneas de tipo Slider y Preset (:934-935, :954-955). Default <b>true</b>
+    ''' (main.cpp:150, leído en :854).
+    ''' <para>⛔ NO APAGA EL SCULPT. El bloque que suma los deltas por vértice del <c>.jslot</c> está ARRIBA de
+    ''' ese <c>return</c> (:1108-1125), así que el sculpt se aplica igual. Apagar los dos con la misma key sería
+    ''' inventar una ley: son dos canales distintos y el interruptor gobierna uno solo.</para>
+    ''' <para>El bool de skee sale del MISMO <c>%u</c> que los enteros y vale <c>tmp &gt; 0</c>
+    ''' (main.cpp:313-326), así que se parsea con <see cref="ScanUInt32Like"/> y no con un lector de
+    ''' "true/false": un <c>bExtendedMorphs=true</c> textual NO parsea y para el motor queda en su default.</para></summary>
+    Friend Function FaceExtendedMorphsEnabled() As Boolean
+        EnsureSkeeIniValues()
+        Return _faceExtendedMorphs
     End Function
 
     ''' <summary>The skee64 node name for a slot, e.g. <c>Body [Ovl0]</c> (OverlayInterface.h:33-46). This is

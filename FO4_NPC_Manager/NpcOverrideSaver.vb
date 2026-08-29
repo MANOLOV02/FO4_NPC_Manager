@@ -36,9 +36,10 @@ Public Module NpcOverrideSaver
         ''' <summary>Fresh type-safe parse of <see cref="RawRecord"/> — the base the overlay is applied on.</summary>
         Public RawNpcSpec As NPC_Data
         Public SourcePluginName As String
-        ''' <summary>ACBS "Is CharGen Face Preset" bit. Drives whether the CharGen bake is optional
-        ''' for this NPC; the dialog forces the bake on when ANY batch NPC lacks the flag.</summary>
-        Public IsCharGenFacePreset As Boolean
+        ''' <remarks>Aca vivia un campo <c>IsCharGenFacePreset</c> que MainForm llenaba con el bit del record
+        ''' CRUDO. Se borro: el unico lector -el candado del horneado de CharGen en el dialogo de Save- necesita el
+        ''' bit EFECTIVO, y llenarlo desde afuera dejaba la ley partida entre dos formularios, fuera del alcance de
+        ''' cualquier gate. Hoy el dialogo lo pregunta con <see cref="EffectiveIsCharGenFacePreset"/>.</remarks>
     End Class
 
     ''' <summary>Outcome of <see cref="ExecuteAsync"/>. Populated even on failure so the caller
@@ -114,7 +115,12 @@ Public Module NpcOverrideSaver
         ''' <see cref="BuildOverrideEntry"/> JUST AFTER the round-trip copy so the user's Name/flags/keywords/
         ''' factions/inventory/OBTS edits win over the source record. Nothing = no NPC-record overrides authored
         ''' (existing callers / no-op).</summary>
-        Public ApplyNpcRecordOverride As Action(Of NPC_Data, UInteger) = Nothing
+        ''' <para>Lleva <c>strict</c> y DEVUELVE el motivo del fallo (Nothing = resolvio todo) porque los DOS
+        ''' llamadores son el mismo codigo con distinto derecho a romper: el guardado ABORTA si una categoria de
+        ''' plantilla no se puede materializar, y el dialogo -que compone lo MISMO para decidir si el bake se puede
+        ''' destildar- no puede matar el proceso al abrirse. Un segundo delegado "tolerante" seria esta ley escrita
+        ''' dos veces, que es justo el defecto que <see cref="ComposeSaveShadow"/> vino a cerrar.</para></summary>
+        Public ApplyNpcRecordOverride As Func(Of NPC_Data, UInteger, Boolean, String) = Nothing
         ''' <summary>FaceGen bake delegate: invoked once per NPC during Phase 4a. Writes the 4 loose
         ''' files (NIF + 3 DDS) on the UI thread (GL-bound), returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
         ''' identifying that NPC's bake outputs so the orchestrator can batch them into one pack call.
@@ -1173,6 +1179,60 @@ Public Module NpcOverrideSaver
         End If
     End Sub
 
+    ''' <summary>La sombra que el guardado va a escribir para un NPC: el parse crudo con el overlay de LooksMenu
+    ''' encima y, sobre eso, el <c>NpcRecordOverride</c> del NPC Editor. Es LA composicion del guardado, en un solo
+    ''' cuerpo, porque tiene DOS lectores con necesidades opuestas y antes cada uno miraba una cosa distinta:
+    ''' <see cref="BuildOverrideEntry"/> la escribe, y el dialogo de Save la lee para decidir si el horneado de
+    ''' CharGen se puede destildar. Mientras el dialogo miraba el record CRUDO, una bandera que el usuario tildaba
+    ''' en Edit Face se guardaba en el ESP pero el dialogo no la veia.
+    ''' <para>El ORDEN es la ley, no un detalle: el override del editor escribe la PALABRA ACBS entera, asi que
+    ''' pisa lo que el overlay haya puesto en cualquiera de sus bits. Invertir estas dos lineas cambia el byte
+    ''' guardado.</para>
+    ''' <para>La copia intermedia es load-bearing en los DOS llamadores, por motivos distintos: sin preset el
+    ''' overlay devuelve <paramref name="rawNpcSpec"/> TAL CUAL -que puede ser la instancia cacheada del parse-, y
+    ''' de aca en adelante el escritor le escribe encima; el lector, ademas, no puede tocar el <c>RawNpcSpec</c>
+    ''' que el guardado va a usar despues como base.</para></summary>
+    ''' <param name="strict">True = camino de ESCRITURA: una categoria de plantilla irresoluble LANZA y aborta el
+    ''' guardado. False = camino de LECTURA: no lanza, deja el motivo en <paramref name="fallo"/> y sigue con la
+    ''' sombra a medio materializar, que el llamador tiene que tratar como NO RESUELTA y nunca como un valor.</param>
+    Public Function ComposeSaveShadow(rawNpcSpec As NPC_Data, npcFormID As UInteger, ctx As SaveContext,
+                                      strict As Boolean, ByRef fallo As String) As NPC_Data
+        fallo = Nothing
+        If rawNpcSpec Is Nothing Then Return Nothing
+        ' ⛔ NO cae al crudo si el delegado falta. Guardar el record sin overlay tira TODAS las ediciones de
+        ' LooksMenu EN SILENCIO, que es el modo de falla que este par de funciones vino a eliminar; y el
+        ' contrato de SaveContext ya dice que los campos son obligatorios. Se rompe FUERTE y con nombre.
+        If ctx.ApplyPresetOverlayToNpcData Is Nothing Then
+            Throw New InvalidOperationException(
+                "SaveContext.ApplyPresetOverlayToNpcData es Nothing. Sin el overlay, la sombra de guardado " &
+                "seria el record crudo y toda edicion de LooksMenu se perderia sin aviso.")
+        End If
+        Dim npcSpec = ctx.ApplyPresetOverlayToNpcData(rawNpcSpec, npcFormID)
+        If ReferenceEquals(npcSpec, rawNpcSpec) Then npcSpec = rawNpcSpec.Copia()
+        If ctx.ApplyNpcRecordOverride IsNot Nothing Then fallo = ctx.ApplyNpcRecordOverride(npcSpec, npcFormID, strict)
+        Return npcSpec
+    End Function
+
+    ''' <summary>El bit ACBS 0x04 ("Is CharGen Face Preset") tal como va a quedar en el ESP, leido de la MISMA
+    ''' sombra que escribe el guardado. Lo consume el dialogo de Save para decidir si el horneado de CharGen se
+    ''' puede destildar.
+    ''' <para>Se detiene ANTES del strip de <see cref="BuildOverrideEntry"/> -el que baja el bit cuando el bake
+    ''' corre con "Remove CharGen flag"- y ese corte es lo que rompe una circularidad, no una omision: si el valor
+    ''' incluyera esa etapa, dependeria de <c>GenerateChargen</c>, que es exactamente lo que se esta por decidir con
+    ''' el. El candado se estaria leyendo a si mismo. La entrada de la decision es el estado PRE-bake.</para>
+    ''' <para><c>Resolved:=False</c> NO es un valor: es "no se pudo evaluar". Devolver un Boolean pelado obligaba a
+    ''' inventar uno, y el inventado seria el crudo, o sea el defecto original restaurado justo en los NPC sobre los
+    ''' que la app menos sabe. El llamador tiene que MOSTRARLO, no taparlo.</para></summary>
+    Public Function EffectiveIsCharGenFacePreset(rawNpcSpec As NPC_Data, npcFormID As UInteger,
+                                                 ctx As SaveContext) As (Value As Boolean, Resolved As Boolean, Motivo As String)
+        Dim fallo As String = Nothing
+        Dim npcSpec = ComposeSaveShadow(rawNpcSpec, npcFormID, ctx, strict:=False, fallo:=fallo)
+        If npcSpec Is Nothing OrElse npcSpec.Record Is Nothing Then
+            Return (False, False, $"NPC 0x{npcFormID:X8}: the save shadow could not be composed.")
+        End If
+        Return (npcSpec.Record.ConfigurationFlagsIsCharGenFacePreset, fallo Is Nothing, fallo)
+    End Function
+
     ''' <summary>Build a single NPC override entry: apply the overlay onto the raw parse, copy
     ''' round-trip-only fields, detect a user MWGT edit from the overlay, rebuild HeadParts (raw
     ''' PNAM ∪ preset, deduped by PartType), and resolve the outfit (DOFT) draft fallback. Pure —
@@ -1183,16 +1243,19 @@ Public Module NpcOverrideSaver
         Dim npcFormID = npcInput.NpcFormID
         Dim rawNpcSpec = npcInput.RawNpcSpec
 
-        ' Fase 1a: la sombra del preset. Sin preset el overlay devuelve el parse tal cual, que puede
-        ' ser el que quedo en la cache: se copia SIEMPRE antes de escribirle nada, porque de aca en
-        ' adelante esta funcion le escribe encima (override del editor, apply-script, banderas).
-        Dim npcSpec = ctx.ApplyPresetOverlayToNpcData(rawNpcSpec, npcFormID)
-        If ReferenceEquals(npcSpec, rawNpcSpec) Then npcSpec = rawNpcSpec.Copia()
-
-        ' Phase 1a': apply the NPC-record scalar/list override (NPC Editor) ON TOP of the round-trip copy, so
-        ' the user's Name/ACBS/identity/keyword/faction/inventory/OBTS edits win over the source record without
-        ' the round-trip copy above being altered. No-op when no override was authored for this NPC.
-        ctx.ApplyNpcRecordOverride?.Invoke(npcSpec, npcFormID)
+        ' Fases 1a y 1a' (sombra del preset + override del editor) = ComposeSaveShadow. strict:=True: este es el
+        ' camino de ESCRITURA, y una categoria de plantilla irresoluble tiene que ABORTAR el guardado.
+        Dim falloOverride As String = Nothing
+        Dim npcSpec = ComposeSaveShadow(rawNpcSpec, npcFormID, ctx, strict:=True, fallo:=falloOverride)
+        ' strict:=True implica que el applier LANZA en vez de reportar, asi que llegar aca con un motivo es
+        ' imposible. Se asserta en vez de comentarse: el dia que alguien ponga strict:=False en esta linea
+        ' -para 'que el guardado no aborte'- el motivo se perderia EN SILENCIO y el ESP saldria con la sombra
+        ' a medio materializar. O sea, la forma exacta del defecto que esta tanda vino a cerrar.
+        If falloOverride IsNot Nothing Then
+            Throw New InvalidOperationException(
+                $"ComposeSaveShadow devolvio un motivo con strict:=True ({falloOverride}). Es una asercion: " &
+                "con strict el applier tiene que lanzar, no reportar.")
+        End If
 
         ' Phase 1a'': attach (or strip) our Papyrus apply-script on the NPC_'s VMAD, so the engine applies on
         ' FIRST SPAWN the RaceMenu/LooksMenu options with no other delivery route — overlays, skin overrides,

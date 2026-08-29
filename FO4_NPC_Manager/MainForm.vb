@@ -9426,128 +9426,23 @@ Public Class MainForm
         Return p
     End Function
 
-    ''' <summary>Apply the authored NPC-record override onto the post-round-trip save shadow (the
-    ''' <see cref="NpcOverrideSaver.SaveContext.ApplyNpcRecordOverride"/> delegate). For each edited
-    ''' template-inheriting category the Use-X flag is cleared FIRST (so the engine's CopyFromTemplate does not
-    ''' overwrite the edit), then the override values are written. Only fields the user changed are applied; the
-    ''' rest round-trip verbatim from the source record. No-op when the NPC has no authored override.</summary>
-    ''' <remarks>Traits caveat: with a LooksMenu overlay, the materializer copies only non-overlay-owned Traits
-    ''' before clearing Use-Traits; face/skin/morph values already applied to the shadow remain authoritative.
-    ''' Without an overlay it materializes the complete modeled Traits bucket.</remarks>
-    Private Sub ApplyNpcRecordOverrideToSpec(npcSpec As NPC_Data, npcFormID As UInteger)
-        Dim ov As NpcRecordOverride = Nothing
-        If Not _npcRecordOverrides.TryGetValue(npcFormID, ov) OrElse ov Is Nothing Then Return
-        Dim resolver As Func(Of UInteger, NPC_Data) = AddressOf _ctx.GetParsedNpc
-
-        ' --- Template-flag hook (materialize → clear Use-X) for each edited category the NPC still inherits. ---
-        ' Every supported category is fully materialized before its Use-X bit is cleared.
-        If ov.BaseDataChanged Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.BaseData, resolver)
-        If ov.StatsChanged Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Stats, resolver)
-        If ov.Keywords IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Keywords, resolver)
-        If ov.Factions IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Factions, resolver)
-        If ov.Inventory IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Inventory, resolver)
-        ' Actor Effects (SPLO) belong to the SpellList category; Perks (PRKR) and Properties (PRPS) have no
-        ' template category (engine copies them under other buckets), so they are just replaced below.
-        If ov.ActorEffects IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.SpellList, resolver)
-        ' Traits (Race/Voice/OBTS): materialize the template Traits set + clear Use-Traits. When a LooksMenu
-        ' overlay is applied for this NPC, skip the overlay-OWNED appearance fields (skin/hair/headparts/morphs/
-        ' tints/weight) so the overlay's already-applied values win — the template still fills the non-overlaid,
-        ' non-edited Traits fields (Race/DeathItem/FarAwayModel/Height/OBTS), so nothing falls back to the record's
-        ' empty own-value. The user's Race/Voice/OBTS edits are written below, on top of the materialized set.
-        If ov.TraitsChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then
-            Dim hasOverlay = _appliedPresets.ContainsKey(npcFormID)
-            ' resolveLvlnPick: sin esto la cadena que termina en un LVLN era irresoluble y el bit se bajaba
-            ' igual, dejando al NPC sin cara. Ver NpcTemplateMaterializer.ResolveCategorySource.
-            MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Traits, resolver, skipOverlayOwned:=hasOverlay)
-        End If
-
-        ' --- Scalars. ---
-        ' Escribir un campo CREA su subrecord; una referencia en cero significa "ninguna" y por eso se
-        ' saca en vez de escribirse.
-        If ov.FullName IsNot Nothing Then
-            If ov.FullName.Length > 0 OrElse npcSpec.Record.NamePresente Then
-                npcSpec.Record.Name = ov.FullName
-            Else
-                npcSpec.Record.QuitarSubrecord("FULL")
-            End If
-        End If
-        If ov.ShortName IsNot Nothing Then
-            If ov.ShortName.Length > 0 OrElse npcSpec.Record.ShortNamePresente Then
-                npcSpec.Record.ShortName = ov.ShortName
-            Else
-                npcSpec.Record.QuitarSubrecord("SHRT")
-            End If
-        End If
-        If ov.RaceFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.RaceFormID.Value, "RNAM", Sub(v) npcSpec.Record.Race = v)
-        If ov.VoiceFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.VoiceFormID.Value, "VTCK", Sub(v) npcSpec.Record.Voice = v)
-        If ov.ClassFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.ClassFormID.Value, "CNAM", Sub(v) npcSpec.Record.[Class] = v)
-        If ov.CombatStyleFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.CombatStyleFormID.Value, "ZNAM", Sub(v) npcSpec.Record.CombatStyle = v)
-        ' NAM6 / NAM4 (Height). Written AFTER the Traits materialization above on purpose: height is a
-        ' Traits-category field (MaterializeTraits copies it unconditionally), so on a Traits-inheriting NPC
-        ' the materializer first fills the template's height and this then overwrites it with the user's.
-        ' The editor latches TraitsChanged when it sets these, which is what clears the Use-Traits flag —
-        ' without that the engine's CopyFromTemplate would overwrite the edit at runtime.
-        ' Has* is forced True because a value here means the user authored one; NAM4 is FO4-only and the
-        ' SSE editor path never sets it, so Skyrim records keep emitting no NAM4.
-        If ov.HeightMin.HasValue Then npcSpec.Record.PonerAltura(ov.HeightMin.Value)
-        If ov.HeightMax.HasValue Then npcSpec.Record.PonerAlturaMaxima(ov.HeightMax.Value)
-
-        ' --- ACBS (banderas, nivel, rango de calculo, disposicion y los desplazamientos de Skyrim). ---
-        If ov.AcbsFlags.HasValue Then npcSpec.Record.ConfigurationFlags = ov.AcbsFlags.Value
-        If ov.Level.HasValue Then npcSpec.Record.PonerNivelDeConfiguracion(ov.Level.Value)
-        If ov.CalcMinLevel.HasValue Then npcSpec.Record.ConfigurationCalcMinLevel = ov.CalcMinLevel.Value
-        If ov.CalcMaxLevel.HasValue Then npcSpec.Record.ConfigurationCalcMaxLevel = ov.CalcMaxLevel.Value
-        If ov.DispositionBase.HasValue Then npcSpec.Record.PonerBaseDeDisposicion(ov.DispositionBase.Value)
-        If ov.TemplateFlags.HasValue Then npcSpec.Record.ConfigurationTemplateFlags = ov.TemplateFlags.Value
-        Dim ovFo4 = TryCast(npcSpec.Record, Canon.NpcFO4)
-        If ovFo4 IsNot Nothing AndAlso ov.XpValueOffset.HasValue Then ovFo4.ConfigurationXPValueOffset = ov.XpValueOffset.Value
-        Dim ovSse = TryCast(npcSpec.Record, Canon.NpcSSE)
-        If ovSse IsNot Nothing Then
-            If ov.MagickaOffset.HasValue Then ovSse.ConfigurationMagickaOffset = ov.MagickaOffset.Value
-            If ov.StaminaOffset.HasValue Then ovSse.ConfigurationStaminaOffset = ov.StaminaOffset.Value
-            If ov.SpeedMultiplier.HasValue Then ovSse.ConfigurationSpeedMultiplier = ov.SpeedMultiplier.Value
-            If ov.HealthOffset.HasValue Then ovSse.ConfigurationHealthOffset = ov.HealthOffset.Value
-        End If
-
-        ' --- DNAM de Skyrim. El override lleva el record cuyo DNAM es la edicion; se copia el subrecord
-        ' entero, asi que los campos que nadie toco -relleno sin usar incluido- llegan tal cual. ---
-        If ov.SsePlayerSkills IsNot Nothing Then npcSpec.Record.CopiarSubrecord(ov.SsePlayerSkills, "DNAM")
-
-        ' --- Listas. ---
-        If ov.Keywords IsNot Nothing Then npcSpec.Record.PonerPalabrasClave(ov.Keywords)
-        If ov.AttachParentSlots IsNot Nothing Then npcSpec.Record.PonerRanurasDeEnganche(ov.AttachParentSlots)
-        If ov.Factions IsNot Nothing Then npcSpec.Record.PonerFacciones(ov.Factions)
-        If ov.Inventory IsNot Nothing Then npcSpec.Record.PonerInventario(ov.Inventory)
-        If ov.Perks IsNot Nothing Then npcSpec.Record.PonerVentajas(ov.Perks)
-        If ov.ActorEffects IsNot Nothing Then npcSpec.Record.PonerEfectosDeActor(ov.ActorEffects)
-        If ov.Properties IsNot Nothing Then npcSpec.Record.PonerPropiedades(ov.Properties)
-        If ov.ObjectTemplateCombinations IsNot Nothing Then npcSpec.Record.ReemplazarCombinations(ov.ObjectTemplateCombinations)
-    End Sub
-
-    ''' <summary>Escribe una referencia en el record, o SACA el subrecord cuando vale cero: en el editor
-    ''' el campo vacio significa "ninguna", no "una referencia a cero".</summary>
-    Private Shared Sub EscribirReferenciaOSacar(destino As Canon.INpc, fid As UInteger,
-                                                firma As String, escribir As Action(Of UInteger))
-        If fid <> 0UI Then
-            escribir(fid)
-        Else
-            destino.QuitarSubrecord(firma)
-        End If
-    End Sub
-
-    Private Sub MakeCategoryOwnForSave(npcSpec As NPC_Data,
-                                       category As NPC_TemplateCategory,
-                                       resolver As Func(Of UInteger, NPC_Data),
-                                       Optional skipOverlayOwned As Boolean = False)
-        Dim outcome = NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, category, resolver,
-                                                               skipOverlayOwned:=skipOverlayOwned,
-                                                               resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
-        If outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
-           outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then
-            Throw New InvalidOperationException(
-                $"NPC 0x{npcSpec.FormID:X8}: cannot materialize {NpcManagerFormat.GetTemplateCategoryLabel(category)}; save aborted so the template cannot overwrite the edit.")
-        End If
-    End Sub
+    ''' <summary>Enhebra el estado de la app en <see cref="NpcRecordOverrideApplier.Aplicar"/>. Es el delegado
+    ''' <see cref="NpcOverrideSaver.SaveContext.ApplyNpcRecordOverride"/>, y por eso lleva <c>strict</c> hasta el
+    ''' fondo en vez de fijarlo: con <c>strict:=True</c> (el guardado) una categoría que no se puede materializar
+    ''' ABORTA, igual que antes de la mudanza — si el bit Use-X se bajara igual, la plantilla dejaría de llenar el
+    ''' campo y el NPC se quedaría con su valor propio vacío. Con <c>strict:=False</c> (el diálogo, que compone lo
+    ''' mismo sólo para LEER un bit) devuelve el motivo en vez de matar el proceso al abrirse.
+    ''' <para>El cuerpo se mudó a <see cref="NpcRecordOverrideApplier"/> para que un arnés pueda medir la
+    ''' PRECEDENCIA overlay-vs-override sin replicarla: media ley del guardado era inalcanzable desde
+    ''' <c>Tools/</c> mientras vivía en un <c>Private</c> de este formulario. Wrapper fino, el mismo patrón que
+    ''' <see cref="ApplyPresetOverlayToNpcData"/> sobre <see cref="NpcRecordOverlay"/>.</para></summary>
+    Private Function ApplyNpcRecordOverrideToSpec(npcSpec As NPC_Data, npcFormID As UInteger, strict As Boolean) As String
+        Return NpcRecordOverrideApplier.Aplicar(npcSpec, npcFormID, _npcRecordOverrides,
+                                                AddressOf _ctx.GetParsedNpc,
+                                                Function(f As UInteger) _appliedPresets.ContainsKey(f),
+                                                AddressOf ResolveLvlnPick_Friend,
+                                                strict)
+    End Function
 
 
     ''' <summary>In-memory clipboard for Copy Look / Paste Look. Lives at process scope so the
@@ -11138,7 +11033,7 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Build the per-NPC save input from a FormID: fetch + type-safe parse the raw record,
-    ''' resolve its source plugin, and read the CharGen Face Preset flag. Returns Nothing when the
+    ''' y resolve its source plugin. Returns Nothing when the
     ''' record is missing or not an NPC_. Note: after a prior Save this session mounted an auto-gen
     ''' override (MergeOverridePlugin), GetRecord returns that override — re-saving then uses the
     ''' saved state as its base, which is the intended "saved override is the new baseline" behaviour.</summary>
@@ -11151,15 +11046,13 @@ Public Class MainForm
         If rawNpcSpec Is Nothing Then Return Nothing
         Dim npc As NPC_Data = Nothing
         _ctx.NpcCache.TryGetValue(npcFormID, npc)
-        ' ACBS bit 0x04 = "Is CharGen Face Preset".
 
         Return New NpcOverrideSaver.NpcSaveInput With {
             .NpcFormID = npcFormID,
             .Npc = If(npc, rawNpcSpec),
             .RawRecord = rawRecord,
             .RawNpcSpec = rawNpcSpec,
-            .SourcePluginName = sourcePluginName,
-            .IsCharGenFacePreset = rawNpcSpec.Record.ConfigurationFlagsIsCharGenFacePreset
+            .SourcePluginName = sourcePluginName
         }
     End Function
 
@@ -11682,7 +11575,8 @@ Public Class MainForm
         Dim bundle As New NpcFaceGenPacker.BakedNpcBundle With {
             .OriginPlugin = originPlugin,
             .FormIdLow = formIdLow,
-            .DebugSandbox = FaceGenBuilder.DebugMode
+            .DebugSandbox = FaceGenBuilder.DebugMode,
+            .ExtraLooseFiles = bakeResult.ExtraLooseFiles
         }
         ' The NIF wrote (Success=True), but face-texture slots may have failed to encode/write. Surface the
         ' cause upward: the orchestrator adds it to the save summary + flips the icon to Warning, so the user

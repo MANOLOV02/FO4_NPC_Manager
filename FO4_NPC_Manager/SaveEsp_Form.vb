@@ -242,7 +242,11 @@ Public Class SaveEsp_Form
         ''' <summary>When True (and <see cref="GenerateChargen"/> is also True), the orchestrator clears the
         ''' ACBS "Is CharGen Face Preset" flag (bit 0x04) on every saved NPC override, so the engine loads
         ''' the freshly baked FaceGen instead of reconstructing the face at runtime. Only meaningful when the
-        ''' CharGen bake runs; the dialog disables + unchecks the option when the bake is off. Default False.</summary>
+        ''' CharGen bake runs; the dialog DISABLES the option when the bake is off — sin destildarla, para no
+        ''' pisar la preferencia persistida (ver UpdateRemoveChargenFlagEnabled). El default sale de
+        ''' <c>NPC_Config.RemoveCharGenFlagOnBake</c>, que es <b>True</b>: con el horneado forzado, ese default es
+        ''' lo que hace que el bit 0x04 salga BAJADO del guardado aunque el usuario lo haya tildado en Edit Face.
+        ''' (Decia "Default False", que es el valor contrario al que la app usa de verdad.)</summary>
         Public RemoveCharGenFlag As Boolean
         ''' <summary>El sidecar <c>&lt;plugin&gt;.bssliders</c> se escribe SIEMPRE. Era un checkbox y se quitó:
         ''' no es una opción de salida, es la BASE DE DATOS de la app, y apagarlo rompía cosas en silencio.
@@ -344,10 +348,28 @@ Public Class SaveEsp_Form
     ''' <summary>Every NPC the user changed this session (includes the selected one). The
     ''' "Apply to all changed NPCs" checkbox switches the save scope to this list.</summary>
     Private ReadOnly _allDirtyInputs As List(Of NpcOverrideSaver.NpcSaveInput)
-    ''' <summary>True when EVERY NPC in the current scope has the CharGen Face Preset flag, so the
-    ''' bake is optional. Recomputed when the scope (Apply-to-all) toggles. When False the CharGen
-    ''' checkbox is forced on (at least one NPC needs the BA2 to render in-world).</summary>
-    Private _scopeAllowsChargenOptOut As Boolean
+    ''' <summary>Veredicto de un alcance frente al bit ACBS 0x04. "Sin resolver" NO es "no lo tiene": es
+    ''' que la sombra de guardado de ese NPC no se pudo componer, y eso va al aviso en vez de disfrazarse de
+    ''' decision.</summary>
+    Private Structure VeredictoChargen
+        ''' <summary>True cuando TODOS los NPC del alcance van a llevar el bit en el ESP: el horneado es opcional.</summary>
+        Public PermiteDestildar As Boolean
+        ''' <summary>Se encontro AL MENOS UNO que no se pudo evaluar. No es un contador: el barrido CORTA, asi
+        ''' que un censo seria mentira. Un cero de un barrido cortado se lee como <i>esta todo bien</i>.</summary>
+        Public HuboSinResolver As Boolean
+        ''' <summary>Motivo del PRIMER NPC sin resolver, para el aviso.</summary>
+        Public PrimerMotivo As String
+        ''' <summary>Primer NPC que no lleva el bit. El rotulo lo nombra: "un NPC" a secas no le sirve a nadie que
+        ''' tenga 200 en el lote.</summary>
+        Public PrimerCulpable As UInteger
+    End Structure
+
+    ''' <summary>Los dos alcances, evaluados UNA vez en el ctor. No es un cache que alguien tenga que acordarse de
+    ''' invalidar: las dos listas y el <c>SaveContext</c> son argumentos del constructor y el dialogo es MODAL, asi
+    ''' que nada de lo que entra en la cuenta puede cambiar mientras esta abierto. El toggle de radio pasa a costar
+    ''' cero composiciones; antes recorria la lista entera en cada click.</summary>
+    Private ReadOnly _chargenSeleccionados As VeredictoChargen
+    Private ReadOnly _chargenTodosCambiados As VeredictoChargen
 
     Public Property Result As SaveTarget = Nothing
     ''' <summary>Populated by <see cref="OnOkClick"/> after the orchestrator finishes; remains
@@ -406,6 +428,12 @@ Public Class SaveEsp_Form
         _sourceMasterIsEsm = sourceMasterIsEsm
         _saveCtx = saveCtx
         _anchorSourcePluginName = If(anchorSourcePluginName, "")
+        ' El candado del horneado de CharGen se decide con el bit que el guardado VA A ESCRIBIR, no con el del
+        ' record crudo: si no, una bandera tildada en Edit Face salia al ESP y el dialogo seguia sin verla, o sea
+        ' que la unica maniobra que destraba la casilla no funcionaba. La ley es UNA y vive en
+        ' NpcOverrideSaver.EffectiveIsCharGenFacePreset, sobre la MISMA composicion que escribe el saver.
+        _chargenSeleccionados = EvaluarAlcanceChargen(_selectedInputs)
+        _chargenTodosCambiados = EvaluarAlcanceChargen(_allDirtyInputs)
 
         ' Scope radios: "Selected" vs "All changed". The default depends on the entry point: the
         ' toolbar Save button defaults to "All changed"; the tree context-menu "Save Selected"
@@ -533,22 +561,68 @@ Public Class SaveEsp_Form
         Return _allDirtyInputs
     End Function
 
+    ''' <summary>Veredicto del alcance ACTIVO. Los dos ya estan resueltos desde el ctor; esto solo elige.</summary>
+    Private Function VeredictoActual() As VeredictoChargen
+        Return If(RadioScopeSelected.Checked, _chargenSeleccionados, _chargenTodosCambiados)
+    End Function
+
     ''' <summary>Recompute whether the CharGen bake can be opted out for the current scope. The bake
     ''' is forced on (checkbox checked + disabled) when ANY NPC in scope lacks the CharGen Face
-    ''' Preset flag — those NPCs render as a generic head in-world without our BA2.</summary>
+    ''' Preset flag — those NPCs render as a generic head in-world without our BA2.
+    ''' <para>El rotulo distingue los DOS motivos del forzado. "No lo tiene" y "no se pudo evaluar" llevan a la
+    ''' misma casilla gris pero no son la misma cosa, y una sola etiqueta para las dos manda al usuario a buscar
+    ''' una bandera que quiza si esta.</para></summary>
     Private Sub RecomputeChargenForcing()
-        _scopeAllowsChargenOptOut = CurrentInputs().All(Function(i) i.IsCharGenFacePreset)
+        Dim v = VeredictoActual()
         ' Strip any prior "(required…)" suffix before re-deciding. Keep in sync with the Designer text.
         Const baseText As String = "Bake CharGen (NIF + textures) → BA2"
-        If _scopeAllowsChargenOptOut Then
+        If v.PermiteDestildar Then
             CheckBoxGenerateChargen.Enabled = True
             CheckBoxGenerateChargen.Text = baseText
         Else
             CheckBoxGenerateChargen.Checked = True
             CheckBoxGenerateChargen.Enabled = False
-            CheckBoxGenerateChargen.Text = baseText & "  (required: a NPC lacks CharGen flag)"
+            Dim motivo As String
+            If v.HuboSinResolver Then
+                motivo = $"(required: the CharGen flag could not be evaluated for NPC 0x{v.PrimerCulpable:X8})"
+            Else
+                motivo = $"(required: NPC 0x{v.PrimerCulpable:X8} lacks CharGen flag)"
+            End If
+            CheckBoxGenerateChargen.Text = baseText & "  " & motivo
         End If
     End Sub
+
+    ''' <summary>Evalua un alcance: por cada NPC, el bit 0x04 que el guardado VA A ESCRIBIR. CORTA en el primero
+    ''' que fuerza el candado, sea porque no lleva la bandera o porque no se pudo evaluar — las dos cosas dan el
+    ''' mismo veredicto, asi que seguir no cambiaria ninguna decision.
+    ''' <para><b>El corte esta MEDIDO, no supuesto.</b> Componer la sombra cuesta 0,327 ms por NPC sin ediciones
+    ''' pero <b>11,773 ms</b> por NPC con un preset de LooksMenu (500 NPC, FO4, con pasada de calentamiento), y el
+    ''' alcance <i>All changed</i> es POR CONSTRUCCION la poblacion con preset. Sin corte, 500 NPC editados son
+    ''' ~5,9 s por alcance, y se evaluan los dos: ~12 s para ABRIR el dialogo. Con corte, el caso del reporte
+    ''' -NPC genericos, que no llevan la bandera- se resuelve en el PRIMERO.</para>
+    ''' <para>⚠️ Peor caso que el corte NO arregla: si TODOS los NPC del alcance llevan la bandera no hay donde
+    ''' cortar y se pagan los N x 11,8 ms. Queda asi a proposito: bajarlo pide saltear el overlay y reemplazarlo
+    ''' por su unica contribucion al ACBS, que es una ley nueva y va con su propio gate, en su propia tanda.</para>
+    ''' <para>Lo que el corte CUESTA: el aviso deja de ser un censo y pasa a ser <b>best-effort</b>. Un NPC
+    ''' irresoluble mas adelante en la lista puede no descubrirse nunca. No es regresion -antes el dialogo no
+    ''' componia nada y no avisaba de nada- pero dejo de ser garantia, y por eso el aviso dice <i>al menos uno</i>
+    ''' y NUNCA un numero.</para></summary>
+    Private Function EvaluarAlcanceChargen(inputs As List(Of NpcOverrideSaver.NpcSaveInput)) As VeredictoChargen
+        Dim v As New VeredictoChargen With {.PermiteDestildar = True}
+        If inputs Is Nothing Then Return v
+        For Each i In inputs
+            Dim r = NpcOverrideSaver.EffectiveIsCharGenFacePreset(i.RawNpcSpec, i.NpcFormID, _saveCtx)
+            ' Sin resolver cuenta como "no lo tiene": deja el horneado forzado, que es el lado conservador y el
+            ' mismo comportamiento que habia antes para ese NPC. Lo que cambia es que ahora se DICE.
+            If r.Resolved AndAlso r.Value Then Continue For
+            v.PermiteDestildar = False
+            v.PrimerCulpable = i.NpcFormID
+            v.HuboSinResolver = Not r.Resolved
+            v.PrimerMotivo = r.Motivo
+            Exit For
+        Next
+        Return v
+    End Function
 
     ''' <summary>The "Remove CharGen flag" option only does something when the CharGen bake runs, so it
     ''' is enabled iff the bake checkbox is checked. The checked state is LEFT INTACT when disabling, so the
@@ -870,6 +944,18 @@ Public Class SaveEsp_Form
         ' re-encodes those records' FormIDs (inherent to ESP↔ESL), breaking external references.
         If IsRiskyEslFlip() Then
             warnings.Add("⚠ Changing ESM/ESL re-encodes this plugin's NEW outfit (OTFT) FormIDs — existing saves/mods referencing them would break. (NPC overrides are unaffected.)")
+        End If
+
+        ' NPC cuya sombra de guardado no se pudo componer: el horneado les queda forzado y el Save DESPUES va a
+        ' fallar en ellos con el mensaje de la materializacion. Decirlo aca lo ADELANTA, en vez de que aparezca
+        ' como un error sin relacion con nada de lo que el usuario tenia en pantalla.
+        ' BEST-EFFORT, no censo: EvaluarAlcanceChargen CORTA en el primero que fuerza el candado, asi que puede
+        ' haber mas y no se sabria. Por eso dice "at least one" y NUNCA un numero — un cero salido de un barrido
+        ' cortado se leeria como "esta todo bien", que es lo contrario de lo que pasa.
+        Dim vChargen = VeredictoActual()
+        If vChargen.HuboSinResolver Then
+            warnings.Add("⚠ At least one NPC could not be evaluated for the CharGen flag, so the bake stays " &
+                         "required for this scope — and the save will fail on it. First: " & If(vChargen.PrimerMotivo, ""))
         End If
 
         Dim text = String.Join(vbCrLf, warnings)

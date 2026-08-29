@@ -68,6 +68,16 @@ Friend Module BakeAllRunner
         ''' npc_config.json (que es estado de la UI) ni Plugins.txt (que es del juego).</para>
         ''' <para>No modifica nada: es por corrida.</para></summary>
         Public SkipCustomList As Boolean = False
+        ''' <summary>Carpeta que REEMPLAZA a Data como raiz de escritura del bake. "" (default) = Data.
+        ''' La estructura relativa NO cambia: adentro se arma el mismo
+        ''' <c>Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;plugin&gt;\</c>, asi que la carpeta por
+        ''' plugin sigue estando - con el nombre del plugin que ORIGINA cada NPC, que no es
+        ''' necesariamente el de <see cref="EspTarget"/> (ese filtra por el GANADOR).
+        ''' <para>Solo afecta a la SALIDA. La LECTURA -plugins, archives, texturas fuente- sigue
+        ''' saliendo del Data del juego: si esto redirigiera la lectura, el bake no encontraria una
+        ''' sola textura.</para>
+        ''' <para>Por corrida, nunca se persiste - igual que <see cref="ExecutablePath"/>.</para></summary>
+        Public OutputDir As String = ""
     End Class
 
     ''' <summary>Infer the game from an executable's file name — the same signal the preflight uses to warn
@@ -132,6 +142,24 @@ Friend Module BakeAllRunner
                 Config_App.Current.FO4ExePath = exeOverride
                 Config_App.Current.Game = inferred.Value
                 log($"--executable override: {exeOverride}  →  game = {inferred.Value} (this run only, config.json untouched)")
+            End If
+
+            ' --outdir: mueve la RAIZ DE ESCRITURA del bake y nada mas.
+            ' Aca se valida la FORMA y NO se crea la carpeta: este bloque corre antes de Check_FOFolder,
+            ' del chequeo de Data, del mismatch juego/exe y de la validacion de --esptarget. Creando aca,
+            ' un script que barre 40 plugins con el config roto deja 40 carpetas vacias. El
+            ' CreateDirectory va junto al seteo, ya pasado todo lo que puede abortar la corrida.
+            ' IsPathFullyQualified, NO IsPathRooted: "\foo" y "C:foo" son ROOTED y NO son absolutas (se
+            ' resuelven contra la unidad/directorio actuales del proceso), asi que con IsPathRooted el
+            ' FATAL no dispara y el barrido cae en la raiz de otra unidad segun desde donde se lo lanzo.
+            ' Es la misma API que ya usa FilesDictionary_class.vb:350. UNC pasa, que es lo que se quiere.
+            Dim outRoot As String = ""
+            If opt IsNot Nothing AndAlso BakeOutputRoot.EsMovida(opt.OutputDir) Then
+                outRoot = opt.OutputDir.Trim().Trim(""""c)
+                If Not Path.IsPathFullyQualified(outRoot) Then
+                    log($"FATAL: --outdir '{outRoot}' is not a fully qualified path (e.g. D:\out\MyMod).")
+                    Return ExitFatal
+                End If
             End If
 
             Dim game = Config_App.Current.Game
@@ -700,6 +728,7 @@ Friend Module BakeAllRunner
             ' Nada entre el punto viejo y éste LEE los flags: se consumen dentro del loop, en compose/encode.
             Dim prevSkipDds = FaceGenBuilder.SkipDdsEncode
             Dim prevSkipCompose = FaceTintCpuCompositor.SkipPixelCompose
+            Dim prevRaizSalida = BakeOutputRoot.Elegida
 
             ' EL SETEO VA ADENTRO DEL Try. Quedó AFUERA cinco líneas, y su `log("SAMPLE: ...")`
             ' corría con los dos flags YA PRENDIDOS: si ese log tiraba —o si tiraba
@@ -708,6 +737,25 @@ Friend Module BakeAllRunner
             ' Es el mismo modo de falla que este arreglo dice cerrar, desplazado. Las CAPTURAS sí quedan
             ' afuera: se leen antes de tocar nada y el Finally las necesita.
             Try
+                ' Se fija UNA vez, aca, ANTES del Parallel.ForEach. Adentro del loop solo se lee.
+                ' El CreateDirectory vive aca y no en la validacion de forma: a esta altura ya pasaron
+                ' todos los chequeos que pueden abortar la corrida, asi que no se crean carpetas de
+                ' barridos que nunca van a hornear.
+                ' El MISMO predicado que la validacion y que EstaMovida(). Aca decia
+                ' `outRoot <> ""`, que es la forma por la que se rechazo la v2: no rompia
+                ' porque H8 ya habia hecho Trim, pero era la cuarta redaccion de una ley que
+                ' tiene que estar en UN lugar.
+                If BakeOutputRoot.EsMovida(outRoot) Then
+                    Try
+                        Directory.CreateDirectory(outRoot)
+                    Catch exOut As Exception
+                        log($"FATAL: --outdir '{outRoot}' could not be created: {exOut.GetType().Name}: {exOut.Message}")
+                        Return ExitFatal
+                    End Try
+                    BakeOutputRoot.Elegida = outRoot
+                    log($"--outdir: the bake writes to {outRoot} instead of Data (same relative tree; reads still come from Data).")
+                    log("          Data is NOT cleaned by this run: FaceGen left there by a previous bake stays, and a later Save ESP would pack it.")
+                End If
                 If If(Environment.GetEnvironmentVariable("FGBAKE_SKIP_DDS"), "").Trim() = "1" Then
                     FaceGenBuilder.SkipDdsEncode = True
                     FaceTintCpuCompositor.SkipPixelCompose = True
@@ -1008,12 +1056,13 @@ Friend Module BakeAllRunner
                     End Try
                  End Sub)
             Finally
-                ' LOS FLAGS PRIMERO. Son dos asignaciones que no pueden tirar, asi que si algo de abajo
+                ' LOS FLAGS PRIMERO. Son tres asignaciones que no pueden tirar, asi que si algo de abajo
                 ' revienta igual quedan restaurados. `SkipPixelCompose = True` colgado deja todo compose
                 ' posterior de la sesion de la GUI devolviendo un buffer NEGRO. Nada de lo que sigue en este
                 ' Finally los lee.
                 FaceGenBuilder.SkipDdsEncode = prevSkipDds
                 FaceTintCpuCompositor.SkipPixelCompose = prevSkipCompose
+                BakeOutputRoot.Elegida = prevRaizSalida
                 ' BLOQUE DE DIAGNOSTICO, GATEADO. A un usuario que hornea su load order no le sirve NADA de
                 ' esto: hits/misses de cache, bytes por nivel y contadores del izado son para MEDIR, no para
                 ' operar. Va todo bajo Logger.Enabled (= FaceGenBuilder.DebugMode), que es lo que prenden el

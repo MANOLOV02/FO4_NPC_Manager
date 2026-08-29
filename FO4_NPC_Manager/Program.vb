@@ -228,6 +228,29 @@ Module Program
         opt.ExecutablePath = GetFlagValue(args, "--executable")
         opt.EspTarget = GetFlagValue(args, "--esptarget")
         opt.SkipCustomList = HasFlag(args, "--skipcustomlist")
+        opt.OutputDir = GetFlagValue(args, "--outdir")
+        ' GetFlagValue devuelve "" tanto si el flag NO esta como si esta SIN VALOR (itera hasta
+        ' args.Length - 2; su propio doc lo dice). Para --esptarget eso es benigno: hornea de mas.
+        ' Para --outdir es EXACTAMENTE el accidente que el flag existe para evitar - `--outdir` como
+        ' ultimo token, o `--outdir %OUTDIR%` con la variable vacia, horneaba los miles de NPC sobre
+        ' el Data del juego sin una sola linea que dijera que la opcion se ignoro.
+        ' EL MISMO PREDICADO que la validacion de BakeAllRunner y que BakeOutputRoot.EstaMovida(): uno
+        ' solo, y vive en BakeOutputRoot. Aca decia `= ""` y alla IsNullOrWhiteSpace, y con esos DOS un
+        ' `--outdir "   "` se salteaba los dos guardas y horneaba sobre Data en silencio.
+        If HasFlag(args, "--outdir") AndAlso Not BakeOutputRoot.EsMovida(opt.OutputDir) Then
+            ' El canal depende del MODO, como en WrapperNativoOk: sin --windowless este proceso va a
+            ' mostrar una ventana de progreso, y Program.vb:281-283 dice que ahi "un Console.Error no
+            ' lo ve nadie". Un FATAL invisible deja la corrida abortada sin explicacion.
+            Dim msgOut = "FATAL: --outdir needs a folder (e.g. --outdir ""D:\out\MyMod"")."
+            If opt.Windowless Then
+                EnsureConsole()
+                Console.Error.WriteLine(msgOut)
+            Else
+                MessageBox.Show(msgOut, "NPC Manager - --outdir", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End If
+            Environment.ExitCode = BakeAllRunner.ExitFatal
+            Return
+        End If
 
         ' El bake escribe DDS en disco. Con el componente nativo desajustado los escribe MAL y en silencio
         ' (un wrapper de otra plataforma hace que cada textura DX10 de un BA2 se lea como 0 bytes).
@@ -314,6 +337,7 @@ Module Program
         Console.WriteLine("NPC_Manager_FO4.exe — command line modes")
         Console.WriteLine("")
         Console.WriteLine("  --bake-all [--windowless] [--executable <path to game .exe>] [--esptarget <plugin>]")
+        Console.WriteLine("             [--outdir <folder>]")
         Console.WriteLine("      Bake loose FaceGen (NIF + face textures) for EVERY NPC in the active load")
         Console.WriteLine("      order — same as selecting them all and pressing 'Build CharGen (loose)'.")
         Console.WriteLine("      Shows a progress window with a live log by default.")
@@ -328,6 +352,12 @@ Module Program
         Console.WriteLine("      --esptarget    bake ONLY the NPCs of this plugin (e.g. MyFollower.esp) and")
         Console.WriteLine("                     skip every other NPC. Counts the NPCs the plugin adds AND the")
         Console.WriteLine("                     ones it overrides. The rest of the load order is still loaded.")
+        Console.WriteLine("      --outdir       writes the FaceGen tree into <folder> instead of Data, with")
+        Console.WriteLine("                     the SAME relative layout (...\FaceGeom\<plugin>\). Reads still")
+        Console.WriteLine("                     come from Data, and Data is NOT cleaned. Combine with")
+        Console.WriteLine("                     --esptarget for one self-contained folder per mod. The")
+        Console.WriteLine("                     subfolder is named after the plugin that ORIGINATES each NPC,")
+        Console.WriteLine("                     which for an override is the master, not --esptarget.")
         Console.WriteLine("      Exit: 0 = all baked, 1 = config/load failed, 2 = some NPCs failed, 3 = cancelled")
         Console.WriteLine("")
         Console.WriteLine("  --bake-geom <espName> <edidOrFormId> [--data <Dir>] [--out <nif>]")

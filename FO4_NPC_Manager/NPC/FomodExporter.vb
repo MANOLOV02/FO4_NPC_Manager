@@ -123,12 +123,22 @@ Public Module FomodExporter
             ' Loose-only: include every FaceGen file that EXISTS on disk for the plugin's NPCs.
             ' Paths are per ORIGIN plugin + local FormID (game-aware, ESL-aware) — the exact same
             ' source of truth the packer/delete flows use.
+            ' Las INVENTADAS se juntan aparte y se agregan UNA vez: son compartidas entre NPC (las
+            ' mismas tres texturas para todas las gules de la raza), asi que recorrerlas por NPC las
+            ' agregaria repetidas al manifiesto.
+            Dim inventadas As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
             For Each fid In npcFormIDs
                 For Each entry In NpcFaceGenPacker.CanonicalFaceGenEntryPathsForNpc(fid, pluginManager, game)
                     If File.Exists(Path.Combine(dataPath, entry)) Then
                         addDisk(ItemKind.FaceGenLoose, entry, False, "")
                     End If
                 Next
+                For Each extra In NpcFaceGenPacker.InventedLooseFilesForNpc(fid, pluginManager, dataPath)
+                    inventadas.Add(extra)
+                Next
+            Next
+            For Each extra In inventadas
+                addDisk(ItemKind.FaceGenLoose, extra, False, "textura que inventa el bake: no la trae ningun mod")
             Next
         End If
 

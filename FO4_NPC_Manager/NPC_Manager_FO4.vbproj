@@ -77,6 +77,13 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>OverlaySlotGate</_Parameter1>
     </AssemblyAttribute>
+    <!-- Tools/HairTintGateProbe: mide el gate del tinte de pelo (IsHairHeadPart, por TIPO de head part)
+         contra la ley del motor (por MATERIAL). Necesita MeshCandidate y NpcMaterialResolver, que son
+         Friend y asi se quedan. Mismo criterio que OverlaySlotGate: el testigo LLAMA al sujeto en vez de
+         re-transcribirlo. Ver 00-reglas-el-testigo-tiene-que-compartir-el-codigo-del-sujeto. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>HairTintGateProbe</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
   <!-- Fija la plataforma del wrapper NATIVO. Va en LOS SEIS proyectos, no solo en los dos que lo
        referencian de verdad: el SDK inyecta el ProjectReference transitivo sin la metadata. Ver el .targets. -->

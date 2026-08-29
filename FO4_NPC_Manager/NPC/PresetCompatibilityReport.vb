@@ -613,6 +613,40 @@ Public Module PresetCompatibilityReport
                                    $"{String.Join(", ", shown)}{If(unknownNames.Count > 15, ", …", "")} — no .slider definition for race '{raceEditorId}' ({If(ctx.IsFemale, "female", "male")}). The name is still tried directly against the chargen .tri, so it applies only if a morph of exactly that name exists there. Typical cause: the mod that adds those sliders isn't installed."))
         End If
         If okMorphs > 0 Then r.Resolved.Add($"{okMorphs} RaceMenu custom morph(s) resolve through this race's slider catalog")
+
+        ' El preset puede venir de una máquina con OTRO fSliderMultiplier. El valor se conserva entero —nada del
+        ' round-trip de skee64 lo clampea (PresetInterface.cpp:448-456/1068-1073)— así que el morph se aplica con
+        ' su magnitud, pero el slider de ESTA instalación no llega hasta ahí: en cuanto el usuario toque esa fila
+        ' se va a ir al borde de su propia ventana. Es información, no un problema: el mismo criterio que el aviso
+        ' de slots de overlay, que también avisa y deja seguir.
+        If Not SseCatalogs.FaceExtendedMorphsEnabled() Then
+            r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Custom morphs",
+                                   $"{p.SseCustomMorphs.Count} RaceMenu morph(s) won't be applied by the game",
+                                   $"[FaceGen] bExtendedMorphs=0 in {SseCatalogs.SkeeIniSource()} — RaceMenu applies none of its extended face morphs while that key is 0, so neither does the preview or the bake. The values stay in the preset and come back when the key is 1. Per-vertex sculpt is unaffected."))
+        Else
+            Dim mult = SseCatalogs.FaceSliderKnobs().Multiplier
+            Dim beyond As New List(Of String)
+            Dim worst As Single = 0
+            For Each cm In p.SseCustomMorphs
+                If cm Is Nothing OrElse String.IsNullOrEmpty(cm.Name) Then Continue For
+                ' Sólo los BIDIRECCIONALES: en un slider de tipo Preset el valor es un índice y su cota es
+                ' presetCount, que no tiene nada que ver con el multiplicador.
+                Dim d = catalog.GetSlider(raceEditorId, ctx.IsFemale, cm.Name)
+                If d IsNot Nothing AndAlso d.Type <> FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Slider Then Continue For
+                If Math.Abs(cm.Value) > mult + 0.0001R Then
+                    beyond.Add($"{cm.Name}={cm.Value:0.00}")
+                    worst = Math.Max(worst, Math.Abs(cm.Value))
+                End If
+            Next
+            If beyond.Count > 0 Then
+                Dim shown = beyond.Take(10)
+                r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Custom morphs",
+                                       $"{beyond.Count} morph(s) go past this install's slider range (±{mult:0.##})",
+                                       $"{String.Join(", ", shown)}{If(beyond.Count > 10, ", …", "")} — authored where [FaceGen] fSliderMultiplier was at least {Math.Ceiling(worst):0}. " &
+                                       $"The values are applied at full magnitude and are saved back unchanged; what does not reach them is the SLIDER of this install (yours is {SseCatalogs.SkeeIniSource()}), so touching one of those rows snaps it to ±{mult:0.##}. " &
+                                       "Raise fSliderMultiplier in skee64.ini to edit them without losing the excess."))
+            End If
+        End If
     End Sub
 
     ' ---------------------------------------------------------------------------------------------
@@ -730,7 +764,7 @@ Public Module PresetCompatibilityReport
             ' La fuente TAMBIÉN se saca una vez. Pedirla adentro del loop anulaba el hoist de arriba —vuelve a
             ' statear por cada overlay— y encima abría una ventana por fila para que el número impreso y el
             ' archivo nombrado dejen de corresponderse.
-            Dim countSource = SseCatalogs.OverlayCountSource()
+            Dim countSource = SseCatalogs.SkeeIniSource()
             For Each ov In p.SseBodyOverlays
                 If ov Is Nothing Then Continue For
                 Dim zone = SseCatalogs.ZoneOfNode(ov.NodeName)

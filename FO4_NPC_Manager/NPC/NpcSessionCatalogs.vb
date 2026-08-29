@@ -27,6 +27,16 @@ Public Module NpcSessionCatalogs
         ' directo). Se construye UNA vez, con los nombres de los plugins cargados: skee64 escanea
         ' Meshes\actors\character\FaceGenMorphs\<pluginName>\races.ini por mod (LoadMods→ForEachMod).
         ' Alimenta el camino compartido de morphs vía NpcMorphResolver.SliderCatalog.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            ' El interruptor va CON el catálogo y por la misma puerta: los dos describen la misma instalación
+            ' de RaceMenu, y el camino compartido de morphs (render + bake, NpcMorphResolver) los lee juntos.
+            ' Fuera de Skyrim NO se toca: en FO4 no hay skee64.ini y el default (True) es el que corresponde.
+            NpcMorphResolver.ExtendedMorphsEnabled = SseCatalogs.FaceExtendedMorphsEnabled()
+            If Not NpcMorphResolver.ExtendedMorphsEnabled Then
+                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] bExtendedMorphs=0 — el motor NO aplica morphs " &
+                                          $"extendidos de cara en esta instalación [{SseCatalogs.SkeeIniSource()}]")
+            End If
+        End If
         If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso NpcMorphResolver.SliderCatalog Is Nothing Then
             Try
                 ' La lista de carpetas son los plugins que ESTA SESIÓN cargó, en load order — el mismo

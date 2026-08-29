@@ -74,6 +74,16 @@ Public Module FaceGenBuilder
         ''' <summary>First texture-bake failure reason (exception type + message + slot/size/format, or the
         ''' bail reason). Representative message for the user-facing summary. Empty when TextureSlotsFailed=0.</summary>
         Public Property TextureFailureDetail As String = ""
+
+        ''' <summary>Sueltos que ESTE bake dejo FUERA del layout por NPC y que su NIF referencia, como
+        ''' rutas relativas a Data. Hoy: el clon de UV vanilla de la nuca de gul
+        ''' (<c>NpcMaterialResolver.HeadRearClonedTextureRoot</c>), que vive en una raiz que se inventa
+        ''' la app y que por lo tanto NINGUN mod trae.
+        ''' <para>Sin esto el mod se publica con un NIF apuntando a texturas que no entrega: MEDIDO,
+        ''' 24 de 2877 NIF horneados del corpus las referencian.</para>
+        ''' <para>NO entran en <c>FaceGenFileSpecs</c>: esa lista sirve tambien al flujo de BORRADO, y
+        ''' este activo es COMPARTIDO por todas las gules de la raza - entregarlo si, borrarlo no.</para></summary>
+        Public ReadOnly Property ExtraLooseFiles As New List(Of String)
     End Class
 
 
@@ -109,6 +119,23 @@ Public Module FaceGenBuilder
     ''' El decode de los sources NO se gatea: ya esta amortizado entre NPCs por BatchDecodeCache y ademas es lo
     ''' que determina que slots existen.</summary>
     Public Property SkipDdsEncode As Boolean = False
+
+    ''' <summary>Anota en el resultado del bake toda ruta del material que cuelgue de una raiz que
+    ''' INVENTA la app -hoy solo <c>NpcMaterialResolver.HeadRearClonedTextureRoot</c>- y que por lo
+    ''' tanto no trae ni el juego ni ningun mod. Es lo que la entrega tiene que llevar ademas de los
+    ''' archivos por NPC de <c>FaceGenFileSpecs</c>.
+    ''' <para>Normaliza con la MISMA funcion que usa el clonador (<c>CorrectTexturePath</c>), o la
+    ''' comparacion falla por el prefijo "Textures\" o por el separador.</para></summary>
+    Private Sub AnotarSueltoInventado(mat As FO4UnifiedMaterial_Class, result As BuildResult)
+        If mat Is Nothing OrElse result Is Nothing Then Return
+        For Each ruta In {mat.Diffuse_or_Base_Texture, mat.NormalTexture, mat.SmoothSpecTexture}
+            If String.IsNullOrEmpty(ruta) Then Continue For
+            Dim norm = FO4UnifiedMaterial_Class.CorrectTexturePath(ruta)
+            If String.IsNullOrEmpty(norm) Then Continue For
+            If Not norm.StartsWith(NpcMaterialResolver.HeadRearClonedTextureRoot, StringComparison.OrdinalIgnoreCase) Then Continue For
+            If Not result.ExtraLooseFiles.Contains(norm, StringComparer.OrdinalIgnoreCase) Then result.ExtraLooseFiles.Add(norm)
+        Next
+    End Sub
 
     ' =========================== INSTRUMENTACION DE FASES ==============================
     ' POR QUE EXISTE: el bake se venia optimizando midiendo SOLO el tiempo total, que dice SI mejoro pero
@@ -1238,7 +1265,12 @@ Public Module FaceGenBuilder
                         ' (Unknown) per user instruction — CK's normalization to None is purely
                         ' cosmetic at this point.
                         Try
-                            ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
+                            Dim matAplicado = ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
+                            ' El material que quedo ES el que se embebe en el NIF. Si alguna de sus tres
+                            ' rutas cuelga de la raiz que INVENTA la app, este NPC no se puede entregar sin
+                            ' ese archivo: no lo trae ningun mod ni el juego. Se declara aca, por NPC, y
+                            ' viaja con el bundle a cualquiera de los caminos de entrega.
+                            AnotarSueltoInventado(matAplicado, result)
                         Catch exMat As Exception
                             ' El link al BGSM externo YA se corto (arriba, cuando se vacia shad.Name.String), asi
                             ' que el shader inline es LA LEY y quedo INDETERMINADO (`Save_To_Shader` escribe ~25
@@ -1883,7 +1915,7 @@ Public Module FaceGenBuilder
         '   DebugMode=True: <formID>_2.nif → sandbox al lado del CK bake, sin pisar; engine
         '                   sigue usando el CK; el comparator diff-ea against CK BA2 baseline.
         Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
-        Dim dataPathForNif = Config_App.Current.DataPath
+        Dim dataPathForNif = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPathForNif) Then
             result.Summary = "DataPath unset; cannot write .nif"
             Return result
@@ -2246,7 +2278,10 @@ Public Module FaceGenBuilder
         Return wrapper.ShapeMaterial?.material
     End Function
 
-    Private Sub ApplyRenderResolvedMaterialToShape(nif As Nifcontent_Class_Manolo,
+    ''' <summary>Aplica al shape el material resuelto como lo hace el render, y DEVUELVE ese
+    ''' material: el bake necesita saber que texturas quedaron embebidas para poder declarar las
+    ''' que INVENTA la app y que ningun mod entrega. Era una Sub; tiene un solo llamador.</summary>
+    Private Function ApplyRenderResolvedMaterialToShape(nif As Nifcontent_Class_Manolo,
                                                     cloned As INiShape,
                                                     srcNif As Nifcontent_Class_Manolo,
                                                     srcShape As INiShape,
@@ -2255,12 +2290,12 @@ Public Module FaceGenBuilder
                                                     state As MainForm.NPCVisualState,
                                                     pluginManager As PluginManager,
                                                     applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
-                                                    skinTintAlpha As Single)
+                                                    skinTintAlpha As Single) As FO4UnifiedMaterial_Class
         ' Resolve the FINAL material exactly like the render (TXST/FTST + MNAM-BGSM + tints + palette);
         ' shared with the FaceTint bake so both transcribe / composite the SAME resolved textures.
         Dim mat = ResolveRenderResolvedShapeMaterial(srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
         If mat Is Nothing Then
-            Return
+            Return Nothing
         End If
 
         ' POST-RESOLVER snapshot: same fields after the resolver ran. Diff against PRE shows
@@ -2273,7 +2308,8 @@ Public Module FaceGenBuilder
         ' se intentó, y se desincronizó al toque: la versión a mano no tenía el centinela de Emissive de más
         ' abajo y apagaba el Emissive en las 9 cabezas de FO4.
         TranscribeResolvedMaterialToShader(nif, cloned, mat, skinTintAlpha)
-    End Sub
+        Return mat
+    End Function
 
     ''' <summary>Vuelca el material YA RESUELTO al shader INLINE del shape y corta el link al BGSM externo,
     ''' que es lo que vuelve al NIF autocontenido.
@@ -2492,7 +2528,7 @@ Public Module FaceGenBuilder
             Dim suffix = If(DebugMode, "_2.dds", ".dds")          ' on-disk name (sandbox in DebugMode)
             Dim embeddedSuffix = If(willBePacked, ".dds", suffix) ' the packer renames _2 → canonical
             Dim rel = tintDir & $"{fgLocal:X8}{suffix}"
-            Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+            Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
             If Not SkipDdsEncode Then
                 IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
                 IO.File.WriteAllBytes(outFile, dds)
@@ -2582,7 +2618,7 @@ Public Module FaceGenBuilder
         Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(w, h, gbra, DiffuseDxgiFromSetting(), generateMipMaps:=True, generatedMipLevels:=mips)
         If dds Is Nothing Then Return
         Dim rel = FaceGenPaths.TexturaDds(FaceGenPaths.CanalTint, originPlugin, fgLocal, "_2b")
-        Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+        Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
         IO.File.WriteAllBytes(outFile, dds)
         MaybeWriteTgaBeside(outFile, w, h, gbra)
@@ -2705,7 +2741,7 @@ Public Module FaceGenBuilder
         Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(gpW, gpH, gpBuf, DiffuseDxgiFromSetting(), generateMipMaps:=True, generatedMipLevels:=mips)
         If dds Is Nothing Then Return
         Dim rel = FaceGenPaths.TexturaDds(FaceGenPaths.CanalDiffuse, originPlugin, fgLocal, "_2d")
-        Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+        Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
         IO.File.WriteAllBytes(outFile, dds)
         MaybeWriteTgaBeside(outFile, gpW, gpH, gpBuf)
@@ -2796,7 +2832,7 @@ Public Module FaceGenBuilder
     ''' dejaría al NPC SIN tint (cara marrón) en vez de con uno viejo.</para></summary>
     Private Sub DeleteFoldedOnlyArtifacts(npcFormID As UInteger, originPlugin As String)
         If String.IsNullOrEmpty(originPlugin) OrElse Config_App.Current Is Nothing Then Return
-        Dim dataPath = Config_App.Current.DataPath
+        Dim dataPath = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPath) Then Return
         Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
         For Each subDir In {"FaceDiffuse", "FaceNormal"}   ' 'dir' es palabra reservada en VB (función Dir)
@@ -2827,7 +2863,7 @@ Public Module FaceGenBuilder
     ''' <para>Corre UNA sola vez por NPC: si corriera por shape, la segunda borraria lo que escribio la primera.</para></summary>
     Private Sub DeleteStaleFaceCustomizationArtifacts(npcFormID As UInteger, originPlugin As String)
         If String.IsNullOrEmpty(originPlugin) OrElse Config_App.Current Is Nothing Then Return
-        Dim dataPath = Config_App.Current.DataPath
+        Dim dataPath = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPath) Then Return
         Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
         For Each chan In {"_d", "_msn", "_s"}
@@ -3087,7 +3123,7 @@ Public Module FaceGenBuilder
             Dim suffix = If(forced, forcedSuffix & ".dds", If(DebugMode, "_2.dds", ".dds"))
             Dim embeddedSuffix = If(forced, suffix, If(willBePacked, ".dds", suffix))
             Dim rel = dir & $"{fgLocal:X8}{suffix}"
-            Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+            Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
             If Not SkipDdsEncode Then
                 Try
                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
@@ -3176,7 +3212,7 @@ Public Module FaceGenBuilder
                                     If mDds IsNot Nothing Then
                                         Dim ndir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalNormal, originPlugin)
                                         Dim nRel = ndir & $"{fgLocal:X8}{suffix}"
-                                        Dim nFile = IO.Path.Combine(Config_App.Current.DataPath, nRel)
+                                        Dim nFile = IO.Path.Combine(BakeOutputRoot.Current(), nRel)
                                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(nFile))
                                         IO.File.WriteAllBytes(nFile, mDds)
                                         MaybeWriteTgaBeside(nFile, nOutW, nOutH, nOutBgra)
@@ -3613,7 +3649,7 @@ Public Module FaceGenBuilder
 
         ' --- 5. Output dir + slot plan + texture-set for slot rewrites. ---
         Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
-        Dim dataPath = Config_App.Current.DataPath
+        Dim dataPath = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPath) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: Config_App.Current.DataPath empty (npcFormID=0x{npcFormID:X8})")
             ' (Este caso ademas aborta BuildCharGen mas abajo con Success=False, asi que NO llega a escribirse un

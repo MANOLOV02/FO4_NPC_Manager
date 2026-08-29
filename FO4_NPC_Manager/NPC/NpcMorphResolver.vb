@@ -469,7 +469,13 @@ Public Class NpcMorphResolver
         '   • HeadPart : a head-part selection, not a morph — skipped here.
         ' No catalog / unknown slider ⇒ apply the name directly (covers simple name==morph sliders + keeps working
         ' when the RaceMenu slider config isn't installed).
-        If applyChargenMorphs AndAlso npcData.SseCustomMorphs IsNot Nothing Then
+        ' ⛔ Y TODO ESTE CANAL DEPENDE DE UN INTERRUPTOR DEL INI. Con `[FaceGen] bExtendedMorphs=0`, skee64 no
+        ' aplica NI UNO de estos morphs: `ApplyMorphs` corta con `if (!g_extendedMorphs) return;` ANTES del
+        ' bucle del ValueSet (FaceMorphInterface.cpp:1126 y :1204). Omitirlos acá es lo que hace que la vista
+        ' previa y el bake muestren la misma cara que el juego en esa instalación.
+        ' El SCULPT (2c, más abajo) NO se toca: su bloque está ARRIBA de ese `return` (:1108-1125), o sea que se
+        ' sigue aplicando. Son dos canales distintos y la key gobierna uno solo.
+        If applyChargenMorphs AndAlso ExtendedMorphsEnabled AndAlso npcData.SseCustomMorphs IsNot Nothing Then
             For Each cm In npcData.SseCustomMorphs
                 If cm Is Nothing OrElse String.IsNullOrEmpty(cm.Name) OrElse Math.Abs(cm.Value) < 0.0001F Then Continue For
                 AddCustomMorphChannel(plan, triHead, raceEditorId, npcData.Record.ConfigurationFlagsFemale, cm.Name, cm.Value)
@@ -544,6 +550,15 @@ Public Class NpcMorphResolver
     ''' its actual TRI morph(s). Nothing until the app populates it (e.g. FO4 sessions never set it) → the custom
     ''' morph loop falls back to applying the name directly.</summary>
     Public Shared Property SliderCatalog As FO4_Base_Library.RaceMenuSliderCatalog
+
+    ''' <summary><c>[FaceGen] bExtendedMorphs</c> de la instalación (SseCatalogs lo lee del <c>skee64.ini</c> y
+    ''' lo publica acá junto con <see cref="SliderCatalog"/>). En <b>False</b> el motor no aplica NINGÚN morph
+    ''' extendido de cara, así que este camino tampoco los emite y la vista previa coincide con el juego.
+    ''' <para>Arranca en <b>True</b> por dos razones que apuntan al mismo lado: es el default hardcodeado de
+    ''' skee (main.cpp:150), y es el valor que tiene que valer cuando nadie lo pobló — una sesión de Fallout 4,
+    ''' el CLI, o un bake headless. Un default en False apagaría en silencio un canal entero de Skyrim por no
+    ''' haber leído un ini que en FO4 ni existe.</para></summary>
+    Public Shared Property ExtendedMorphsEnabled As Boolean = True
 
     ''' <summary>Apply one RaceMenu extended custom morph (slider name → value) faithfully to the plan via the
     ''' catalog. See caller comment / skee64 ApplyMorphs:1229-1247.</summary>

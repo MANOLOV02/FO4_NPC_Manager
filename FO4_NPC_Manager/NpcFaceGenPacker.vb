@@ -53,6 +53,13 @@ Public Module NpcFaceGenPacker
         ''' names. The _2 sources are deleted after a successful pack just like canonical ones
         ''' (2026-05-26 change — BA2 is the post-pack source of truth).</summary>
         Public Property DebugSandbox As Boolean
+        ''' <summary>Sueltos que el bake de ESTE NPC dejo fuera del layout por NPC y que su NIF
+        ''' referencia (rutas relativas a Data). Hoy: el clon de UV vanilla de la nuca de gul, que
+        ''' vive en una raiz que se inventa la app y que por lo tanto no trae ni el juego ni un mod.
+        ''' <para>Va POR BUNDLE y no en una lista de sesion: asi un bundle DESCARTADO no aporta los
+        ''' suyos, un render de fondo no puede colar los de una NPC que no se esta guardando, y dos
+        ''' Save con los mismos inputs producen el MISMO archive.</para></summary>
+        Public Property ExtraLooseFiles As List(Of String)
     End Class
 
     ''' <summary>One file of an NPC's FaceGen bake, as Data-relative paths. <c>Source</c> carries the
@@ -133,6 +140,54 @@ Public Module NpcFaceGenPacker
     ''' texture layout are game-aware — see <see cref="FaceGenFileSpecs"/>, the same source <see cref="PackBatch"/>
     ''' uses for its bundle spec. Used by the "mark to delete" flow to build the ExcludePaths passed to
     ''' <see cref="PackBatch"/>. Empty when the origin plugin can't be resolved.</summary>
+    ''' <summary>Rutas relativas a Data que el NIF horneado de este NPC referencia y que NO trae ni el
+    ''' juego ni ningun mod, porque las INVENTA la app. Hoy es una sola familia: el clon de UV vanilla
+    ''' de la nuca de gul (<c>NpcMaterialResolver.HeadRearClonedTextureRoot</c>).
+    ''' <para>MEDIDO: 24 de 2877 NIF horneados del corpus del usuario las referencian. Sin entregarlas,
+    ''' el mod se publica con un NIF apuntando a texturas que no existen en la maquina del que instala
+    ''' y esa nuca queda sin textura.</para>
+    ''' <para>NO salen de <see cref="FaceGenFileSpecs"/> a proposito: esa lista sirve TAMBIEN al flujo de
+    ''' borrado, y este activo es COMPARTIDO por todas las gules de la raza — entregarlo si, borrarlo no.
+    ''' El camino del BA2 las obtiene del bundle, que las trae del bake; este camino no puede, porque
+    ''' cuando se exporta el FOMOD el bake ya corrio (tal vez en otra sesion) y no queda nada en memoria.
+    ''' Se averigua entonces del NIF EN DISCO, que es la misma invariante: se entrega lo que el NIF
+    ''' referencia.</para>
+    ''' <para>Es un ESCANEO del texto del NIF, no un parseo: las rutas de textura se guardan como cadenas
+    ''' ASCII y lo unico que se busca es un prefijo de raiz que controla la app, asi que no hace falta
+    ''' abrir el formato. Devuelve solo lo que ademas EXISTE en disco, igual que el resto de esta rama.</para></summary>
+    Public Function InventedLooseFilesForNpc(npcFormID As UInteger, pluginManager As PluginManager,
+                                             dataDir As String) As List(Of String)
+        Dim salida As New List(Of String)
+        If String.IsNullOrEmpty(dataDir) OrElse pluginManager Is Nothing Then Return salida
+        Dim origin = pluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(origin) Then Return salida
+        Dim local = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        ' Suelto a proposito: esta rama del FOMOD entrega SUELTOS, y su propio comentario dice que
+        ' enumera "every FaceGen file that EXISTS on disk". Si el NIF esta adentro de un BA2/BSA, el
+        ' FOMOD no pasa por aca sino por la rama del archive set, que empaqueta los .ba2 ENTEROS y ya
+        ' se lleva el clon adentro. Leerlo por el diccionario seria PEOR: resolveria NIF que viven en
+        ' archives de OTROS mods y sumaria al manifiesto texturas que no son de este.
+        Dim nifAbs = Path.Combine(dataDir, FaceGenPaths.GeomNif(origin, local))
+        If Not File.Exists(nifAbs) Then Return salida
+        Try
+            Dim texto = Text.Encoding.ASCII.GetString(File.ReadAllBytes(nifAbs))
+            Dim patron = Text.RegularExpressions.Regex.Escape(NpcMaterialResolver.HeadRearClonedTextureRoot) &
+                         "[^\x00-\x1F""<>|*?]+?\.dds"
+            For Each m As Text.RegularExpressions.Match In
+                Text.RegularExpressions.Regex.Matches(texto, patron, Text.RegularExpressions.RegexOptions.IgnoreCase)
+                Dim rel = m.Value
+                If salida.Contains(rel, StringComparer.OrdinalIgnoreCase) Then Continue For
+                If File.Exists(Path.Combine(dataDir, rel)) Then salida.Add(rel)
+            Next
+        Catch ex As Exception
+            ' Best-effort, igual que el resto de esta rama del FOMOD: si el NIF no se puede leer, el
+            ' manifiesto sale sin estas texturas y el usuario lo ve en la grilla como ausente.
+            Dim nL = nifAbs, mL = ex.Message
+            Logger.LogLazy(Function() $"[FOMOD] no se pudo escanear '{nL}' por texturas inventadas: {mL}")
+        End Try
+        Return salida
+    End Function
+
     Public Function CanonicalFaceGenEntryPathsForNpc(npcFormID As UInteger, pluginManager As PluginManager,
                                                      game As Config_App.Game_Enum) As List(Of String)
         Dim origin = pluginManager.GetOriginatingPluginName(npcFormID)
@@ -220,6 +275,11 @@ Public Module NpcFaceGenPacker
         Public Property EntryPath As String             ' canonical path inside the BA2 (never _2)
         Public Property IsTexture As Boolean
         Public Property DebugSandbox As Boolean
+        ''' <summary>El suelto NO se borra despues de empaquetar. Para activos COMPARTIDOS, que no son
+        ''' de un NPC: hoy, el clon de UV vanilla de la nuca de gul. El paso 5 borra el suelto Y hace
+        ''' RemoveDictionaryEntry por cada ref committeado; hacerle eso al clon lo sacaria del disco y
+        ''' del diccionario, rompiendo el render y a TODAS las otras gules que lo comparten.</summary>
+        Public Property ConservarSuelto As Boolean
     End Class
 
     ''' <summary>Pack the FaceGen loose for <paramref name="bundles"/> into the BA2 set anchored
@@ -350,6 +410,41 @@ Public Module NpcFaceGenPacker
         If missingSources.Count > 0 Then
             result.MissingSources.AddRange(missingSources)
             Logger.LogLazy(Function() $"[PACK-BATCH] {missingSources.Count} expected loose file(s) missing on disk before pack — first: '{missingSources(0)}'")
+        End If
+
+        ' --- Step 1b: sueltos INVENTADOS por la app que los NIF de estos bundles referencian ---
+        ' Hoy son los clones de UV vanilla de la nuca de gul. Viven en una raiz que se inventa la app,
+        ' asi que sin esto el mod se publica apuntando a texturas que no entrega: MEDIDO, 24 de 2877
+        ' NIF del corpus las referencian.
+        ' Salen de los bundles ACEPTADOS -no de una lista de sesion-, asi que un bundle descartado no
+        ' aporta los suyos y dos Save con los mismos inputs dan el MISMO archive.
+        ' Van UNA vez aunque los compartan varias NPC, y con ConservarSuelto: entran al archive pero NO
+        ' al borrado del paso 5.
+        If allRefs.Count > 0 Then
+            Dim yaPuestos As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            For bi2 = 0 To bundles.Count - 1
+                If bundleRefCounts(bi2) = 0 Then Continue For   ' bundle DESCARTADO: no aporta nada
+                Dim extras = bundles(bi2).ExtraLooseFiles
+                If extras Is Nothing Then Continue For
+                For Each rel In extras
+                    If String.IsNullOrWhiteSpace(rel) OrElse Not yaPuestos.Add(rel) Then Continue For
+                    Dim srcCompartido = Path.Combine(dataDir, rel)
+                    If Not File.Exists(srcCompartido) Then
+                        ' Contado Y nombrado, no un log: en Release el Logger esta apagado, asi que un
+                        ' log suelto aca seria mudo justo en el modo de falla que esto cierra.
+                        result.MissingSources.Add(srcCompartido)
+                        Continue For
+                    End If
+                    allRefs.Add(New LooseFileRef With {
+                        .SourcePath = srcCompartido,
+                        .EntryPath = srcCompartido,
+                        .IsTexture = True,
+                        .DebugSandbox = False,
+                        .ConservarSuelto = True
+                    })
+                    refToBundleIdx.Add(-1)   ' no es de ningun bundle: no cuenta para su atomicidad
+                Next
+            Next
         End If
 
         ' No bake outputs to pack. If there is also nothing to remove, that's the "bake reported Success but
@@ -529,6 +624,9 @@ Public Module NpcFaceGenPacker
             Dim affectedDirs As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
             For Each rf In committedRefs
                 deletedAt += 1
+                ' Activo COMPARTIDO: entro al archive pero el suelto se queda. Borrarlo -y sacarlo del
+                ' diccionario, dos lineas mas abajo- romperia al render y a las demas NPC que lo usan.
+                If rf.ConservarSuelto Then Continue For
                 Try
                     If File.Exists(rf.SourcePath) Then
                         File.Delete(rf.SourcePath)
@@ -561,7 +659,9 @@ Public Module NpcFaceGenPacker
                                                    StringComparer.OrdinalIgnoreCase)
         Dim bundleHitCounts(bundles.Count - 1) As Integer
         For ri = 0 To allRefs.Count - 1
-            If committedSet.Contains(allRefs(ri).SourcePath) Then
+            ' -1 = ref COMPARTIDO (no es de ningun bundle): no cuenta para la atomicidad de nadie.
+            ' Sin esta guarda es un indice fuera de rango, no un conteo equivocado.
+            If refToBundleIdx(ri) >= 0 AndAlso committedSet.Contains(allRefs(ri).SourcePath) Then
                 bundleHitCounts(refToBundleIdx(ri)) += 1
             End If
         Next

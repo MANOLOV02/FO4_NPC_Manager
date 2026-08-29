@@ -129,19 +129,38 @@ Friend NotInheritable Class NpcMaterialResolver
         End Try
     End Function
 
-    ''' <summary>Resolución engine-faithful de paleta y HairTintColor para head parts de pelo. FUENTE ÚNICA:
-    ''' la usan la carga del NIF y el refresh live del preset (estuvo duplicada con guards distintos, y el laxo
-    ''' pintaba cualquier material con paleta habilitada).
-    ''' <para>Regla del motor: el <c>RemappingIndex</c> del CLFM lo consumen solo los head parts a los que el
-    ''' motor equipa un color form — pelo, barba y cejas. Con RemappingIndex y LUT resoluble se activa la
-    ''' paleta; si no, cae al HairTintColor. No-op silencioso fuera de ese caso.
-    ''' Ver 50-facetint-leyes-y-compositor §A.7.</para></summary>
+    ''' <summary>Resolución engine-faithful de paleta y HairTintColor para head parts con MATERIAL de pelo.
+    ''' FUENTE ÚNICA: la usan la carga del NIF, el refresh live del preset y el bake.
+    ''' <para>⭐ El gate es el MATERIAL, NO el tipo de head part: <c>material.Hair</c> (shader type Hair Tint
+    ''' en SSE / flag Hair del BGSM en FO4) o <c>GrayscaleToPaletteColor</c>. Medido con bakes propios del CK
+    ''' (BAKETEST.esp): una pestaña tipada Misc y la misma tipada Facial Hair reciben el MISMO HairTintColor,
+    ''' con color de pelo y sin él. El límite que sí aplica es <c>Kind = HeadPart</c>, para no pisarle la
+    ''' paleta a la armadura recoloreable de FO4.</para>
+    ''' <para>Con RemappingIndex y LUT resoluble se activa la paleta; si no, cae al HairTintColor. No-op
+    ''' silencioso fuera de ese caso. Ver 50-facetint-leyes-y-compositor §A.7.</para></summary>
     Friend Sub ApplyMaterialPaletteHairColor(material As FO4UnifiedMaterial_Class,
                                              candidate As MainForm.MeshCandidate,
                                              state As MainForm.NPCVisualState,
                                              hairTintColorOverride As Nullable(Of Color))
         If material Is Nothing Then Return
-        If Not IsHairHeadPart(candidate) Then Return
+        ' El gate es el MATERIAL (guarda de abajo), no el tipo de head part. Aca solo queda el limite de
+        ' ALCANCE: head parts. MEDIDO 2026-08-28 con bakes propios del CK (BAKETEST.esp; una sola variable
+        ' por par, verificado por maquina que los NPC difieren en exactamente EDID + un PNAM). Matriz 2x2
+        ' sobre el HairTintColor del shape de la pestana, con el mesh autorado en (48,48,48):
+        '                        pestana Misc(0)+IsExtraPart      pestana Facial Hair(4)
+        '   con HCLF          ->   (184,176,160)                    (184,176,160)     = 2 x CLFM
+        '   sin color alguno  ->   (0,0,0)                          (0,0,0)
+        ' El tipo NO cambia el resultado en NINGUNA celda: ni para poner el color ni para forzar el negro.
+        ' Corrobora, con muestra grande, que el CK tinta las barbas HumanBeardLong*_1bit (n=101/109/94...),
+        ' que Bethesda tipo Misc. Runtime SSE: UpdateModelColor_Recursive (skee64/SKEEHooks.cpp:987-1013)
+        ' filtra por material->GetShaderType() == kShaderType_HairTint.
+        ' FO4: HairColorModify_Hook (f4ee/main.cpp:409-411) escribe fLookupScale = remappingIndex, y el CK
+        ' lo propaga a TODAS las shapes (medido sobre Piper en FO4BAKETEST.esp: G2P=0,675 en las 10).
+        ' *** Kind = HeadPart NO se puede sacar: sin eso la guarda del material admite armadura recoloreable
+        ' de FO4 (GrayscaleToPaletteColor=True, Hair=False) y le escribe el RemappingIndex del pelo del NPC
+        ' -- el bug que documenta ResolveHairPaletteTexture. El tinte de ropa por slot de pelo
+        ' (TintMaskInterface::OnAttach, g_tintHairSlot) es OTRA ley y NO esta implementada.
+        If candidate Is Nothing OrElse candidate.Kind <> MainForm.MeshCandidateKind.HeadPart Then Return
         If Not (material.Hair OrElse material.GrayscaleToPaletteColor) Then Return
 
         Dim logEnabled = Logger.Enabled
@@ -265,10 +284,19 @@ Friend NotInheritable Class NpcMaterialResolver
                     Logger.LogLazy(Function() $"[HAIRTINT-WRITE] hdptType={candidate.HeadPartType} oldRGB=({oldHairCol.R},{oldHairCol.G},{oldHairCol.B}) → newRGB=({newColLog.R},{newColLog.G},{newColLog.B}) scale={scaleLog:F2} effective=({newColLog.R / 255.0F * scaleLog:F3},{newColLog.G / 255.0F * scaleLog:F3},{newColLog.B / 255.0F * scaleLog:F3})")
                 End If
             ElseIf hairColorFormID = 0UI AndAlso Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-                ' NPC without a hair color (HCLF absent) — CK writes HairTintColor=(0,0,0) instead of keeping the
-                ' source hair mesh's tint. MEDIDO vs BSA CK: the 3 vanilla Dremora with HCLF=None bake (0,0,0),
-                ' while the source hairline mesh carries a non-zero tint; without this the baked hair keeps that
-                ' stray source color. SSE-only, hair/facialhair/brow-only (IsHairHeadPart gate above).
+                ' NPC sin color de pelo EFECTIVO — el CK escribe HairTintColor=(0,0,0) en vez de conservar el
+                ' tinte autorado del mesh. "Efectivo" = después de ApplyRaceFallbacks (NpcStateResolver.vb:477-484),
+                ' que rellena desde RACE.DefaultHairColors: por eso la rama es MUCHO más angosta que "NPC sin HCLF".
+                ' MEDIDO 2026-08-28 sobre los FaceGeom de Bethesda (sólo ésos: los de un mod los horneó su autor):
+                ' 1970 NPC con color efectivo 0, de los cuales 24 tienen FaceGeom de Bethesda ⇒ 69 shapes HairTint,
+                ' 69/69 en (0,0,0). SIN excepciones. Y NO son sólo Dremora: entran HairLineMaleDarkElf01,
+                ' HairMaleDarkElf01, HumanBeardShort10_Headpart, HumanBeard34 y BrowsMaleHumanoid03.
+                ' ⭐ VA POR MATERIAL, igual que el tinte — NO por tipo de head part. Medido con bakes propios del
+                ' CK (BAKETEST.esp, ST3/ST4): la MISMA pestaña tipada Misc y tipada Facial Hair, en un NPC sin
+                ' color, recibe (0,0,0) en los dos casos, con el mesh autorado en (48,48,48).
+                ' ⛔ Que una shape sin máscara de vertex-color termine en NEGRO PURO es FIDELIDAD, no un defecto:
+                ' 00DZB_MaleLashesAirlie no tiene vertex colors y el CK le escribió (0,0,0) igual. Poner un piso
+                ' acá sería una ley de la app. SSE-only: en FO4 el color va por RemappingIndex, no por este campo.
                 material.TintColorScale = 1.0F   ' negro: sin doblado (y no arrastrar scale de un uso previo)
                 material.HairTintColor = Color.FromArgb(material.HairTintColor.A, 0, 0, 0)
             End If
@@ -1046,6 +1074,11 @@ Friend NotInheritable Class NpcMaterialResolver
         Return ""
     End Function
 
+    ''' <summary>Head parts a las que el motor equipa un color form (pelo, barba, ceja).
+    ''' ⛔ YA NO GATEA NADA EN LA APP: el tinte lo decide el MATERIAL (ver ApplyMaterialPaletteHairColor y la
+    ''' matriz 2x2 de bakes del CK que lo midió). Queda SIN consumidores de producción; el único que la llama
+    ''' es Tools/HairTintGateProbe, en DOS sitios (Program.vb y CkWitness.vb) vía el InternalsVisibleTo del
+    ''' .vbproj. NO borrarla como código muerto sin retirar antes los dos.</summary>
     Friend Shared Function IsHairHeadPart(candidate As MainForm.MeshCandidate) As Boolean
         If candidate Is Nothing OrElse candidate.Kind <> MainForm.MeshCandidateKind.HeadPart Then Return False
         ' Hair (3), Facial Hair (4), Hairline/Brow (6) all use hair color
@@ -1152,7 +1185,10 @@ Friend NotInheritable Class NpcMaterialResolver
     ' Dedicated loose-file clone root under the game Data dir. Keeps the cloned vanilla bytes under a
     ' DISTINCT path key so the model-wide, path-keyed render texture cache (Render.vb Textures_Dictionary)
     ' can hold them separately from the body's own (same-named) texture.
-    Private Const HeadRearClonedTextureRoot As String = "Textures\ManoloCloned\NpcMgrHeadRear\"
+    ' Friend y no Private: el bake necesita reconocer una ruta de esta raiz para poder DECLARAR,
+    ' por NPC, que el NIF que acaba de escribir la referencia. Es la unica raiz que se inventa la
+    ' app, asi que es la unica que la entrega no puede deducir de FaceGenFileSpecs.
+    Friend Const HeadRearClonedTextureRoot As String = "Textures\ManoloCloned\NpcMgrHeadRear\"
 
     ' Memo de sesión para ResolveGhoulHeadRearClonedTextures: el resultado depende SOLO de (RaceFormID,
     ' SkinFormID) y los bytes vanilla del BA2 no cambian en la sesión. Sin esto cada render re-lee el BGSM y
@@ -1337,6 +1373,32 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim dir = IO.Path.GetDirectoryName(clonedFullPath)
                 If Not String.IsNullOrEmpty(dir) AndAlso Not IO.Directory.Exists(dir) Then IO.Directory.CreateDirectory(dir)
                 IO.File.WriteAllBytes(clonedFullPath, vanillaBytes)
+            End If
+            ' --outdir: EL CLON VA A LOS DOS LADOS. A Data (arriba) porque el diccionario lo resuelve
+            ' contra FO4Path -ver el AddOrUpdateDictionaryEntry de abajo- y sin eso la propia corrida
+            ' no lo encuentra; y a la raiz de salida porque el NIF que queda ahi lo referencia, y sin
+            ' la copia esa carpeta no se puede instalar sola.
+            ' VA FUERA DEL `needWrite`: ese flag dice si el clon YA estaba en Data de una corrida
+            ' anterior, y no dice NADA de la carpeta de salida, que puede estar recien creada.
+            ' El guard pregunta por la PERILLA, no compara rutas. Comparar la raiz contra FO4Path da
+            ' falsos positivos: el FO4_FaceTint_CLI le pasa al diccionario su --data verbatim
+            ' (Program.vb:344/:420), que puede ser OTRA carpeta (:340) o la misma con '/' en vez de
+            ' '\' (:349, "un falso positivo SIEMPRE"). Con el guard por ruta, ese CLI escribia el clon
+            ' en el Data del juego en corridas que nunca pidieron --outdir.
+            ' Todo lo que PUEDE tirar va adentro de su propio Try (la condicion del If no: EstaMovida()
+            ' es un IsNullOrWhiteSpace sobre un String y no tiene como fallar). El Catch de afuera hace
+            ' Return "", asi que un tiro aca DESACTIVARIA el arreglo de la nuca y encima el log culparia
+            ' a la escritura de Data, que si funciono.
+            If BakeOutputRoot.EstaMovida() Then
+                Try
+                    Dim copia = IO.Path.Combine(BakeOutputRoot.Current(), clonedRelPath)
+                    Dim dirCopia = IO.Path.GetDirectoryName(copia)
+                    If Not String.IsNullOrEmpty(dirCopia) AndAlso Not IO.Directory.Exists(dirCopia) Then IO.Directory.CreateDirectory(dirCopia)
+                    IO.File.WriteAllBytes(copia, vanillaBytes)
+                Catch exCopia As Exception
+                    Dim rutaL = clonedRelPath, msgC = exCopia.Message
+                    Logger.LogLazy(Function() $"[HEADREAR-CLONE] copia a la raiz de salida FALLO '{rutaL}' -> {msgC} (el clon de Data si se escribio)")
+                End Try
             End If
         Catch ex As Exception
             Dim srcL = normalized, msgL = ex.Message
@@ -1649,7 +1711,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' Pre-resolved hairTintColor (incl. solidTintColor head-part color) passed as override
             ' so the helper can short-circuit ResolveColorFormColor for hair HeadParts whose
             ' candidate carries a richer color choice. Helper is the single source of truth for
-            ' the engine-faithful gate (Hair/FacialHair/Brow HDPTs only) — removes the prior
+            ' the engine-faithful gate (por MATERIAL de pelo, CUALQUIER tipo de head part) — removes the prior
             ' If/ElseIf duplication and the looser parallel copy in RefreshFaceTintLivePreview.
             ApplyMaterialPaletteHairColor(material, candidate, state, hairTintColor)
 

@@ -1164,6 +1164,30 @@ Public Class EditFace_Form
         LabelSseRaceMenuEmpty.Visible = False
         SseRaceMenuRoot.Visible = True
 
+        ' The window RaceMenu draws for these sliders is ±1 × fSliderMultiplier, NOT ±1 (FaceMorphInterface.cpp
+        ' :1321-1322 + :1354). It is per-INSTALL, read from the skee64.ini this user actually has, so it is
+        ' fetched once per tab build and never hardcoded: the same preset is a ±1 slider on one machine and a
+        ' ±3 slider on another, and both are right.
+        Dim knobs = SseCatalogs.FaceSliderKnobs()
+        ' El número QUEDA EN EL LOG junto con el archivo del que salió. Es la misma lección que pagó el camino
+        ' de los contadores de overlay: sin esto, un skee64.ini que vive en el Data virtual de un mod manager
+        ' hace que la pestaña dibuje ±1 y el usuario no tiene NINGUNA forma de saber por qué.
+        Logger.LogLazy(Function() $"[RACEMENU-TAB] fSliderMultiplier={knobs.Multiplier} fSliderInterval={knobs.Interval} " &
+                                  $"extendedMorphs={SseCatalogs.FaceExtendedMorphsEnabled()} [{SseCatalogs.SkeeIniSource()}]")
+
+        ' AVISA Y DEJA SEGUIR, igual que el pool de overlays. Con bExtendedMorphs=0 el motor no aplica ni uno de
+        ' estos morphs (FaceMorphInterface.cpp:1126/:1204), así que la app tampoco los aplica y la vista previa
+        ' coincide con el juego — pero las filas quedan EDITABLES a propósito: lo que el usuario ponga se guarda
+        ' igual en el preset y en el .jslot, y revive el día que la key vuelva a 1. Deshabilitarlas escondería
+        ' dato suyo que el archivo sí conserva.
+        If Not SseCatalogs.FaceExtendedMorphsEnabled() Then AddSseRaceMenuNotice(
+            "RaceMenu's extended face morphs are turned OFF on this install." & vbCrLf &
+            $"[FaceGen] bExtendedMorphs=0 — in {SseCatalogs.SkeeIniSource()}" & vbCrLf & vbCrLf &
+            "The game applies none of the sliders below, so the preview and the bake do not apply them " &
+            "either: what you see here is the face you get in game." & vbCrLf &
+            "You can still edit them — the values are kept in the preset and in the .jslot, and come back " &
+            "as soon as that key is 1 again. Per-vertex sculpt does not depend on this key and is still applied.")
+
         ' Category display order (skee64 bitflags): Face, Eyes, Brow, Mouth, Head, Hair, Body, Extra, Expressions.
         Dim catOrder = New Integer() {16, 32, 64, 128, 8, 256, 4, 512, 1024}
         For Each catVal In catOrder
@@ -1174,24 +1198,13 @@ Public Class EditFace_Form
             For Each def0 In inCat
                 Dim def = def0
                 Dim ctl As Control
+                Dim b = FO4_Base_Library.RaceMenuSliderCatalog.BoundsOf(def, knobs)
                 If def.Type = FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Preset Then
-                    Dim cb As New ComboBox With {.DropDownStyle = ComboBoxStyle.DropDownList, .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Margin = New Padding(3, 4, 8, 3)}
-                    cb.Items.Add("Default")
-                    For n = 1 To Math.Max(1, def.PresetCount) : cb.Items.Add(def.LowerBound & n.ToString()) : Next
-                    cb.SelectedIndex = Math.Max(0, Math.Min(cb.Items.Count - 1, CInt(Math.Truncate(CDbl(GetSseCustomValue(def.Name))))))
+                    Dim cb = MakeSseRaceMenuPresetCombo(def, b, CDbl(GetSseCustomValue(def.Name)))
                     AddHandler cb.SelectedIndexChanged, Sub(s, e) OnSseRaceMenuChanged(def.Name, CSng(cb.SelectedIndex))
                     ctl = cb
                 Else
-                    ' Slider: range from the bounds (skee64 LoadSliders:1318-1319): has lower ⇒ min −1, has upper ⇒ max +1.
-                    Dim lo As Double = If(String.IsNullOrEmpty(def.LowerBound), 0.0R, -1.0R)
-                    Dim hi As Double = If(String.IsNullOrEmpty(def.UpperBound), 0.0R, 1.0R)
-                    If lo = 0.0R AndAlso hi = 0.0R Then hi = 1.0R
-                    Dim tb As New FO4_Base_Library.TinySliderTextBox With {
-                        .Minimum = lo, .Maximum = hi, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
-                        .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 3, 8, 3), .Value = Math.Max(lo, Math.Min(hi, CDbl(GetSseCustomValue(def.Name))))}
-                    AddHandler tb.ValueChanged, Sub(s, e) OnSseRaceMenuChanged(def.Name, CSng(tb.Value))
-                    AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
-                    ctl = tb
+                    ctl = NewSseRaceMenuSlider(def.Name, b)
                 End If
                 AddSseRaceMenuRow(def.Name, ctl)
                 _sseRaceMenuControls(def.Name) = ctl
@@ -1200,20 +1213,20 @@ Public Class EditFace_Form
             _sseRaceMenuGroups.Add((hdr, groupNames))
         Next
 
-        ' Uncatalogued custom morphs carried by this NPC's preset (see the comment above). RaceMenu stores a
-        ' custom morph as a plain name→value pair with no declared bounds, and skee64 applies negative values to
-        ' the slider's lower morph and positive to the upper (ApplyMorphs), so −1..1 is the faithful range.
+        ' Uncatalogued custom morphs carried by this NPC's preset (see the comment above).
+        ' ⛔ ACÁ EL MOTOR NO DIBUJA NADA, así que el ancho de la pista es una decisión de la APP y no una ley:
+        ' sin definición de slider instalada, skee64 no arma la fila, `GetSlider` devuelve null y el `if(slider)`
+        ' saltea el morph sin `else` (FaceMorphInterface.cpp:1137 y :1216) — encima al abrir el RaceSex menu lo
+        ' BORRA del ValueSet (:1286-1306). La app igual los muestra para que no deformen la cara siendo
+        ' invisibles e ineditables, y elige el ancho más grande que skee64 le da a un Slider. La cita dice de
+        ' dónde sale ESE número, no que corresponda dibujarlo.
         If extras.Count > 0 Then
             Dim hdr = AddSseRaceMenuHeader(If(sliders.Count = 0, "Custom morphs (from this NPC)", "Custom morphs (no slider definition installed)"))
             Dim groupNames As New List(Of String)
+            Dim extraBounds = FO4_Base_Library.RaceMenuSliderCatalog.WidestSliderBounds(knobs)
             For Each name0 In extras
                 Dim nm = name0
-                Dim tb As New FO4_Base_Library.TinySliderTextBox With {
-                    .Minimum = -1.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
-                    .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 3, 8, 3),
-                    .Value = Math.Max(-1.0R, Math.Min(1.0R, CDbl(GetSseCustomValue(nm))))}
-                AddHandler tb.ValueChanged, Sub(s, e) OnSseRaceMenuChanged(nm, CSng(tb.Value))
-                AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
+                Dim tb = NewSseRaceMenuSlider(nm, extraBounds)
                 AddSseRaceMenuRow(nm, tb)
                 _sseRaceMenuControls(nm) = tb
                 groupNames.Add(nm)
@@ -1221,6 +1234,149 @@ Public Class EditFace_Form
             _sseRaceMenuGroups.Add((hdr, groupNames))
         End If
     End Sub
+
+    ''' <summary>Construye el control de una fila de slider extendido. <c>Friend Shared</c> Y ESO ES EL PUNTO:
+    ''' el orden de este inicializador es la pieza frágil de todo el cambio, y siendo Shared el gate puede
+    ''' llamar ESTA función —el código del sujeto— en vez de rehacer la construcción por su cuenta. Un testigo
+    ''' que no ejecuta el código del sujeto es una segunda transcripción, y las dos divergen justo cuando importa.
+    '''
+    ''' <para>⛔ EL ORDEN DE ASIGNACIÓN ES LOAD-BEARING. VB asigna las properties en orden de escritura, y los
+    ''' setters de <c>Minimum</c> y <c>Maximum</c> terminan en
+    ''' <c>If Not _allowExtremeValues Then Me.Value = Clamp(_value)</c> (TinySliderTextBox.vb:106 y :123),
+    ''' mientras <c>Value</c> pasa por <c>NormalizeValue</c> (:741-743). Con <c>AllowExtremeValues</c> en
+    ''' cualquier lugar DESPUÉS de <c>Value</c>, el valor se clampea al entrar y el cambio entero es un no-op.</para>
+    '''
+    ''' <para>POR QUÉ LA CAJITA MUESTRA MÁS DE LO QUE LA PISTA PERMITE. Son dos preguntas distintas y tienen
+    ''' respuestas distintas:
+    ''' <list type="bullet">
+    ''' <item>lo que el ARCHIVO trae se muestra verbatim: un .jslot escrito donde <c>fSliderMultiplier=5</c>
+    ''' guarda un 4,2 que nada del round-trip de skee64 clampea (PresetInterface.cpp:448-456/1068-1073), y
+    ''' dibujarlo como "1,00" sería una mentira que el render no comparte — <see cref="NpcMorphResolver"/>
+    ''' emite estos canales con <c>engineApplied:=False</c> y aplica la magnitud real;</item>
+    ''' <item>lo que el USUARIO tipea se acota a la pista, en <see cref="OnSseRaceMenuSliderEdited"/>. El menú
+    ''' de RaceMenu no puede producir un valor fuera de <c>±1 × fSliderMultiplier</c> (el slider se construye
+    ''' con esos bounds, FaceMorphInterface.cpp:1354), así que la app tampoco debe autorarlo.</item></list>
+    ''' Sin esa segunda mitad, <c>AllowExtremeValues</c> desclampea también teclado, rueda y cajita
+    ''' (TinySliderTextBox.vb:507-537, :588-597) y la app escribe en el preset, en el .jslot y en el bake
+    ''' números que el juego no puede generar. Es la misma mitad que <c>EditBody_Form.EnforceHeightHardLimit</c>
+    ''' (:3336-3369) agrega por la misma razón — ahí el comentario ya lo dice con todas las letras.</para>
+    '''
+    ''' <para><c>LargeChange</c> mantiene la relación 10× que ya usaba la app: el salto de PáginaArriba/Abajo es
+    ''' ergonomía de UI y no tiene contraparte en skee64, que sólo declara <c>interval</c>.</para></summary>
+    Friend Shared Function MakeSseRaceMenuSlider(b As FO4_Base_Library.RaceMenuSliderCatalog.SliderBounds,
+                                                 value As Double) As FO4_Base_Library.TinySliderTextBox
+        Dim tb As New FO4_Base_Library.TinySliderTextBox With {
+            .AllowExtremeValues = True,
+            .Minimum = b.Min, .Maximum = b.Max,
+            .DisplayFormat = "0.00", .SmallChange = b.Interval, .LargeChange = b.Interval * 10.0R,
+            .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 3, 8, 3),
+            .Value = value}
+        ' Un slider cuyos dos morphs son "None" sale [0,0] del canon (FaceMorphInterface.cpp:1318-1319): en
+        ' RaceMenu tampoco se puede mover. Deshabilitarlo NO es cosmético — con Min = Max, `XToValue` devuelve
+        ' `_minimum` para cualquier X (TinySliderTextBox.vb:706-708), así que un solo click escribiría 0 y
+        ' `OnSseRaceMenuChanged` BORRA la entrada del preset. La fila quedaría siendo un botón de borrar.
+        If b.Min = b.Max Then tb.Enabled = False
+        Return tb
+    End Function
+
+    ''' <summary>El combo de una fila de tipo Preset. <c>Friend Shared</c> por lo mismo que
+    ''' <see cref="MakeSseRaceMenuSlider"/>: la cantidad de ítems ES una ley del canon y tiene que poder gatearse
+    ''' ejecutando esta función, no una copia de su cuerpo.
+    '''
+    ''' <para>⛔ LA CANTIDAD SALE DE <paramref name="b"/>, NO DE <c>def.PresetCount</c>. Es la misma ley —skee64
+    ''' arma el slider de Preset con <c>upperBound = presetCount</c> (FaceMorphInterface.cpp:1329)— y escrita
+    ''' dos veces YA DIVERGÍA: el <c>Math.Max(1, PresetCount)</c> que había acá ofrecía el ítem 1 cuando el
+    ''' catálogo declara 0 (una línea de .slider con el contador ausente o no numérico), mientras el canon deja
+    ''' el rango en <c>[0,0]</c>. Pasando por <see cref="RaceMenuSliderCatalog.BoundsOf"/> hay una sola ley, y
+    ''' además esa rama deja de ser código que sólo el gate ejercita.</para>
+    '''
+    ''' <para>El índice se acota ANTES de convertir: <c>CInt</c> sobre el <c>Math.Truncate</c> de un valor
+    ''' grande —un .jslot ajeno con 1e12 en una clave de tipo Preset— tira <c>OverflowException</c> y se lleva
+    ''' puesta la apertura del editor entero.</para></summary>
+    Friend Shared Function MakeSseRaceMenuPresetCombo(def As FO4_Base_Library.RaceMenuSliderCatalog.SliderDef,
+                                                      b As FO4_Base_Library.RaceMenuSliderCatalog.SliderBounds,
+                                                      value As Double) As ComboBox
+        Dim cb As New ComboBox With {.DropDownStyle = ComboBoxStyle.DropDownList,
+                                     .Anchor = AnchorStyles.Left Or AnchorStyles.Right,
+                                     .Margin = New Padding(3, 4, 8, 3)}
+        cb.Items.Add("Default")
+        For n = 1 To CInt(Math.Max(0.0R, b.Max)) : cb.Items.Add(def.LowerBound & n.ToString()) : Next
+        Dim raw As Double = value
+        If Double.IsNaN(raw) Then raw = 0.0R
+        cb.SelectedIndex = CInt(Math.Truncate(Math.Max(0.0R, Math.Min(CDbl(cb.Items.Count - 1), raw))))
+        Return cb
+    End Function
+
+    ''' <summary>La fila entera: control + handlers, con el valor que el preset trae hoy.</summary>
+    Private Function NewSseRaceMenuSlider(sliderName As String,
+                                          b As FO4_Base_Library.RaceMenuSliderCatalog.SliderBounds) As FO4_Base_Library.TinySliderTextBox
+        Dim tb = MakeSseRaceMenuSlider(b, CDbl(GetSseCustomValue(sliderName)))
+        AddHandler tb.ValueChanged, Sub(s, e) OnSseRaceMenuSliderEdited(sliderName, tb, b)
+        AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
+        Return tb
+    End Function
+
+    ''' <summary>La otra mitad de <see cref="MakeSseRaceMenuSlider"/>: repone el límite que
+    ''' <c>AllowExtremeValues</c> le sacó a los caminos de ENTRADA.
+    '''
+    ''' <para>Sólo corre por gesto del usuario — la siembra y el refresco van con <c>_suspendEvents</c>, así que
+    ''' el valor que trae el archivo nunca pasa por acá y no se clampea.</para>
+    '''
+    ''' <para>⛔ EL RECHAZO DE NO FINITOS NO ES DEFENSIVO, TAPA DOS CADENAS REALES. Tipear <c>1e39</c> en la
+    ''' cajita da un Double finito que <c>IsUsableNumber</c> acepta y que <c>NormalizeValue</c> ya no clampea;
+    ''' el <c>CSng</c> de la línea siguiente lo satura a <c>Single.PositiveInfinity</c>, y de ahí:
+    ''' (a) <c>NpcMorphResolver.AddNam9Channel</c> lo emite con <c>engineApplied:=False</c> —o sea que
+    ''' <c>DropChannelsRejectedByEngine</c> NO lo descarta— y <c>MorphEngine</c> sólo neutraliza NaN, no ∞, así
+    ''' que la cabeza sale con vértices infinitos en render Y en el .nif horneado; (b) guardar el preset tira
+    ''' <c>ArgumentException</c> en <c>RaceMenuJslot</c>, porque JSON no admite infinito. El clamp de abajo lo
+    ''' toma antes que nada de eso, pero el guard explícito queda porque el clamp depende de que los bounds
+    ''' sean finitos y esa es una precondición que este método no controla.</para></summary>
+    ''' <summary>El valor que puede quedar guardado tras un gesto del usuario: acotado a la pista y finito.
+    ''' <c>Friend Shared</c> por la misma razón que <see cref="MakeSseRaceMenuSlider"/> — es la ley que hay que
+    ''' gatear, y el gate tiene que ejecutar ESTA función y no una copia.</summary>
+    Friend Shared Function BoundEditedValue(v As Double, b As FO4_Base_Library.RaceMenuSliderCatalog.SliderBounds) As Double
+        If Double.IsNaN(v) OrElse Double.IsInfinity(v) Then v = 0.0R
+        Return Math.Max(b.Min, Math.Min(b.Max, v))
+    End Function
+
+    Private Sub OnSseRaceMenuSliderEdited(sliderName As String, tb As FO4_Base_Library.TinySliderTextBox,
+                                          b As FO4_Base_Library.RaceMenuSliderCatalog.SliderBounds)
+        If _suspendEvents Then Return
+        Dim v As Double = tb.Value
+        Dim bounded As Double = BoundEditedValue(v, b)
+        If bounded <> v Then
+            ' Se repone en el control además del modelo: si sólo se corrigiera el modelo, la cajita seguiría
+            ' mostrando el 50 que la persona tipeó mientras el preset guarda 3 — la misma mentira de pantalla
+            ' que este cambio vino a sacar, en el otro sentido.
+            _suspendEvents = True
+            Try
+                tb.Value = bounded
+            Finally
+                _suspendEvents = False
+            End Try
+        End If
+        OnSseRaceMenuChanged(sliderName, CSng(bounded))
+    End Sub
+
+    ''' <summary>Banner de aviso arriba de todo el flujo de filas. No es un header de categoría: NO entra en
+    ''' <c>_sseRaceMenuGroups</c>, así que el filtro de búsqueda no lo esconde junto con un grupo — un aviso que
+    ''' desaparece cuando filtrás es un aviso que no se leyó.
+    ''' <para>Se dimensiona solo con <c>MaximumSize</c> + <c>AutoSize</c> para que el texto envuelva al ancho de
+    ''' la fila en vez de recortarse; <see cref="OnSseRaceMenuFlowResize"/> ya reajusta el resto de las filas y
+    ''' este control sigue el mismo ancho.</para></summary>
+    Private Function AddSseRaceMenuNotice(text As String) As Control
+        Dim w = SseRaceMenuRowWidth()
+        Dim box As New Label With {
+            .Text = text,
+            .AutoSize = True, .MaximumSize = New Size(w, 0),
+            .Margin = New Padding(0, 4, 0, 10), .Padding = New Padding(10, 8, 10, 8),
+            .BackColor = Color.FromArgb(255, 248, 220), .ForeColor = SystemColors.ControlText,
+            .BorderStyle = BorderStyle.FixedSingle,
+            .Font = New Font(Me.Font, FontStyle.Regular),
+            .UseMnemonic = False}
+        FlowSseRaceMenu.Controls.Add(box)
+        Return box
+    End Function
 
     ''' <summary>Bold category header, added to the row flow as a row of its own so the filter can hide it with
     ''' its whole group.</summary>
@@ -1340,7 +1496,18 @@ Public Class EditFace_Form
                 Dim v = GetSseCustomValue(kv.Key)
                 Dim tb = TryCast(kv.Value, FO4_Base_Library.TinySliderTextBox)
                 If tb IsNot Nothing Then
-                    tb.Value = Math.Max(tb.Minimum, Math.Min(tb.Maximum, CDbl(v)))
+                    ' SIN CLAMP, A PROPÓSITO. Acá vivía `Math.Max(tb.Minimum, Math.Min(tb.Maximum, v))`, y era
+                    ' el punto exacto donde la pantalla se separaba del archivo: un .jslot con −2,4 se dibujaba
+                    ' como −1,00 mientras el render seguía aplicando −2,4 (NpcMorphResolver emite estos canales
+                    ' con engineApplied:=False y NO los descarta por rango). Medido sobre los 48 .jslot del
+                    ' usuario: 219 valores en 30 archivos se mostraban mal.
+                    ' ⚠️ LO QUE ESTO **NO** ARREGLA, para que nadie lo lea de más: el primer click en la pista
+                    ' sigue llevando el −2,4 a un valor de adentro del track, porque `XToValue` acota la X
+                    ' (TinySliderTextBox.vb:706-713). Eso es FIEL y se queda: el slider de RaceMenu tampoco
+                    ' puede quedar fuera de su rango una vez que lo tocás, y `DoubleMorphCallback_Hook` aplica
+                    ' la diferencia contra el valor viejo (SKEEHooks.cpp:828-943). Lo que se arregla acá es que
+                    ' el número MOSTRADO deje de mentir mientras nadie lo toca.
+                    tb.Value = CDbl(v)
                 Else
                     Dim cb = TryCast(kv.Value, ComboBox)
                     If cb IsNot Nothing Then cb.SelectedIndex = Math.Max(0, Math.Min(cb.Items.Count - 1, CInt(Math.Truncate(CDbl(v)))))
