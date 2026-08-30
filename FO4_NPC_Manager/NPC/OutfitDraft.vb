@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Un atuendo que se está armando y todavía no se guardó.
@@ -82,6 +82,18 @@ Public Class OutfitDraft
     ''' <summary>Una edición de un atuendo que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As OutfitDraft
+        ' ⛔ SIN PluginManager NO HAY BORRADOR. `NormalizarReferencias` se va sin hacer nada cuando
+        ' `plugins` es Nothing, así que el árbol quedaría con los FormID LOCALES del archivo fuente
+        ' mientras todo lo de arriba —las propiedades de referencia, el resolvedor del render y el
+        ' reindexado del guardado— asume espacio de orden de carga. Antes no mordía porque los editores
+        ' volcaban valores ya globales sobre un record en blanco; ahora el árbol crudo ES el borrador, y
+        ' un ESP con las referencias sin reindexar apunta al mod equivocado sin un solo aviso.
+        If plugins Is Nothing Then
+            Throw New ArgumentNullException(NameOf(plugins),
+                "Un árbol sin normalizar no es un borrador editable: sus referencias quedan en el espacio " &
+                "LOCAL del archivo de origen y el guardado las reindexaría una segunda vez.")
+        End If
+        If rec Is Nothing Then Return Nothing
         Dim abierto = Canon.CanonRecords.Otft(rec, plugins)
         If abierto Is Nothing Then Return Nothing
         Return New OutfitDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,

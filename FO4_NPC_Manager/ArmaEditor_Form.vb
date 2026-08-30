@@ -89,6 +89,9 @@ Public Class ArmaEditor_Form
     Private _previewArmaWrapperRegistered As Boolean
     Private _lastPreviewKey As String = Nothing
     Private _previewInProgress As Boolean
+    ''' <summary>Ya se avisó que el volcado del preview falló. Se avisa UNA vez: el temporizador vuelve
+    ''' a intentar en cada redibujo y un diálogo por tick es inusable.</summary>
+    Private _previewCommitFallado As Boolean
     Private _pendingApply As Boolean
     Private WithEvents _previewDebounce As Timer
 
@@ -530,68 +533,34 @@ Public Class ArmaEditor_Form
     ' Load a real ARMA into a draft (copy of every editor-relevant field)
     ' =====================================================================
 
-    ''' <summary>Build an ArmaDraft from a real ARMA record (via the draft-aware parsed view). asOverride=False →
-    ''' a NEW copy with a fresh draft FormID; =True → an override keeping the real global FormID. Bone-scale +
-    ''' all fields are copied so a template starts identical to its source.</summary>
+    ''' <summary>Arma el borrador a partir de un ARMA/ARMO REAL. <c>asOverride:=True</c> ⇒ un override
+    ''' que conserva el FormID global; <c>False</c> ⇒ una COPIA NUEVA con FormID de borrador.
+    ''' <para>⛔ El record se COPIA —árbol y contexto propio—, no se reconstruye. Antes esta función
+    ''' arrancaba de un record EN BLANCO y le volcaba los campos a mano, uno por uno, y su propio
+    ''' docstring prometía que «todos los campos se copian». No era cierto y no podía serlo: la lista
+    ''' enumera lo que alguien se acordó de poner. Lo que faltaba se perdía en silencio al duplicar —
+    ''' el precio y el peso de un ARMO de Skyrim estuvieron ausentes hasta que alguien los buscó en el
+    ''' archivo— y los campos que la app no modela no llegaban nunca. En Skyrim, además, la
+    ''' construcción normalizaba la plantilla de cuerpo de BODT a BOD2 y perdía General Flags y Armor
+    ''' Type, o sea el 85 % de los ARMA del juego.</para>
+    ''' <para>Con el árbol copiado no hay nada que enumerar: viene TODO, incluidos el sculpt, las razas
+    ''' adicionales, las combinaciones de object template, las resistencias y las banderas de
+    ''' cabecera.</para></summary>
     Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean) As ArmaDraft
-        Dim a = _mainForm.GetParsedArmaForEditor(fid)
-        If a Is Nothing Then Return Nothing
-        Dim d = ArmaDraft.Nuevo(If(asOverride, fid, _mainForm.AllocateDraftFormID()),
-                               Canon.CanonBridge.SessionGame())
-        Dim rec = d.Record
-        rec.EditorID = If(Not String.IsNullOrEmpty(a.EditorID), a.EditorID,
-                          ArmaDraft.EditorIdPrefix & fid.ToString("X8"))
-        rec.BipedBodyTemplateFirstPersonFlags = a.SlotMaskDe()
-        rec.Race = a.Race
-        rec.FootstepSound = a.FootstepSound
-        rec.DataMalePriority = ClampByte(a.DataMalePriority)
-        rec.DataFemalePriority = ClampByte(a.DataFemalePriority)
-        rec.DataWeightSliderMale = a.DataWeightSliderMale
-        rec.DataWeightSliderFemale = a.DataWeightSliderFemale
-        rec.DataDetectionSoundValue = a.DataDetectionSoundValue
-        rec.DataWeaponAdjust = a.DataWeaponAdjust
-        rec.MaleModelFilename = a.MaleModelFilename
-        rec.FemaleModelFilename = a.FemaleModelFilename
-        rec.MaleModelFilename2 = a.MaleModelFilename2
-        rec.FemaleModelFilename2 = a.FemaleModelFilename2
-        rec.MaleSkinTexture = a.MaleSkinTexture
-        rec.FemaleSkinTexture = a.FemaleSkinTexture
-        rec.MaleSkinTextureSwapList = a.MaleSkinTextureSwapList
-        rec.FemaleSkinTextureSwapList = a.FemaleSkinTextureSwapList
-        rec.ArtObject = a.ArtObject
-        ' MO2F/MO3F, MO2C/MO3C, MO2S..MO5S y el sculpt sólo existen en el ARMA de Fallout 4 — en
-        ' Skyrim esos subrecords no están en el formato, así que no hay adónde escribirlos.
-        Dim aFo4 = TryCast(a, Canon.ArmaFO4)
-        Dim fo4 = TryCast(rec, Canon.ArmaFO4)
-        If aFo4 IsNot Nothing AndAlso fo4 IsNot Nothing Then
-            fo4.MaleFlags = aFo4.MaleFlags
-            fo4.FemaleFlags = aFo4.FemaleFlags
-            fo4.MaleFlags2 = aFo4.MaleFlags2
-            fo4.FemaleFlags2 = aFo4.FemaleFlags2
-            If aFo4.MaleColorRemappingIndexPresente Then
-                fo4.MaleColorRemappingIndex = aFo4.MaleColorRemappingIndex
-            End If
-            If aFo4.FemaleColorRemappingIndexPresente Then
-                fo4.FemaleColorRemappingIndex = aFo4.FemaleColorRemappingIndex
-            End If
-            fo4.MaleMaterialSwap = aFo4.MaleMaterialSwap
-            fo4.FemaleMaterialSwap = aFo4.FemaleMaterialSwap
-            fo4.MaleMaterialSwap2 = aFo4.MaleMaterialSwap2
-            fo4.FemaleMaterialSwap2 = aFo4.FemaleMaterialSwap2
-            WriteBoneScaleDataIntoRecord(fo4, ReadAllBoneScaleFromRecord(aFo4))
-            ' La cabecera no sale del árbol de campos, pero viaja en el contexto del record, así
-            ' que un override sí puede heredar estas tres banderas de la fuente.
-            fo4.NoUnderarmorScaling = aFo4.NoUnderarmorScaling
-            fo4.HasSculptData = aFo4.HasSculptData
-            fo4.HiRes1stPersonOnly = aFo4.HiRes1stPersonOnly
+        Dim pm = _mainForm.PluginManagerForEditor
+        If pm Is Nothing Then Return Nothing
+        Dim rec = pm.GetRecord(fid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "ARMA" Then Return Nothing
+        Dim d = If(asOverride,
+                   ArmaDraft.Edicion(rec, pm),
+                   ArmaDraft.Clon(rec, pm, _mainForm.AllocateDraftFormID()))
+        If d Is Nothing Then Return Nothing
+        ' El EditorID sólo se SINTETIZA si el record no traía uno: `EDID` no es requerido en el esquema,
+        ' pero el commit exige uno no vacío para poder guardar.
+        If String.IsNullOrEmpty(d.Record.EditorID) Then
+            d.Record.EditorID = ArmaDraft.EditorIdPrefix & fid.ToString("X8")
         End If
-        d.IsOverride = asOverride
-        d.IsNew = Not asOverride
         d.IsModified = False
-        For Each r In a.AdditionalRaces
-            Dim e = rec.AgregarAdditionalRaces()
-            If e IsNot Nothing Then e.Race = r.Race
-        Next
         Return d
     End Function
 
@@ -684,7 +653,10 @@ Public Class ArmaEditor_Form
             CheckMo3f1stPerson.Checked = (femaleFlags And &H2) <> 0
 
             ' Slots.
-            SetSlotChecks(rec.BipedBodyTemplateFirstPersonFlags)
+            ' Por SlotMaskDe: en Skyrim el 85 % de los ARMA trae la plantilla por BODT, y leer
+            ' BOD2 a pelo devuelve 0. Los checkboxes salían todos apagados y el volcado escribía
+            ' ESE 0 de vuelta: el slot mask se borraba sin que nadie dijera nada.
+            SetSlotChecks(rec.SlotMaskDe())
 
             ' Skin & material.
             SetFidText(TextBoxRace, rec.Race)
@@ -739,7 +711,16 @@ Public Class ArmaEditor_Form
     ''' DialogResult.OK, close). On validation failure CommitPanelsToDraft already showed the message and returned
     ''' False → stay open. The live preview already reflects the committed draft, so no extra re-render is needed.</summary>
     Private Sub OnOk(sender As Object, e As EventArgs)
-        If CommitPanelsToDraft(validate:=True) Then
+        ' Por CommitProtegido y no directo: el diálogo que sale cuando el volcado del preview falla
+        ' invita a apretar Aceptar, y acá corre EL MISMO volcado. Sin la guarda, el clic siguiente al
+        ' aviso mataba el proceso.
+        ' Y se para el temporizador ANTES de volcar: el render lee la vista VIVA del borrador desde un
+        ' worker, así que mutar el árbol mientras uno está en vuelo lo hace fallar — sin ruido, porque el
+        ' await cae en el catch mudo del render, pero con una vista previa a medias. Parando el
+        ' temporizador no arranca ninguno nuevo; el que ya esté en vuelo sigue siendo una ventana abierta,
+        ' y cerrarla del todo pide un candado compartido con el render, que no está hecho.
+        If _previewDebounce IsNot Nothing Then _previewDebounce.Stop()
+        If CommitProtegido(validate:=True) Then
             _resultArmaFormID = _draft.FormID
             ' Set DialogResult.OK BEFORE Close() so the ensuing FormClosing sees OK and does NOT
             ' revert/discard the draft we just finalized.
@@ -783,6 +764,7 @@ Public Class ArmaEditor_Form
     ''' <summary>Commit the panel state into <see cref="_draft"/> and register it on MainForm. When
     ''' <paramref name="validate"/> the EditorID is checked (non-empty + unique for New); on failure a message
     ''' is shown and the draft is NOT registered. Returns True on a successful commit.</summary>
+
     Private Function CommitPanelsToDraft(validate As Boolean) As Boolean
         ' Flush the visible sculpt grid into its gender bucket first.
         SaveSculptGrid(_sculptShownGender)
@@ -811,6 +793,15 @@ Public Class ArmaEditor_Form
                                 MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return False
             End If
+            ' ⛔ LA RAZA ES OBLIGATORIA EN LA PRÁCTICA, aunque el esquema la declare opcional: está en
+            ' 5.825 de 5.825 ARMA de los dos juegos y no declara NULL. Dejarla vacía no es «borrarla»,
+            ' es entrada inválida — y sin este rechazo el volcado la conserva callado, que es peor que
+            ' avisar.
+            If GetFid(TextBoxRace) = 0UI Then
+                MessageBox.Show(Me, "Elegiá una raza (RNAM): todos los ARMA del juego la traen.",
+                                "Apply", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return False
+            End If
         End If
         Dim rec = _draft.Record
         rec.EditorID = edid
@@ -830,22 +821,30 @@ Public Class ArmaEditor_Form
         End If
 
         ' Slots.
-        rec.BipedBodyTemplateFirstPersonFlags = ReadSlotChecks()
+        ' Por la rama QUE EL RECORD TRAE, no siempre BOD2: en Skyrim un ARMA con BODT quedaba
+        ' con las dos ramas y al releerlo todo lo que sigue caía en passthrough. La ley vive en
+        ' un solo lugar, junto a su lectura (SlotMaskDe).
+        rec.PonerSlotMaskEn(ReadSlotChecks())
 
         ' Skin & material.
-        rec.Race = GetFid(TextBoxRace)
-        rec.FootstepSound = GetFid(TextBoxSndd)
-        rec.MaleSkinTexture = GetFid(TextBoxNam0)
-        rec.FemaleSkinTexture = GetFid(TextBoxNam1)
-        rec.MaleSkinTextureSwapList = GetFid(TextBoxNam2)
-        rec.FemaleSkinTextureSwapList = GetFid(TextBoxNam3)
+        ' ⛔ RNAM NO pasa por PonerRef. El esquema lo da por opcional, pero está en 5.825 de 5.825 ARMA
+        ' y ARMO de los dos juegos y no declara NULL: una caja de raza vacía no es «borrar la raza», es
+        ' entrada inválida. Sacarlo dejaría un ARMA sin raza, en silencio; escribir 0 dejaría una
+        ' referencia nula. Así que no se toca, y `validate` lo rechaza (ver arriba).
+        Dim razaPedida = GetFid(TextBoxRace)
+        If razaPedida <> 0UI Then rec.Race = razaPedida
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxSndd), Sub(v) rec.FootstepSound = v, Sub() rec.FootstepSoundPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam0), Sub(v) rec.MaleSkinTexture = v, Sub() rec.MaleSkinTexturePresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam1), Sub(v) rec.FemaleSkinTexture = v, Sub() rec.FemaleSkinTexturePresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam2), Sub(v) rec.MaleSkinTextureSwapList = v, Sub() rec.MaleSkinTextureSwapListPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam3), Sub(v) rec.FemaleSkinTextureSwapList = v, Sub() rec.FemaleSkinTextureSwapListPresente = False)
         If fo4 IsNot Nothing Then
-            fo4.MaleMaterialSwap = GetFid(TextBoxMo2s)
-            fo4.FemaleMaterialSwap = GetFid(TextBoxMo3s)
-            fo4.MaleMaterialSwap2 = GetFid(TextBoxMo4s)
-            fo4.FemaleMaterialSwap2 = GetFid(TextBoxMo5s)
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo2s), Sub(v) fo4.MaleMaterialSwap = v, Sub() fo4.MaleMaterialSwapPresente = False)
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo3s), Sub(v) fo4.FemaleMaterialSwap = v, Sub() fo4.FemaleMaterialSwapPresente = False)
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo4s), Sub(v) fo4.MaleMaterialSwap2 = v, Sub() fo4.MaleMaterialSwap2Presente = False)
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo5s), Sub(v) fo4.FemaleMaterialSwap2 = v, Sub() fo4.FemaleMaterialSwap2Presente = False)
         End If
-        rec.ArtObject = GetFid(TextBoxOnam)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxOnam), Sub(v) rec.ArtObject = v, Sub() rec.ArtObjectPresente = False)
         rec.DataMalePriority = CByte(NumMalePrio.Value)
         rec.DataFemalePriority = CByte(NumFemalePrio.Value)
         rec.DataDetectionSoundValue = CByte(NumDetectionSound.Value)
@@ -1272,7 +1271,7 @@ Public Class ArmaEditor_Form
         Try
             ' Flush ALL panel state into the draft (mesh paths, race, and the currently-shown sculpt grid) so
             ' the estimate reads the user's latest typed values, not a stale pre-debounce snapshot.
-            CommitPanelsToDraft(validate:=False)
+            If Not CommitProtegido(validate:=False) Then Return
 
             Dim anyEstimated As Boolean = False
             Dim messages As New List(Of String)
@@ -1403,8 +1402,8 @@ Public Class ArmaEditor_Form
         If pm Is Nothing Then Return 0UI
         Dim raceRec = pm.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return 0UI
-        Dim race = Canon.CanonRecords.Race(raceRec, pm)
-        Return If(race IsNot Nothing, race.Skin, 0UI)
+        ' `SkinDe` YA trae la guarda de raza nula: escribirla otra vez acá era la misma ley dos veces.
+        Return Canon.CanonInterpretacion.SkinDe(Canon.CanonRecords.Race(raceRec, pm))
     End Function
 
     ' =====================================================================
@@ -1456,6 +1455,10 @@ Public Class ArmaEditor_Form
     End Sub
 
     Private Sub RequestPreview()
+        ' ⛔ Si el volcado ya falló, no se rearma: este método hace Stop+Start y lo llama CADA edición
+        ' de campo, así que el Stop() del manejador de error duraba hasta la próxima tecla — y como el
+        ' aviso sale una sola vez, a partir de ahí el commit fallaba en silencio en cada tecla.
+        If _previewCommitFallado Then Return
         If _host Is Nothing OrElse _previewDebounce Is Nothing Then Return
         _previewDebounce.Stop()
         _previewDebounce.Start()
@@ -1541,7 +1544,7 @@ Public Class ArmaEditor_Form
         Return String.Join(":", {
             previewOtftFid.ToString("X8"), throwawayItemFid.ToString("X8"),
             _parentArmoFormID.ToString("X8"), _outfitContextFormID.ToString("X8"),
-            _draft.FormID.ToString("X8"), rec.BipedBodyTemplateFirstPersonFlags.ToString("X8"),
+            _draft.FormID.ToString("X8"), rec.SlotMaskDe().ToString("X8"),
             rec.MaleModelFilename, rec.FemaleModelFilename,
             rec.Race.ToString("X8"),
             maleSwap.ToString("X8"), femaleSwap.ToString("X8"),
@@ -1559,6 +1562,51 @@ Public Class ArmaEditor_Form
             If(_host IsNot Nothing AndAlso _host.PreviewGenderOverride.HasValue, "g" & _host.PreviewGenderOverride.Value.ToString(), "g-")})
     End Function
 
+    ''' <summary>Vuelca los paneles al borrador PARA EL PREVIEW, sin que un fallo se lleve el proceso.
+    ''' <para>⛔ El volcado termina en <c>ContentEquals</c> → <c>WbWriter.EmitBody</c>, que TIRA en dos
+    ''' casos legítimos: un árbol cuya Form Version no coincide con la del contexto, y un subrecord que
+    ''' el esquema no supo ubicar. Este camino lo dispara el temporizador del preview en CADA redibujo,
+    ''' desde un <c>Async Sub</c> sin <c>Try</c> y con <c>UnhandledExceptionMode.ThrowException</c>: sin
+    ''' esta guarda, un árbol inemitible CIERRA la aplicación en mitad de un dibujo, sin diálogo y sin
+    ''' nada accionable.</para>
+    ''' <para>Y tampoco se puede callar —hay un <c>Catch</c> mudo más abajo para el render, que es otra
+    ''' cosa—: un preview que no volcó está mostrando algo distinto de lo que el usuario está editando.
+    ''' Se avisa una vez y se para el temporizador; lo que el usuario tenga sin guardar no se toca.</para>
+    ''' <para>⛔ Y REVIERTE. El volcado escribe ~25 campos en el árbol antes de llegar al punto que
+    ''' puede tirar, y el árbol del borrador es el MISMO objeto que ya está registrado en MainForm: sin
+    ''' revertir, un fallo a mitad de camino deja un borrador medio escrito, marcado como sucio, y el
+    ''' guardado lo emite así. Reportar un estado que ya quedó pegado no es reportar.</para>
+    ''' <para>Lo usa también OnOk (con validate:=True): el diálogo del fallo invita a apretar Aceptar, y
+    ''' si Aceptar corriera el mismo volcado sin protección el proceso moriría ahí — que es justo lo que
+    ''' esta guarda vino a evitar.</para>
+    ''' <para>Devuelve False si no se pudo volcar: el llamador no sigue con datos a medias.</para></summary>
+    Private Function CommitProtegido(validate As Boolean) As Boolean
+        Dim antes = _draft?.Clone()
+        Try
+            Return CommitPanelsToDraft(validate)
+        Catch ex As Exception
+            ' Primero deshacer, después avisar: si el aviso saliera antes, cualquier cosa que el usuario
+            ' haga desde el diálogo ya vería el árbol a medio escribir.
+            If antes IsNot Nothing AndAlso _draft IsNot Nothing Then
+                _draft.Record = antes.Record
+                _draft.IsModified = antes.IsModified
+                _mainForm.RegisterArmaDraft(_draft)
+            End If
+            Logger.Log("ArmaEditor.CommitProtegido: " & ex.ToString())
+            If _previewDebounce IsNot Nothing Then _previewDebounce.Stop()
+            If Not _previewCommitFallado Then
+                _previewCommitFallado = True
+                MessageBox.Show(Me,
+                    "No se pudo armar este ARMA:" & vbCrLf & vbCrLf &
+                    ex.Message & vbCrLf & vbCrLf &
+                    "La vista previa queda detenida y el último cambio se deshizo. El detalle quedó en " &
+                    "el log. Podés seguir editando, pero este cambio no se va a poder guardar.",
+                    "Vista previa", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            End If
+            Return False
+        End Try
+    End Function
+
     Private Async Function RenderPreviewAsync() As Task
         If _host Is Nothing OrElse _preview Is Nothing OrElse _preview.IsDisposed Then Return
         If _previewNpcFormID = 0UI Then Return
@@ -1568,7 +1616,7 @@ Public Class ArmaEditor_Form
         ' _pendingApply=False, so without this the draft would never be registered and the draft-aware
         ' resolver (TryGetArmaDraft) returns Nothing → naked. validate:=False never early-returns, so the
         ' draft is always registered; the key is computed from _draft AFTER this so it stays correct.
-        CommitPanelsToDraft(validate:=False)
+        If Not CommitProtegido(validate:=False) Then Return
 
         ' Push the preview-mode controls onto the host BEFORE the key is built so a scope / Include Body /
         ' gender change is reflected in both the render knobs and the cache key (else the key match early-returns).

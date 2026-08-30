@@ -112,7 +112,8 @@ Public Module NpcRecordOverlay
                                                 appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                                 pluginManager As PluginManager,
                                                 Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
-                                                Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing) As NPC_Data
+                                                Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
+                                                Optional estricto As Boolean = False) As NPC_Data
         If raw Is Nothing OrElse raw.Record Is Nothing Then Return raw
         If appliedPresets Is Nothing Then Return raw
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -141,11 +142,71 @@ Public Module NpcRecordOverlay
         Dim sr = shadow.Record
         If effRaceFid <> 0UI Then sr.Race = effRaceFid
 
-        ' NPC.WNAM (vanilla skin → ARMO). Tres estados para el override:
-        '   Nothing       → se preserva el WNAM del record
-        '   valor <> 0    → override de ARMO (por ejemplo una piel propia elegida en Edit Face)
-        '   valor = 0     → borrado explícito; el resolver del render cae al WNAM de la RACE
-        If preset.SkinFormIDOverride.HasValue Then sr.Skin = preset.SkinFormIDOverride.Value
+        ' La RACE se parsea UNA vez y acá arriba: la necesitan el WNAM (abajo), el seed de head-parts y
+        ' la derivación del QNAM. Antes se parseaba recién en la mitad de la función, y por eso el WNAM
+        ' no podía resolver nada y se conformaba con dejar un 0.
+        Dim raceRec = If(effRaceFid <> 0UI, pluginManager.GetRecord(effRaceFid), Nothing)
+        Dim raceIsValid As Boolean = raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE"
+        Dim race As Canon.IRace = Nothing
+        If raceIsValid Then
+            race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, pluginManager))
+        End If
+
+        ' NPC.WNAM (piel → ARMO). Tres estados del override, y NINGUNO escribe un 0 al archivo:
+        '   Nothing    → no se toca el WNAM del record
+        '   valor <> 0 → se escribe ese ARMO
+        '   valor = 0  → el combo dice «(use RACE default)» ⇒ se resuelve contra la RAZA (abajo).
+        '
+        ' LA RAZA TIENE TRES ESTADOS, y los tres producen algo DISTINTO y VISIBLE:
+        '   declara piel     → se escribe ESA piel, explícita en el archivo.
+        '   NO declara piel  → no hay nada que nombrar ⇒ el subrecord NO VA. Es el dato correcto:
+        '                      la raza no tiene piel, así que el NPC tampoco.
+        '   NO SE PUDO resolver → SE RECHAZA EL GUARDADO. No es un estado del dato: es que falta
+        '                      información. Sacar el subrecord «porque el motor igual cae a la raza»
+        '                      parece inocuo y NO lo es: dejaría que el MISMO clic produzca dos
+        '                      productos según si el mod de la raza estaba cargado al guardar —uno
+        '                      CLAVADO a la piel de hoy y otro que sigue a la raza para siempre—, y
+        '                      eso lo elegiría el orden de carga, en silencio. Los bytes los decide
+        '                      el usuario, y para decidir tiene que enterarse.
+        '
+        ' ⛔ Antes esto grababa `sr.Skin = 0`, o sea un WNAM presente apuntando a nada. Eso no es un
+        ' tercer estado del formato: xEdit declara NPC_\WNAM como [ARMO] SIN NULL en los dos juegos, así
+        ' que su validador lo marca «Found a NULL reference, expected: ARMO» y ni siquiera deja
+        ' escribirlo a mano — a diferencia de RACE\WNAM, que sí es [ARMO, NULL]. Y no existe en el
+        ' ecosistema: medido sobre 175 plugins y 3.482.830 records, CERO referencias nulas en
+        ' NPC_/ARMA/ARMO/RACE/HDPT.
+        ' La ley de cuál es la piel de una raza es la MISMA que usa el render (CanonInterpretacion.SkinDe),
+        ' no una copia.
+        If preset.SkinFormIDOverride.HasValue Then
+            Dim pielPedida = preset.SkinFormIDOverride.Value
+            If pielPedida = 0UI Then
+                ' Falta de información, no un estado del dato. Y el rechazo va SÓLO en el camino de
+                ' GUARDADO: esta función la comparten el render y el horneado, y ahí tirar cerraba la
+                ' app al seleccionar un NPC — `MainForm.LoadNPCOnDemandAsyncFromExisting` la llama en el
+                ' hilo de UI, sin Try, y la app corre con UnhandledExceptionMode.ThrowException. En
+                ' render/bake se deja el WNAM como está y el resolvedor cae al fallback de siempre: el
+                ' preview muestra lo que el record dice HOY, y el guardado se niega a adivinar. No hay
+                ' divergencia de producto, porque en ese estado el guardado no produce nada.
+                If race Is Nothing Then
+                    If estricto Then
+                        Throw New InvalidOperationException(
+                            $"NPC {raw.FormID:X8} ({raw.EditorID}): se pidió usar la piel de la raza, pero " &
+                            $"la raza {effRaceFid:X8} no se pudo resolver — falta su plugin en el orden de " &
+                            "carga, o el record al que apunta ya no existe. No se graba: elegir por el " &
+                            "usuario cuál de las dos representaciones posibles queda en el archivo sería " &
+                            "decidir sus bytes.")
+                    End If
+                    GoTo finDelSkin
+                End If
+                pielPedida = Canon.CanonInterpretacion.SkinDe(race)
+            End If
+            If pielPedida <> 0UI Then
+                sr.Skin = pielPedida
+            Else
+                sr.QuitarSubrecord("WNAM")
+            End If
+finDelSkin:
+        End If
 
         ' LM SkinTemplate (F4SE bundle) wins over NPC.WNAM at preview time, mirroring
         ' SkinInterface.cpp:250-332 in Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee — ApplyOverride applies the
@@ -229,12 +290,7 @@ Public Module NpcRecordOverlay
         ' on the offline bake path) and reuse for both the HeadParts seed and the QNAM derivation below.
         ' RAZA EFECTIVA (effRaceFid, no la del record): el seed de head-parts y el QNAM salen del catálogo
         ' de la raza que realmente se muestra/hornea.
-        Dim raceRec = If(effRaceFid <> 0UI, pluginManager.GetRecord(effRaceFid), Nothing)
-        Dim raceIsValid As Boolean = raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE"
-        Dim race As Canon.IRace = Nothing
-        If raceIsValid Then
-            race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, pluginManager))
-        End If
+        ' La RACE ya se parseó arriba (hace falta para el WNAM). Acá sólo se reusa.
 
         ' EL WIPE SE GATEA POR PRESENCIA (HasHeadPartFormIDs), igual que morphs, tints y weight, Y NO SE
         ' PREPENDE NADA. Las dos mitades importan y las dos vienen de bugs medidos, en FO4 y en SSE:

@@ -2360,6 +2360,10 @@ Public Class MainForm
         ' mismos, pero lo que cuelga de cada uno no (FMRS vs node transforms, MWGT vs NAM7, ARMA SCLP vs
         ' sculpt RaceMenu, [U]/[A] vs outfit/accesorios). Ver RenderToggleLabels.
         ApplyRenderToggleLabelsForGame()
+        ' Rótulo del botón de lanzar. Va acá y no en el Designer porque depende del juego pineado en el
+        ' Preflight y de si el script extender está instalado. Se resuelve UNA vez: ni el juego ni el exe
+        ' cambian mientras esta ventana vive (los dos los fija el Preflight ANTES de construirla).
+        ApplyLaunchButtonCaptionForGame()
         RestoreMainWindowBounds()
         ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
         ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
@@ -3184,8 +3188,8 @@ Public Class MainForm
             For Each rec In raceRecs
                 If rec Is Nothing Then Continue For
                 Try
-                    Dim race = _ctx.ParseRaceCanonCached(rec)
-                    If race.Skin <> 0UI Then _skinArmoUniverse.Add(race.Skin)
+                    Dim pielRaza = Canon.CanonInterpretacion.SkinDe(_ctx.ParseRaceCanonCached(rec))
+                    If pielRaza <> 0UI Then _skinArmoUniverse.Add(pielRaza)
                 Catch
                 End Try
             Next
@@ -7972,8 +7976,9 @@ Public Class MainForm
     ''' in the app, RecordParsers-direct in the bake) — single source (RENDER == BAKE).</summary>
     Friend Shared Function IsPowerArmorRaceData(race As Canon.IRace, armorTypePowerKywdFid As UInteger,
                                                 getParsedArmo As Func(Of UInteger, Canon.IArmo)) As Boolean
-        If race Is Nothing OrElse armorTypePowerKywdFid = 0UI OrElse race.Skin = 0UI Then Return False
-        Return IsPowerArmorArmoData(getParsedArmo(race.Skin), armorTypePowerKywdFid)
+        Dim pielRaza = Canon.CanonInterpretacion.SkinDe(race)
+        If armorTypePowerKywdFid = 0UI OrElse pielRaza = 0UI Then Return False
+        Return IsPowerArmorArmoData(getParsedArmo(pielRaza), armorTypePowerKywdFid)
     End Function
 
     ''' <summary>True if the ARMO is power armor — carries the ArmorTypePower keyword. Cached per ARMO.</summary>
@@ -8686,7 +8691,8 @@ Public Class MainForm
                                              If(raceSse IsNot Nothing, raceSse.MaleHeadDataDefaultFaceTextureMale, 0UI))
             If maleFaceTex <> 0UI Then AddNode(raceNode, $"Default Face Texture: {DescribeFormID(maleFaceTex)}")
         End If
-        If race.Skin <> 0UI Then AddNode(raceNode, $"Race Skin: {DescribeFormID(race.Skin)}")
+        Dim pielDeLaRaza = Canon.CanonInterpretacion.SkinDe(race)
+        If pielDeLaRaza <> 0UI Then AddNode(raceNode, $"Race Skin: {DescribeFormID(pielDeLaRaza)}")
     End Sub
 
     Private Sub ExpandOutfitDetails(parentNode As TreeNode, outfitFormID As UInteger)
@@ -9285,6 +9291,20 @@ Public Class MainForm
     ''' threads <see cref="_pluginManager"/> + <see cref="_appliedPresets"/> through. Real impl
     ''' lives in the helper module so offline bake (FaceGenBuilder) can reuse without coupling
     ''' to MainForm instance state.</summary>
+    ''' <summary>El MISMO overlay, pero para GUARDAR: en modo estricto.
+    ''' <para>⛔ La diferencia no es cosmética. Si el preset dice «usá la piel de la raza» y la raza no
+    ''' resuelve —falta su plugin—, el guardado RECHAZA en vez de elegir por el usuario cuál de las dos
+    ''' representaciones posibles queda en el archivo. El RENDER no puede rechazar: esta función la
+    ''' comparten seis llamadores y uno de ellos corre en el hilo de UI al seleccionar un NPC, sin Try,
+    ''' con UnhandledExceptionMode.ThrowException — tirar ahí cierra la aplicación. En render el WNAM
+    ''' queda como está y el resolvedor cae al fallback de siempre.</para></summary>
+    Private Function ApplyPresetOverlayParaGuardado(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
+        Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets,
+                                                            _pluginManager, AddressOf ResolveLmSkinTemplate,
+                                                            AddressOf _ctx.ParseRaceCanonCached,
+                                                            estricto:=True)
+    End Function
+
     Private Function ApplyPresetOverlayToNpcData(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
         Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets,
                                                             _pluginManager, AddressOf ResolveLmSkinTemplate,
@@ -10838,7 +10858,7 @@ Public Class MainForm
             .AppliedPresets = _appliedPresets,
             .RenderHost = _renderHost,
             .DataPath = _dataPath,
-            .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayToNpcData,
+            .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayParaGuardado,
             .ApplyNpcRecordOverride = AddressOf ApplyNpcRecordOverrideToSpec,
             .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
                                         prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
@@ -11365,6 +11385,52 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Guarda como PNG el frame actual del mismo PreviewControl que usa el render principal.</summary>
+    ''' <summary>Pone en el botón el nombre de lo que realmente se va a arrancar ("Launch F4SE",
+    ''' "Launch Skyrim SE", …), que es lo que hace al botón game-aware para el usuario: sin esto tendría que
+    ''' hacer clic para enterarse de si el script extender está puesto o no.
+    ''' <para>Si no hay nada que lanzar el botón NO se deshabilita: queda con el rótulo genérico y el clic
+    ''' muestra el <c>Problem</c>. Un botón gris no explica por qué está gris.</para></summary>
+    Private Sub ApplyLaunchButtonCaptionForGame()
+        Dim target = GamePathsResolver.ResolveLaunchTarget()
+        If Not target.CanLaunch Then Return   ' queda el "▶ Launch game" del Designer
+        ButtonLaunchGame.Text = $"▶ Launch {target.DisplayName}"
+    End Sub
+
+    ''' <summary>Arranca el juego, con el script extender primero. La cascada entera vive en
+    ''' <see cref="GamePathsResolver.ResolveLaunchTarget"/> — acá sólo se ejecuta lo que aquélla eligió.
+    '''
+    ''' <para><b><c>UseShellExecute = False</c> es deliberado</b> y es lo contrario de lo que hace el botón
+    ''' de Ko-fi. Con False el proceso nace de un <c>CreateProcess</c> hecho por ESTE proceso, así que es un
+    ''' hijo directo de NPC Manager. Eso importa cuando la app se lanza desde MO2: <c>usvfs</c> engancha las
+    ''' APIs de archivo del proceso y se propaga a los hijos, de modo que el juego ve el <c>Data</c> virtual
+    ''' con los mods y el <c>Plugins.txt</c> del perfil — el mismo VFS del que ya sale el load order que
+    ''' lee la app. Con True lo crearía el shell y la cadena deja de ser determinista.</para>
+    '''
+    ''' <para><b>Lo que esto NO puede evitar:</b> si Steam no está corriendo, los exes de Bethesda levantan
+    ''' Steam y se relanzan a sí mismos como hijos de <c>steam.exe</c>. Ese proceso nuevo ya no cuelga de
+    ''' acá y queda fuera del VFS ⇒ juego sin mods. Es el mismo motivo por el que las entradas de
+    ''' <c>[customExecutables]</c> de MO2 tienen un campo <c>steamAppID</c>. No hay nada que la app pueda
+    ''' hacer desde afuera: se avisa y listo.</para></summary>
+    Private Sub ButtonLaunchGame_Click(sender As Object, e As EventArgs) Handles ButtonLaunchGame.Click
+        Dim target = GamePathsResolver.ResolveLaunchTarget()
+        If Not target.CanLaunch Then
+            MessageBox.Show(target.Problem, "Launch game", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Try
+            System.Diagnostics.Process.Start(New System.Diagnostics.ProcessStartInfo(target.ExePath) With {
+                .WorkingDirectory = target.WorkingDirectory,
+                .UseShellExecute = False})
+            Logger.LogLazy(Function() $"[LAUNCH] {target.ExePath} (scriptExtender={target.IsScriptExtender})")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[LAUNCH] failed {target.ExePath}: {ex.GetType().Name}: {ex.Message}")
+            MessageBox.Show($"Could not launch {target.DisplayName}.{Environment.NewLine}{Environment.NewLine}" &
+                            $"{target.ExePath}{Environment.NewLine}{Environment.NewLine}{ex.Message}",
+                            "Launch game", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End Try
+    End Sub
+
     ''' <summary>Abre la página de Ko-fi del autor en el navegador por defecto.
     ''' <para><c>UseShellExecute = True</c> NO es opcional acá: el proyecto es <c>net8.0-windows</c>, y en
     ''' .NET (Core) el default de <c>UseShellExecute</c> pasó a <c>False</c> — <c>Process.Start</c> con una

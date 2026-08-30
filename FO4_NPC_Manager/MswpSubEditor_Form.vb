@@ -242,13 +242,37 @@ Public Class MswpSubEditor_Form
             Return
         End If
 
-        _draft.Record.EditorID = edid
-        _draft.Record.ReemplazarSustituciones(subs)
-        ' Dirty only on a REAL change (mirror of ArmA/ArmO): an OVERRIDE opened and OK'd without edits is not
-        ' marked modified, so the saver won't re-emit an identical MSWP override. NEW drafts are always dirty.
-        If Not _draft.IsNew Then
-            _draft.IsModified = (_openSnapshot Is Nothing) OrElse Not _draft.ContentEquals(_openSnapshot)
-        End If
+        ' ⛔ Bajo Try, y no por precaución: `ContentEquals` termina en `WbWriter.EmitBody`, que TIRA con
+        ' un subrecord que el esquema no supo ubicar. Y este editor es el ÚNICO de los tres cuyo
+        ' `Edicion` ya está cableado (MainForm.BuildMswpOverrideDraftFromReal), o sea el único que ya
+        ' trabaja sobre un árbol COPIADO de un record del disco — la precondición exacta de ese throw.
+        ' Sin esto, un MSWP de un mod de terceros con un subrecord raro mataba el proceso AL APRETAR OK:
+        ' es un manejador de clic sin Try y la app corre con UnhandledExceptionMode.ThrowException.
+        Dim antes = _draft?.Clone()
+        Try
+            _draft.Record.EditorID = edid
+            _draft.Record.ReemplazarSustituciones(subs)
+            ' Dirty only on a REAL change (mirror of ArmA/ArmO): an OVERRIDE opened and OK'd without edits is not
+            ' marked modified, so the saver won't re-emit an identical MSWP override. NEW drafts are always dirty.
+            If Not _draft.IsNew Then
+                _draft.IsModified = (_openSnapshot Is Nothing) OrElse Not _draft.ContentEquals(_openSnapshot)
+            End If
+        Catch ex As Exception
+            ' Primero deshacer, después avisar, y NO cerrar: el borrador vive en MainForm y el árbol es
+            ' el mismo objeto, así que lo que quedó a medio escribir ya sería visible para el guardado.
+            If antes IsNot Nothing Then
+                _draft.Record = antes.Record
+                _draft.IsModified = antes.IsModified
+            End If
+            Logger.Log("MswpSubEditor.OnOk: " & ex.ToString())
+            MessageBox.Show(Me,
+                "No se pudo armar esta sustitución de materiales:" & vbCrLf & vbCrLf &
+                ex.Message & vbCrLf & vbCrLf &
+                "El último cambio se deshizo. El detalle quedó en el log.",
+                "MSWP", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            DialogResult = DialogResult.None
+            Return
+        End Try
 
         DialogResult = DialogResult.OK
         Close()

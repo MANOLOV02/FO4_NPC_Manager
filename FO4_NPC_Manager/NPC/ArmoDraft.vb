@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports FO4_Base_Library.Canon.CanonInterpretacion
 
 ''' <summary>Una armadura que se está editando y todavía no se guardó.
@@ -62,10 +62,56 @@ Public Class ArmoDraft
     ''' <summary>Una edición de un record que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As ArmoDraft
+        ' ⛔ SIN PluginManager NO HAY BORRADOR. `NormalizarReferencias` se va sin hacer nada cuando
+        ' `plugins` es Nothing, así que el árbol quedaría con los FormID LOCALES del archivo fuente
+        ' mientras todo lo de arriba —las propiedades de referencia, el resolvedor del render y el
+        ' reindexado del guardado— asume espacio de orden de carga. Antes no mordía porque los editores
+        ' volcaban valores ya globales sobre un record en blanco; ahora el árbol crudo ES el borrador, y
+        ' un ESP con las referencias sin reindexar apunta al mod equivocado sin un solo aviso.
+        If plugins Is Nothing Then
+            Throw New ArgumentNullException(NameOf(plugins),
+                "Un árbol sin normalizar no es un borrador editable: sus referencias quedan en el espacio " &
+                "LOCAL del archivo de origen y el guardado las reindexaría una segunda vez.")
+        End If
+        If rec Is Nothing Then Return Nothing
         Dim abierto = Canon.CanonRecords.Armo(rec, plugins)
         If abierto Is Nothing Then Return Nothing
         Return New ArmoDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,
                                    .IsOverride = True, .IsNew = False}
+    End Function
+
+    ''' <summary>Un record NUEVO a partir de uno que ya existe (una plantilla). Igual que
+    ''' <see cref="Edicion"/> —se trabaja sobre una COPIA con contexto propio— pero con identidad nueva.
+    ''' <para>⛔ No se reconstruye campo por campo. Copiar el árbol trae TODO lo que el record tenía,
+    ''' incluidos los campos que la app no modela y los que ningún editor muestra; enumerarlos a mano
+    ''' garantiza que alguno falte, y el que falta no se nota hasta que alguien lo busca en el archivo.
+    ''' En Skyrim, además, la construcción a mano normalizaba la plantilla de cuerpo de BODT a BOD2 y
+    ''' perdía General Flags y Armor Type — el 85 % de los ARMA del juego.</para>
+    ''' <para>El EditorID NO se toca acá: lo pone el editor, que es quien sabe si el usuario le dio uno
+    ''' o hay que sintetizarlo.</para></summary>
+    Public Shared Function Clon(rec As PluginRecord, plugins As PluginManager,
+                                formIDNuevo As UInteger) As ArmoDraft
+        Dim d = Edicion(rec, plugins)
+        If d Is Nothing Then Return Nothing
+        d.FormID = formIDNuevo
+        d.IsOverride = False
+        d.IsNew = True
+        ' LA IDENTIDAD DEL CONTEXTO, decidida campo por campo y no heredada por descuido:
+        Dim v = TryCast(d.Record, Canon.CanonRecordView)
+        If v IsNot Nothing AndAlso v.Context IsNot Nothing Then
+            ' FormID: el emisor reporta sus avisos con el del contexto, y un clon que arrastre el de la
+            ' fuente los publica con el identificador equivocado.
+            v.Context.FormID = formIDNuevo
+            ' EditorId: mismo argumento, campo de al lado. `SaveNpcEspWriter` arma su mensaje de error
+            ' con `Context.EditorId`. El del ÁRBOL lo pone el editor; el del contexto se limpia para que
+            ' nadie confunda al clon con su fuente.
+            v.Context.EditorId = ""
+            ' ⛔ Y NO SE HEREDA `Deleted` (bit 5). El guardado emite `Context.RecordFlags` tal cual, así
+            ' que clonar un record marcado como borrado daría un record NUEVO nacido borrado: el usuario
+            ' lo ve en la lista, lo guarda, y el motor lo ignora. Un clon es un record nuevo; nace vivo.
+            v.Context.RecordFlags = v.Context.RecordFlags And Not &H20UI
+        End If
+        Return d
     End Function
 
     '==============================================================================================

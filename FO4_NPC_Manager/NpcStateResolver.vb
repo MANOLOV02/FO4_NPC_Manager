@@ -200,7 +200,7 @@ Friend NotInheritable Class NpcStateResolver
                 If state.SkinFormID = 0UI Then
                     Dim raceRec2 = _ctx.PluginManager.GetRecord(state.RaceFormID)
                     If raceRec2 IsNot Nothing AndAlso raceRec2.Header.Signature = "RACE" Then
-                        state.SkinFormID = _ctx.ParseRaceCanonCached(raceRec2).Skin
+                        state.SkinFormID = Canon.CanonInterpretacion.SkinDe(_ctx.ParseRaceCanonCached(raceRec2))
                     End If
                 End If
             End If
@@ -429,8 +429,10 @@ Friend NotInheritable Class NpcStateResolver
         state.WeightMuscular = resolvedWeights.Muscular
         state.WeightFat = resolvedWeights.Fat
 
+        ' Por SkinDe y no por race.Skin a pelo: la misma ley la usa ahora el camino de ESCRITURA, y
+        ' ahí la raza SÍ puede ser nula. Una sola versión, con guarda, para los dos.
         If state.SkinFormID = 0UI Then
-            state.SkinFormID = race.Skin
+            state.SkinFormID = Canon.CanonInterpretacion.SkinDe(race)
         End If
 
         ' FTST PROPIO del NPC (0 si no tiene), capturado ANTES del fallback DFTM de abajo. Acá

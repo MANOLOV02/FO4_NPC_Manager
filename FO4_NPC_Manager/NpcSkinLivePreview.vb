@@ -74,7 +74,10 @@ Friend NotInheritable Class NpcSkinLivePreview
         If effective = 0UI AndAlso raceFormID <> 0UI Then
             Dim raceRec = _ctx.PluginManager.GetRecord(raceFormID)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-                effective = _ctx.ParseRaceCanonCached(raceRec).Skin
+                ' Por SkinDe y no por .Skin a pelo: es la MISMA ley que el guardado, y este es el
+                ' preview EN VIVO de la piel. Con dos copias, el día que la ley cambie el preview
+                ' muestra una piel y el ESP graba otra — RENDER == BAKE.
+                effective = Canon.CanonInterpretacion.SkinDe(_ctx.ParseRaceCanonCached(raceRec))
             End If
         End If
         Return effective
