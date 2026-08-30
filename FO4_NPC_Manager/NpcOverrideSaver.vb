@@ -508,8 +508,7 @@ Public Module NpcOverrideSaver
                 End If
                 If rec.Header.Signature = "OTFT" Then
                     Dim parsedOtft = Canon.CanonRecords.Otft(rec, ctx.PluginManager)
-                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
-                        .Record = CType(parsedOtft, Canon.CanonView),
+                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry(CType(parsedOtft, Canon.CanonView)) With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedOtft.EditorID,
                         .IsOverride = True,
@@ -523,19 +522,13 @@ Public Module NpcOverrideSaver
                 If rec.Header.Signature = "LVLI" Then
                     Dim parsedLvli = Canon.CanonRecords.Lvli(rec, ctx.PluginManager)
                     If parsedLvli Is Nothing Then Throw NoSePudoPreservar(rec)
-                    Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
-                        .Record = CType(parsedLvli, Canon.CanonView),
+                    Dim le As New SaveNpcEspWriter.LvliRecordEntry(CType(parsedLvli, Canon.CanonView)) With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedLvli.EditorID,
-                        .ObjectBoundsRaw = ObjectBoundsRawDe(parsedLvli),
-                        .ChanceNone = parsedLvli.ChanceNone,
-                        .MaxCount = LvliMaxCountDe(parsedLvli),
-                        .Flags = parsedLvli.Flags,
                         .IsOverride = True,
                         .OriginalVcs1 = rec.Header.VCS1,
                         .OriginalVcs2 = rec.Header.VCS2
                     }
-                    CargarLvliOpcionalesFo4(parsedLvli, le)
                     For Each ent In parsedLvli.LeveledListEntries
                         le.Entries.Add(EntradaLvliDe(ent))
                     Next
@@ -555,8 +548,7 @@ Public Module NpcOverrideSaver
                     ' interfaz de "Use Global" con LVLI asi que hacerlo pediria un TryCast por juego sin uso.
                     Dim parsedLvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(rec, ctx.PluginManager)
                     If parsedLvln Is Nothing Then Throw NoSePudoPreservar(rec)
-                    Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
-                        .Record = CType(parsedLvln, Canon.CanonView),
+                    Dim le As New SaveNpcEspWriter.LvliRecordEntry(CType(parsedLvln, Canon.CanonView)) With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedLvln.EditorID,
                         .IsOverride = True,
@@ -627,34 +619,41 @@ Public Module NpcOverrideSaver
                     ' autoró bajo otro codepage, y con ExceptionFallback podría TIRAR a mitad del write sin
                     ' que el pre-chequeo de Phase 2b lo cubra (ése sólo camina FULL/SHRT/ATTX de NPC_).
                     Dim clfmEdid As String = rec.EditorID
-                    Dim clfmFullRaw As Byte() = Nothing
+                    ' ⛔ El RGB sale de los BYTES del CNAM y NO del arbol. Es el unico dato de esta ficha
+                    ' que no es copia de la vista, y alimenta el indice de reuso de color de
+                    ' MaterializeSseHairColors: si quedara en 0, el indice colapsa a una sola clave, un NPC
+                    ' reusa el CLFM equivocado y cualquier otro color se vuelve a acunar en cada guardado.
+                    ' Compila igual y ningun gate de bytes lo ve, porque el CUERPO del record se emite
+                    ' desde el arbol y sale identico. Por eso este bucle no se fue con los campos que si
+                    ' eran sombra (FullNameRaw / ColorAlpha / Flags), que se leian aca al lado.
                     Dim clfmRgb As Integer = 0
-                    Dim clfmAlpha As Byte = 0
-                    Dim clfmFlags As UInteger = 0UI
                     For Each sr In rec.Subrecords
                         If sr.Signature = "CNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then
                             clfmRgb = (CInt(sr.Data(0)) << 16) Or (CInt(sr.Data(1)) << 8) Or CInt(sr.Data(2))
-                            clfmAlpha = sr.Data(3)
-                        ElseIf sr.Signature = "FNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then
-                            clfmFlags = BitConverter.ToUInt32(sr.Data, 0)
-                        ElseIf sr.Signature = "FULL" AndAlso sr.Data IsNot Nothing AndAlso clfmFullRaw Is Nothing Then
-                            clfmFullRaw = CType(sr.Data.Clone(), Byte())
+                            ' ⚠️ GANA EL PRIMER CNAM, y es un CAMBIO respecto del bucle anterior, que
+                            ' sin corte se quedaba con el ULTIMO. Se declara en vez de dejarlo viajar
+                            ' escondido dentro de un borrado, porque es lo unico de este cambio que
+                            ' altera conducta.
+                            ' Por que primero y no ultimo: el cuerpo se emite desde el ARBOL, y las dos
+                            ' puertas por las que se lo lee son gana-el-primero —PluginRecord.GetSubrecord
+                            ' (PluginStructures.vb:274-279) y WbNode.BySignature (WbCore.vb:761-766), las
+                            ' dos devuelven en el primer match—. Con el ultimo-gana, ColorRgb podia
+                            ' DISCREPAR del color que realmente se escribe. La rama FULL de este mismo
+                            ' bucle ya era primero-gana explicita; la CNAM era la excepcion.
+                            ' Medido sobre los dos corpus: 977 CLFM, CERO con mas de un CNAM, asi que hoy
+                            ' las dos leyes dan lo mismo y el cambio no mueve un byte de nada existente.
+                            Exit For
                         End If
                     Next
                     ' El cuerpo sale del árbol -Canon.CanonRecords.Clfm-, no de estos bytes: un record sin
                     ' tocar reproduce sus subrecords byte a byte por construcción, la misma ley que ya vale
-                    ' para ARMO/ARMA/MSWP/OTFT. Los campos de arriba se quedan igual, porque alimentan el
-                    ' índice de reuso por color de MaterializeSseHairColors.
+                    ' para ARMO/ARMA/MSWP/OTFT.
                     Dim parsedClfm = Canon.CanonRecords.Clfm(rec, ctx.PluginManager)
                     If parsedClfm Is Nothing Then Throw NoSePudoPreservar(rec)
-                    clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
-                        .Record = CType(parsedClfm, Canon.CanonView),
+                    clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry(CType(parsedClfm, Canon.CanonView)) With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = clfmEdid,
-                        .FullNameRaw = clfmFullRaw,
                         .ColorRgb = clfmRgb,
-                        .ColorAlpha = clfmAlpha,
-                        .Flags = clfmFlags,
                         .IsOverride = True,
                         .OriginalVcs1 = rec.Header.VCS1,
                         .OriginalVcs2 = rec.Header.VCS2})
@@ -762,8 +761,7 @@ Public Module NpcOverrideSaver
                     End If
                     recOtft.EditorID = oeEdid
                 End If
-                Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
-                    .Record = CType(recOtft, Canon.CanonView),
+                Dim oe As New SaveNpcEspWriter.OtftRecordEntry(CType(recOtft, Canon.CanonView)) With {
                     .FormID = d.FormID,
                     .EditorID = oeEdid,
                     .IsOverride = d.IsOverride
@@ -838,9 +836,6 @@ Public Module NpcOverrideSaver
                             ' fuente (LeveledListDraft.Edicion) con los cambios del usuario encima, así que
                             ' trae OBND/LLKC/LVLG/LVSG/ONAM del original y LVLD/LVLM/LVLF/entries editados.
                             preserved.Record = CType(d.Record, Canon.CanonView)
-                            preserved.ChanceNone = d.Record.ChanceNone
-                            preserved.MaxCount = dMaxCount
-                            preserved.Flags = d.Record.Flags
                             preserved.IsOverride = True
                             preserved.Entries.Clear()
                             For Each e In d.Record.LeveledListEntries
@@ -873,13 +868,9 @@ Public Module NpcOverrideSaver
                         $"LVLI draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
                 End If
                 recLvli.EditorID = finalLvliEdid
-                Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
-                    .Record = CType(recLvli, Canon.CanonView),
+                Dim le As New SaveNpcEspWriter.LvliRecordEntry(CType(recLvli, Canon.CanonView)) With {
                     .FormID = d.FormID,
-                    .EditorID = finalLvliEdid,
-                    .ChanceNone = d.Record.ChanceNone,
-                    .MaxCount = dMaxCount,
-                    .Flags = d.Record.Flags
+                    .EditorID = finalLvliEdid
                 }
                 For Each e In d.Record.LeveledListEntries
                     If e.LeveledListEntryItem = 0UI Then Continue For
@@ -1454,7 +1445,6 @@ Public Module NpcOverrideSaver
         }
     End Function
 
-
     ''' <summary>Working EditorID prefix (type segment) for Leveled-NPC lists authored by the Save dialog's
     ''' "Add to LVL list" feature: <c>npcm_LVLN_&lt;name&gt;</c>. At save the destination plugin name is
     ''' injected via <see cref="ApplyEspNamespaceToEditorId"/> → final <c>npcm_&lt;ESPNAME&gt;_LVLN_&lt;name&gt;</c>.
@@ -1464,7 +1454,6 @@ Public Module NpcOverrideSaver
     ''' <summary>ACBS Flags bit 0x04 = "Is CharGen Face Preset" (NPC_.ConfigurationFlags). Cleared from
     ''' saved overrides when the user bakes CharGen and ticks "Remove CharGen flag", so the engine loads the
     ''' baked FaceGen instead of reconstructing the face at runtime.</summary>
-
 
     ''' <summary>LLCT is a single unsigned byte → a leveled list holds at most 255
     ''' entries.</summary>
@@ -1581,54 +1570,17 @@ Public Module NpcOverrideSaver
             rec.EditorID = finalEdid
         End If
         Dim fo4 = TryCast(rec, Canon.ArmoFO4)
-        Dim sse = TryCast(rec, Canon.ArmoSSE)
         ' InstanceNaming/Pattern(PreviewTransform)/material swap a nivel ARMO/Value/Weight/Health/
         ' BaseAddonIndex/StaggerRating/Resistances/AttachParentSlots/Combinations sólo existen en
         ' Fallout 4; ArmorRating y Value/Weight tienen su propio campo (y tipo) en Skyrim.
-        Dim e As New SaveNpcEspWriter.ArmoRecordEntry With {
-            .Record = CType(rec, Canon.CanonView),
+        Dim e As New SaveNpcEspWriter.ArmoRecordEntry(CType(rec, Canon.CanonView)) With {
             .FormID = d.FormID,
             .EditorID = finalEdid,
-            .FullName = rec.Name,
-            .SlotMask = rec.BipedBodyTemplateFirstPersonFlags,
-            .RaceFormID = rec.Race,
-            .InstanceNamingFormID = If(fo4 IsNot Nothing, fo4.InstanceNaming, 0UI),
-            .EnchantmentFormID = rec.Enchantment,
-            .PatternFormID = If(fo4 IsNot Nothing, fo4.PreviewTransform, 0UI),
-            .EquipTypeFormID = rec.EquipmentType,
-            .PickupSoundFormID = rec.SoundPickUp,
-            .DropSoundFormID = rec.SoundPutDown,
-            .AlternateBlockMaterialFormID = rec.AlternateBlockMaterial,
-            .Description = rec.Description,
-            .HasDescription = rec.DescriptionPresente,
-            .NonPlayable = rec.NonPlayable,
-            .ObndX1 = rec.MinX, .ObndY1 = rec.MinY,
-            .ObndZ1 = rec.MinZ,
-            .ObndX2 = rec.MaxX, .ObndY2 = rec.MaxY,
-            .ObndZ2 = rec.MaxZ,
-            .TemplateArmorFormID = rec.TemplateArmor,
-            .MaleWorldModelPath = rec.WorldModelModelFilename,
-            .FemaleWorldModelPath = rec.WorldModelModelFilename2,
-            .MaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.WorldModelMaterialSwap, 0UI),
-            .FemaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.WorldModelMaterialSwap2, 0UI),
-            .Value = If(fo4 IsNot Nothing, fo4.Value, If(sse IsNot Nothing, sse.DataValue, 0)),
-            .Weight = If(fo4 IsNot Nothing, fo4.Weight, If(sse IsNot Nothing, sse.DataWeight,
-                         0.0F)),
-            .Health = If(fo4 IsNot Nothing, fo4.Health, 0UI),
-            .ArmorRating = If(fo4 IsNot Nothing, fo4.ArmorRating, CUShort(0)),
-            .SkyrimArmorRating = If(sse IsNot Nothing, sse.ArmorRating, 0),
-            .BaseAddonIndex = If(fo4 IsNot Nothing, fo4.BaseAddonIndex, CUShort(0)),
-            .StaggerRating = If(fo4 IsNot Nothing, fo4.StaggerRating, CByte(0)),
             .IsOverride = d.IsOverride,
             .OriginalVcs1 = vcs1,
-            .OriginalVcs2 = vcs2,
-            .SourceRecord = src
+            .OriginalVcs2 = vcs2
         }
-        e.ArmorAddons.AddRange(ArmoEditor_Form.ReadAddons(rec))
-        e.KeywordFormIDs.AddRange(ArmoEditor_Form.ReadKeywordList(rec))
         If fo4 IsNot Nothing Then
-            e.AttachParentSlotFormIDs.AddRange(ReadAttachParentSlots(fo4))
-            e.DamageResistances.AddRange(ArmoEditor_Form.ReadDamageResistances(fo4))
         End If
         Return e
     End Function
@@ -1653,60 +1605,13 @@ Public Module NpcOverrideSaver
             End If
             rec.EditorID = finalEdid
         End If
-        Dim fo4 = TryCast(rec, Canon.ArmaFO4)
-        ' MO2S..MO5S, MO2F/MO3F, MO2C/MO3C, y las 3 banderas de cabecera sólo existen en Fallout 4.
-        Dim maleRemap As Single? = If(fo4 IsNot Nothing AndAlso fo4.MaleColorRemappingIndexPresente,
-                                      CType(fo4.MaleColorRemappingIndex, Single?), Nothing)
-        Dim femalePresente = fo4 IsNot Nothing AndAlso fo4.FemaleColorRemappingIndexPresente
-        Dim femaleRemap As Single? = If(femalePresente,
-                                        CType(fo4.FemaleColorRemappingIndex, Single?), Nothing)
-        Dim e As New SaveNpcEspWriter.ArmaRecordEntry With {
-            .Record = CType(rec, Canon.CanonView),
+        Dim e As New SaveNpcEspWriter.ArmaRecordEntry(CType(rec, Canon.CanonView)) With {
             .FormID = d.FormID,
             .EditorID = finalEdid,
-            .SlotMask = rec.BipedBodyTemplateFirstPersonFlags,
-            .RaceFormID = rec.Race,
-            .FootstepSetFormID = rec.FootstepSound,
-            .ArtObjectFormID = rec.ArtObject,
-            .MaleFPMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.MaleMaterialSwap2, 0UI),
-            .FemaleFPMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap2, 0UI),
-            .MalePriority = rec.DataMalePriority,
-            .FemalePriority = rec.DataFemalePriority,
-            .MaleWeightSliderFlags = rec.DataWeightSliderMale,
-            .FemaleWeightSliderFlags = rec.DataWeightSliderFemale,
-            .DetectionSoundValue = rec.DataDetectionSoundValue,
-            .WeaponAdjust = rec.DataWeaponAdjust,
-            .MaleMeshPath = rec.MaleModelFilename,
-            .FemaleMeshPath = rec.FemaleModelFilename,
-            .MaleFPMeshPath = rec.MaleModelFilename2,
-            .FemaleFPMeshPath = rec.FemaleModelFilename2,
-            .MaleModelFlags = If(fo4 IsNot Nothing, fo4.MaleFlags, CByte(0)),
-            .FemaleModelFlags = If(fo4 IsNot Nothing, fo4.FemaleFlags, CByte(0)),
-            .MaleFPModelFlags = If(fo4 IsNot Nothing, fo4.MaleFlags2, CByte(0)),
-            .FemaleFPModelFlags = If(fo4 IsNot Nothing, fo4.FemaleFlags2, CByte(0)),
-            .MaleColorRemapIndex = maleRemap,
-            .FemaleColorRemapIndex = femaleRemap,
-            .MaleSkinTextureFormID = rec.MaleSkinTexture,
-            .FemaleSkinTextureFormID = rec.FemaleSkinTexture,
-            .MaleSkinTextureSwapListFormID = rec.MaleSkinTextureSwapList,
-            .FemaleSkinTextureSwapListFormID = rec.FemaleSkinTextureSwapList,
-            .MaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.MaleMaterialSwap, 0UI),
-            .FemaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap, 0UI),
-            .NoUnderarmorScaling = (fo4 IsNot Nothing AndAlso fo4.NoUnderarmorScaling),
-            .HasSculptData = (fo4 IsNot Nothing AndAlso fo4.HasSculptData),
-            .HiRes1stPersonOnly = (fo4 IsNot Nothing AndAlso fo4.HiRes1stPersonOnly),
             .IsOverride = d.IsOverride,
             .OriginalVcs1 = vcs1,
-            .OriginalVcs2 = vcs2,
-            .SourceRecord = src
+            .OriginalVcs2 = vcs2
         }
-        e.AdditionalRaces.AddRange(rec.AdditionalRaces.Select(Function(r) r.Race))
-        If fo4 IsNot Nothing Then
-            For Each gender As UInteger In {0UI, 1UI}
-                Dim g = ArmaEditor_Form.ReadBoneScaleGenderFromRecord(fo4, gender)
-                If g IsNot Nothing Then e.BoneScaleData.Add(g)
-            Next
-        End If
         Return e
     End Function
 
@@ -1730,18 +1635,14 @@ Public Module NpcOverrideSaver
             End If
             recMswp.EditorID = finalEdid
         End If
-        Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
-            .Record = CType(recMswp, Canon.CanonView),
+        Dim e As New SaveNpcEspWriter.MswpRecordEntry(CType(recMswp, Canon.CanonView)) With {
             .FormID = d.FormID,
             .EditorID = finalEdid,
-            .TreeFolder = recMswp.TreeFolder,
             .IsOverride = d.IsOverride,
             .OriginalVcs1 = vcs1,
-            .OriginalVcs2 = vcs2,
-            .SourceRecord = src
+            .OriginalVcs2 = vcs2
         }
         ' Las mismas sustituciones del borrador, sin copiarlas: son las que hay que escribir.
-        e.Substitutions.AddRange(recMswp.MaterialSubstitutions)
         Return e
     End Function
 
@@ -1755,52 +1656,6 @@ Public Module NpcOverrideSaver
         Next
         Return True
     End Function
-
-    ''' <summary>Reempaqueta OBND a los 12 bytes crudos (6×s16) que espera el writer, a partir de los seis
-    ''' campos que expone la vista generada. Mismo layout que decodifica Paridad_Listas.vb, en sentido
-    ''' inverso — no es una adivinanza, es el mismo struct.</summary>
-    Private Function ObjectBoundsRawDe(n As Canon.ILvli) As Byte()
-        Dim raw(11) As Byte
-        Buffer.BlockCopy(BitConverter.GetBytes(n.MinX), 0, raw, 0, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.MinY), 0, raw, 2, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.MinZ), 0, raw, 4, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.MaxX), 0, raw, 6, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.MaxY), 0, raw, 8, 2)
-        Buffer.BlockCopy(BitConverter.GetBytes(n.MaxZ), 0, raw, 10, 2)
-        Return raw
-    End Function
-
-    ''' <summary>LVLM (Max Count) solo esta declarado para Fallout 4 en LVLI/LVLN — Skyrim no trae ese
-    ''' subrecord. Mismo patron que <see cref="OutfitPicker_Form.EntryChanceNone"/>.</summary>
-    Private Function LvliMaxCountDe(n As Canon.ILvli) As Byte
-        Dim fo4 = TryCast(n, Canon.LvliFO4)
-        Return If(fo4 IsNot Nothing, fo4.MaxCount, CByte(0))
-    End Function
-
-    ''' <summary>Copia a <paramref name="le"/> los subrecords opcionales de LVLI que solo Fallout 4
-    ''' declara: LVLG (Use Global — "Global" del lado Skyrim, si existiera, va por su propio nombre asi
-    ''' que igual haria falta el TryCast), LVSG (Epic Loot Chance) y ONAM (Override Name), mas LLKC
-    ''' (Filter Keywords). En Skyrim, Use Global SI existe (con otro nombre de propiedad) pero Epic Loot
-    ''' Chance/Override Name/Filter Keywords no — Paridad_Listas.vb los documenta SIN EQUIVALENTE.</summary>
-    Private Sub CargarLvliOpcionalesFo4(n As Canon.ILvli, le As SaveNpcEspWriter.LvliRecordEntry)
-        Dim nFo4 = TryCast(n, Canon.LvliFO4)
-        Dim nSse = TryCast(n, Canon.LvliSSE)
-        If nFo4 IsNot Nothing Then
-            le.HasUseGlobal = nFo4.UseGlobalPresente
-            le.UseGlobalFormID = nFo4.UseGlobal
-            le.HasEpicLootChance = nFo4.EpicLootChancePresente
-            le.EpicLootChanceFormID = nFo4.EpicLootChance
-            le.HasOverrideName = nFo4.OverrideNamePresente
-            le.OverrideName = nFo4.OverrideName
-            For Each fk In nFo4.FilterKeywordChances
-                le.FilterKeywords.Add(New SaveNpcEspWriter.LvliFilterKeywordData With {
-                    .KeywordFormID = fk.FilterKeyword, .Chance = fk.FilterChance})
-            Next
-        ElseIf nSse IsNot Nothing Then
-            le.HasUseGlobal = nSse.GlobalPresente
-            le.UseGlobalFormID = nSse.Global
-        End If
-    End Sub
 
     ''' <summary>Arma una LvliEntryData a partir de un Leveled List Entry de la vista generada, incluyendo
     ''' el COED per-entrada. GlobalVariableRequiredRankGlobalVariablePresente distingue la rama de la
@@ -1878,21 +1733,15 @@ Public Module NpcOverrideSaver
     ''' everything the user didn't touch. Mirror of the ARMO/ARMA override "owned from draft, rest from source" rule.
     ''' The entry FormID is the draft's real GLOBAL FormID (the writer master-remaps it on emit).</summary>
     Private Function BuildLvliOverrideEntryFromSource(d As LeveledListDraft, ctx As SaveContext) As SaveNpcEspWriter.LvliRecordEntry
-        ' Max Count (LVLM) sólo existe en Fallout 4 — en Skyrim ese subrecord no está en el formato.
-        Dim dLvliFo4 = TryCast(d.Record, Canon.LvliFO4)
-        Dim maxCount = If(dLvliFo4 IsNot Nothing, dLvliFo4.MaxCount, CByte(0))
+
         ' d.Record ya es una copia de la fuente (LeveledListDraft.Edicion) con los cambios del usuario
         ' encima: trae OBND/LLKC/LVLG/LVSG/ONAM del original sin que haga falta reabrirlo aparte para eso.
-        Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
-            .Record = CType(d.Record, Canon.CanonView),
-            .FormID = d.FormID, .EditorID = d.Record.EditorID, .IsOverride = True,
-            .ChanceNone = d.Record.ChanceNone, .MaxCount = maxCount, .Flags = d.Record.Flags}
+        Dim le As New SaveNpcEspWriter.LvliRecordEntry(CType(d.Record, Canon.CanonView)) With {
+            .FormID = d.FormID, .EditorID = d.Record.EditorID, .IsOverride = True}
         Dim src = ctx.PluginManager.GetRecord(d.FormID)
         If src IsNot Nothing AndAlso src.Header.Signature = "LVLI" Then
             Dim p = Canon.CanonRecords.Lvli(src, ctx.PluginManager)
             If p IsNot Nothing Then
-                le.ObjectBoundsRaw = ObjectBoundsRawDe(p)
-                CargarLvliOpcionalesFo4(p, le)
                 le.OriginalVcs1 = src.Header.VCS1
                 le.OriginalVcs2 = src.Header.VCS2
             End If
@@ -1911,48 +1760,14 @@ Public Module NpcOverrideSaver
     ''' guarda como 0.</summary>
     Private Function BuildArmoEntryFromParsed(parsed As Canon.IArmo, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.ArmoRecordEntry
         Dim fo4 = TryCast(parsed, Canon.ArmoFO4)
-        Dim sse = TryCast(parsed, Canon.ArmoSSE)
-        Dim e As New SaveNpcEspWriter.ArmoRecordEntry With {
-            .Record = CType(parsed, Canon.CanonView),
+        Dim e As New SaveNpcEspWriter.ArmoRecordEntry(CType(parsed, Canon.CanonView)) With {
             .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
             .EditorID = parsed.EditorID,
-            .FullName = parsed.Name,
-            .SlotMask = parsed.SlotMaskDe(),
-            .RaceFormID = parsed.Race,
-            .InstanceNamingFormID = If(fo4 IsNot Nothing, fo4.InstanceNaming, 0UI),
-            .EnchantmentFormID = parsed.Enchantment,
-            .PatternFormID = If(fo4 IsNot Nothing, fo4.PreviewTransform, 0UI),
-            .EquipTypeFormID = parsed.EquipmentType,
-            .PickupSoundFormID = parsed.SoundPickUp,
-            .DropSoundFormID = parsed.SoundPutDown,
-            .AlternateBlockMaterialFormID = parsed.AlternateBlockMaterial,
-            .Description = parsed.Description,
-            .HasDescription = parsed.DescriptionPresente,
-            .NonPlayable = parsed.NonPlayable,
-            .ObndX1 = parsed.MinX, .ObndY1 = parsed.MinY, .ObndZ1 = parsed.MinZ,
-            .ObndX2 = parsed.MaxX, .ObndY2 = parsed.MaxY, .ObndZ2 = parsed.MaxZ,
-            .TemplateArmorFormID = parsed.TemplateArmor,
-            .MaleWorldModelPath = parsed.WorldModelModelFilename,
-            .FemaleWorldModelPath = parsed.WorldModelModelFilename2,
-            .MaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.WorldModelMaterialSwap, 0UI),
-            .FemaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.WorldModelMaterialSwap2, 0UI),
-            .Value = If(fo4 IsNot Nothing, fo4.Value, If(sse IsNot Nothing, sse.DataValue, 0)),
-            .Weight = If(fo4 IsNot Nothing, fo4.Weight, If(sse IsNot Nothing, sse.DataWeight, 0.0F)),
-            .Health = If(fo4 IsNot Nothing, fo4.Health, 0UI),
-            .ArmorRating = If(fo4 IsNot Nothing, fo4.ArmorRating, CUShort(0)),
-            .SkyrimArmorRating = If(sse IsNot Nothing, sse.ArmorRating, 0),
-            .BaseAddonIndex = If(fo4 IsNot Nothing AndAlso fo4.BaseAddonIndex <> &HFFFFUS, fo4.BaseAddonIndex, CUShort(0)),
-            .StaggerRating = If(fo4 IsNot Nothing, fo4.StaggerRating, CByte(0)),
             .IsOverride = True,
             .OriginalVcs1 = rec.Header.VCS1,
-            .OriginalVcs2 = rec.Header.VCS2,
-            .SourceRecord = rec
+            .OriginalVcs2 = rec.Header.VCS2
         }
-        e.ArmorAddons.AddRange(ArmoEditor_Form.ReadAddons(parsed))
-        e.KeywordFormIDs.AddRange(ArmoEditor_Form.ReadKeywordList(parsed))
         If fo4 IsNot Nothing Then
-            e.AttachParentSlotFormIDs.AddRange(ReadAttachParentSlots(fo4))
-            e.DamageResistances.AddRange(ArmoEditor_Form.ReadDamageResistances(fo4))
         End If
         Return e
     End Function
@@ -1961,51 +1776,13 @@ Public Module NpcOverrideSaver
     ''' (Phase 2a). Mirrors <see cref="BuildArmaEntry"/>'s field map, sourcing from the parsed <see cref="Canon.IArma"/>.
     ''' See <see cref="BuildArmoEntryFromParsed"/> for the header/FormID-resolution rationale.</summary>
     Private Function BuildArmaEntryFromParsed(parsed As Canon.IArma, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.ArmaRecordEntry
-        Dim fo4 = TryCast(parsed, Canon.ArmaFO4)
-        Dim e As New SaveNpcEspWriter.ArmaRecordEntry With {
-            .Record = CType(parsed, Canon.CanonView),
+        Dim e As New SaveNpcEspWriter.ArmaRecordEntry(CType(parsed, Canon.CanonView)) With {
             .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
             .EditorID = parsed.EditorID,
-            .SlotMask = parsed.SlotMaskDe(),
-            .RaceFormID = parsed.Race,
-            .FootstepSetFormID = parsed.FootstepSound,
-            .ArtObjectFormID = parsed.ArtObject,
-            .MaleFPMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.MaleMaterialSwap2, 0UI),
-            .FemaleFPMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap2, 0UI),
-            .MalePriority = parsed.DataMalePriority,
-            .FemalePriority = parsed.DataFemalePriority,
-            .MaleWeightSliderFlags = parsed.DataWeightSliderMale,
-            .FemaleWeightSliderFlags = parsed.DataWeightSliderFemale,
-            .DetectionSoundValue = parsed.DataDetectionSoundValue,
-            .WeaponAdjust = parsed.DataWeaponAdjust,
-            .MaleMeshPath = parsed.MaleModelFilename,
-            .FemaleMeshPath = parsed.FemaleModelFilename,
-            .MaleFPMeshPath = parsed.MaleModelFilename2,
-            .FemaleFPMeshPath = parsed.FemaleModelFilename2,
-            .MaleModelFlags = If(fo4 IsNot Nothing, fo4.MaleFlags, CByte(0)),
-            .FemaleModelFlags = If(fo4 IsNot Nothing, fo4.FemaleFlags, CByte(0)),
-            .MaleFPModelFlags = If(fo4 IsNot Nothing, fo4.MaleFlags2, CByte(0)),
-            .FemaleFPModelFlags = If(fo4 IsNot Nothing, fo4.FemaleFlags2, CByte(0)),
-            .MaleColorRemapIndex = If(fo4 IsNot Nothing AndAlso fo4.MaleColorRemappingIndexPresente,
-                                      CType(fo4.MaleColorRemappingIndex, Single?), Nothing),
-            .FemaleColorRemapIndex = If(fo4 IsNot Nothing AndAlso fo4.FemaleColorRemappingIndexPresente,
-                                        CType(fo4.FemaleColorRemappingIndex, Single?), Nothing),
-            .MaleSkinTextureFormID = parsed.MaleSkinTexture,
-            .FemaleSkinTextureFormID = parsed.FemaleSkinTexture,
-            .MaleSkinTextureSwapListFormID = parsed.MaleSkinTextureSwapList,
-            .FemaleSkinTextureSwapListFormID = parsed.FemaleSkinTextureSwapList,
-            .MaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.MaleMaterialSwap, 0UI),
-            .FemaleMaterialSwapFormID = If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap, 0UI),
-            .NoUnderarmorScaling = fo4 IsNot Nothing AndAlso fo4.NoUnderarmorScaling,
-            .HasSculptData = fo4 IsNot Nothing AndAlso fo4.HasSculptData,
-            .HiRes1stPersonOnly = fo4 IsNot Nothing AndAlso fo4.HiRes1stPersonOnly,
             .IsOverride = True,
             .OriginalVcs1 = rec.Header.VCS1,
-            .OriginalVcs2 = rec.Header.VCS2,
-            .SourceRecord = rec
+            .OriginalVcs2 = rec.Header.VCS2
         }
-        e.AdditionalRaces.AddRange(parsed.AdditionalRaces.Select(Function(r) r.Race))
-        If fo4 IsNot Nothing Then e.BoneScaleData.AddRange(ArmaEditor_Form.ReadAllBoneScaleFromRecord(fo4))
         Return e
     End Function
 
@@ -2013,18 +1790,14 @@ Public Module NpcOverrideSaver
     ''' (Phase 2a). Mirrors <see cref="BuildMswpEntry"/>'s field map, sourcing from the parsed <see cref="Canon.IMswp"/>.
     ''' See <see cref="BuildArmoEntryFromParsed"/> for the header/FormID-resolution rationale.</summary>
     Private Function BuildMswpEntryFromParsed(parsed As Canon.IMswp, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.MswpRecordEntry
-        Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
-            .Record = CType(parsed, Canon.CanonView),
+        Dim e As New SaveNpcEspWriter.MswpRecordEntry(CType(parsed, Canon.CanonView)) With {
             .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
             .EditorID = parsed.EditorID,
-            .TreeFolder = parsed.TreeFolder,
             .IsOverride = True,
             .OriginalVcs1 = rec.Header.VCS1,
-            .OriginalVcs2 = rec.Header.VCS2,
-            .SourceRecord = rec
+            .OriginalVcs2 = rec.Header.VCS2
         }
         ' Las sustituciones tal como estan en el record leido, sin copiarlas campo por campo.
-        e.Substitutions.AddRange(parsed.Sustituciones())
         Return e
     End Function
 
@@ -2093,13 +1866,9 @@ Public Module NpcOverrideSaver
                 rec.EditorID = edid
                 rec.ChanceNone = 0
                 rec.Flags = 0
-                Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
-                    .Record = CType(rec, Canon.CanonView),
+                Dim le As New SaveNpcEspWriter.LvliRecordEntry(CType(rec, Canon.CanonView)) With {
                     .FormID = allocProvisional(),
                     .EditorID = edid,
-                    .ChanceNone = 0,
-                    .MaxCount = 0,
-                    .Flags = 0,
                     .IsOverride = False,
                     .IsNpcList = True
                 }
@@ -2347,14 +2116,10 @@ Public Module NpcOverrideSaver
                 rec.ColorBlue = CByte(rgb And &HFF)
                 rec.ColorAlpha = 0            ' measured: 178/178 CLFM in Skyrim.esm carry alpha 0
                 rec.Playable = True           ' measured: the 15 vanilla hair colours carry FNAM=1 (Playable)
-                clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
-                    .Record = CType(rec, Canon.CanonView),
+                clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry(CType(rec, Canon.CanonView)) With {
                     .FormID = fid,
                     .EditorID = finalEdid,
-                    .FullName = finalFull,
                     .ColorRgb = rgb,
-                    .ColorAlpha = 0,          ' measured: 178/178 CLFM in Skyrim.esm carry alpha 0
-                    .Flags = 1UI,             ' measured: the 15 vanilla hair colours carry FNAM=1 (Playable)
                     .IsOverride = False})
                 byRgb(rgb) = fid
                 Logger.LogLazy(Function() $"[SAVE] SSE hair colour 0x{rgb:X6} → NEW CLFM '{finalEdid}' (provisional 0x{fid:X8}).")
