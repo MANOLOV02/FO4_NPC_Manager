@@ -487,6 +487,7 @@ finDelSkin:
             e.ValuesRotationY = ValorEn(v, 4)
             e.ValuesRotationZ = ValorEn(v, 5)
             e.ValuesScale = ValorEn(v, 6)
+            e.ValuesUnknown = New Byte(7) {}
         Next
     End Sub
 

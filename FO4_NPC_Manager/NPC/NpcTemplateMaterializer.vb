@@ -403,6 +403,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
             If m.ValuesRotationYPresente Then e.ValuesRotationY = m.ValuesRotationY
             If m.ValuesRotationZPresente Then e.ValuesRotationZ = m.ValuesRotationZ
             If m.ValuesScalePresente Then e.ValuesScale = m.ValuesScale
+            If m.ValuesUnknownPresente Then e.ValuesUnknown = CType(m.ValuesUnknown?.Clone(), Byte())
         Next
     End Sub
 
