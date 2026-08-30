@@ -11365,6 +11365,25 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Guarda como PNG el frame actual del mismo PreviewControl que usa el render principal.</summary>
+    ''' <summary>Abre la página de Ko-fi del autor en el navegador por defecto.
+    ''' <para><c>UseShellExecute = True</c> NO es opcional acá: el proyecto es <c>net8.0-windows</c>, y en
+    ''' .NET (Core) el default de <c>UseShellExecute</c> pasó a <c>False</c> — <c>Process.Start</c> con una
+    ''' URL tira <see cref="System.ComponentModel.Win32Exception"/> en vez de abrir el navegador. Con True
+    ''' lo resuelve el shell, que es quien sabe cuál es el navegador por defecto del usuario.</para>
+    ''' <para>El catch no es mudo: un shell sin handler para <c>http</c>, o una política de empresa que
+    ''' bloquee el <c>ShellExecute</c>, tienen que decirlo y mostrar la URL para que se pueda copiar. No hay
+    ''' estado que revertir — es un botón de cortesía y no toca nada de la app.</para></summary>
+    Private Sub ButtonKofi_Click(sender As Object, e As EventArgs) Handles ButtonKofi.Click
+        Const KofiUrl As String = "https://ko-fi.com/manolov02"
+        Try
+            System.Diagnostics.Process.Start(New System.Diagnostics.ProcessStartInfo(KofiUrl) With {.UseShellExecute = True})
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[KOFI] could not open {KofiUrl}: {ex.GetType().Name}: {ex.Message}")
+            MessageBox.Show($"Could not open the browser.{Environment.NewLine}{Environment.NewLine}{KofiUrl}",
+                            "Ko-fi", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        End Try
+    End Sub
+
     Private Sub ButtonScreenshot_Click(sender As Object, e As EventArgs) Handles ButtonScreenshot.Click
         Dim preview = _renderHost?.PreviewCtl
         If preview Is Nothing OrElse preview.IsDisposed Then

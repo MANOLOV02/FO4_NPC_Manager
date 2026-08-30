@@ -509,6 +509,7 @@ Public Module NpcOverrideSaver
                 If rec.Header.Signature = "OTFT" Then
                     Dim parsedOtft = Canon.CanonRecords.Otft(rec, ctx.PluginManager)
                     Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
+                        .Record = CType(parsedOtft, Canon.CanonView),
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedOtft.EditorID,
                         .IsOverride = True,
@@ -576,15 +577,36 @@ Public Module NpcOverrideSaver
                 ' only handles NPC_ and threw "currently only supports NPC_ records. Encountered 'ARMO'…". The
                 ' draft phases (2e/2f/2g) APPEND to these same lists and dedup against the preserved entries.
                 If rec.Header.Signature = "ARMO" Then
-                    armoEntries.Add(BuildArmoEntryFromParsed(Canon.CanonRecords.Armo(rec, ctx.PluginManager), rec, ctx))
+                    ' Guarda de Nothing, no ceremonia: CanonRecords.Armo devuelve Nothing cuando el
+                    ' esquema del JUEGO DE LA SESION no declara la firma, y el de Skyrim NO declara MSWP
+                    ' (medido: 0 ocurrencias en WbSchemaGen_TES5.vb contra 68 en el de FO4). Sin esto,
+                    ' preservar un ESP con MSWP en una sesion de Skyrim tira NullReferenceException en
+                    ' parsed.EditorID.
+                    Dim parsedArmo = Canon.CanonRecords.Armo(rec, ctx.PluginManager)
+                    If parsedArmo Is Nothing Then Throw NoSePudoPreservar(rec)
+                    armoEntries.Add(BuildArmoEntryFromParsed(parsedArmo, rec, ctx))
                     Continue For
                 End If
                 If rec.Header.Signature = "ARMA" Then
-                    armaEntries.Add(BuildArmaEntryFromParsed(Canon.CanonRecords.Arma(rec, ctx.PluginManager), rec, ctx))
+                    ' Guarda de Nothing, no ceremonia: CanonRecords.Arma devuelve Nothing cuando el
+                    ' esquema del JUEGO DE LA SESION no declara la firma, y el de Skyrim NO declara MSWP
+                    ' (medido: 0 ocurrencias en WbSchemaGen_TES5.vb contra 68 en el de FO4). Sin esto,
+                    ' preservar un ESP con MSWP en una sesion de Skyrim tira NullReferenceException en
+                    ' parsed.EditorID.
+                    Dim parsedArma = Canon.CanonRecords.Arma(rec, ctx.PluginManager)
+                    If parsedArma Is Nothing Then Throw NoSePudoPreservar(rec)
+                    armaEntries.Add(BuildArmaEntryFromParsed(parsedArma, rec, ctx))
                     Continue For
                 End If
                 If rec.Header.Signature = "MSWP" Then
-                    mswpEntries.Add(BuildMswpEntryFromParsed(Canon.CanonRecords.Mswp(rec, ctx.PluginManager), rec, ctx))
+                    ' Guarda de Nothing, no ceremonia: CanonRecords.Mswp devuelve Nothing cuando el
+                    ' esquema del JUEGO DE LA SESION no declara la firma, y el de Skyrim NO declara MSWP
+                    ' (medido: 0 ocurrencias en WbSchemaGen_TES5.vb contra 68 en el de FO4). Sin esto,
+                    ' preservar un ESP con MSWP en una sesion de Skyrim tira NullReferenceException en
+                    ' parsed.EditorID.
+                    Dim parsedMswp = Canon.CanonRecords.Mswp(rec, ctx.PluginManager)
+                    If parsedMswp Is Nothing Then Throw NoSePudoPreservar(rec)
+                    mswpEntries.Add(BuildMswpEntryFromParsed(parsedMswp, rec, ctx))
                     Continue For
                 End If
                 ' CLFM authored by a PRIOR save (an SSE hair colour materialized from a RaceMenu preset) —
@@ -696,6 +718,13 @@ Public Module NpcOverrideSaver
                     End If
                     Dim preserved = outfitEntries.FirstOrDefault(Function(o) o.FormID = d.FormID)
                     If preserved IsNot Nothing Then
+                        ' El arbol editado ES el que se graba (espejo del camino LVLI). Reemplazar solo
+                        ' ItemArmoFormIDs dejaba la edicion en un campo que el emisor no lee.
+                        preserved.Record = CType(d.Record, Canon.CanonView)
+                        ' El EDID grabado sale del arbol, asi que el del conjunto de dedup tiene que ser
+                        ' ESE y no el que traia el record preservado del plugin destino.
+                        preserved.EditorID = d.Record.EditorID
+                        usedOtftEdids.Add(preserved.EditorID)
                         preserved.ItemArmoFormIDs.Clear()
                         preserved.ItemArmoFormIDs.AddRange(d.Prendas())
                         Continue For
@@ -713,7 +742,28 @@ Public Module NpcOverrideSaver
                         Logger.LogLazy(Function() $"[SAVE] Outfit EditorID '{desiredEdid}' already used in {IO.Path.GetFileName(target.TargetPath)} → renamed to '{oeEdid}' (FormID unchanged).")
                     End If
                 End If
+                ' El cuerpo sale del ARBOL, asi que el identificador final tiene que estar EN el arbol.
+                ' Se escribe sobre una COPIA y no sobre el borrador del usuario: si el guardado falla, el
+                ' dialogo queda abierto para reintentar (SaveEsp_Form.vb:1300-1308) y la promocion que
+                ' dropea los borradores no corre (MainForm.vb:10886), asi que mutar el vivo dejaba el
+                ' nombre ya namespaceado -y ApplyEspNamespaceToEditorId re-prefija su propio resultado
+                ' (:1443)-. Ademas IsOutfitEditorIdAvailable (MainForm.vb:4134) lee ese mismo campo, y el
+                ' nombre original quedaba LIBRE para que un segundo borrador lo tomara.
+                ' Solo en la rama NUEVA: un OVERRIDE conserva el identificador del record que sobrescribe,
+                ' y escribirlo CREARIA el subrecord en un record que no lo traia (CanonView.Escribir crea
+                ' el campo cualquiera sea el valor, CanonView.vb:147-149; medido: el MSWP 0x00117BC8 de
+                ' Fallout4.esm no tiene EDID, 1 de 40.084 records de las 8 firmas en los dos corpus).
+                Dim recOtft As Canon.IOtft = d.Record
+                If Not d.IsOverride Then
+                    recOtft = recOtft.Copia()
+                    If recOtft Is Nothing Then
+                        Throw New InvalidOperationException(
+                            $"Outfit draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                    End If
+                    recOtft.EditorID = oeEdid
+                End If
                 Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
+                    .Record = CType(recOtft, Canon.CanonView),
                     .FormID = d.FormID,
                     .EditorID = oeEdid,
                     .IsOverride = d.IsOverride
@@ -814,10 +864,17 @@ Public Module NpcOverrideSaver
                 If Not String.Equals(finalLvliEdid, desiredLvliEdid, StringComparison.Ordinal) Then
                     Logger.LogLazy(Function() $"[SAVE] LVLI EditorID '{desiredLvliEdid}' already used in {IO.Path.GetFileName(target.TargetPath)} → renamed to '{finalLvliEdid}' (FormID unchanged).")
                 End If
-                ' El identificador final (deduplicado) se escribe SOBRE el record: es lo que se graba.
-                d.Record.EditorID = finalLvliEdid
+                ' El identificador final va EN el arbol (de ahi sale el cuerpo), sobre una COPIA: mutar
+                ' el borrador del usuario sobrevivia a un guardado fallido y el reintento re-prefijaba.
+                ' Aca no hace falta distinguir override: esta rama ya es solo la NUEVA (:809 Continue For).
+                Dim recLvli = d.Record.Copia()
+                If recLvli Is Nothing Then
+                    Throw New InvalidOperationException(
+                        $"LVLI draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                End If
+                recLvli.EditorID = finalLvliEdid
                 Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
-                    .Record = CType(d.Record, Canon.CanonView),
+                    .Record = CType(recLvli, Canon.CanonView),
                     .FormID = d.FormID,
                     .EditorID = finalLvliEdid,
                     .ChanceNone = d.Record.ChanceNone,
@@ -1509,11 +1566,20 @@ Public Module NpcOverrideSaver
                                     usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.ArmoRecordEntry
         Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
         Dim vcs1 As UInteger, vcs2 As UShort
-        Dim rec = d.Record
+        Dim rec As Canon.IArmo = d.Record
         ResolveArmorDraftHeader(d.FormID, d.IsOverride, rec.EditorID, "ARMO", espNameNoExt,
                                 usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
-        ' El identificador de editor final se escribe SOBRE el record: lo que se graba es el record.
-        rec.EditorID = finalEdid
+        ' El identificador final va EN el arbol, porque de ahi sale el cuerpo. Sobre una COPIA y solo
+        ' en la rama NUEVA: ver la nota extensa de la fase 2c. Un guardado fallido no puede renombrar
+        ' el borrador del usuario, y un OVERRIDE no puede ganar un EDID que el original no traia.
+        If Not d.IsOverride Then
+            rec = rec.Copia()
+            If rec Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"ARMO draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+            End If
+            rec.EditorID = finalEdid
+        End If
         Dim fo4 = TryCast(rec, Canon.ArmoFO4)
         Dim sse = TryCast(rec, Canon.ArmoSSE)
         ' InstanceNaming/Pattern(PreviewTransform)/material swap a nivel ARMO/Value/Weight/Health/
@@ -1573,11 +1639,20 @@ Public Module NpcOverrideSaver
                                     usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.ArmaRecordEntry
         Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
         Dim vcs1 As UInteger, vcs2 As UShort
-        Dim rec = d.Record
+        Dim rec As Canon.IArma = d.Record
         ResolveArmorDraftHeader(d.FormID, d.IsOverride, rec.EditorID, "ARMA", espNameNoExt,
                                 usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
-        ' El identificador de editor final se escribe SOBRE el record: lo que se graba es el record.
-        rec.EditorID = finalEdid
+        ' El identificador final va EN el arbol, porque de ahi sale el cuerpo. Sobre una COPIA y solo
+        ' en la rama NUEVA: ver la nota extensa de la fase 2c. Un guardado fallido no puede renombrar
+        ' el borrador del usuario, y un OVERRIDE no puede ganar un EDID que el original no traia.
+        If Not d.IsOverride Then
+            rec = rec.Copia()
+            If rec Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"ARMA draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+            End If
+            rec.EditorID = finalEdid
+        End If
         Dim fo4 = TryCast(rec, Canon.ArmaFO4)
         ' MO2S..MO5S, MO2F/MO3F, MO2C/MO3C, y las 3 banderas de cabecera sólo existen en Fallout 4.
         Dim maleRemap As Single? = If(fo4 IsNot Nothing AndAlso fo4.MaleColorRemappingIndexPresente,
@@ -1642,20 +1717,31 @@ Public Module NpcOverrideSaver
         Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
         Dim vcs1 As UInteger, vcs2 As UShort
         ResolveArmorDraftHeader(d.FormID, d.IsOverride, d.Record.EditorID, "MSWP", espNameNoExt, usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
-        ' El identificador de editor final se escribe SOBRE el record: lo que se graba es el record.
-        d.Record.EditorID = finalEdid
+        ' Ver la nota de la fase 2c: copia, y solo en la rama NUEVA. TODO lo que arma la entry tiene que
+        ' leer el MISMO arbol que va en .Record -incluido .Substitutions, que son vistas VIVAS sobre sus
+        ' nodos-: dejar la mitad apuntando al original partia la entry en dos arboles, que es justo la
+        ' desincronizacion que CanonView.vb:3-8 existe para evitar.
+        Dim recMswp As Canon.IMswp = d.Record
+        If Not d.IsOverride Then
+            recMswp = recMswp.Copia()
+            If recMswp Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"MSWP draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+            End If
+            recMswp.EditorID = finalEdid
+        End If
         Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
-            .Record = CType(d.Record, Canon.CanonView),
+            .Record = CType(recMswp, Canon.CanonView),
             .FormID = d.FormID,
             .EditorID = finalEdid,
-            .TreeFolder = d.Record.TreeFolder,
+            .TreeFolder = recMswp.TreeFolder,
             .IsOverride = d.IsOverride,
             .OriginalVcs1 = vcs1,
             .OriginalVcs2 = vcs2,
             .SourceRecord = src
         }
         ' Las mismas sustituciones del borrador, sin copiarlas: son las que hay que escribir.
-        e.Substitutions.AddRange(d.Record.MaterialSubstitutions)
+        e.Substitutions.AddRange(recMswp.MaterialSubstitutions)
         Return e
     End Function
 
@@ -2051,13 +2137,24 @@ Public Module NpcOverrideSaver
             ' host.Record es el LVLN abierto en la fase de preservación (Canon.CanonRecords.Lvln): cada
             ' entrada que se agrega acá tiene que ir TAMBIÉN al árbol, o el cuerpo emitido no la lleva.
             Dim hostRecLvln = TryCast(host.Record, Canon.ILvln)
+            ' ASERCION, no un caso que se haya visto: hoy el unico productor de IsNpcList=True que
+            ' existe cuando corre este lookup es la preservacion de LVLN (:562), ya guardada en :556,
+            ' asi que el cast no puede fallar. Se deja como throw y no como tolerancia porque sin
+            ' arbol no hay donde escribir las entradas -el cuerpo emitido sale SOLO del arbol- y
+            ' seguir de largo agregaba los NPC a host.Entries, que el emisor ya no lee: el guardado
+            ' terminaba bien con la lista igual que antes. Mismo silencio que el OTFT de 0 bytes.
+            If hostRecLvln Is Nothing Then
+                Dim tipoHost As String = If(host.Record Is Nothing, "Nothing", host.Record.GetType().Name)
+                Throw New InvalidOperationException(
+                    $"LVLN {host.FormID:X8}: el record preservado no es un arbol de lista de NPC ({tipoHost}).")
+            End If
 
             Dim present As New HashSet(Of UInteger)(host.Entries.Select(Function(e) e.RefFormID))
             For Each fid In npcFids
                 If present.Add(fid) Then
                     Dim nuevaEnt = makeEntry(fid)
                     host.Entries.Add(nuevaEnt)
-                    If hostRecLvln IsNot Nothing Then EscribirEntradaLvln(hostRecLvln, nuevaEnt)
+                    EscribirEntradaLvln(hostRecLvln, nuevaEnt)
                 End If
             Next
 
@@ -2065,13 +2162,11 @@ Public Module NpcOverrideSaver
                 Dim overflow = host.Entries.Skip(LeveledListEntryCap).ToList()
                 Dim totalAntes = host.Entries.Count
                 host.Entries.RemoveRange(LeveledListEntryCap, totalAntes - LeveledListEntryCap)
-                If hostRecLvln IsNot Nothing Then
-                    ' De atrás para adelante: sacar por índice corre los que quedan, así que hay que
-                    ' arrancar por el último para que los índices ya visitados no se muevan.
-                    For i = totalAntes - 1 To LeveledListEntryCap Step -1
-                        hostRecLvln.QuitarLeveledListEntries(i)
-                    Next
-                End If
+                ' De atrás para adelante: sacar por índice corre los que quedan, así que hay que
+                ' arrancar por el último para que los índices ya visitados no se muevan.
+                For i = totalAntes - 1 To LeveledListEntryCap Step -1
+                    hostRecLvln.QuitarLeveledListEntries(i)
+                Next
                 Dim siblingIdx As Integer = 1
                 For Each chunk In ChunkList(overflow, LeveledListEntryCap)
                     Dim edid = NextFreeListEditorId(host.EditorID, siblingIdx, usedEdids)

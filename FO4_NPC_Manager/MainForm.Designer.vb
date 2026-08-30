@@ -92,6 +92,9 @@ Partial Class MainForm
         Label3 = New Label()
         ButtonSaveSceneNif = New Button()
         ButtonScreenshot = New Button()
+        SeparatorSupport = New Label()
+        LabelSupport = New Label()
+        ButtonKofi = New Button()
         ButtonCharGenOptions = New Button()
         ButtonExportFomod = New Button()
         PanelPreviewHost = New Panel()
@@ -785,6 +788,11 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Controls.Add(ButtonScreenshot)
+        ' ÚLTIMO grupo de la barra a propósito. En un FlowLayoutPanel el orden lo da esta colección, no el
+        ' Location, así que agregarlos acá abajo —y en este orden— es lo que los deja al final de todos.
+        PanelActionsToolbar.Controls.Add(SeparatorSupport)
+        PanelActionsToolbar.Controls.Add(LabelSupport)
+        PanelActionsToolbar.Controls.Add(ButtonKofi)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -1042,9 +1050,42 @@ Partial Class MainForm
         ButtonScreenshot.TabIndex = 19
         ButtonScreenshot.Text = "Screenshot"
         ButtonScreenshot.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' SeparatorSupport
+        '
+        SeparatorSupport.BorderStyle = BorderStyle.Fixed3D
+        SeparatorSupport.Location = New Point(670, 36)
+        SeparatorSupport.Margin = New Padding(8, 4, 8, 4)
+        SeparatorSupport.Name = "SeparatorSupport"
+        SeparatorSupport.Size = New Size(2, 24)
+        SeparatorSupport.TabIndex = 20
+        '
+        ' LabelSupport
+        '
+        LabelSupport.Anchor = AnchorStyles.None
+        LabelSupport.AutoSize = True
+        LabelSupport.Location = New Point(683, 40)
+        LabelSupport.Margin = New Padding(3)
+        LabelSupport.Name = "LabelSupport"
+        LabelSupport.Size = New Size(52, 15)
+        LabelSupport.TabIndex = 21
+        LabelSupport.Text = "Support:"
+        LabelSupport.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' ButtonKofi
+        '
+        ButtonKofi.AutoSize = True
+        ButtonKofi.Location = New Point(740, 34)
+        ButtonKofi.Margin = New Padding(2)
+        ButtonKofi.MinimumSize = New Size(90, 28)
+        ButtonKofi.Name = "ButtonKofi"
+        ButtonKofi.Size = New Size(90, 28)
+        ButtonKofi.TabIndex = 22
+        ButtonKofi.Text = "☕ Ko-fi"
+        ButtonKofi.UseVisualStyleBackColor = True
+        '
         ' ButtonCharGenOptions
-        ' 
+        '
         ButtonCharGenOptions.AutoSize = True
         ButtonCharGenOptions.Location = New Point(316, 34)
         ButtonCharGenOptions.Margin = New Padding(2)
@@ -1394,6 +1435,9 @@ Partial Class MainForm
     Friend WithEvents ButtonExportFomod As System.Windows.Forms.Button
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonScreenshot As System.Windows.Forms.Button
+    Friend WithEvents SeparatorSupport As System.Windows.Forms.Label
+    Friend WithEvents LabelSupport As System.Windows.Forms.Label
+    Friend WithEvents ButtonKofi As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
     Friend WithEvents ButtonEditNpc As System.Windows.Forms.Button
