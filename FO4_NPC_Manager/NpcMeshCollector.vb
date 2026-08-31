@@ -568,16 +568,14 @@ Friend NotInheritable Class NpcMeshCollector
             End If
 
             ' Resolve mesh path with ARMA-first / ARMO-WorldModel-fallback semantics.
-            ' ARMO.MOD2 (male) / MOD4 (female) populate when the
-            ' mesh is authored at ARMO level (robots: Assaultron skin has ARMO.MOD2=Assaultron.nif
-            ' with empty ARMA.MOD2/MOD3). Humanoid armors inverse: ARMA has the mesh, ARMO.MOD2/MOD4
-            ' usually empty. Gender mirror inside each source: try same-gender first, then opposite.
-            Dim meshPath = If(state.IsFemale, arma.FemaleModelFilename, arma.MaleModelFilename)
-            If meshPath = "" Then meshPath = If(arma.MaleModelFilename <> "", arma.MaleModelFilename, arma.FemaleModelFilename)
-            If meshPath = "" Then
-                meshPath = If(state.IsFemale, armo.WorldModelModelFilename2, armo.WorldModelModelFilename)
-                If meshPath = "" Then meshPath = If(armo.WorldModelModelFilename <> "", armo.WorldModelModelFilename, armo.WorldModelModelFilename2)
-            End If
+            ' ARMO.MOD2 (male) / MOD4 (female) populate when the mesh is authored at ARMO level
+            ' (robots: Assaultron skin has ARMO.MOD2=Assaultron.nif with empty ARMA.MOD2/MOD3).
+            ' Humanoid armors inverse: ARMA has the mesh, ARMO.MOD2/MOD4 usually empty. Gender mirror
+            ' inside each source: try same-gender first, then opposite.
+            ' ⛔ La decisión vive en `EquipResolver.ResolverMalla`, UNA sola vez. Estaba escrita acá y
+            ' otra vez en `BuildFootprint` con un criterio distinto —allá sólo miraba la ARMA—, así que
+            ' el gate de oclusión del bake y el render discrepaban justo en el patrón de los robots.
+            Dim meshPath = EquipResolver.ResolverMalla(arma, armo, state.IsFemale).Ruta
             If meshPath = "" Then
                 Continue For
             End If

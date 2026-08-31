@@ -48,28 +48,22 @@ Public Class LeveledListDraft
 
     ''' <summary>Una lista nueva, vacía.</summary>
     Public Shared Function Nuevo(formID As UInteger, game As Canon.WbGame) As LeveledListDraft
-        Return New LeveledListDraft With {.Record = Canon.CanonRecords.LvliNuevo(game),
+        Dim r = Canon.CanonRecords.LvliNuevo(game)
+        Borradores.ExigirRecord(r, "LVLI", $"el formato de {game} no declara ese record")
+        Return New LeveledListDraft With {.Record = r,
                                           .FormID = formID, .IsOverride = False, .IsNew = True}
     End Function
 
     ''' <summary>Una edición de una lista que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As LeveledListDraft
-        ' ⛔ SIN PluginManager NO HAY BORRADOR. `NormalizarReferencias` se va sin hacer nada cuando
-        ' `plugins` es Nothing, así que el árbol quedaría con los FormID LOCALES del archivo fuente
-        ' mientras todo lo de arriba —las propiedades de referencia, el resolvedor del render y el
-        ' reindexado del guardado— asume espacio de orden de carga. Antes no mordía porque los editores
-        ' volcaban valores ya globales sobre un record en blanco; ahora el árbol crudo ES el borrador, y
-        ' un ESP con las referencias sin reindexar apunta al mod equivocado sin un solo aviso.
-        If plugins Is Nothing Then
-            Throw New ArgumentNullException(NameOf(plugins),
-                "Un árbol sin normalizar no es un borrador editable: sus referencias quedan en el espacio " &
-                "LOCAL del archivo de origen y el guardado las reindexaría una segunda vez.")
-        End If
+        Borradores.ExigirPluginsNormalizados(plugins)
         If rec Is Nothing Then Return Nothing
         Dim abierto = Canon.CanonRecords.Lvli(rec, plugins)
         If abierto Is Nothing Then Return Nothing
-        Return New LeveledListDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,
+        Dim copia = abierto.Copia()
+        Borradores.ExigirRecord(copia, "LVLI", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Return New LeveledListDraft With {.Record = copia, .FormID = rec.Header.FormID,
                                           .IsOverride = True, .IsNew = False}
     End Function
 
@@ -78,8 +72,16 @@ Public Class LeveledListDraft
     '==============================================================================================
 
     Public Function Clone() As LeveledListDraft
+        ' ⛔ `Clone` es la TERCERA puerta: también CONSTRUYE un borrador, y `Copia()` puede devolver
+        ' Nothing por los mismos tres caminos. En ARMA, ARMO y MSWP su resultado se registra en
+        ' producción (`_openSnapshot`, que `RevertOrDiscardCurrentDraft` vuelve a meter en el mapa que
+        ' consultan el render y el guardado). En LeveledListDraft hoy no tiene llamadores — la guarda va
+        ' igual, por la misma razón que está en las otras dos puertas: un borrador sin record no es un
+        ' borrador, y el que agregue el primer llamador no tiene por qué acordarse.
+        Dim copiaClone = Record?.Copia()
+        Borradores.ExigirRecord(copiaClone, "LVLI", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
         Return New LeveledListDraft With {
-            .Record = Record?.Copia(),
+            .Record = copiaClone,
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

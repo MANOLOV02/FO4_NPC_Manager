@@ -83,10 +83,22 @@ Public Module NpcRecordOverrideApplier
                 npcSpec.Record.QuitarSubrecord("SHRT")
             End If
         End If
-        If ov.RaceFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.RaceFormID.Value, "RNAM", Sub(v) npcSpec.Record.Race = v)
-        If ov.VoiceFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.VoiceFormID.Value, "VTCK", Sub(v) npcSpec.Record.Voice = v)
-        If ov.ClassFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.ClassFormID.Value, "CNAM", Sub(v) npcSpec.Record.[Class] = v)
-        If ov.CombatStyleFormID.HasValue Then EscribirReferenciaOSacar(npcSpec.Record, ov.CombatStyleFormID.Value, "ZNAM", Sub(v) npcSpec.Record.CombatStyle = v)
+        ' ⛔ RNAM NO pasa por la ley del «sin valor SACA el campo»: xEdit lo declara
+        ' `wbFormIDCk(RNAM, 'Race', [RACE]).SetRequired` dentro de `wbRecord(NPC_)` en LOS DOS juegos
+        ' (wbDefinitionsFO4.pas:10370, dentro del record que abre en :10286; wbDefinitionsTES5.pas:8355,
+        ' record en :8290). Un NPC_ sin RNAM es ilegal, así que una caja de raza vacía no es «borrar la
+        ' raza» sino entrada INVÁLIDA — la misma excepción declarada que ya tienen ARMA y ARMO. La ley
+        ' lo dice en su propio docstring: «NO va para campos REQUERIDOS de hecho, como el RNAM».
+        ' ⚠️ CAMBIO DE SEMANTICA declarado: antes un 0 acá SACABA el RNAM; ahora es un no-op y el
+        ' NPC conserva su raza. Es el sentido seguro —RNAM es requerido— y además ALINEA el guardado
+        ' con el render, que ya trataba el 0 como «sin override». Hoy no llega un 0: el picker de raza
+        ' abre con `allowNull:=False` y el override se escribe desde esa misma caja.
+        If ov.RaceFormID.HasValue Then
+            Canon.CanonInterpretacion.PonerReferenciaRequerida(ov.RaceFormID.Value, Sub(x) npcSpec.Record.Race = x)
+        End If
+        If ov.VoiceFormID.HasValue Then Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(npcSpec.Record, ov.VoiceFormID.Value, "VTCK", Sub(v) npcSpec.Record.Voice = v)
+        If ov.ClassFormID.HasValue Then Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(npcSpec.Record, ov.ClassFormID.Value, "CNAM", Sub(v) npcSpec.Record.[Class] = v)
+        If ov.CombatStyleFormID.HasValue Then Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(npcSpec.Record, ov.CombatStyleFormID.Value, "ZNAM", Sub(v) npcSpec.Record.CombatStyle = v)
         ' NAM6 / NAM4 (Height). Written AFTER the Traits materialization above on purpose: height is a
         ' Traits-category field (MaterializeTraits copies it unconditionally), so on a Traits-inheriting NPC
         ' the materializer first fills the template's height and this then overwrites it with the user's.
@@ -140,17 +152,6 @@ Public Module NpcRecordOverrideApplier
         If ov.ObjectTemplateCombinations IsNot Nothing Then npcSpec.Record.ReemplazarCombinations(ov.ObjectTemplateCombinations)
         Return fallo
     End Function
-
-    ''' <summary>Escribe una referencia en el record, o SACA el subrecord cuando vale cero: en el editor
-    ''' el campo vacio significa "ninguna", no "una referencia a cero".</summary>
-    Private Sub EscribirReferenciaOSacar(destino As Canon.INpc, fid As UInteger,
-                                         firma As String, escribir As Action(Of UInteger))
-        If fid <> 0UI Then
-            escribir(fid)
-        Else
-            destino.QuitarSubrecord(firma)
-        End If
-    End Sub
 
     ''' <summary>Materializa la categoría y baja su bit Use-X. Una categoría irresoluble es un ABORTO en el
     ''' camino de escritura (si se bajara el bit igual, la plantilla dejaría de llenar el campo y el NPC se

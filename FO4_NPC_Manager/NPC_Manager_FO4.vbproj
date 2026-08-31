@@ -44,6 +44,8 @@
          (el que pasa por LooksmenuLoader.ResolveFormIdentifier). SidecarIdentifierProbe lo ejercita con un
          resolvedor inyectado, que prueba el recorrido pero NO el cableado ni el criterio real de "es light". -->
     <InternalsVisibleTo Include="SlotResolutionProbe" />
+    <InternalsVisibleTo Include="ContextoPropioGate" />
+    <InternalsVisibleTo Include="OutfitDraftSaveGate" />
     <!-- ⛔ GATE DE BUILD del parser del buscador. Era el flag `filter-selftest` DENTRO de este exe (233
          líneas + una entrada en la ayuda); salió el 2026-08-08 porque un parser de strings da lo mismo en
          toda máquina y no tiene por qué viajar con lo que se distribuye. Llega a NpcFilterQuery / NpcFilterFacet /

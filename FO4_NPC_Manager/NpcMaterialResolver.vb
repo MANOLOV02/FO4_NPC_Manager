@@ -1459,7 +1459,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' draft (resolver Nothing / not registered) falls back to the skip-with-log behavior. A swap that
             ' references an EXISTING (real) MSWP — even from a draft ARMA/ARMO — is a normal FormID and takes the
             ' unchanged FormID overload path below.
-            If OutfitDraft.IsDraftFormID(candidate.MaterialSwapFormID) Then
+            If Borradores.EsFormIdDeBorrador(candidate.MaterialSwapFormID) Then
                 Dim d = _ctx.MswpDraftResolver?.Invoke(candidate.MaterialSwapFormID)
                 If d IsNot Nothing Then
                     ShapeMaterialOverrides.ApplyMaterialSwap(d,

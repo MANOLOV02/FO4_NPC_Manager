@@ -42,7 +42,21 @@ Public Class MswpSubEditor_Form
         InitializeComponent()
         _mainForm = mainForm
         _draft = draft
-        _openSnapshot = draft?.Clone()
+        ' ⛔ Con `Try`, por lo mismo que en `CommitProtegido`: `Clone()` tiene una precondición que
+        ' puede tirar, esto corre desde cuatro manejadores sin `Try`, y la app usa
+        ' `UnhandledExceptionMode.ThrowException` — un throw acá CIERRA la app. Sin snapshot no hay
+        ' reversión, que es peor que tenerla; con la app cerrada no hay nada.
+        ' ⛔ Y la SEGUNDA consecuencia, declarada: sin snapshot, el cálculo de «no cambió nada»
+        ' (`_openSnapshot IsNot Nothing AndAlso …`) da False, o sea que un OVERRIDE abierto y aceptado
+        ' sin tocar nada sale marcado como modificado y se emite al .esp como override redundante.
+        ' Es la dirección SEGURA a propósito: el otro error —darlo por no modificado— perdería un
+        ' cambio real del usuario. Un override de más es ruido; un cambio perdido es daño.
+        Try
+            _openSnapshot = draft?.Clone()
+        Catch ex As Exception
+            _openSnapshot = Nothing
+            Logger.Log(ex.ToString())
+        End Try
 
         Text = $"Material Swap (MSWP) — {genderLabel}"
         ' Original-Material list = the gender mesh's NIF materials PLUS any supplied extra meshes' materials
@@ -248,8 +262,13 @@ Public Class MswpSubEditor_Form
         ' trabaja sobre un árbol COPIADO de un record del disco — la precondición exacta de ese throw.
         ' Sin esto, un MSWP de un mod de terceros con un subrecord raro mataba el proceso AL APRETAR OK:
         ' es un manejador de clic sin Try y la app corre con UnhandledExceptionMode.ThrowException.
-        Dim antes = _draft?.Clone()
+        ' ⛔ DENTRO del Try. `Clone()` ganó una precondición que puede tirar, y acá arriba no la
+        ' atrapa nadie: el Catch que revierte el borrador empieza una línea más abajo, y la app corre
+        ' con `UnhandledExceptionMode.ThrowException`, o sea que tirar en esta línea CIERRA la app y
+        ' deja el borrador registrado a medias — lo contrario de lo que este Try existe para hacer.
+        Dim antes As MswpDraft = Nothing
         Try
+            antes = _draft?.Clone()
             _draft.Record.EditorID = edid
             _draft.Record.ReemplazarSustituciones(subs)
             ' Dirty only on a REAL change (mirror of ArmA/ArmO): an OVERRIDE opened and OK'd without edits is not

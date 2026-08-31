@@ -1417,7 +1417,7 @@ Public Module NpcOverrideSaver
         ' NPC's DOFT points at an unsaved draft (provisional FormID), revert it to the original
         ' record outfit (the user's rule). Draft EMISSION (the ON case) is handled once per batch in
         ' ExecuteWritePhases Phase 2c. A DOFT pointing at a real OTFT is kept either way.
-        If Not target.SaveNewOutfits AndAlso OutfitDraft.IsDraftFormID(npcSpec.Record.DefaultOutfit) Then
+        If Not target.SaveNewOutfits AndAlso Borradores.EsFormIdDeBorrador(npcSpec.Record.DefaultOutfit) Then
             If rawNpcSpec.Record.DefaultOutfitPresente Then
                 npcSpec.Record.DefaultOutfit = rawNpcSpec.Record.DefaultOutfit
             Else
@@ -1430,7 +1430,7 @@ Public Module NpcOverrideSaver
         ' the draft is never emitted (Phase 2e skin closure is SaveNewOutfits-gated), so revert WNAM to the
         ' original record's skin. Without this, NPC_.WNAM would be written as a DANGLING 0xFF… reference and the
         ' custom skin armor would be absent from the plugin. Draft EMISSION (the ON case) is Phase 2e.
-        If Not target.SaveNewOutfits AndAlso OutfitDraft.IsDraftFormID(npcSpec.Record.Skin) Then
+        If Not target.SaveNewOutfits AndAlso Borradores.EsFormIdDeBorrador(npcSpec.Record.Skin) Then
             If rawNpcSpec.Record.SkinPresente Then
                 npcSpec.Record.Skin = rawNpcSpec.Record.Skin
             Else
@@ -1844,7 +1844,7 @@ Public Module NpcOverrideSaver
         ' Provisional FormID allocator: prefer MainForm's shared draft counter (no collision with OTFT/LVLI
         ' drafts). Fallback is a high local 0xFF counter — these LVLN are terminal (nothing references them by
         ' provisional), so the only requirement is in-save uniqueness.
-        Dim fallbackCtr As UInteger = &HFF0F0000UI
+        Dim fallbackCtr As UInteger = Borradores.FormIdAltoDeBorrador Or &HF0000UI
         Dim allocProvisional As Func(Of UInteger) =
             Function() As UInteger
                 If ctx.AllocateDraftFormID IsNot Nothing Then Return ctx.AllocateDraftFormID()
@@ -1862,7 +1862,11 @@ Public Module NpcOverrideSaver
         ' graba- y la lista salía vacía.
         Dim makeList As Func(Of String, IEnumerable(Of SaveNpcEspWriter.LvliEntryData), SaveNpcEspWriter.LvliRecordEntry) =
             Function(edid, ents)
-                Dim rec = Canon.CanonRecords.LvlnNuevo(Canon.CanonBridge.SessionGame())
+                Dim juegoLvln = Canon.CanonBridge.SessionGame()
+                Dim rec = Canon.CanonRecords.LvlnNuevo(juegoLvln)
+                ' Misma ley que los borradores: la fábrica devuelve Nothing cuando el esquema no declara
+                ' el record, y la línea de abajo lo desreferencia. Hoy LVLN está en los dos esquemas.
+                Borradores.ExigirRecord(rec, "LVLN", $"el formato de {juegoLvln} no declara ese record")
                 rec.EditorID = edid
                 rec.ChanceNone = 0
                 rec.Flags = 0
@@ -2079,7 +2083,7 @@ Public Module NpcOverrideSaver
         End If
 
         ' --- Provisional FormID allocator for the drafts we mint (shared counter, no cross-draft collision). ---
-        Dim fallbackCtr As UInteger = &HFF0C0000UI
+        Dim fallbackCtr As UInteger = Borradores.FormIdAltoDeBorrador Or &HC0000UI
         Dim allocProvisional As Func(Of UInteger) =
             Function() As UInteger
                 If ctx.AllocateDraftFormID IsNot Nothing Then Return ctx.AllocateDraftFormID()
@@ -2109,6 +2113,8 @@ Public Module NpcOverrideSaver
                 ' El cuerpo sale del árbol: un CLFM en blanco de Skyrim (esta ruta es SSE-only por el
                 ' guard de arriba) y los mismos valores medidos de antes, escritos sobre el record.
                 Dim rec = DirectCast(Canon.CanonRecords.ClfmNuevo(Canon.WbGame.Skyrim), Canon.ClfmSSE)
+                ' `DirectCast(Nothing, ClfmSSE)` es Nothing, no tira: sin esto la línea de abajo NREa.
+                Borradores.ExigirRecord(rec, "CLFM", "el formato de Skyrim no declara ese record")
                 rec.EditorID = finalEdid
                 rec.Name = finalFull
                 rec.ColorRed = CByte((rgb >> 16) And &HFF)

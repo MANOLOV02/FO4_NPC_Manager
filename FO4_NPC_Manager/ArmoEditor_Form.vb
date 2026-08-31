@@ -263,6 +263,17 @@ Public Class ArmoEditor_Form
     ''' preserved verbatim, never authored here), and the Armature grid's INDX column (Skyrim's armature is a
     ''' plain MODL list with no INDX). FO4 is unchanged.</summary>
     Private Sub ConfigureForGame()
+        ' ⛔ Los controles de MSWP se apagan por lo que el ESQUEMA declara, no por el nombre del
+        ' juego. La ley «Skyrim no declara MSWP» estaba escrita en TRES lugares —el esquema generado y
+        ' dos listas de controles a mano— y nada ataba las listas al esquema: lo único que separaba al
+        ' usuario de la excepción de `MswpDraft.Nuevo` era acordarse de nombrar cada botón acá. Se le
+        ' pregunta a `SessionGame()`, que es EXACTAMENTE lo que consulta la fábrica.
+        If Canon.WbSchema.Get(Canon.CanonBridge.SessionGame(), "MSWP") Is Nothing Then
+            LabelMo2s.Visible = False : TextBoxMo2s.Visible = False
+            ButtonPickMo2s.Visible = False : ButtonEditMo2s.Visible = False
+            LabelMo4s.Visible = False : TextBoxMo4s.Visible = False
+            ButtonPickMo4s.Visible = False : ButtonEditMo4s.Visible = False
+        End If
         _isSkyrim = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         If Not _isSkyrim Then Return
         LabelArmorRating.Text = "Armor Rating (DNAM):"
@@ -274,11 +285,6 @@ Public Class ArmoEditor_Form
         LabelPtrn.Visible = False : TextBoxPtrn.Visible = False : ButtonPickPtrn.Visible = False
         ' APPR (Attach Parent Slots) — FO4-only.
         LabelAppr.Visible = False : ListAppr.Visible = False : ApprButtons.Visible = False
-        ' MO2S / MO4S material swaps — FO4-only (Skyrim uses Alternate Textures, preserved verbatim).
-        LabelMo2s.Visible = False : TextBoxMo2s.Visible = False
-        ButtonPickMo2s.Visible = False : ButtonEditMo2s.Visible = False
-        LabelMo4s.Visible = False : TextBoxMo4s.Visible = False
-        ButtonPickMo4s.Visible = False : ButtonEditMo4s.Visible = False
         ' Armature grid: INDX exists only in the Fallout 4 entry (INDX + MODL). Skyrim's Armature is a plain
         ' RArray of MODL FormIDs. Hidden here (not in BuildAddonsGridColumns) because the columns are built
         ' before this runs.
@@ -544,7 +550,7 @@ Public Class ArmoEditor_Form
     ''' <summary>Originating (source) plugin name for a real global FormID, via the ESL-aware PluginManager
     ''' helper. "" when unknown (draft sentinel / unattributed) → the banner omits the plugin clause.</summary>
     Private Function SourcePluginName(fid As UInteger) As String
-        If fid = 0UI OrElse OutfitDraft.IsDraftFormID(fid) Then Return ""
+        If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return ""
         Try
             Return If(_mainForm.PluginManagerForEditor?.GetOriginatingPluginName(fid), "")
         Catch
@@ -618,6 +624,15 @@ Public Class ArmoEditor_Form
         Return rec.Keywords.Select(Function(k) k.Keyword).ToList()
     End Function
 
+    ' ⛔ ACÁ NO VA la guarda «un id en 0 no se agrega» que SÍ tiene `OutfitDraft.ReemplazarPrendas`,
+    ' y la diferencia la decide el FORMATO, no el origen de la lista. La ley y su cita viven allá, en
+    ' un solo lugar; acá sólo se declara por qué no aplica:
+    '   · El INAM del atuendo declara sus destinos SIN NULL, así que un 0 ahí es ilegal.
+    '   · Acá la lista se siembra del record de ORIGEN (`ReadKeywordList` / `ReadAddons`) y el picker
+    '     ya rechaza el 0 (`allowNull:=False` más el guard del diálogo), así que un 0 sólo puede venir
+    '     del archivo del usuario: saltearlo no cerraría una referencia nula, le BORRARÍA una entrada.
+    ' Medido: con la guarda puesta, E-1 sigue byte a byte sobre 1.067 ARMO de FO4 y 4.222 de SSE — o
+    ' sea que en el corpus no hay ni un keyword en 0 y la guarda sería, además, inerte.
     Friend Shared Sub WriteKeywordList(rec As Canon.IArmo, ids As IEnumerable(Of UInteger))
         While rec.Keywords.Count > 0
             If Not rec.QuitarKeywords(0) Then Exit While
@@ -678,10 +693,15 @@ Public Class ArmoEditor_Form
                 If Not sse.QuitarArmature(0) Then Exit While
             End While
             If addons IsNot Nothing Then
-                ' Skyrim no tiene índice propio: el orden en el array ES el índice, así que se emite
-                ' en el
-                ' orden que traía la lista (ya ordenada por AddonIndex por quien la arma).
-                For Each ad In addons.OrderBy(Function(x) x.AddonIndex)
+                ' ⛔ Skyrim NO tiene índice propio: el orden en el array ES el índice, y el `AddonIndex`
+                ' que trae la entrada lo SINTETIZÓ `ReadAddons` desde la posición al abrir. Ordenar por él
+                ' deshacía en silencio lo que el usuario acababa de hacer: `MoveAddon` intercambia las
+                ' posiciones pero el índice viaja CON la fila, así que el `OrderBy` restauraba el orden
+                ' viejo y el ESP salía con el armature como estaba — sin un aviso. Y una fila agregada
+                ' nace con índice 0, o sea que saltaba al principio sin importar dónde se la veía.
+                ' El orden de la LISTA es la respuesta: es lo que el usuario ve y armó. La rama de FO4 ya
+                ' emite así — ahí el INDX sí es un campo real del archivo y viaja con su entrada.
+                For Each ad In addons
                     Dim m = sse.AgregarArmature()
                     If m IsNot Nothing Then m.ModelFilename = ad.ArmaFormID
                 Next
@@ -728,11 +748,17 @@ Public Class ArmoEditor_Form
 
             ' General.
             TextBoxFull.Text = rec.Name
-            SetFidText(TextBoxRace, rec.Race)
+            ' ⛔ El llenado va POR EL PORTADOR, no por una segunda transcripción del mismo mapeo.
+            ' Con DOS listas —ésta y `LeerReferencias`— la que se olvida un campo deja la caja vacía,
+            ' `GetFid` devuelve 0 y la ley de `AplicarReferencias` BORRA el subrecord; y el gate E-1 no
+            ' lo ve, porque usa `LeerReferencias` y nunca ejecuta este llenado. Con el portador en el
+            ' medio, el testigo recorre EL MISMO lector que producción.
+            Dim refsCarga = LeerReferencias(rec)
+            SetFidText(TextBoxRace, refsCarga.Raza)
             ' INRD/PTRN (Instance Naming / Preview Transform) sólo existen en Fallout 4.
-            SetFidText(TextBoxInnr, If(fo4 IsNot Nothing, fo4.InstanceNaming, 0UI))
-            SetFidText(TextBoxEitm, rec.Enchantment)
-            SetFidText(TextBoxPtrn, If(fo4 IsNot Nothing, fo4.PreviewTransform, 0UI))
+            SetFidText(TextBoxInnr, refsCarga.NombradoDeInstancia)
+            SetFidText(TextBoxEitm, refsCarga.Encantamiento)
+            SetFidText(TextBoxPtrn, refsCarga.TransformDePreview)
             CheckBoxNonPlayable.Checked = rec.NonPlayable
             TextBoxDesc.Text = rec.Description
             ' Explícito y no por efecto secundario: poblar el cuadro NO es una edición del usuario, y
@@ -769,10 +795,10 @@ Public Class ArmoEditor_Form
             NumStaggerRating.Value = ClampDec(CDec(staggerRating), NumStaggerRating)
 
             ' Misc & Sounds.
-            SetFidText(TextBoxYnam, rec.SoundPickUp)
-            SetFidText(TextBoxZnam, rec.SoundPutDown)
-            SetFidText(TextBoxEtyp, rec.EquipmentType)
-            SetFidText(TextBoxBamt, rec.AlternateBlockMaterial)
+            SetFidText(TextBoxYnam, refsCarga.SonidoTomar)
+            SetFidText(TextBoxZnam, refsCarga.SonidoSoltar)
+            SetFidText(TextBoxEtyp, refsCarga.TipoDeEquipo)
+            SetFidText(TextBoxBamt, refsCarga.MaterialDeBloqueo)
             NumObndX1.Value = ClampDec(CDec(rec.MinX), NumObndX1)
             NumObndY1.Value = ClampDec(CDec(rec.MinY), NumObndY1)
             NumObndZ1.Value = ClampDec(CDec(rec.MinZ), NumObndZ1)
@@ -810,8 +836,8 @@ Public Class ArmoEditor_Form
             ' Fallout 4.
             TextBoxMod2.Text = rec.WorldModelModelFilename
             TextBoxMod4.Text = rec.WorldModelModelFilename2
-            SetFidText(TextBoxMo2s, If(fo4 IsNot Nothing, fo4.WorldModelMaterialSwap, 0UI))
-            SetFidText(TextBoxMo4s, If(fo4 IsNot Nothing, fo4.WorldModelMaterialSwap2, 0UI))
+            SetFidText(TextBoxMo2s, refsCarga.SwapMundoMasc)
+            SetFidText(TextBoxMo4s, refsCarga.SwapMundoFem)
         Finally
             _loading = False
         End Try
@@ -870,13 +896,95 @@ Public Class ArmoEditor_Form
     ''' state instead of the very first draft opened.</summary>
     Private Sub SnapshotCurrentDraft()
         If _draft Is Nothing Then Return
-        _openSnapshot = _draft.Clone()
+        ' ⛔ Con `Try`, por lo mismo que en `CommitProtegido`: `Clone()` tiene una precondición que
+        ' puede tirar, esto corre desde cuatro manejadores sin `Try`, y la app usa
+        ' `UnhandledExceptionMode.ThrowException` — un throw acá CIERRA la app. Sin snapshot no hay
+        ' reversión, que es peor que tenerla; con la app cerrada no hay nada.
+        ' ⛔ Y la SEGUNDA consecuencia, declarada: sin snapshot, el cálculo de «no cambió nada»
+        ' (`_openSnapshot IsNot Nothing AndAlso …`) da False, o sea que un OVERRIDE abierto y aceptado
+        ' sin tocar nada sale marcado como modificado y se emite al .esp como override redundante.
+        ' Es la dirección SEGURA a propósito: el otro error —darlo por no modificado— perdería un
+        ' cambio real del usuario. Un override de más es ruido; un cambio perdido es daño.
+        Try
+            _openSnapshot = _draft.Clone()
+        Catch ex As Exception
+            _openSnapshot = Nothing
+            Logger.Log(ex.ToString())
+        End Try
         _draftWasNew = _draft.IsNew
     End Sub
 
     ''' <summary>Commit the panel state into <see cref="_draft"/> and register it on MainForm. When
     ''' <paramref name="validate"/> the EditorID is checked (non-empty + unique for New); on failure a message
     ''' is shown and the draft is NOT registered. Returns True on a successful commit.</summary>
+
+    ''' <summary>Las REFERENCIAS que este editor escribe. Gemelo del de ARMA; el porqué está allá:
+    ''' el volcado tiene que ser invocable SIN UI o ningún testigo puede recorrerlo.</summary>
+    Friend Class ReferenciasDeArmo
+        Public Raza As UInteger
+        Public Encantamiento As UInteger
+        Public SonidoTomar As UInteger
+        Public SonidoSoltar As UInteger
+        Public TipoDeEquipo As UInteger
+        Public MaterialDeBloqueo As UInteger
+        Public NombradoDeInstancia As UInteger
+        Public TransformDePreview As UInteger
+        Public SwapMundoMasc As UInteger
+        Public SwapMundoFem As UInteger
+    End Class
+
+    ''' <summary>Lee las referencias de un record: es «abrir el editor y no tocar nada».</summary>
+    Friend Shared Function LeerReferencias(a As Canon.IArmo) As ReferenciasDeArmo
+        Dim r As New ReferenciasDeArmo
+        If a Is Nothing Then Return r
+        Dim af = TryCast(a, Canon.ArmoFO4)
+        r.Raza = a.Race
+        r.Encantamiento = a.Enchantment
+        r.SonidoTomar = a.SoundPickUp
+        r.SonidoSoltar = a.SoundPutDown
+        r.TipoDeEquipo = a.EquipmentType
+        r.MaterialDeBloqueo = a.AlternateBlockMaterial
+        If af IsNot Nothing Then r.NombradoDeInstancia = af.InstanceNaming
+        If af IsNot Nothing Then r.TransformDePreview = af.PreviewTransform
+        If af IsNot Nothing Then r.SwapMundoMasc = af.WorldModelMaterialSwap
+        If af IsNot Nothing Then r.SwapMundoFem = af.WorldModelMaterialSwap2
+        Return r
+    End Function
+
+    ''' <summary>Escribe las referencias aplicando la ley: «sin valor» SACA el campo, no graba un 0.
+    ''' La raza queda afuera a propósito — está en 5.825 de 5.825 records y no declara NULL, así que
+    ''' una caja vacía es entrada inválida y la rechaza el commit al validar, no se borra.</summary>
+    Friend Shared Sub AplicarReferencias(v As ReferenciasDeArmo, rec As Canon.IArmo)
+        ' ⛔ TIRA, no vuelve callado — igual que `ReidentificarComoClon`. Los dos son errores de
+        ' LLAMADOR: en producción `rec` sale de `_draft.Record`, que la cuarta ley ya garantiza, y
+        ' `v` se arma en la línea de arriba. Con el `Return` mudo, el testigo que le pase un cast
+        ' fallido no corre el volcado, los bytes ya eran iguales y el caso sale VERDE con el camino
+        ' sin recorrer: la forma exacta en que un gate pasa en vacío.
+        If rec Is Nothing OrElse v Is Nothing Then
+            Throw New ArgumentException(
+                "AplicarReferencias necesita el record de ARMO y su portador: con alguno en Nothing el " &
+                "volcado no corre y el editor descartaría en silencio lo que el usuario acaba de escribir.")
+        End If
+        Dim fo4 = TryCast(rec, Canon.ArmoFO4)
+        Canon.CanonInterpretacion.PonerReferenciaRequerida(v.Raza, Sub(x) rec.Race = x)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.Encantamiento, Sub(x) rec.Enchantment = x, Sub() rec.EnchantmentPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SonidoTomar, Sub(x) rec.SoundPickUp = x, Sub() rec.SoundPickUpPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SonidoSoltar, Sub(x) rec.SoundPutDown = x, Sub() rec.SoundPutDownPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.TipoDeEquipo, Sub(x) rec.EquipmentType = x, Sub() rec.EquipmentTypePresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.MaterialDeBloqueo, Sub(x) rec.AlternateBlockMaterial = x, Sub() rec.AlternateBlockMaterialPresente = False)
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.NombradoDeInstancia, Sub(x) fo4.InstanceNaming = x, Sub() fo4.InstanceNamingPresente = False)
+        End If
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.TransformDePreview, Sub(x) fo4.PreviewTransform = x, Sub() fo4.PreviewTransformPresente = False)
+        End If
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapMundoMasc, Sub(x) fo4.WorldModelMaterialSwap = x, Sub() fo4.WorldModelMaterialSwapPresente = False)
+        End If
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapMundoFem, Sub(x) fo4.WorldModelMaterialSwap2 = x, Sub() fo4.WorldModelMaterialSwap2Presente = False)
+        End If
+    End Sub
 
     Private Function CommitPanelsToDraft(validate As Boolean) As Boolean
         ' Flush any in-progress INDX cell edit into the model first.
@@ -930,9 +1038,21 @@ Public Class ArmoEditor_Form
         ' y ARMO de los dos juegos y no declara NULL: una caja de raza vacía no es «borrar la raza», es
         ' entrada inválida. Sacarlo dejaría un ARMA sin raza, en silencio; escribir 0 dejaría una
         ' referencia nula. Así que no se toca, y `validate` lo rechaza (ver arriba).
-        Dim razaPedida = GetFid(TextBoxRace)
-        If razaPedida <> 0UI Then rec.Race = razaPedida
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxEitm), Sub(v) rec.Enchantment = v, Sub() rec.EnchantmentPresente = False)
+        ' Las referencias van por el portador + AplicarReferencias, que son `Friend Shared` y por eso
+        ' invocables sin UI: es lo que permite que un testigo recorra ESTE camino y no sólo la
+        ' construcción. Lo que se lee de los controles es el Único paso que no se puede sacar del Form.
+        Dim refs As New ReferenciasDeArmo
+        refs.Raza = GetFid(TextBoxRace)
+        refs.Encantamiento = GetFid(TextBoxEitm)
+        refs.SonidoTomar = GetFid(TextBoxYnam)
+        refs.SonidoSoltar = GetFid(TextBoxZnam)
+        refs.TipoDeEquipo = GetFid(TextBoxEtyp)
+        refs.MaterialDeBloqueo = GetFid(TextBoxBamt)
+        refs.NombradoDeInstancia = GetFid(TextBoxInnr)
+        refs.TransformDePreview = GetFid(TextBoxPtrn)
+        refs.SwapMundoMasc = GetFid(TextBoxMo2s)
+        refs.SwapMundoFem = GetFid(TextBoxMo4s)
+        AplicarReferencias(refs, rec)
         ' NonPlayable vive en la cabecera, que no sale del árbol de campos pero sí viaja en el
         ' contexto del record —de ahí la toma el grabado—, así que escribirla acá es editar lo
         ' que se va a guardar.
@@ -973,10 +1093,6 @@ Public Class ArmoEditor_Form
         End If
 
         ' Misc & Sounds.
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxYnam), Sub(v) rec.SoundPickUp = v, Sub() rec.SoundPickUpPresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxZnam), Sub(v) rec.SoundPutDown = v, Sub() rec.SoundPutDownPresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxEtyp), Sub(v) rec.EquipmentType = v, Sub() rec.EquipmentTypePresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxBamt), Sub(v) rec.AlternateBlockMaterial = v, Sub() rec.AlternateBlockMaterialPresente = False)
         rec.MinX = CShort(NumObndX1.Value)
         rec.MinY = CShort(NumObndY1.Value)
         rec.MinZ = CShort(NumObndZ1.Value)
@@ -991,10 +1107,6 @@ Public Class ArmoEditor_Form
         WriteKeywordList(rec, _keywords)
 
         If fo4 IsNot Nothing Then
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxInnr), Sub(v) fo4.InstanceNaming = v, Sub() fo4.InstanceNamingPresente = False)
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxPtrn), Sub(v) fo4.PreviewTransform = v, Sub() fo4.PreviewTransformPresente = False)
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo2s), Sub(v) fo4.WorldModelMaterialSwap = v, Sub() fo4.WorldModelMaterialSwapPresente = False)
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo4s), Sub(v) fo4.WorldModelMaterialSwap2 = v, Sub() fo4.WorldModelMaterialSwap2Presente = False)
             ' Damage Resist (DAMA): flush the working buffer (deep-copied so the draft never aliases
             ' the grid).
             WriteDamageResistances(fo4, _damageResists)
@@ -1623,8 +1735,11 @@ Public Class ArmoEditor_Form
             ' its existing substitutions, not a blank one. Nothing ⇒ field empty/unresolved ⇒ fresh NEW draft.
             draft = _mainForm.BuildMswpOverrideDraftFromReal(currentFid)
             If draft Is Nothing Then
+                ' ⛔ La guarda que estaba acá miraba `draft`, y lo que podía ser nulo era su
+                ' `.Record`: chequeaba la variable equivocada a dos líneas del peligro. `Nuevo` ya no
+                ' puede devolver un borrador sin record — si el juego no declara MSWP, tira.
                 draft = MswpDraft.Nuevo(_mainForm.AllocateDraftFormID(), Canon.CanonBridge.SessionGame())
-                If draft IsNot Nothing Then draft.Record.EditorID = MswpDraft.EditorIdPrefix & "new"
+                draft.Record.EditorID = MswpDraft.EditorIdPrefix & "new"
                 _mainForm.RegisterMswpDraft(draft)
             End If
         End If
@@ -1801,8 +1916,13 @@ Public Class ArmoEditor_Form
     ''' temporizador, bandera por referencia y mensaje: cuatro parámetros para ahorrar catorce líneas.
     ''' Lo que sí es ley —qué se registra cuando falla— va a <c>Logger</c>, que es un solo lugar.</para></summary>
     Private Function CommitProtegido(validate As Boolean) As Boolean
-        Dim antes = _draft?.Clone()
+        ' ⛔ DENTRO del Try. `Clone()` ganó una precondición que puede tirar, y acá arriba no la
+        ' atrapa nadie: el Catch que revierte el borrador empieza una línea más abajo, y la app corre
+        ' con `UnhandledExceptionMode.ThrowException`, o sea que tirar en esta línea CIERRA la app y
+        ' deja el borrador registrado a medias — lo contrario de lo que este Try existe para hacer.
+        Dim antes As ArmoDraft = Nothing
         Try
+            antes = _draft?.Clone()
             Return CommitPanelsToDraft(validate)
         Catch ex As Exception
             If antes IsNot Nothing AndAlso _draft IsNot Nothing Then

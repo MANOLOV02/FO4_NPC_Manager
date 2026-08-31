@@ -1443,7 +1443,7 @@ Public Module LooksmenuLoader
                 ' nombrar el plugin dueño". Emitir "" en el segundo caso le dice al lector CLEAR — y el lector
                 ' (:610-681) lo obedece: NpcRecordOverlay:131/157 apaga la piel o el outfit del NPC.
                 ' Camino de rutina: un outfit recién creado en Edit Outfit tiene FormID provisional 0xFF00xxxx
-                ' (OutfitDraft.DraftFormIdHighByte), y 0xFF NUNCA es un slot (MAX_FULL_SLOT = 0xFD), así que
+                ' (Borradores.FormIdAltoDeBorrador), y 0xFF NUNCA es un slot (MAX_FULL_SLOT = 0xFD), así que
                 ' GetOriginatingPluginName devuelve "" ⇒ el preset salía diciendo "sin outfit" ⇒ NPC DESNUDO.
                 ' Canónico: f4ee saltea el form que no resuelve y no toca al actor — `if(!form) continue`
                 ' (CharGenInterface.cpp:328-330). Omitir la key es exactamente eso, y es la simetría del

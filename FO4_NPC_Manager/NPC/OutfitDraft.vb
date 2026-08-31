@@ -20,11 +20,6 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' </list></summary>
 Public Class OutfitDraft
 
-    ''' <summary>Byte alto del identificador provisional de un borrador sin guardar. 0xFF nunca es
-    ''' un índice de master real (el tope son 254), así que no puede chocar con un record cargado.
-    ''' Al guardar se reescribe como (índice propio del plugin) &lt;&lt; 24 | número de objeto.</summary>
-    Public Const DraftFormIdHighByte As UInteger = &HFF000000UI
-
     ''' <summary>Prefijo del identificador de editor. Al guardar se le inyecta el nombre del archivo
     ''' destino, para que sea reconocible y no choque entre plugins.</summary>
     Public Const EditorIdPrefix As String = "npcm_Outfit_"
@@ -32,8 +27,11 @@ Public Class OutfitDraft
     ''' <summary>Identificador reservado del atuendo de PREVISUALIZACIÓN del selector: el conjunto
     ''' que se está armando y que se vuelve a registrar en cada cambio para que el render lo resuelva
     ''' como a cualquier borrador. El número de objeto 0x7FF queda justo debajo del piso de asignación
-    ''' real, así que no puede chocar con uno confirmado. Nunca se persiste.</summary>
-    Public Const PreviewDraftFormID As UInteger = &HFF0007FFUI
+    ''' real, así que no puede chocar con uno confirmado. Nunca se persiste.
+    ''' <para>Se compone del centinela COMPARTIDO en vez de escribir <c>&amp;HFF0007FF</c> a mano: escrito
+    ''' como literal, el byte alto quedaba repetido acá, y el día que el centinela cambiara este número
+    ''' no lo seguiría — dejaría de ser reconocido como borrador sin que nada fallara al compilar.</para></summary>
+    Public Const PreviewDraftFormID As UInteger = Borradores.FormIdAltoDeBorrador Or &H7FFUI
 
     ''' <summary>El record que se está editando. Todo lo que el usuario cambia va acá.</summary>
     Public Property Record As Canon.IOtft
@@ -43,7 +41,12 @@ Public Class OutfitDraft
 
     ''' <summary>Sólo para mostrar, no se guarda: qué prendas concretas salieron sorteadas para cada
     ''' lista por nivel del atuendo, por identificador de la lista. Se cachea para que la vista previa
-    ''' no cambie sola entre dibujados; volver a sortear borra la entrada.</summary>
+    ''' no cambie sola entre dibujados; volver a sortear borra la entrada.
+    ''' <para>⚠️ LATENTE, declarado: la llave es el FormID, así que si el INAM repitiera la MISMA lista
+    ''' por nivel dos veces, las dos entradas comparten una sola realización — la vista previa dibujaría
+    ''' dos sorteos distintos y el render commiteado, el mismo dos veces. Medido: 0 duplicados en 1.241
+    ''' OTFT del orden de carga (750 de Skyrim, 491 de FO4), así que hoy no llega — pero llegaría con un
+    ''' atuendo de un mod que repita. Cerrarlo pide llavear por POSICIÓN del INAM, no por FormID.</para></summary>
     Public ReadOnly Property LvliRealization As New Dictionary(Of UInteger, List(Of UInteger))
 
     ''' <summary>True = edita un atuendo existente. False = uno nuevo.</summary>
@@ -62,41 +65,28 @@ Public Class OutfitDraft
         End Get
     End Property
 
-    ''' <summary>El identificador es el provisional de un borrador sin guardar. Deja que el render y
-    ''' los resolvedores detecten que un atuendo apunta a algo que todavía no existe en ningún archivo
-    ''' y lo resuelvan desde el borrador.</summary>
-    Public Shared Function IsDraftFormID(formID As UInteger) As Boolean
-        Return (formID And &HFF000000UI) = DraftFormIdHighByte
-    End Function
-
     '==============================================================================================
     ' Creación
     '==============================================================================================
 
     ''' <summary>Un atuendo nuevo, vacío.</summary>
     Public Shared Function Nuevo(formID As UInteger, game As Canon.WbGame) As OutfitDraft
-        Return New OutfitDraft With {.Record = Canon.CanonRecords.OtftNuevo(game),
+        Dim r = Canon.CanonRecords.OtftNuevo(game)
+        Borradores.ExigirRecord(r, "OTFT", $"el formato de {game} no declara ese record")
+        Return New OutfitDraft With {.Record = r,
                                      .FormID = formID, .IsOverride = False, .IsNew = True}
     End Function
 
     ''' <summary>Una edición de un atuendo que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As OutfitDraft
-        ' ⛔ SIN PluginManager NO HAY BORRADOR. `NormalizarReferencias` se va sin hacer nada cuando
-        ' `plugins` es Nothing, así que el árbol quedaría con los FormID LOCALES del archivo fuente
-        ' mientras todo lo de arriba —las propiedades de referencia, el resolvedor del render y el
-        ' reindexado del guardado— asume espacio de orden de carga. Antes no mordía porque los editores
-        ' volcaban valores ya globales sobre un record en blanco; ahora el árbol crudo ES el borrador, y
-        ' un ESP con las referencias sin reindexar apunta al mod equivocado sin un solo aviso.
-        If plugins Is Nothing Then
-            Throw New ArgumentNullException(NameOf(plugins),
-                "Un árbol sin normalizar no es un borrador editable: sus referencias quedan en el espacio " &
-                "LOCAL del archivo de origen y el guardado las reindexaría una segunda vez.")
-        End If
+        Borradores.ExigirPluginsNormalizados(plugins)
         If rec Is Nothing Then Return Nothing
         Dim abierto = Canon.CanonRecords.Otft(rec, plugins)
         If abierto Is Nothing Then Return Nothing
-        Return New OutfitDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,
+        Dim copia = abierto.Copia()
+        Borradores.ExigirRecord(copia, "OTFT", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Return New OutfitDraft With {.Record = copia, .FormID = rec.Header.FormID,
                                      .IsOverride = True, .IsNew = False}
     End Function
 
@@ -121,6 +111,21 @@ Public Class OutfitDraft
         End While
         If ids Is Nothing Then Return
         For Each id In ids
+            ' ⛔ Una prenda en 0 NO se agrega, y el porqué sale del FORMATO, no de una suposición mía:
+            ' xEdit declara `wbArrayS(INAM, 'Items', wbFormIDCk('Item', [ARMO, LVLI]))` dentro de
+            ' `wbRecord(OTFT, 'Outfit')` — wbDefinitionsFO4.pas:9359 (record en :9357) y
+            ' wbDefinitionsTES5.pas:7443 (record en :7441) —, y esa lista de destinos NO incluye NULL.
+            ' O sea que un INAM en 0 es ILEGAL para el formato, exactamente como el RNAM de NPC_.
+            ' En una colección la ley no es «sacar el subrecord» —eso borraría el arreglo entero— sino
+            ' NO AGREGAR LA ENTRADA.
+            ' ⛔ CORRECCIÓN, y va escrita porque el porqué me salió mal DOS veces. Primero la saqué
+            ' argumentando que «la lista se siembra del OTFT existente, así que un 0 sólo puede venir del
+            ' archivo»: falso, `OutfitDraft.Edicion` tiene CERO llamadores. Después la repuse diciendo que
+            ' «un 0 ya se descarta dos capas más arriba», y en ese momento tampoco era cierto: el 0 entraba
+            ' por el carril de las prendas no mostrables. Hoy SÍ se descarta arriba —
+            ' `OutfitPicker_Form.PlanDeSembrado` lo saca, y el caso C12 del gate lo mide—, pero
+            ' esta guarda NO depende de eso: la sostiene la cita del formato, no el camino del llamador.
+            If id = 0UI Then Continue For
             Dim e = Record.AgregarItems()
             If e Is Nothing Then Exit For
             e.Item = id
@@ -132,8 +137,16 @@ Public Class OutfitDraft
     '==============================================================================================
 
     Public Function Clone() As OutfitDraft
+        ' ⛔ `Clone` es la TERCERA puerta: también CONSTRUYE un borrador, y `Copia()` puede devolver
+        ' Nothing por los mismos tres caminos. En ARMA, ARMO y MSWP su resultado se registra en
+        ' producción (`_openSnapshot`, que `RevertOrDiscardCurrentDraft` vuelve a meter en el mapa que
+        ' consultan el render y el guardado). En OutfitDraft hoy no tiene llamadores — la guarda va
+        ' igual, por la misma razón que está en las otras dos puertas: un borrador sin record no es un
+        ' borrador, y el que agregue el primer llamador no tiene por qué acordarse.
+        Dim copiaClone = Record?.Copia()
+        Borradores.ExigirRecord(copiaClone, "OTFT", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
         Dim c As New OutfitDraft With {
-            .Record = Record?.Copia(),
+            .Record = copiaClone,
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

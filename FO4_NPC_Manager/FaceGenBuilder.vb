@@ -2173,14 +2173,19 @@ Public Module FaceGenBuilder
                     Dim armo = parseArmo(terminalFID)
                     If armo Is Nothing Then Continue For
                     If ArmoEditor_Form.ReadAddons(armo).Count = 0 Then
-                        ' ARMO sin armatures (el render cae al mesh fallback ARMO.MOD2, p.ej. robots):
-                        ' su BOD2 propio cuenta, como antes. El gate PA lo aplica igual la ley única abajo,
-                        ' pero acá no hay footprint que pedir.
-                        If Not (MainForm.IsPowerArmorArmoData(armo, paKywdFid) AndAlso Not raceIsPa) Then
-                            slots = slots Or armo.SlotMaskDe()
-                        End If
+                        ' ⛔ Un ARMO SIN ARMATURES no ocluye NADA, y esto es lo que decía el render, no una
+                        ' decisión de acá. Acá antes se ocluia con su BOD2 afirmando «el render cae al mesh
+                        ' fallback ARMO.MOD2, p.ej. robots»: FALSO, esa caída vive DENTRO del bucle de armatures
+                        ' del colector, que con cero armatures no se ejecuta.
+                        ' La otra vía por la que el colector SÍ emite geometría sin armatures —el chunk-mount de
+                        ' OMOD— tampoco ocluye: ese candidato nace con `SlotMask = 0` y `slottedCandidates`
+                        ' filtra `SlotMask <> 0`, así que no entra al torneo ni a `headChannelMask`. Dibuja, pero
+                        ' no tapa. Por eso la respuesta es NO OCLUIR, sin excepciones — hubo una versión que
+                        ' preguntaba por chunk-mount y ocluia con el BOD2 crudo: en el único caso donde disparaba,
+                        ' hacía lo contrario del render.
                         Continue For
                     End If
+
                     ' LEY ÚNICA (EquipResolver, FO4_Base_Library) — el mismo footprint que el render y los
                     ' editores. El gate de power-armor entra por el contexto, no como un if repetido acá.
                     Dim fp = EquipResolver.BuildFootprint(terminalFID, eqCtx)

@@ -75,6 +75,7 @@ Public Class OutfitPicker_Form
     ''' so per-item lookups (AddItemFidAsPiece / PrefillPiecesFromOutfit / Add-to-lvl name) are O(1)
     ''' instead of an O(n) FirstOrDefault per item. First occurrence wins, mirroring FirstOrDefault.</summary>
     Private _itemCandidatesByFid As Dictionary(Of UInteger, (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+
     Private _filteredItems As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
 
     ''' <summary>Assign <see cref="_itemCandidates"/> and rebuild the FormID index in lockstep so the two
@@ -123,6 +124,8 @@ Public Class OutfitPicker_Form
     Private Class PieceEntry
         Public FormID As UInteger
         Public Display As String
+        ''' <summary>⚠️ SÓLO lo lee la vista del drill-down (`_levelView`). Para una pieza de nivel
+        ''' superior la columna de slots sale de `mutexMaskByPiece`, así que acá es informativo.</summary>
         Public SlotMask As UInteger
         Public Order As Integer
         Public Plugin As String = ""
@@ -800,7 +803,7 @@ Public Class OutfitPicker_Form
     ''' <summary>Stable throwaway OTFT sentinel for the "outfit context" threaded into the ARMO/ARMA editors'
     ''' "Full Outfit" preview mode. DISTINCT from <see cref="OutfitDraft.PreviewDraftFormID"/> (which those
     ''' editors overwrite for their OWN single-item preview) and from the ARMA editor's ARMO wrapper sentinel.</summary>
-    Private Const OutfitContextFormID As UInteger = &HFF0007FDUI
+    Private Const OutfitContextFormID As UInteger = Borradores.FormIdAltoDeBorrador Or &H7FDUI
     Private _outfitContextRegistered As Boolean
 
     ''' <summary>Las unidades de equip de las piezas armadas, para la LEY ÚNICA
@@ -814,6 +817,19 @@ Public Class OutfitPicker_Form
         Dim order As Integer = 0
         For Each p In _pieces.OrderBy(Function(x) x.Order)
             For Each fid In PieceTerminals(p)
+                ' ⛔ ACÁ NO SE DESCARTA NADA, y es a propósito. Hubo un filtro por `DibujaAlgunArmature`
+                ' que sacaba del torneo a la prenda que no dibuja — y estaba mal por construcción: esa
+                ' propiedad se deriva sólo de los ARMATURES, y el colector ADEMÁS emite geometría por
+                ' chunk-mount de OMOD antes de mirarlos. O sea que es un SUBCONJUNTO de lo que se dibuja, y
+                ' un subconjunto sirve para AFIRMAR, nunca para DESCARTAR: se comía prendas que la ventana
+                ' principal sí dibuja.
+                ' Reconstruir acá la respuesta completa sería escribir OTRA copia de la ley del colector,
+                ' que es exactamente lo que `ResolverMalla` vino a terminar. La respuesta correcta es
+                ' PREGUNTÁRSELA al colector — `CollectArmoCandidates` es `Friend` y ya se usa así desde
+                ' `NpcSkinLivePreview` —, y eso pide llevarle un `NPCVisualState` a este formulario.
+                ' ⚠️ MIENTRAS TANTO, y declarado: una prenda marcada compite igual en el torneo, así que
+                ' puede tapar en la VISTA PREVIA a la que sí aplica. Es cosmético, no mueve un byte, y es
+                ' el comportamiento que había antes de todo esto.
                 order += 1
                 units.Add(EquipResolver.EquipItem.FromFootprint(
                     _mainForm.ArmoFootprintFor(fid, _raceFormID, _isFemale), order, p))
@@ -936,19 +952,144 @@ Public Class OutfitPicker_Form
     ''' Call AFTER RefreshItemCandidates (which rebuilds _itemCandidatesByFid). LVLI pieces keep their sample.</summary>
     Private Sub ResyncPiecesFromCandidates()
         For Each p In _pieces
-            If p.IsLeveled Then Continue For
             Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
             If _itemCandidatesByFid.TryGetValue(p.FormID, it) Then
-                p.SlotMask = it.SlotMask
                 p.Display = it.DisplayName
                 p.Plugin = it.Plugin
+                ' La máscara de una lista por nivel es la de SU realización, no la unión de todos los
+                ' terminales del candidato: pisarla con la unión desalinea la fila de lo que se sorteó.
+                If Not p.IsLeveled Then p.SlotMask = it.SlotMask
             End If
         Next
     End Sub
 
-    ''' <summary>Add an item (ARMO or LVLI, including an own draft LVL) to the pieces list by FormID: dedup,
-    ''' build the <see cref="PieceEntry"/>, sample a realization for leveled items, then refresh. Shared by
-    ''' "Add to outfit" and by "New LVL…" (which auto-adds the freshly-created list as a piece).</summary>
+    ''' <summary>El PLAN de sembrado del editor: qué prendas del INAM entran a la grilla, en orden, y
+    ''' cuáles entran MARCADAS por no aplicar a esta raza/género.
+    ''' <para>⛔ Acá vive la decisión que tenía el defecto, y por eso recibe el conjunto de candidatos
+    ''' como PARÁMETRO: una versión anterior extrajo sólo el filtro de ceros y duplicados —un pedazo que
+    ''' nunca había fallado— y el caso del gate quedaba VERDE aunque se repusiera el filtro por
+    ''' candidatos, que es lo que borraba prendas del archivo del usuario.</para>
+    ''' <para>Dos respuestas correctas: el 0 no entra —el formato no declara NULL para INAM, ver
+    ''' <see cref="OutfitDraft.ReemplazarPrendas"/>— y TODO LO DEMÁS entra, marcado si no es candidato.</para>
+    ''' <para>⛔ NO deduplica. Hubo una versión que descartaba la repetición exacta «porque no agrega
+    ''' nada al torneo de equip»: eso es una regla de la APP, sin cita del formato, y además cambiaba el
+    ''' comportamiento — el sembrador viejo no deduplicaba, así que descartar era PERDER una entrada del
+    ''' archivo del usuario. Medido sobre el corpus: 0 duplicados en 1.241 OTFT (750 de Skyrim, 491 de
+    ''' FO4), o sea que la guarda habría sido inerte — pero inerte no es lo mismo que correcta.</para>
+    ''' <para>⚠️ El ORDEN de la lista es la secuencia de equip y el último gana el slot. Eso es premisa
+    ''' NUESTRA, declarada en <c>EquipResolver</c>, no una ley citada: la línea de xEdit que sostiene lo
+    ''' del NULL usa <c>wbArrayS</c>, que es el constructor de arreglo ORDENADO, así que no se puede
+    ''' invocar para hablar del orden autorado.</para></summary>
+    Friend Shared Function PlanDeSembrado(inam As IEnumerable(Of UInteger),
+                                          aplica As Func(Of UInteger, Boolean),
+                                          esLeveled As Func(Of UInteger, Boolean)) _
+                                          As List(Of (Fid As UInteger, NoAplica As Boolean,
+                                                      EsLeveled As Boolean, Orden As Integer))
+        Dim salida As New List(Of (Fid As UInteger, NoAplica As Boolean,
+                                   EsLeveled As Boolean, Orden As Integer))
+        If inam Is Nothing Then Return salida
+        Dim orden = 0
+        For Each fid In inam
+            If fid = 0UI Then Continue For
+            orden += 1
+            salida.Add((fid,
+                        Not (aplica IsNot Nothing AndAlso aplica(fid)),
+                        esLeveled IsNot Nothing AndAlso esLeveled(fid),
+                        orden))
+        Next
+        Return salida
+    End Function
+
+    ''' <summary>¿Esta referencia aplica a la raza/género de ESTE NPC? Es la lectura del RENDER sobre la ley única:
+    ''' <c>DibujaAlgunArmature</c>, derivado de <c>ResolverMalla</c> — la misma respuesta que usa el colector.
+    ''' <para>⛔ No se pregunta «está entre los candidatos»: ese universo incluye SIEMPRE a los borradores
+    ''' ARMO propios, tengan o no un armature de esta raza, así que uno recién creado entraba sin marcar,
+    ''' competía en el torneo con el BOD2 crudo y eliminaba a la armadura real de la vista previa — que
+    ''' el render sí dibujaba, porque ahí el borrador sin ARMA no emite candidato.</para>
+    ''' <para>Una LVLI no tiene footprint de ARMO: se pregunta por su máscara resuelta.</para></summary>
+    Private Function AplicaAEsteNpc(fid As UInteger) As Boolean
+        If fid = 0UI Then Return False
+        If _mainForm.IsLeveledItem(fid) Then
+            ' ⛔ «Alguno de sus terminales dibuja algo», que es el mismo CRITERIO que usa el universo de
+            ' candidatos — no el mismo CONJUNTO: acá los terminales salen de `EnumerateLeveledTerminalsAll`,
+            ' que es draft-aware, y allá de `EnumerateItemTerminalArmos` sin resolvedor. Con un borrador de
+            ' override de la lista, acá se ve lo editado y allá el record del disco; y los borradores propios
+            ' de lista entran al universo sin este gate. En los dos casos ESTE lado es el más fresco.
+            ' NO `GetReferenceSlotMask <> 0`: ésa es la
+            ' máscara de DISPLAY y cae al BOD2 crudo cuando ningún armature matchea la raza, así que
+            ' degenera a «siempre verdadero» — su propio docstring dice que existe para MOSTRAR slots de
+            ' referencias FUERA del universo filtrado por raza. Con ella, una lista cuyos terminales
+            ' dejaron de aplicar volvía al torneo y eliminaba a la prenda que sí aplica.
+            Return _mainForm.EnumerateLeveledTerminalsAll(fid).
+                   Any(Function(term) _mainForm.ArmoFootprintFor(term, _raceFormID, _isFemale).DibujaAlgunArmature)
+        End If
+        ' ⛔ Sobre el TERMINAL, no sobre el FormID crudo del INAM. Un ARMO hijo de plantilla trae sus
+        ' armatures en el terminal (`TemplateArmor`), así que preguntando por el crudo `ComplementosDe`
+        ' sale vacío y la fila decía «⚠ no aplica a este NPC» sobre una prenda que el render dibuja
+        ' perfecto. Todos los otros consumidores de esta misma pregunta resuelven la plantilla primero
+        ' — el bake y el sampler de atuendos —; éste era el único que no.
+        Dim terminal = OutfitResolver.ResolveTerminalArmorFormID(fid, _mainForm.PluginManagerForEditor)
+        If terminal = 0UI Then terminal = fid
+        Return _mainForm.ArmoFootprintFor(terminal, _raceFormID, _isFemale).DibujaAlgunArmature
+    End Function
+
+    ''' <summary>Siembra en la grilla lo que el plan diga. NO decide nada: la decisión entera vive en
+    ''' <see cref="PlanDeSembrado"/>, que es `Friend Shared` y por eso el gate la puede recorrer.
+    ''' <para>⛔ Antes la decisión estaba acá, en un `Private Sub` de un formulario, y el caso del gate
+    ''' medía una función auxiliar que nunca había fallado: poner un `Continue For` sobre las marcadas
+    ''' reproducía EL defecto original — borrarle prendas al usuario — y la suite seguía en verde.</para>
+    ''' <para>Lo que queda acá es sólo lo que necesita la UI y el resolvedor: el nombre, el plugin y el
+    ''' muestreo de la realización.</para></summary>
+    Private Sub SembrarInam(inam As IEnumerable(Of UInteger))
+        For Each e In PlanDeSembrado(inam, AddressOf AplicaAEsteNpc, AddressOf _mainForm.IsLeveledItem)
+            ' ⛔ El orden sale del PLAN. Con un contador aparte, el `Orden` que el plan calcula quedaba
+            ' sin consumir y el aserto del gate medía un campo muerto: el orden real se podía romper con
+            ' el caso en verde. `_pieceOrderCounter` se sincroniza para que lo que se AGREGUE después
+            ' («Add to outfit») siga la numeración.
+            _pieceOrderCounter = e.Orden
+            Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
+            Dim pieza As PieceEntry
+            ' ⛔ La decisión es la del PLAN y nada más. Acá hubo una segunda compuerta
+            ' (`AndAlso _itemCandidatesByFid.TryGetValue(…)`), o sea que la marca efectiva era
+            ' `plan.NoAplica OR NO-pertenencia` — y con eso se podía reponer EL defecto original mutando
+            ' esta línea, con el caso del gate en verde, porque el gate mide el plan y no llega hasta acá.
+            ' El índice se consulta SÓLO para el texto y el plugin, que es dato de presentación.
+            If Not e.NoAplica Then
+                If Not _itemCandidatesByFid.TryGetValue(e.Fid, it) Then
+                    it = (e.Fid, _mainForm.GetRecordDisplayNameForEditor(e.Fid), 0UI,
+                          _mainForm.GetOutfitPluginName(e.Fid))
+                End If
+                pieza = New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName,
+                                             .SlotMask = it.SlotMask, .Order = _pieceOrderCounter,
+                                             .Plugin = it.Plugin}
+            Else
+                ' La marcada también lleva su plugin: es la fila donde el usuario decide si la saca.
+                pieza = New PieceEntry With {.FormID = e.Fid,
+                                             .Display = _mainForm.GetRecordDisplayNameForEditor(e.Fid),
+                                             .SlotMask = 0UI, .Order = _pieceOrderCounter,
+                                             .Plugin = _mainForm.GetOutfitPluginName(e.Fid)}
+            End If
+            ' ⛔ La clasificación sale del PLAN, no de otra consulta: sin esto una LVLI cuyos terminales
+            ' no aplican quedaba como ARMO concreto y se rompían tres cosas — Reroll apagado aunque el
+            ' atuendo SÍ tiene lista, el doble clic abriendo un editor de ARMO EN BLANCO porque el editor
+            ' rechaza la firma, y el FormID de la lista viajando al draft de vista previa como terminal
+            ' plano, contra el contrato declarado de ese draft.
+            If e.EsLeveled Then
+                pieza.IsLeveled = True
+                Dim r = _mainForm.SampleLeveledRealization(e.Fid, _raceFormID, _isFemale)
+                pieza.Realization = r.Terminals
+                pieza.SlotMask = r.SlotMask
+            End If
+            _pieces.Add(pieza)
+        Next
+    End Sub
+
+    ''' <summary>Agrega un item (ARMO o LVLI, incluido un borrador propio) a la lista por FormID:
+    ''' deduplica, arma la <see cref="PieceEntry"/>, muestrea la realización si es leveled y refresca.
+    ''' Lo comparten «Add to outfit» y «New LVL…».
+    ''' <para>⚠️ Es el camino de AUTORAR, no el de LEER: su deduplicación es correcta ací —el usuario no
+    ''' agrega dos veces lo mismo— y sería incorrecta al sembrar desde el archivo, donde manda el INAM.
+    ''' Por eso <see cref="SembrarInam"/> NO pasa por acá.</para></summary>
     Private Sub AddItemFidAsPiece(fid As UInteger)
         If fid = 0UI Then Return
         If _pieces.Any(Function(p) p.FormID = fid) Then Return  ' no exact-duplicate item (ARMO or LVLI)
@@ -1178,17 +1319,50 @@ Public Class OutfitPicker_Form
             If pe Is Nothing Then Continue For
             mutexMaskByPiece(pe) = If(mutexMaskByPiece.ContainsKey(pe), mutexMaskByPiece(pe), 0UI) Or EquipResolver.MutexMaskOf(u)
         Next
-        Dim renderingCount As Integer = 0, eliminatedCount As Integer = 0, rolledNothingCount As Integer = 0
+        Dim renderingCount As Integer = 0, eliminatedCount As Integer = 0, rolledNothingCount As Integer = 0, noAplicanCount As Integer = 0
         ListViewPieces.BeginUpdate()
         Try
             ListViewPieces.Items.Clear()
+            ' ⛔ La marca se DERIVA acá, no se guarda. Como campo era una FOTO que sólo se refrescaba al
+            ' volver del editor de ARMO: agregar un ARMO válido a una lista por nivel recién creada dejaba
+            ' la fila diciendo «no aplica» y la barra «0 of 1 rendering» mientras la vista previa SÍ la
+            ' dibujaba — el mismo defecto de antes con el signo dado vuelta. Derivada no se puede
+            ' desincronizar; memoizada por pasada, se paga una vez por FormID y no una por fila.
+            Dim noAplicaMemo As New Dictionary(Of UInteger, Boolean)
+            Dim marcada = Function(fid As UInteger) As Boolean
+                              Dim r As Boolean
+                              If noAplicaMemo.TryGetValue(fid, r) Then Return r
+                              r = Not AplicaAEsteNpc(fid)
+                              noAplicaMemo(fid) = r
+                              Return r
+                          End Function
             For Each p In _pieces.OrderBy(Function(x) x.Order)
+                Dim noAplica = marcada(p.FormID)
                 Dim v = If(verdicts.ContainsKey(p), verdicts(p), (Won:=0, Lost:=0))
                 Dim hasUnits = (v.Won + v.Lost) > 0
-                Dim row As New ListViewItem(If(p.IsLeveled, "🎲 " & p.Display, p.Display))
+                ' ⛔ La prenda que no aplica se VE, marcada: si no se ve no se puede sacar, y borrarla
+                ' en silencio era el defecto original.
+                Dim etiqueta = If(p.IsLeveled, "🎲 " & p.Display, p.Display)
+                ' ⛔ «no aplica a este NPC» y no «a esta raza/género»: el predicado (`Valid` del
+                ' footprint) junta TRES motivos — sin ARMA de la raza o sin malla del género, el gate de
+                ' power armor, y un FormID que no resuelve a nada. Afirmar el primero en los tres casos le
+                ' muestra al usuario un problema de raza donde hay una referencia colgada.
+                If noAplica Then etiqueta = "⚠ " & etiqueta & "  (no aplica a este NPC)"
+                Dim row As New ListViewItem(etiqueta)
                 Dim status As String
                 Dim slotsText As String
-                If Not hasUnits Then
+                If noAplica Then
+                    ' ⛔ Estado PROPIO, no un veredicto del torneo: no corrió en él. Contarla como
+                    ' «renderizando» hacía que la barra dijera «3 of 3» mientras la vista previa dibujaba 2.
+                    ' ⚠️ LÍMITE: la marcada NO se saca del torneo (ver `BuildEquipUnits`), así que puede
+                    ' GANAR el slot y dejar a la que sí aplica en «✗ eliminated» — y entonces la barra dice
+                    ' «0 of 2 rendering» mientras la vista previa dibuja una. Sacarla del torneo pide saber
+                    ' si el colector emite, y eso hoy sólo lo sabe el colector.
+                    noAplicanCount += 1
+                    status = "— no aplica"
+                    slotsText = "(no aplica a este NPC)"
+                    row.ForeColor = Color.Gray
+                ElseIf Not hasUnits Then
                     ' La lista no sorteó nada (ChanceNone). La fila NO puede mostrar "(none)": lo que la
                     ' pieza ES sigue siendo la lista, así que se muestra su footprint, etiquetado.
                     rolledNothingCount += 1
@@ -1234,6 +1408,7 @@ Public Class OutfitPicker_Form
         Dim statusText = $"{renderingCount} of {_pieces.Count} piece(s) rendering"
         If eliminatedCount > 0 Then statusText &= $"  ·  {eliminatedCount} eliminated by slot conflict"
         If rolledNothingCount > 0 Then statusText &= $"  ·  {rolledNothingCount} rolled nothing"
+        If noAplicanCount > 0 Then statusText &= $"  ·  {noAplicanCount} no aplica(n) a este NPC"
         LabelCreateStatus.Text = statusText
 
         ' Preview only when the Create tab is active and the host exists (skipped during construction,
@@ -1426,7 +1601,7 @@ Public Class OutfitPicker_Form
         If LabelCreateBanner Is Nothing Then Return
         If _overrideTargetFormID <> 0UI Then
             Dim edid = If(String.IsNullOrEmpty(_overrideTargetEditorID), TextBoxEdid.Text.Trim(), _overrideTargetEditorID)
-            If OutfitDraft.IsDraftFormID(_overrideTargetFormID) Then
+            If Borradores.EsFormIdDeBorrador(_overrideTargetFormID) Then
                 LabelCreateBanner.Text = $"Editing draft — {edid} (new)"
             Else
                 Dim plug = If(_mainForm.GetOutfitPluginName(_overrideTargetFormID), "")
@@ -1460,20 +1635,8 @@ Public Class OutfitPicker_Form
         _pieces.Clear()
         _pieceOrderCounter = 0
         ' INAM items AS AUTHORED (ARMO or LVLI) — a leveled entry stays a leveled piece (not flattened).
-        For Each itemFID In _mainForm.ResolveOutfitItemList(fid)
-            Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
-            If Not _itemCandidatesByFid.TryGetValue(itemFID, it) Then Continue For
-            _pieceOrderCounter += 1
-            Dim piece As New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask,
-                                              .Order = _pieceOrderCounter, .Plugin = it.Plugin}
-            If _mainForm.IsLeveledItem(itemFID) Then
-                piece.IsLeveled = True
-                Dim r = _mainForm.SampleLeveledRealization(itemFID, _raceFormID, _isFemale)
-                piece.Realization = r.Terminals
-                piece.SlotMask = r.SlotMask
-            End If
-            _pieces.Add(piece)
-        Next
+        ' ⛔ TODAS entran, también las que no aplican a esta raza/género: ver `SembrarInam`.
+        SembrarInam(_mainForm.ResolveOutfitItemList(fid))
         RefreshPieces()
     End Sub
 
@@ -1519,7 +1682,7 @@ Public Class OutfitPicker_Form
             ' A draft target (provisional 0xFF FormID) is a NEW owned record being re-edited — RENAMEABLE: keep
             ' its FormID but rebuild the EDID from the editable name box. A real OTFT FormID is an OVERRIDE — keep
             ' its FormID + EditorID verbatim.
-            Dim isDraftTarget = OutfitDraft.IsDraftFormID(_overrideTargetFormID)
+            Dim isDraftTarget = Borradores.EsFormIdDeBorrador(_overrideTargetFormID)
             If isDraftTarget Then
                 Dim suffix = TextBoxEdid.Text.Trim()
                 If suffix.Length = 0 Then
@@ -1571,6 +1734,9 @@ Public Class OutfitPicker_Form
         End If
         ' INAM = EVERY assembled piece FormID as authored — ARMO or LVLI (LVLIs persist as leveled entries).
         ' Slot conflicts are resolved at render/equip time, never dropped at save (see the header comment).
+        ' ⛔ `allPieces` YA trae las que no aplican a esta raza/género, marcadas: son parte del atuendo
+        ' y viajan en la MISMA lista y el mismo orden. Hubo una versión con un carril paralelo que se
+        ' reintercalaba acá; rompía de cuatro formas y se sacó — ver `SembrarInam`.
         draft.ReemplazarPrendas(allPieces.Select(Function(p) p.FormID))
         ' Carry each LVLI piece's current realization to the draft so the committed render matches the
         ' picker's preview (until rerolled later). The draft still saves the LVLI ref in INAM.
@@ -1681,9 +1847,10 @@ Public Class OutfitPicker_Form
         RefreshItemCandidates()
         _pieces.Clear()
         _pieceOrderCounter = 0
-        For Each fid In d.Prendas()
-            AddItemFidAsPiece(fid)   ' builds the PieceEntry (samples LVLI realizations) exactly like "Add to outfit"
-        Next
+        ' ⛔ El MISMO sembrador que `PrefillPiecesFromOutfit`. Con `AddItemFidAsPiece` acá, reabrir el
+        ' borrador volvía a descartar lo que no es candidato: el arreglo no sobrevivía su propio
+        ' round-trip — override, aceptar, reabrir para retocar el nombre, y las prendas se caían igual.
+        SembrarInam(d.Prendas())
         TabsMain.SelectedTab = TabPageCreate
         UpdateCreateBanner()
         RefreshPieces()

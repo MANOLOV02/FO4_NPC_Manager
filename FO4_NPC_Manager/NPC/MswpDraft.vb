@@ -51,34 +51,34 @@ Public Class MswpDraft
 
     ''' <summary>Un cambio de materiales nuevo, vacío.</summary>
     Public Shared Function Nuevo(formID As UInteger, game As Canon.WbGame) As MswpDraft
-        Return New MswpDraft With {.Record = Canon.CanonRecords.MswpNuevo(game),
+        Dim r = Canon.CanonRecords.MswpNuevo(game)
+        Borradores.ExigirRecord(r, "MSWP", $"el formato de {game} no declara ese record")
+        Return New MswpDraft With {.Record = r,
                                    .FormID = formID, .IsOverride = False, .IsNew = True}
     End Function
 
     ''' <summary>Una edición de un record que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As MswpDraft
-        ' ⛔ SIN PluginManager NO HAY BORRADOR. `NormalizarReferencias` se va sin hacer nada cuando
-        ' `plugins` es Nothing, así que el árbol quedaría con los FormID LOCALES del archivo fuente
-        ' mientras todo lo de arriba —las propiedades de referencia, el resolvedor del render y el
-        ' reindexado del guardado— asume espacio de orden de carga. Antes no mordía porque los editores
-        ' volcaban valores ya globales sobre un record en blanco; ahora el árbol crudo ES el borrador, y
-        ' un ESP con las referencias sin reindexar apunta al mod equivocado sin un solo aviso.
-        If plugins Is Nothing Then
-            Throw New ArgumentNullException(NameOf(plugins),
-                "Un árbol sin normalizar no es un borrador editable: sus referencias quedan en el espacio " &
-                "LOCAL del archivo de origen y el guardado las reindexaría una segunda vez.")
-        End If
+        Borradores.ExigirPluginsNormalizados(plugins)
         If rec Is Nothing Then Return Nothing
         Dim abierto = Canon.CanonRecords.Mswp(rec, plugins)
         If abierto Is Nothing Then Return Nothing
-        Return New MswpDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,
+        Dim copia = abierto.Copia()
+        Borradores.ExigirRecord(copia, "MSWP", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Return New MswpDraft With {.Record = copia, .FormID = rec.Header.FormID,
                                    .IsOverride = True, .IsNew = False}
     End Function
 
     Public Function Clone() As MswpDraft
+        ' ⛔ `Clone` es la TERCERA puerta: también CONSTRUYE un borrador, y `Copia()` puede
+        ' devolver Nothing por los mismos tres caminos. Su resultado se registra en producción —
+        ' `_openSnapshot = _draft.Clone()`, y `RevertOrDiscardCurrentDraft` lo vuelve a meter en el
+        ' mapa que consultan el render y el guardado.
+        Dim copiaClone = Record?.Copia()
+        Borradores.ExigirRecord(copiaClone, "MSWP", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
         Return New MswpDraft With {
-            .Record = Record?.Copia(),
+            .Record = copiaClone,
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

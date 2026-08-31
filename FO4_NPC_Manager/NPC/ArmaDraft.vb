@@ -54,28 +54,22 @@ Public Class ArmaDraft
 
     ''' <summary>Un complemento de armadura nuevo, vacío.</summary>
     Public Shared Function Nuevo(formID As UInteger, game As Canon.WbGame) As ArmaDraft
-        Return New ArmaDraft With {.Record = Canon.CanonRecords.ArmaNuevo(game),
+        Dim r = Canon.CanonRecords.ArmaNuevo(game)
+        Borradores.ExigirRecord(r, "ARMA", $"el formato de {game} no declara ese record")
+        Return New ArmaDraft With {.Record = r,
                                    .FormID = formID, .IsOverride = False, .IsNew = True}
     End Function
 
     ''' <summary>Una edición de un record que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As ArmaDraft
-        ' ⛔ SIN PluginManager NO HAY BORRADOR. `NormalizarReferencias` se va sin hacer nada cuando
-        ' `plugins` es Nothing, así que el árbol quedaría con los FormID LOCALES del archivo fuente
-        ' mientras todo lo de arriba —las propiedades de referencia, el resolvedor del render y el
-        ' reindexado del guardado— asume espacio de orden de carga. Antes no mordía porque los editores
-        ' volcaban valores ya globales sobre un record en blanco; ahora el árbol crudo ES el borrador, y
-        ' un ESP con las referencias sin reindexar apunta al mod equivocado sin un solo aviso.
-        If plugins Is Nothing Then
-            Throw New ArgumentNullException(NameOf(plugins),
-                "Un árbol sin normalizar no es un borrador editable: sus referencias quedan en el espacio " &
-                "LOCAL del archivo de origen y el guardado las reindexaría una segunda vez.")
-        End If
+        Borradores.ExigirPluginsNormalizados(plugins)
         If rec Is Nothing Then Return Nothing
         Dim abierto = Canon.CanonRecords.Arma(rec, plugins)
         If abierto Is Nothing Then Return Nothing
-        Return New ArmaDraft With {.Record = abierto.Copia(), .FormID = rec.Header.FormID,
+        Dim copia = abierto.Copia()
+        Borradores.ExigirRecord(copia, "ARMA", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Return New ArmaDraft With {.Record = copia, .FormID = rec.Header.FormID,
                                    .IsOverride = True, .IsNew = False}
     End Function
 
@@ -95,21 +89,9 @@ Public Class ArmaDraft
         d.FormID = formIDNuevo
         d.IsOverride = False
         d.IsNew = True
-        ' LA IDENTIDAD DEL CONTEXTO, decidida campo por campo y no heredada por descuido:
-        Dim v = TryCast(d.Record, Canon.CanonRecordView)
-        If v IsNot Nothing AndAlso v.Context IsNot Nothing Then
-            ' FormID: el emisor reporta sus avisos con el del contexto, y un clon que arrastre el de la
-            ' fuente los publica con el identificador equivocado.
-            v.Context.FormID = formIDNuevo
-            ' EditorId: mismo argumento, campo de al lado. `SaveNpcEspWriter` arma su mensaje de error
-            ' con `Context.EditorId`. El del ÁRBOL lo pone el editor; el del contexto se limpia para que
-            ' nadie confunda al clon con su fuente.
-            v.Context.EditorId = ""
-            ' ⛔ Y NO SE HEREDA `Deleted` (bit 5). El guardado emite `Context.RecordFlags` tal cual, así
-            ' que clonar un record marcado como borrado daría un record NUEVO nacido borrado: el usuario
-            ' lo ve en la lista, lo guarda, y el motor lo ignora. Un clon es un record nuevo; nace vivo.
-            v.Context.RecordFlags = v.Context.RecordFlags And Not &H20UI
-        End If
+        ' La identidad del clon la pone `Borradores`, no cada borrador: `Clon` existe hoy en dos de
+        ' los cinco, y la ley tiene que estar donde la encuentre el tercero.
+        Borradores.ReidentificarComoClon(d.Record, formIDNuevo)
         Return d
     End Function
 
@@ -118,8 +100,14 @@ Public Class ArmaDraft
     '==============================================================================================
 
     Public Function Clone() As ArmaDraft
+        ' ⛔ `Clone` es la TERCERA puerta: también CONSTRUYE un borrador, y `Copia()` puede
+        ' devolver Nothing por los mismos tres caminos. Su resultado se registra en producción —
+        ' `_openSnapshot = _draft.Clone()`, y `RevertOrDiscardCurrentDraft` lo vuelve a meter en el
+        ' mapa que consultan el render y el guardado.
+        Dim copiaClone = Record?.Copia()
+        Borradores.ExigirRecord(copiaClone, "ARMA", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
         Return New ArmaDraft With {
-            .Record = Record?.Copia(),
+            .Record = copiaClone,
             .FormID = FormID,
             .IsOverride = IsOverride,
             .IsNew = IsNew,

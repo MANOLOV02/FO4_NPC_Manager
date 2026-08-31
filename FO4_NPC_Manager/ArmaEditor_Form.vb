@@ -116,7 +116,7 @@ Public Class ArmaEditor_Form
     ''' <summary>Throwaway ARMO wrapper FormID for previewing a STANDALONE ARMA draft — a draft sentinel just
     ''' below the OTFT preview sentinel (<see cref="OutfitDraft.PreviewDraftFormID"/>) so the resolver picks
     ''' it up but it's never persisted (filtered out of the save set).</summary>
-    Private Const PreviewArmoWrapperFormID As UInteger = &HFF0007FEUI
+    Private Const PreviewArmoWrapperFormID As UInteger = Borradores.FormIdAltoDeBorrador Or &H7FEUI
 
     ''' <param name="mainForm">Owner — supplies the draft registrars, the PluginManager for the FormID pickers,
     ''' parsed-record access and the WYSIWYG preview host.</param>
@@ -249,15 +249,24 @@ Public Class ArmaEditor_Form
     '''     never authored here.
     ''' FO4 is unchanged.</summary>
     Private Sub ConfigureForGame()
+        ' ⛔ Los controles de MSWP se apagan por lo que el ESQUEMA declara, no por el nombre del
+        ' juego. La ley «Skyrim no declara MSWP» estaba escrita en TRES lugares —el esquema generado y
+        ' dos listas de controles a mano— y nada ataba las listas al esquema: lo único que separaba al
+        ' usuario de la excepción de `MswpDraft.Nuevo` era acordarse de nombrar cada botón acá. Se le
+        ' pregunta a `SessionGame()`, que es EXACTAMENTE lo que consulta la fábrica.
+        If Canon.WbSchema.Get(Canon.CanonBridge.SessionGame(), "MSWP") Is Nothing Then
+            For Each c As Control In New Control() {LabelMo2s, TextBoxMo2s, ButtonPickMo2s, ButtonEditMo2s,
+                                                    LabelMo3s, TextBoxMo3s, ButtonPickMo3s, ButtonEditMo3s,
+                                                    LabelMo4s, TextBoxMo4s, ButtonPickMo4s,
+                                                    LabelMo5s, TextBoxMo5s, ButtonPickMo5s}
+                If c IsNot Nothing Then c.Visible = False
+            Next
+        End If
         If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
         If Tabs.TabPages.Contains(TabSculpt) Then Tabs.TabPages.Remove(TabSculpt)
         If Tabs.TabPages.Contains(TabFlags) Then Tabs.TabPages.Remove(TabFlags)
         For Each c As Control In New Control() {LabelMo2f, CheckMo2fFaceBones, CheckMo2f1stPerson,
-                                                LabelMo3f, CheckMo3fFaceBones, CheckMo3f1stPerson,
-                                                LabelMo2s, TextBoxMo2s, ButtonPickMo2s, ButtonEditMo2s,
-                                                LabelMo3s, TextBoxMo3s, ButtonPickMo3s, ButtonEditMo3s,
-                                                LabelMo4s, TextBoxMo4s, ButtonPickMo4s,
-                                                LabelMo5s, TextBoxMo5s, ButtonPickMo5s}
+                                                LabelMo3f, CheckMo3fFaceBones, CheckMo3f1stPerson}
             If c IsNot Nothing Then c.Visible = False
         Next
     End Sub
@@ -499,7 +508,7 @@ Public Class ArmaEditor_Form
     ''' <summary>Originating (source) plugin name for a real global FormID, via the ESL-aware PluginManager
     ''' helper. "" when unknown (draft sentinel / unattributed) → the banner omits the plugin clause.</summary>
     Private Function SourcePluginName(fid As UInteger) As String
-        If fid = 0UI OrElse OutfitDraft.IsDraftFormID(fid) Then Return ""
+        If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return ""
         Try
             Return If(_mainForm.PluginManagerForEditor?.GetOriginatingPluginName(fid), "")
         Catch
@@ -659,18 +668,25 @@ Public Class ArmaEditor_Form
             SetSlotChecks(rec.SlotMaskDe())
 
             ' Skin & material.
-            SetFidText(TextBoxRace, rec.Race)
-            SetFidText(TextBoxSndd, rec.FootstepSound)
-            SetFidText(TextBoxNam0, rec.MaleSkinTexture)
-            SetFidText(TextBoxNam1, rec.FemaleSkinTexture)
-            SetFidText(TextBoxNam2, rec.MaleSkinTextureSwapList)
-            SetFidText(TextBoxNam3, rec.FemaleSkinTextureSwapList)
-            ' MO2S..MO5S (swap de material) sólo existen en Fallout 4 — Skyrim no tiene MSWP.
-            SetFidText(TextBoxMo2s, If(fo4 IsNot Nothing, fo4.MaleMaterialSwap, 0UI))
-            SetFidText(TextBoxMo3s, If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap, 0UI))
-            SetFidText(TextBoxMo4s, If(fo4 IsNot Nothing, fo4.MaleMaterialSwap2, 0UI))
-            SetFidText(TextBoxMo5s, If(fo4 IsNot Nothing, fo4.FemaleMaterialSwap2, 0UI))
-            SetFidText(TextBoxOnam, rec.ArtObject)
+            ' ⛔ El llenado va POR EL PORTADOR, no por una segunda transcripción del mismo mapeo.
+            ' Con DOS listas —ésta y `LeerReferencias`— la que se olvida un campo deja la caja vacía,
+            ' `GetFid` devuelve 0 y la ley de `AplicarReferencias` BORRA el subrecord; y el gate E-1 no
+            ' lo ve, porque usa `LeerReferencias` y nunca ejecuta este llenado. Con el portador en el
+            ' medio, el testigo recorre EL MISMO lector que producción.
+            ' MO2S..MO5S (swap de material) sólo existen en Fallout 4 — Skyrim no tiene MSWP, y el
+            ' portador ya devuelve 0 ahí.
+            Dim refsCarga = LeerReferencias(rec)
+            SetFidText(TextBoxRace, refsCarga.Raza)
+            SetFidText(TextBoxSndd, refsCarga.SonidoDePaso)
+            SetFidText(TextBoxNam0, refsCarga.PielMasc)
+            SetFidText(TextBoxNam1, refsCarga.PielFem)
+            SetFidText(TextBoxNam2, refsCarga.SwapPielMasc)
+            SetFidText(TextBoxNam3, refsCarga.SwapPielFem)
+            SetFidText(TextBoxMo2s, refsCarga.SwapMasc)
+            SetFidText(TextBoxMo3s, refsCarga.SwapFem)
+            SetFidText(TextBoxMo4s, refsCarga.SwapMasc2)
+            SetFidText(TextBoxMo5s, refsCarga.SwapFem2)
+            SetFidText(TextBoxOnam, refsCarga.ObjetoDeArte)
             NumMalePrio.Value = ClampDec(CDec(rec.DataMalePriority), NumMalePrio)
             NumFemalePrio.Value = ClampDec(CDec(rec.DataFemalePriority), NumFemalePrio)
             NumDetectionSound.Value = ClampDec(CDec(rec.DataDetectionSoundValue), NumDetectionSound)
@@ -757,13 +773,105 @@ Public Class ArmaEditor_Form
     ''' state instead of the very first draft opened.</summary>
     Private Sub SnapshotCurrentDraft()
         If _draft Is Nothing Then Return
-        _openSnapshot = _draft.Clone()
+        ' ⛔ Con `Try`, por lo mismo que en `CommitProtegido`: `Clone()` tiene una precondición que
+        ' puede tirar, esto corre desde cuatro manejadores sin `Try`, y la app usa
+        ' `UnhandledExceptionMode.ThrowException` — un throw acá CIERRA la app. Sin snapshot no hay
+        ' reversión, que es peor que tenerla; con la app cerrada no hay nada.
+        ' ⛔ Y la SEGUNDA consecuencia, declarada: sin snapshot, el cálculo de «no cambió nada»
+        ' (`_openSnapshot IsNot Nothing AndAlso …`) da False, o sea que un OVERRIDE abierto y aceptado
+        ' sin tocar nada sale marcado como modificado y se emite al .esp como override redundante.
+        ' Es la dirección SEGURA a propósito: el otro error —darlo por no modificado— perdería un
+        ' cambio real del usuario. Un override de más es ruido; un cambio perdido es daño.
+        Try
+            _openSnapshot = _draft.Clone()
+        Catch ex As Exception
+            _openSnapshot = Nothing
+            Logger.Log(ex.ToString())
+        End Try
         _draftWasNew = _draft.IsNew
     End Sub
 
     ''' <summary>Commit the panel state into <see cref="_draft"/> and register it on MainForm. When
     ''' <paramref name="validate"/> the EditorID is checked (non-empty + unique for New); on failure a message
     ''' is shown and the draft is NOT registered. Returns True on a successful commit.</summary>
+
+    ''' <summary>Las REFERENCIAS que este editor escribe. Existe para que el volcado sea invocable
+    ''' SIN UI: el editor la llena desde los controles y un testigo desde un record, y los dos
+    ''' terminan en el MISMO <see cref="AplicarReferencias"/>.
+    ''' <para>⛔ Sin esto, el único camino que escribe referencias vive dentro de un <c>Form</c> y
+    ''' ningún gate puede llegar: un testigo que sólo ejercite la CONSTRUCCIÓN sale verde con el
+    ''' defecto vivo, porque quien recreaba las nulas era el VOLCADO.</para></summary>
+    Friend Class ReferenciasDeArma
+        Public Raza As UInteger
+        Public SonidoDePaso As UInteger
+        Public PielMasc As UInteger
+        Public PielFem As UInteger
+        Public SwapPielMasc As UInteger
+        Public SwapPielFem As UInteger
+        Public SwapMasc As UInteger
+        Public SwapFem As UInteger
+        Public SwapMasc2 As UInteger
+        Public SwapFem2 As UInteger
+        Public ObjetoDeArte As UInteger
+    End Class
+
+    ''' <summary>Lee las referencias de un record: es «abrir el editor y no tocar nada».</summary>
+    Friend Shared Function LeerReferencias(a As Canon.IArma) As ReferenciasDeArma
+        Dim r As New ReferenciasDeArma
+        If a Is Nothing Then Return r
+        Dim af = TryCast(a, Canon.ArmaFO4)
+        r.Raza = a.Race
+        r.SonidoDePaso = a.FootstepSound
+        r.PielMasc = a.MaleSkinTexture
+        r.PielFem = a.FemaleSkinTexture
+        r.SwapPielMasc = a.MaleSkinTextureSwapList
+        r.SwapPielFem = a.FemaleSkinTextureSwapList
+        If af IsNot Nothing Then r.SwapMasc = af.MaleMaterialSwap
+        If af IsNot Nothing Then r.SwapFem = af.FemaleMaterialSwap
+        If af IsNot Nothing Then r.SwapMasc2 = af.MaleMaterialSwap2
+        If af IsNot Nothing Then r.SwapFem2 = af.FemaleMaterialSwap2
+        r.ObjetoDeArte = a.ArtObject
+        Return r
+    End Function
+
+    ''' <summary>Escribe las referencias en el record aplicando la ley: «sin valor» SACA el campo, no
+    ''' graba un 0. La raza queda afuera a propósito — ver el comentario de abajo.</summary>
+    Friend Shared Sub AplicarReferencias(v As ReferenciasDeArma, rec As Canon.IArma)
+        ' ⛔ TIRA, no vuelve callado — igual que `ReidentificarComoClon`. Los dos son errores de
+        ' LLAMADOR: en producción `rec` sale de `_draft.Record`, que la cuarta ley ya garantiza, y
+        ' `v` se arma en la línea de arriba. Con el `Return` mudo, el testigo que le pase un cast
+        ' fallido no corre el volcado, los bytes ya eran iguales y el caso sale VERDE con el camino
+        ' sin recorrer: la forma exacta en que un gate pasa en vacío.
+        If rec Is Nothing OrElse v Is Nothing Then
+            Throw New ArgumentException(
+                "AplicarReferencias necesita el record de ARMA y su portador: con alguno en Nothing el " &
+                "volcado no corre y el editor descartaría en silencio lo que el usuario acaba de escribir.")
+        End If
+        Dim fo4 = TryCast(rec, Canon.ArmaFO4)
+        ' ⛔ RNAM NO pasa por la ley. El esquema lo da por opcional, pero está en 5.825 de 5.825
+        ' ARMA y ARMO de los dos juegos y no declara NULL: una caja de raza vacía no es «borrar la
+        ' raza», es entrada inválida. Sacarlo dejaría un record sin raza, en silencio; escribir 0
+        ' dejaría una referencia nula. Así que no se toca, y el commit lo rechaza al validar.
+        Canon.CanonInterpretacion.PonerReferenciaRequerida(v.Raza, Sub(x) rec.Race = x)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SonidoDePaso, Sub(x) rec.FootstepSound = x, Sub() rec.FootstepSoundPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.PielMasc, Sub(x) rec.MaleSkinTexture = x, Sub() rec.MaleSkinTexturePresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.PielFem, Sub(x) rec.FemaleSkinTexture = x, Sub() rec.FemaleSkinTexturePresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapPielMasc, Sub(x) rec.MaleSkinTextureSwapList = x, Sub() rec.MaleSkinTextureSwapListPresente = False)
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapPielFem, Sub(x) rec.FemaleSkinTextureSwapList = x, Sub() rec.FemaleSkinTextureSwapListPresente = False)
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapMasc, Sub(x) fo4.MaleMaterialSwap = x, Sub() fo4.MaleMaterialSwapPresente = False)
+        End If
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapFem, Sub(x) fo4.FemaleMaterialSwap = x, Sub() fo4.FemaleMaterialSwapPresente = False)
+        End If
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapMasc2, Sub(x) fo4.MaleMaterialSwap2 = x, Sub() fo4.MaleMaterialSwap2Presente = False)
+        End If
+        If fo4 IsNot Nothing Then
+            Canon.CanonInterpretacion.PonerReferenciaOpcional(v.SwapFem2, Sub(x) fo4.FemaleMaterialSwap2 = x, Sub() fo4.FemaleMaterialSwap2Presente = False)
+        End If
+        Canon.CanonInterpretacion.PonerReferenciaOpcional(v.ObjetoDeArte, Sub(x) rec.ArtObject = x, Sub() rec.ArtObjectPresente = False)
+    End Sub
 
     Private Function CommitPanelsToDraft(validate As Boolean) As Boolean
         ' Flush the visible sculpt grid into its gender bucket first.
@@ -831,20 +939,22 @@ Public Class ArmaEditor_Form
         ' y ARMO de los dos juegos y no declara NULL: una caja de raza vacía no es «borrar la raza», es
         ' entrada inválida. Sacarlo dejaría un ARMA sin raza, en silencio; escribir 0 dejaría una
         ' referencia nula. Así que no se toca, y `validate` lo rechaza (ver arriba).
-        Dim razaPedida = GetFid(TextBoxRace)
-        If razaPedida <> 0UI Then rec.Race = razaPedida
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxSndd), Sub(v) rec.FootstepSound = v, Sub() rec.FootstepSoundPresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam0), Sub(v) rec.MaleSkinTexture = v, Sub() rec.MaleSkinTexturePresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam1), Sub(v) rec.FemaleSkinTexture = v, Sub() rec.FemaleSkinTexturePresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam2), Sub(v) rec.MaleSkinTextureSwapList = v, Sub() rec.MaleSkinTextureSwapListPresente = False)
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxNam3), Sub(v) rec.FemaleSkinTextureSwapList = v, Sub() rec.FemaleSkinTextureSwapListPresente = False)
-        If fo4 IsNot Nothing Then
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo2s), Sub(v) fo4.MaleMaterialSwap = v, Sub() fo4.MaleMaterialSwapPresente = False)
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo3s), Sub(v) fo4.FemaleMaterialSwap = v, Sub() fo4.FemaleMaterialSwapPresente = False)
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo4s), Sub(v) fo4.MaleMaterialSwap2 = v, Sub() fo4.MaleMaterialSwap2Presente = False)
-            Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxMo5s), Sub(v) fo4.FemaleMaterialSwap2 = v, Sub() fo4.FemaleMaterialSwap2Presente = False)
-        End If
-        Canon.CanonInterpretacion.PonerReferenciaOpcional(GetFid(TextBoxOnam), Sub(v) rec.ArtObject = v, Sub() rec.ArtObjectPresente = False)
+        ' Las referencias van por el portador + AplicarReferencias, que son `Friend Shared` y por eso
+        ' invocables sin UI: es lo que permite que un testigo recorra ESTE camino y no sólo la
+        ' construcción. Lo que se lee de los controles es el Único paso que no se puede sacar del Form.
+        Dim refs As New ReferenciasDeArma
+        refs.Raza = GetFid(TextBoxRace)
+        refs.SonidoDePaso = GetFid(TextBoxSndd)
+        refs.PielMasc = GetFid(TextBoxNam0)
+        refs.PielFem = GetFid(TextBoxNam1)
+        refs.SwapPielMasc = GetFid(TextBoxNam2)
+        refs.SwapPielFem = GetFid(TextBoxNam3)
+        refs.SwapMasc = GetFid(TextBoxMo2s)
+        refs.SwapFem = GetFid(TextBoxMo3s)
+        refs.SwapMasc2 = GetFid(TextBoxMo4s)
+        refs.SwapFem2 = GetFid(TextBoxMo5s)
+        refs.ObjetoDeArte = GetFid(TextBoxOnam)
+        AplicarReferencias(refs, rec)
         rec.DataMalePriority = CByte(NumMalePrio.Value)
         rec.DataFemalePriority = CByte(NumFemalePrio.Value)
         rec.DataDetectionSoundValue = CByte(NumDetectionSound.Value)
@@ -1048,8 +1158,11 @@ Public Class ArmaEditor_Form
             ' its existing substitutions, not a blank one. Nothing ⇒ field empty/unresolved ⇒ fresh NEW draft.
             draft = _mainForm.BuildMswpOverrideDraftFromReal(currentFid)
             If draft Is Nothing Then
+                ' ⛔ La guarda que estaba acá miraba `draft`, y lo que podía ser nulo era su
+                ' `.Record`: chequeaba la variable equivocada a dos líneas del peligro. `Nuevo` ya no
+                ' puede devolver un borrador sin record — si el juego no declara MSWP, tira.
                 draft = MswpDraft.Nuevo(_mainForm.AllocateDraftFormID(), Canon.CanonBridge.SessionGame())
-                If draft IsNot Nothing Then draft.Record.EditorID = MswpDraft.EditorIdPrefix & "new"
+                draft.Record.EditorID = MswpDraft.EditorIdPrefix & "new"
                 _mainForm.RegisterMswpDraft(draft)
             End If
         End If
@@ -1581,8 +1694,13 @@ Public Class ArmaEditor_Form
     ''' esta guarda vino a evitar.</para>
     ''' <para>Devuelve False si no se pudo volcar: el llamador no sigue con datos a medias.</para></summary>
     Private Function CommitProtegido(validate As Boolean) As Boolean
-        Dim antes = _draft?.Clone()
+        ' ⛔ DENTRO del Try. `Clone()` ganó una precondición que puede tirar, y acá arriba no la
+        ' atrapa nadie: el Catch que revierte el borrador empieza una línea más abajo, y la app corre
+        ' con `UnhandledExceptionMode.ThrowException`, o sea que tirar en esta línea CIERRA la app y
+        ' deja el borrador registrado a medias — lo contrario de lo que este Try existe para hacer.
+        Dim antes As ArmaDraft = Nothing
         Try
+            antes = _draft?.Clone()
             Return CommitPanelsToDraft(validate)
         Catch ex As Exception
             ' Primero deshacer, después avisar: si el aviso saliera antes, cualquier cosa que el usuario

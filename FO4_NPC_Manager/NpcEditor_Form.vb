@@ -1300,17 +1300,6 @@ Public Class NpcEditor_Form
         End If
     End Sub
 
-    ''' <summary>Escribe una referencia en el record, o SACA el subrecord cuando vale cero: el picker
-    ''' vacio significa "ninguno", no "una referencia a cero".</summary>
-    Private Shared Sub EscribirReferenciaOSacar(destino As Canon.INpc, fid As UInteger,
-                                                firma As String, escribir As Action(Of UInteger))
-        If fid <> 0UI Then
-            escribir(fid)
-        Else
-            destino.QuitarSubrecord(firma)
-        End If
-    End Sub
-
     ''' <summary>Write the panel state into <see cref="_npc"/> (in place — the caller's live cache instance).</summary>
     Private Sub ApplyToNpc(newFlags As UInteger, changedFlagBits As UInteger,
                            baseDataChanged As Boolean, traitsChanged As Boolean, statsChanged As Boolean, skillsChanged As Boolean,
@@ -1327,10 +1316,16 @@ Public Class NpcEditor_Form
         End If
 
         If traitsChanged Then
-            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxRace), "RNAM", Sub(v) _npc.Record.Race = v)
-            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxVoice), "VTCK", Sub(v) _npc.Record.Voice = v)
-            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxClass), "CNAM", Sub(v) _npc.Record.[Class] = v)
-            EscribirReferenciaOSacar(_npc.Record, GetFid(TextBoxZnam), "ZNAM", Sub(v) _npc.Record.CombatStyle = v)
+            ' ⛔ RNAM NO pasa por la ley del «sin valor SACA el campo»: xEdit lo declara
+            ' `wbFormIDCk(RNAM, 'Race', [RACE]).SetRequired` dentro de `wbRecord(NPC_)` en LOS DOS juegos
+            ' (wbDefinitionsFO4.pas:10370, dentro del record que abre en :10286; wbDefinitionsTES5.pas:8355,
+            ' record en :8290). Un NPC_ sin RNAM es ilegal, así que una caja de raza vacía no es «borrar la
+            ' raza» sino entrada INVÁLIDA — la misma excepción declarada que ya tienen ARMA y ARMO. La ley
+            ' lo dice en su propio docstring: «NO va para campos REQUERIDOS de hecho, como el RNAM».
+            Canon.CanonInterpretacion.PonerReferenciaRequerida(GetFid(TextBoxRace), Sub(x) _npc.Record.Race = x)
+            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxVoice), "VTCK", Sub(v) _npc.Record.Voice = v)
+            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxClass), "CNAM", Sub(v) _npc.Record.[Class] = v)
+            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxZnam), "ZNAM", Sub(v) _npc.Record.CombatStyle = v)
         End If
 
         If traitsChanged Then _npc.Record.PonerBaseDeDisposicion(CShort(NumDisp.Value))

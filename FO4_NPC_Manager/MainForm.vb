@@ -134,7 +134,7 @@ Public Class MainForm
     Private _skinArmoCandidateCache As New Dictionary(Of (UInteger, Boolean), List(Of (FormID As UInteger, DisplayName As String)))
     ''' <summary>Outfits authored in the Edit Outfit "Create" tab — drafts that live here (process
     ''' scope, survive NPC selection changes) until the Save dialog's "Save new outfits" persists
-    ''' them. New drafts get a provisional FormID (<see cref="OutfitDraft.DraftFormIdHighByte"/>)
+    ''' them. New drafts get a provisional FormID (<see cref="Borradores.FormIdAltoDeBorrador"/>)
     ''' allocated from <see cref="_nextDraftObjIndex"/>; the render/Browse/writer resolve them via
     ''' <see cref="TryGetOutfitDraft"/>. Cleared on plugin reload (RebuildTreeModelCache).</summary>
     Private ReadOnly _outfitDrafts As New List(Of OutfitDraft)
@@ -3045,7 +3045,7 @@ Public Class MainForm
     ''' extra (no cachear drafts, invalidar al recargar). Lo caro ya lo cachean GetParsedArmo/GetParsedArma.</para>
     '''
     ''' <para>Drafts propios DIRTY: siempre True, y detectados por PERTENENCIA a <c>_armoDrafts</c>, NO
-    ''' por <c>OutfitDraft.IsDraftFormID</c> — un draft OVERRIDE conserva su FormID REAL, así que el test de
+    ''' por <c>Borradores.EsFormIdDeBorrador</c> — un draft OVERRIDE conserva su FormID REAL, así que el test de
     ''' forma cubriría sólo la mitad de los casos. Misma regla que "Own ARMO drafts are the user's OWN
     ''' creations — ALWAYS list them" (GetArmoItemCandidatesWithDrafts).</para></summary>
     Friend Function ArmoHasBodyArmature(armoFID As UInteger) As Boolean
@@ -3296,8 +3296,9 @@ Public Class MainForm
     End Function
 
     ''' <summary>True if the OTFT resolves (over all possible realizations) to at least one ARMA valid
-    ''' for the race + gender. Used by <see cref="GetOutfitCandidates"/>. Per-ARMA race check + world
-    ''' mesh presence with the same male/female fallback the renderer applies.</summary>
+    ''' for the race + gender. Used by <see cref="GetOutfitCandidates"/>. Chequeo de raza por ARMA +
+    ''' presencia de malla POR LA LEY ÚNICA (<see cref="EquipResolver.ResolverMalla"/>), que es la misma
+    ''' que usa el colector para dibujar: malla de la ARMA y, si no la trae, world model del ARMO.</summary>
     Private Function OutfitHasValidArma(otftFID As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As Boolean
         For Each armoFID In OutfitResolver.EnumerateAllTerminalArmos(otftFID, _pluginManager)
             Dim armo As Canon.IArmo
@@ -3321,7 +3322,12 @@ Public Class MainForm
                 If arma Is Nothing Then Continue For
                     Dim armaRaceOk = EquipResolver.ArmaMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
                 If Not armaRaceOk Then Continue For
-                If arma.FemaleModelFilename <> "" OrElse arma.MaleModelFilename <> "" Then Return True
+                ' ⛔ Por la LEY, no por una tercera copia. Acá estaba escrito el criterio VIEJO —sólo la
+                ' malla de la ARMA— mientras el docstring prometía «the same male/female fallback the
+                ' renderer applies». No era cierto: al colector le falta ese `Or` y cae al world model del
+                ' ARMO. Con la copia vieja, un atuendo cuya única prenda es del patrón robot no se listaba
+                ' en el desplegable del NPC, aunque el render lo dibuja perfecto.
+                If EquipResolver.ResolverMalla(arma, armo, isFemale).Fuente <> EquipResolver.FuenteDeMalla.Ninguna Then Return True
             Next
         Next
         Return False
@@ -3641,7 +3647,7 @@ Public Class MainForm
     ''' MSWP; the caller then falls back to a fresh blank NEW draft. On Cancel the caller unregisters this draft,
     ''' reverting the field to referencing the real record.</summary>
     Friend Function BuildMswpOverrideDraftFromReal(fid As UInteger) As MswpDraft
-        If fid = 0UI OrElse OutfitDraft.IsDraftFormID(fid) Then Return Nothing
+        If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return Nothing
         Dim rec = _pluginManager.GetRecord(fid)
         If rec Is Nothing OrElse rec.Header.Signature <> "MSWP" Then Return Nothing
         ' El borrador trabaja sobre una COPIA del record: cancelar el editor tiene que dejar
@@ -3732,7 +3738,7 @@ Public Class MainForm
     ''' object index ≥0x800, the FO4 new-record convention). The writer rewrites it to the real
     ''' plugin self-index FormID at save time.</summary>
     Friend Function AllocateDraftFormID() As UInteger
-        Dim fid As UInteger = OutfitDraft.DraftFormIdHighByte Or _nextDraftObjIndex
+        Dim fid As UInteger = Borradores.FormIdAltoDeBorrador Or _nextDraftObjIndex
         _nextDraftObjIndex += 1UI
         Return fid
     End Function
@@ -3741,7 +3747,7 @@ Public Class MainForm
     ''' lists and used by their filters. Not-yet-saved drafts → "(new)"; otherwise the originating plugin
     ''' via <see cref="PluginManager.GetOriginatingPluginName"/> (ESL-aware high-byte scheme).</summary>
     Friend Function GetOutfitPluginName(formID As UInteger) As String
-        If OutfitDraft.IsDraftFormID(formID) Then Return "(new)"
+        If Borradores.EsFormIdDeBorrador(formID) Then Return "(new)"
         Return If(_pluginManager.GetOriginatingPluginName(formID), "")
     End Function
 
@@ -4042,7 +4048,13 @@ Public Class MainForm
                 outList.Add(itemFid)
             End If
         Next
-        Return outList
+        ' ⛔ MISMA ley de aplanado que el camino real. `OutfitResolver.SampleOutfitWithKeywords`
+        ' deduplica por ARMO al final; acá no se hacía, así que un atuendo con la misma prenda dos veces
+        ' se dibujaba DUPLICADO mientras era borrador y una sola vez después de guardarlo — preview y
+        ' render divergiendo sobre los mismos bytes. Acá no hay keywords que mergear, así que alcanza con
+        ' conservar la primera aparición: el orden es la secuencia de equip.
+        Dim vistos As New HashSet(Of UInteger)
+        Return outList.Where(Function(x) vistos.Add(x)).ToList()
     End Function
 
     ''' <summary>Reroll an LVLI item's cached realization (clear it so the next resolve re-samples). Pass 0
@@ -4098,7 +4110,7 @@ Public Class MainForm
     ''' draft for this FormID already exists it is returned as-is (don't clobber in-progress edits). On Cancel the
     ''' caller unregisters this draft, reverting the field to referencing the real record.</summary>
     Friend Function BuildLeveledOverrideDraftFromReal(fid As UInteger) As LeveledListDraft
-        If fid = 0UI OrElse OutfitDraft.IsDraftFormID(fid) Then Return Nothing
+        If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return Nothing
         Dim already = TryGetLeveledListDraft(fid)
         If already IsNot Nothing Then Return already
         Dim rec = _pluginManager.GetRecord(fid)
@@ -7988,7 +8000,7 @@ Public Class MainForm
         If kFid = 0UI Then Return False
         ' Draft FormIDs are evaluated FRESH (no PA-boolean cache) so a live keyword edit to the draft is
         ' reflected immediately — same "drafts mutate live, never cache" rule the parse resolver follows.
-        If OutfitDraft.IsDraftFormID(armoFID) Then
+        If Borradores.EsFormIdDeBorrador(armoFID) Then
             Return IsPowerArmorArmoData(_ctx.GetParsedArmo(armoFID), kFid)
         End If
         Return _isPowerArmorArmoCache.GetOrAdd(armoFID,
@@ -11291,7 +11303,7 @@ Public Class MainForm
             Dim g = _pluginManager.ResolveReferencedFormID(savedPluginName, kv.Value)
             ' A still-provisional result means the plugin didn't resolve (e.g. not mounted) — skip it so we
             ' never rewrite a reference to a bogus FormID or drop a draft that wasn't actually persisted.
-            If g <> 0UI AndAlso Not OutfitDraft.IsDraftFormID(g) Then realGlobal(kv.Key) = g
+            If g <> 0UI AndAlso Not Borradores.EsFormIdDeBorrador(g) Then realGlobal(kv.Key) = g
         Next
         If realGlobal.Count = 0 Then Return
 
