@@ -382,7 +382,11 @@ Friend NotInheritable Class NpcMeshCollector
                                       ByRef order As Integer,
                                       warnings As List(Of String),
                                       Optional raceFilterBypassArmaFormID As UInteger = 0UI)
-        Dim armo = _ctx.GetParsedArmo(armoFormID)
+        ' EFECTIVA: la pregunta es que MALLAS va a emitir el motor. Con `TNAM` la lista de armatures
+        ' sale del TERMINAL (SkyrimSE 0x14027E540 / Fallout4 0x140462410) y los `MODL` del hijo son
+        ' letra muerta. Medido: 2 records del orden de carga cambian lo que se dibuja, en las DOS
+        ' direcciones, y alcanzables solo en las razas que declaran esas ARMA.
+        Dim armo = _ctx.GetParsedArmoEfectivo(armoFormID)
         If armo Is Nothing Then Return
 
         ' Head-occlusion slots THIS NPC's race actually declares (RACE.DATA A/B/C via RaceUtil), so an
@@ -453,12 +457,20 @@ Friend NotInheritable Class NpcMeshCollector
             ' elige los que matchean al NPC. El INDX-variant grouping de FO4 NO existe en Skyrim, y
             ' aplicarlo tomaba sólo el armature en posición 0 (el parser da índice posicional sin INDX)
             ' → una skin multi-armature perdía body/hands/feet = "sin manos"/"sin cuerpo".
-            addonOrder = ArmoEditor_Form.ReadAddons(armo).Select(Function(a) a.ArmaFormID).ToList()
+            addonOrder = Canon.CanonInterpretacion.LeerComplementos(armo).Select(Function(a) a.ArmaFormID).ToList()
         Else
             ' Models/BaseAddonIndex/Combinations sólo existen en el ARMO de Fallout 4 — la rama
             ' Skyrim ya volvió arriba, así que acá "armo" siempre resuelve a ArmoFO4.
             Dim armoFo4 = TryCast(armo, Canon.ArmoFO4)
-            Dim fo4Models = If(armoFo4 IsNot Nothing, armoFo4.Models, New List(Of Canon.ArmoFO4_Models))
+            ' ⛔ Por la primitiva unica, no por `armoFo4.Models` directo: era el TERCER carril de
+            ' lectura del layout -los otros dos, `ComplementosDe` y el del editor, ya se unificaron- y
+            ' un layout leido en tres lados es la duplicacion que esta tanda vino a matar.
+            ' `ARMO_AddonEntry` ya lleva `AddonIndex`, asi que cambia la FUENTE de las entradas y NO
+            ' las reglas: el INDX efectivo por OBTS, el fallback a `BaseAddonIndex`, el take-por-grupo
+            ' y el fallback defensivo del INDX minimo quedan exactamente igual.
+            Dim fo4Models = If(armoFo4 IsNot Nothing,
+                               Canon.CanonInterpretacion.LeerComplementos(armoFo4),
+                               New List(Of ARMO_AddonEntry))
             If fo4Models.Count >= 1 Then
                 ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
                 ' HasValue=True cuando hay OMOD override keyword-driven; sino Nothing → usar
@@ -476,21 +488,21 @@ Friend NotInheritable Class NpcMeshCollector
                 ' Take ALL models whose INDX matches the effective AddonIndex (group, not single).
                 addonOrder = New List(Of UInteger)
                 For Each entry In fo4Models
-                    If CInt(entry.ModelAddonIndex) = effectiveIdx Then
-                        addonOrder.Add(entry.ModelArmorAddon)
+                    If CInt(entry.AddonIndex) = effectiveIdx Then
+                        addonOrder.Add(entry.ArmaFormID)
                     End If
                 Next
                 ' Defensive fallback: si el INDX resuelto no existe en los Models (datos malformados
                 ' o keyword-driven INDX que apunta a un grupo no presente), usar todas las entries
                 ' con el menor INDX disponible — no crashear ni dejar el outfit vacío.
                 If addonOrder.Count = 0 Then
-                    Dim minIdx As Integer = fo4Models.Min(Function(e) CInt(e.ModelAddonIndex))
+                    Dim minIdx As Integer = fo4Models.Min(Function(e) CInt(e.AddonIndex))
                     For Each entry In fo4Models
-                        If CInt(entry.ModelAddonIndex) = minIdx Then addonOrder.Add(entry.ModelArmorAddon)
+                        If CInt(entry.AddonIndex) = minIdx Then addonOrder.Add(entry.ArmaFormID)
                     Next
                 End If
             Else
-                addonOrder = ArmoEditor_Form.ReadAddons(armo).Select(Function(a) a.ArmaFormID).ToList()
+                addonOrder = Canon.CanonInterpretacion.LeerComplementos(armo).Select(Function(a) a.ArmaFormID).ToList()
             End If
         End If
 

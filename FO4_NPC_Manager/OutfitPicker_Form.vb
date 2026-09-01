@@ -71,7 +71,7 @@ Public Class OutfitPicker_Form
     Private _pendingOverride As UInteger?
     Private _pendingKey As String
     Private _pendingPieceOnly As Boolean
-    Private _pendingDraftItems As List(Of UInteger)
+    Private _pendingDraft As OutfitDraft
 
     ' === Create tab state ===
     ''' <summary>The NPC's current effective outfit FormID — used to pre-fill the Create tab when the
@@ -399,15 +399,15 @@ Public Class OutfitPicker_Form
     ''' sequence of selections never DROPS the last one (the bug where selecting a chosen piece left the
     ''' preview stuck on the previously rendered candidate). For Create previews the throwaway draft is
     ''' (re)registered HERE, right before the render, so the rendered contents always match the request
-    ''' being drawn even under rapid re-selection. <paramref name="draftItems"/> = Nothing for Browse (a
+    ''' being drawn even under rapid re-selection. <paramref name="draft"/> = Nothing for Browse (a
     ''' real outfit / clear / naked override).</summary>
     Private Async Function RequestPreviewAsync(overrideValue As UInteger?, key As String, pieceOnly As Boolean,
-                                               Optional draftItems As List(Of UInteger) = Nothing) As Task
+                                               Optional draft As OutfitDraft = Nothing) As Task
         _pendingHasValue = True
         _pendingOverride = overrideValue
         _pendingKey = key
         _pendingPieceOnly = pieceOnly
-        _pendingDraftItems = draftItems
+        _pendingDraft = draft
         If _previewInProgress Then Return   ' the in-flight loop will consume the latest pending request
         _previewInProgress = True
         Try
@@ -415,21 +415,17 @@ Public Class OutfitPicker_Form
                 Dim reqOverride = _pendingOverride
                 Dim reqKey = _pendingKey
                 Dim reqPieceOnly = _pendingPieceOnly
-                Dim reqDraftItems = _pendingDraftItems
+                Dim reqDraft = _pendingDraft
                 _pendingHasValue = False
                 If reqKey = _lastPreviewKey Then Continue While   ' nothing changed since the last render
                 If _host Is Nothing OrElse _preview Is Nothing OrElse _preview.IsDisposed Then Return
                 ' Create previews: register the throwaway draft with THIS request's contents so the render
                 ' reads exactly what we're about to mark as rendered (no stale-content race).
-                If reqDraftItems IsNot Nothing Then
-                    ' The preview draft is FLAT terminal ARMOs: ARMO pieces + each LVLI piece's current
-                    ' cached realization (ver PieceTerminals). So it renders exactly the sample shown in the
-                    ' pieces list, with no fresh re-roll on every render.
-                    Dim d = OutfitDraft.Nuevo(OutfitDraft.PreviewDraftFormID,
-                                              Canon.CanonBridge.SessionGame())
-                    d.Record.EditorID = OutfitDraft.EditorIdPrefix & "(preview)"
-                    d.ReemplazarPrendas(reqDraftItems)
-                    _mainForm.RegisterOutfitDraft(d)
+                If reqDraft IsNot Nothing Then
+                    ' ⛔ El borrador viene ARMADO desde el pedido (`VolcarPiezasEn`), con las MISMAS piezas y
+                    ' realizaciones que el confirmado. Se registra acá, con el contenido de ESTE pedido, para
+                    ' que el render lea exactamente lo que estamos por marcar como dibujado.
+                    _mainForm.RegisterOutfitDraft(reqDraft)
                     _previewDraftRegistered = True
                 End If
                 ApplyPreviewToggles(reqPieceOnly)
@@ -448,12 +444,12 @@ Public Class OutfitPicker_Form
     ''' <summary>Render the Create-tab assembled set (winners only) by (re)registering the throwaway
     ''' preview draft with its items and previewing that draft FormID — same code path Browse uses for a
     ''' real outfit. The draft is dropped on close (FormClosing).</summary>
-    Private Async Function PreviewCreateAssemblyAsync(winnerFIDs As List(Of UInteger)) As Task
+    Private Async Function PreviewCreateAssemblyAsync() As Task
         ' Draft registration + toggles happen inside RequestPreviewAsync (coalesced with the render) so the
         ' rendered contents match the request even under rapid re-selection. Whole outfit = full body.
-        Await RequestPreviewAsync(OutfitDraft.PreviewDraftFormID,
-                                  "create:" & String.Join(",", winnerFIDs.Select(Function(f) f.ToString("X"))),
-                                  pieceOnly:=False, draftItems:=winnerFIDs)
+        Dim d = ArmarBorradorDeAtuendo(OutfitDraft.PreviewDraftFormID, "(preview)")
+        Await RequestPreviewAsync(OutfitDraft.PreviewDraftFormID, "create:" & LlaveDelBorrador(d),
+                                  pieceOnly:=False, draft:=d)
     End Function
 
     ''' <summary>Stable dedup token for an override value (Nothing / 0 / fid).</summary>
@@ -828,12 +824,7 @@ Public Class OutfitPicker_Form
     ''' <c>Tag</c> de cada unidad es su <see cref="PieceEntry"/>, para mapear el veredicto de vuelta a la
     ''' fila. Antes esta pestaña calculaba su propia máscara de conflicto (la unión de las ARMA de la
     ''' realización), que es lo que tachaba piezas que el render sí dibuja.</summary>
-    ''' <param name="sinSlot">SALIDA: los terminales que DIBUJAN sin competir, con su orden de equip.
-    ''' ⛔ No es un descarte: sacarlos del torneo es correcto —el render tampoco los mete—, pero el
-    ''' conjunto que se manda a dibujar NO es «los ganadores» sino «los ganadores MÁS estos». Filtrarlos de
-    ''' las dos cosas a la vez los borraba de la vista previa: la fila decía «✓» y en pantalla no estaban.</param>
-    Private Function BuildEquipUnits(Optional memo As Dictionary(Of UInteger, (Dibuja As Boolean, Compite As Boolean)) = Nothing,
-                                     Optional sinSlot As List(Of (Fid As UInteger, Orden As Integer)) = Nothing) As List(Of EquipResolver.EquipItem)
+    Private Function BuildEquipUnits(Optional memo As Dictionary(Of UInteger, (Dibuja As Boolean, Compite As Boolean)) = Nothing) As List(Of EquipResolver.EquipItem)
         Dim units As New List(Of EquipResolver.EquipItem)
         Dim order As Integer = 0
         For Each p In _pieces.OrderBy(Function(x) x.Order)
@@ -848,22 +839,28 @@ Public Class OutfitPicker_Form
                 ' SUBCONJUNTO de lo que se dibuja, y un subconjunto sirve para AFIRMAR y nunca para
                 ' DESCARTAR — usado de filtro se comía prendas que la ventana principal sí dibuja. La
                 ' respuesta completa se le PREGUNTA al colector (`EmisionDe`), que es quien la tiene.
-                ' ⛔ El orden se incrementa SIEMPRE, tambien para el que no compite: es la posicion de
-                ' equip, y con ella se vuelven a intercalar los visibles-sin-slot con los ganadores. Saltear
-                ' el incremento no cambia el torneo (el orden sigue siendo monotono) pero pierde el lugar.
                 order += 1
-                ' ⛔ UNA sola identidad efectiva para las tres cosas: la emisión, el footprint y el
-                ' FormID que se manda a dibujar. Preguntándole a dos records distintos, un hijo de
-                ' plantilla contestaba «dibuja y compite» por su terminal y entraba al torneo con las
-                ' máscaras del crudo, que no tiene addons propios. Ver <see cref="TerminalDe"/>.
-                Dim efectivo = TerminalDe(fid)
-                Dim emision = EmisionDe(fid, memo)
-                If Not emision.Compite Then
-                    If emision.Dibuja AndAlso sinSlot IsNot Nothing Then sinSlot.Add((efectivo, order))
-                    Continue For
-                End If
+                ' El footprint se arma sobre el FormID CRUDO: la herencia la resuelve la vista
+                ' EFECTIVA adentro de `BuildFootprint`, en un solo lugar. Antes se resolvia aca el
+                ' terminal y la fila corria el torneo con identidades de TERMINAL mientras el render
+                ' agrupa por identidad de HIJO: los veredictos coincidian y la identidad no.
+                ' ⛔ Este filtro es SÓLO para la FILA (qué se muestra como «✗ eliminated»). El conjunto que
+                ' se manda a dibujar NO sale de acá: sale de `VolcarPiezasEn`, y el torneo que vale lo corre
+                ' el render. Cuando este filtro decidía las dos cosas, la prenda que no compite desaparecía
+                ' del preview aunque dibujara.
+                ' ⚠️ LÍMITE MEDIDO, y son DOS canales, no uno. La fila arma el footprint con
+                ' `BuildFootprint(addonFormIDs:=Nothing)` —TODOS los Models— y el render sólo con el grupo
+                ' INDX que resolvió OBTS y además pasado por el dedup intra-ARMO `coveredSlots`, que
+                ' `BuildFootprint` NO hace (lo declara ahí mismo). Medido sobre FO4:
+                '   · grupo INDX con BOD2 distinto de la unión total ....: 0 de 39     ⇒ canal MUERTO
+                '   · ARMO donde `coveredSlots` pierde bits de la unión .: 10 de 1.067 ⇒ canal VIVO
+                '     (Armor_Raider_Suit_02B_GlovesC 000732B9: unión 0x40200038, render 0x40000008)
+                ' O sea que la fila PUEDE decir «✗ eliminated» sobre una prenda que el render dibuja, si el
+                ' bit perdido cae en el `shielded`/`reservedA` de un extended-underarmor aceptado antes.
+                ' Eso último NO está medido: queda declarado, no dado por imposible.
+                If Not EmisionDe(fid, memo).Compite Then Continue For
                 units.Add(EquipResolver.EquipItem.FromFootprint(
-                    _mainForm.ArmoFootprintFor(efectivo, _raceFormID, _isFemale), order, p))
+                    _mainForm.ArmoFootprintFor(fid, _raceFormID, _isFemale), order, p))
             Next
         Next
         Return units
@@ -896,36 +893,98 @@ Public Class OutfitPicker_Form
         Return d
     End Function
 
-    ''' <summary>Los ARMO terminales que se mandan a RENDERIZAR: los GANADORES del torneo mas los que
-    ''' DIBUJAN SIN COMPETIR, intercalados por orden de equip.
-    ''' <para>⛔ `Compite` filtra la ENTRADA DEL TORNEO, no la SALIDA VISUAL. Los dos conjuntos salian
-    ''' de la misma lista, asi que el filtro borraba del preview a la prenda que monta por chunk-mount:
-    ''' la fila la contaba como «renderizando» y en pantalla no aparecia. El render hace exactamente esto
-    ''' —dibuja los ganadores del torneo Y ADEMAS la pasada slotless—, y esta es esa union.</para>
-    ''' <para>`Friend Shared` y PURA para que el gate la pueda correr: la ley del conjunto final es esta
-    ''' funcion, y un caso que solo mire el texto del filtro protege la linea que causo la regresion.</para></summary>
-    Friend Shared Function TerminalesParaRender(ganadores As IEnumerable(Of (Fid As UInteger, Orden As Integer)),
-                                                sinSlot As IEnumerable(Of (Fid As UInteger, Orden As Integer))) As List(Of UInteger)
-        Dim todos As New List(Of (Fid As UInteger, Orden As Integer))
-        If ganadores IsNot Nothing Then todos.AddRange(ganadores)
-        If sinSlot IsNot Nothing Then todos.AddRange(sinSlot)
-        Return todos.OrderBy(Function(x) x.Orden).Select(Function(x) x.Fid).ToList()
+    ''' <summary>EL volcado de piezas a un borrador de atuendo: lo deja con EXACTAMENTE estas prendas, en
+    ''' este orden, y con la realización de cada leveled. Es el ÚNICO sitio donde se escribe el contenido
+    ''' de un borrador de atuendo — lo comparten la vista previa, la de una pieza, el contexto del editor
+    ''' de ARMO y el commit.
+    ''' <para>⛔ `Friend Shared` y PURA, y recibe TUPLAS en vez de <c>PieceEntry</c> (que es `Private` de
+    ''' este formulario) POR ESO: para que el gate la pueda CORRER. Con el volcado repetido en cada
+    ''' consumidor, el caso sólo puede comparar textos, y mutar `p.FormID` por `TerminalDe(p.FormID)` —que
+    ''' cambia el conjunto que se manda a dibujar— lo deja verde. Misma razón por la que `PlanDeSembrado`
+    ''' era `Friend Shared`.</para>
+    ''' <para>⛔ `LvliRealization` se limpia primero: `ReemplazarPrendas` reemplaza la lista ENTERA, así
+    ''' que dejar la realización de una prenda que ya no está es un carril paralelo que sobrevive a su
+    ''' dueño.</para></summary>
+    Friend Shared Sub VolcarPiezasEn(d As OutfitDraft,
+                                     piezas As IEnumerable(Of (Fid As UInteger, EsLeveled As Boolean,
+                                                               Picks As List(Of OutfitArmorPick))))
+        If d Is Nothing Then Return
+        ' ⛔ Sin ternario: `If(piezas, New List(...))` mezcla `IEnumerable(Of T)` con `List(Of T)` y el
+        ' resultado no tiene tipo común. Con Option Strict apagado eso compila y revienta en ejecución.
+        Dim lista As New List(Of (Fid As UInteger, EsLeveled As Boolean, Picks As List(Of OutfitArmorPick)))
+        If piezas IsNot Nothing Then lista.AddRange(piezas)
+        d.ReemplazarPrendas(lista.Select(Function(p) p.Fid))
+        d.LvliRealization.Clear()
+        For Each p In lista
+            If p.EsLeveled AndAlso p.Picks IsNot Nothing Then
+                d.LvliRealization(p.Fid) = New List(Of OutfitArmorPick)(p.Picks)
+            End If
+        Next
+    End Sub
+
+    ''' <summary>Adapta las <see cref="PieceEntry"/> del formulario a la forma que consume
+    ''' <see cref="VolcarPiezasEn"/>. Único puente entre el tipo privado y la ley compartida.</summary>
+    Private Shared Function ComoTuplas(piezas As IEnumerable(Of PieceEntry)) _
+            As List(Of (Fid As UInteger, EsLeveled As Boolean, Picks As List(Of OutfitArmorPick)))
+        Dim salida As New List(Of (Fid As UInteger, EsLeveled As Boolean, Picks As List(Of OutfitArmorPick)))
+        If piezas Is Nothing Then Return salida
+        For Each p In piezas
+            salida.Add((p.FormID, p.IsLeveled, p.Realization))
+        Next
+        Return salida
     End Function
 
-    ''' <summary>Corre el torneo y devuelve el conjunto final para el render. Un solo camino: los dos
-    ''' consumidores —la vista previa y el borrador de contexto— tienen que mandar LO MISMO.</summary>
-    Private Function ConjuntoParaRender() As List(Of UInteger)
-        Dim sinSlot As New List(Of (Fid As UInteger, Orden As Integer))
-        Dim memo As New Dictionary(Of UInteger, (Dibuja As Boolean, Compite As Boolean))
-        Dim res = EquipResolver.Resolve(BuildEquipUnits(memo, sinSlot))
-        Return TerminalesParaRender(res.Winners.Select(Function(x) (Fid:=x.ArmoFormID, Orden:=x.Order)), sinSlot)
+    ''' <summary>UN borrador de atuendo con las piezas del editor. Misma forma para los cuatro
+    ''' consumidores — vista previa, vista previa de UNA pieza, contexto del editor de ARMO, y el commit.
+    ''' <para>⛔ NO prefiltra por el torneo: `ApplyEquipSlotResolution` corre su PROPIO torneo sobre los
+    ''' candidates emitidos y ADEMÁS dibuja la pasada slotless sobre `visibleCandidates` — todos los
+    ''' emitidos, incluidos los de un ARMO perdedor. Prefiltrar acá es opinar distinto que el motor.</para>
+    ''' <para>⛔ Y NO aplana: el aplanado existía para que la LVLI no re-sorteara en cada repintado, y eso
+    ''' ya lo impide `LvliRealization` — `ResolveDraftPicks` sólo muestrea con la caché vacía, y el re-sorteo
+    ''' tiene su propio botón que la borra. Aplanar además tiraba las keywords del LLKC.</para></summary>
+    Private Function ArmarBorradorDeAtuendo(formID As UInteger, sufijoEdid As String) As OutfitDraft
+        Dim d = OutfitDraft.Nuevo(formID, Canon.CanonBridge.SessionGame())
+        d.Record.EditorID = OutfitDraft.EditorIdPrefix & sufijoEdid
+        VolcarPiezasEn(d, ComoTuplas(_pieces.OrderBy(Function(x) x.Order)))
+        Return d
+    End Function
+
+    ''' <summary>La llave anti-repetición del preview, DERIVADA del borrador ya armado.
+    ''' <para>⛔ Sale del CONTENIDO del borrador y no de `_pieces`, para que no se pueda desincronizar de
+    ''' lo que se va a dibujar. Incluye las `ContextKeywords` de cada pick: dos sorteos que caen en los
+    ''' mismos terminales por ramas distintas del LLKC resuelven combinaciones OBTS distintas, y con la
+    ''' llave vieja el render se salteaba y dejaba la variante anterior en pantalla.</para>
+    ''' <para>Las keywords se ORDENAN: el multiset viene en el orden del recorrido del LLKC, así que sin
+    ''' ordenar dos caminos equivalentes dan llaves distintas y disparan un render de más.</para>
+    ''' <para>⛔ `Friend` y no `Private`, por lo mismo que `VolcarPiezasEn`: para que el gate la pueda
+    ''' CORRER (`InternalsVisibleTo OutfitDraftSaveGate`).</para>
+    ''' <para>Lo dibujado es función del contenido del borrador Y de la cadena de plantilla más el
+    ''' registro de borradores de ARMO, que la llave no ve. La cadena es estática en la sesión, y los tres
+    ''' caminos que registran un borrador de ARMO desde el selector pasan por `RefreshCreateAfterArmorEdit`,
+    ''' que anula `_lastPreviewKey`. Cerrado por argumento, no por suerte.</para></summary>
+    Friend Shared Function LlaveDelBorrador(d As OutfitDraft) As String
+        If d Is Nothing Then Return ""
+        Dim partes As New List(Of String)
+        For Each fid In d.Prendas()
+            Dim picks As List(Of OutfitArmorPick) = Nothing
+            If Not d.LvliRealization.TryGetValue(fid, picks) Then picks = Nothing
+            Dim tok = fid.ToString("X")
+            If picks IsNot Nothing Then
+                tok &= "=" & String.Join(",", picks.Select(Function(pk) pk.ArmoFormID.ToString("X") & "+" &
+                            String.Join("|", pk.ContextKeywords.OrderBy(Function(k) k).Select(Function(k) k.ToString("X")))))
+            End If
+            partes.Add(tok)
+        Next
+        Return String.Join(";", partes)
     End Function
     Private Function RegisterOutfitContextDraft() As UInteger
-        Dim winners = ConjuntoParaRender()
-        If winners.Count = 0 Then Return 0UI
-        Dim d = OutfitDraft.Nuevo(OutfitContextFormID, Canon.CanonBridge.SessionGame())
-        d.Record.EditorID = OutfitDraft.EditorIdPrefix & "(outfitcontext)"
-        d.ReemplazarPrendas(winners)
+        ' ⛔ La guarda EQUIVALENTE a la vieja («había ≥1 ganador»), no `_pieces.Count = 0`: con ésa, un
+        ' atuendo cuyas piezas no dibujan nada pasaba de ctx=0 a ctx≠0 y los editores de ARMA/ARMO caían de
+        ' «Full Outfit con contexto» a un atuendo que no dibuja. Y NO se pregunta `EmisionDe(p.FormID)` sobre
+        ' una LVLI: eso recursa por TODOS sus terminales posibles, no por los sorteados.
+        Dim memoCtx As New Dictionary(Of UInteger, (Dibuja As Boolean, Compite As Boolean))
+        If Not _pieces.Any(Function(p) PieceTerminals(p).Any(Function(f) EmisionDe(f, memoCtx).Dibuja)) Then Return 0UI
+        Dim d = ArmarBorradorDeAtuendo(OutfitContextFormID, "(outfitcontext)")
         _mainForm.RegisterOutfitDraft(d)
         _outfitContextRegistered = True
         Return OutfitContextFormID
@@ -1065,25 +1124,6 @@ Public Class OutfitPicker_Form
     ''' aplica» sobre una prenda que el render dibuja perfecto.</para>
     ''' <para>El memo es POR PASADA y lo trae el llamador: como campo sería una foto que se desincroniza,
     ''' que es el defecto que ya se cazó dos veces acá — con el signo para un lado y para el otro.</para></summary>
-    ''' <summary>La IDENTIDAD EFECTIVA de una referencia a ARMO: el terminal de su cadena de plantilla.
-    ''' <para>⛔ Existe para que la emisión y el footprint se pregunten sobre EL MISMO record. Se
-    ''' preguntaban sobre dos: <c>EmisionDe</c> resolvía el terminal y <c>BuildEquipUnits</c> armaba el
-    ''' footprint con el FormID crudo — y <c>EquipResolver.BuildFootprint</c> abre el FormID que recibe y
-    ''' NO sigue <c>TemplateArmor</c>. Un hijo de plantilla sin addons propios daba <c>GeometryMask</c> y
-    ''' <c>OcclusionMask</c> en cero mientras su terminal declaraba las reales.</para>
-    ''' <para>Medido antes de unificar, y por eso no cambia ningún veredicto: el torneo lo decide sólo
-    ''' <c>EquipMask</c> (= BOD2, vía <c>MutexMaskOf</c>), y de 2.679 ARMO con plantilla del orden de carga
-    ''' de Skyrim hay CERO con BOD2 distinto al de su terminal; FO4 no tiene ninguno con plantilla. Lo que
-    ''' se corrige es la incoherencia, no un síntoma.</para>
-    ''' <para>El terminal es también lo que se manda a dibujar: el colector NO sigue plantillas —no hay un
-    ''' solo <c>TemplateArmor</c> en <c>NpcMeshCollector</c>— y recibe FormID ya resueltos en
-    ''' <c>state.LoadoutArmorFormIDs</c>. Los borradores de vista previa y de contexto no se persisten, así
-    ''' que esto no mueve un byte del ESP: lo que se guarda son las piezas, no los ganadores.</para></summary>
-    Private Function TerminalDe(fid As UInteger) As UInteger
-        If fid = 0UI Then Return 0UI
-        Dim terminal = OutfitResolver.ResolveTerminalArmorFormID(fid, _mainForm.PluginManagerForEditor)
-        Return If(terminal = 0UI, fid, terminal)
-    End Function
 
     Private Function EmisionDe(fid As UInteger,
                                Optional memo As Dictionary(Of UInteger, (Dibuja As Boolean, Compite As Boolean)) = Nothing) _
@@ -1099,7 +1139,9 @@ Public Class OutfitPicker_Form
                 If r.Dibuja AndAlso r.Compite Then Exit For
             Next
         Else
-            r = _mainForm.EmisionDeArmo(TerminalDe(fid), _visualState)
+            ' Sobre el FormID CRUDO: el colector pide la vista EFECTIVA y resuelve la herencia el
+            ' mismo. Resolverla tambien aca era la segunda copia de la ley.
+            r = _mainForm.EmisionDeArmo(fid, _visualState)
         End If
         If memo IsNot Nothing Then memo(fid) = r
         Return r
@@ -1447,7 +1489,7 @@ Public Class OutfitPicker_Form
                     slotsText = "(no aplica a este NPC)"
                     row.ForeColor = Color.Gray
                 ElseIf Not hasUnits AndAlso PieceTerminals(p).Any(Function(f) EmisionDe(f, emisionMemo).Dibuja) Then
-                    ' ⛔ SE VE PERO NO PELEA EL SLOT, y SE RENDERIZA: `ConjuntoParaRender` la suma a los
+                    ' ⛔ SE VE PERO NO PELEA EL SLOT, y SE RENDERIZA: va al borrador como cualquier otra
                     ' ganadores. No es «rolled nothing» —eso es una lista que no sorteó, y se distingue porque
                     ' ahi NINGUN terminal dibuja—: emite geometría por chunk-mount de OMOD, que sale
                     ' con `SlotMask = 0` y se dibuja por la pasada slotless del render sin entrar al torneo.
@@ -1530,32 +1572,40 @@ Public Class OutfitPicker_Form
         Else
             ' Los ARMO terminales ganadores del sorteo actual — el mismo veredicto y el mismo sorteo que
             ' pinta la lista (Reroll cambia la realización y con ella esto).
-            Await PreviewCreateAssemblyAsync(ConjuntoParaRender())
+            Await PreviewCreateAssemblyAsync()
         End If
     End Function
 
     ''' <summary>Terminal ARMO FormIDs to preview for a single selected FormID: a chosen LVLI piece → its
     ''' cached realization; a candidate LVLI item (not yet added) → a fresh sample; an ARMO → itself.</summary>
-    Private Function RealizedTerminalsFor(fid As UInteger) As List(Of UInteger)
-        Dim p = _pieces.FirstOrDefault(Function(x) x.FormID = fid)
-        If p IsNot Nothing Then
-            If p.IsLeveled AndAlso p.Realization IsNot Nothing Then Return p.Realization.Select(Function(pk) pk.ArmoFormID).ToList()
-            Return New List(Of UInteger) From {p.FormID}
-        End If
-        If _mainForm.IsLeveledItem(fid) Then Return _mainForm.SampleLeveledRealization(fid, _raceFormID, _isFemale).Picks.Select(Function(pk) pk.ArmoFormID).ToList()
-        Return New List(Of UInteger) From {fid}
-    End Function
 
     ''' <summary>Preview a single ARMO piece via the throwaway draft (one-item set) — same WYSIWYG host
     ''' path the assembly preview uses, just with one FormID.</summary>
+    ''' <summary>Vista previa de UNA pieza por el borrador desechable — el mismo camino WYSIWYG del atuendo
+    ''' entero, con una sola prenda.
+    ''' <para>⛔ Va la pieza COMO LA AUTORÓ EL USUARIO (LVLI o ARMO) más su realización, y NO los terminales
+    ''' pelados: aplanar tiraba las keywords del LLKC de cada `OutfitArmorPick`, y con el contexto vacío
+    ''' `ObjectTemplateResolver.ResolveCombinationList` ni entra a la rama de keywords — o sea la MISMA S3
+    ''' que arregla `ArmarBorradorDeAtuendo`, por el otro carril. Este carril existe y v1 no lo veía.</para></summary>
     Private Async Function PreviewCreatePieceAsync(fid As UInteger) As Task
-        ' Single-item preview; pieceOnly hides body/head so ONLY the piece shows. For an LVLI the realized
-        ' terminal(s) are previewed (the key includes them so a Reroll re-renders). Draft register + toggles
-        ' are coalesced with the render inside RequestPreviewAsync.
-        Dim flat = RealizedTerminalsFor(fid)
+        Dim p = _pieces.FirstOrDefault(Function(x) x.FormID = fid)
+        Dim esLeveled As Boolean
+        Dim picks As List(Of OutfitArmorPick) = Nothing
+        If p IsNot Nothing Then
+            esLeveled = p.IsLeveled
+            If esLeveled Then picks = p.Realization
+        Else
+            esLeveled = _mainForm.IsLeveledItem(fid)
+            If esLeveled Then picks = _mainForm.SampleLeveledRealization(fid, _raceFormID, _isFemale).Picks
+        End If
+        Dim una As New List(Of (Fid As UInteger, EsLeveled As Boolean, Picks As List(Of OutfitArmorPick)))
+        una.Add((fid, esLeveled, picks))
+        Dim d = OutfitDraft.Nuevo(OutfitDraft.PreviewDraftFormID, Canon.CanonBridge.SessionGame())
+        d.Record.EditorID = OutfitDraft.EditorIdPrefix & "(preview)"
+        VolcarPiezasEn(d, una)
         Await RequestPreviewAsync(OutfitDraft.PreviewDraftFormID,
-                                  "piece:" & fid.ToString("X") & ":" & String.Join(",", flat.Select(Function(f) f.ToString("X"))),
-                                  pieceOnly:=True, draftItems:=flat)
+                                  "piece:" & fid.ToString("X") & ":" & LlaveDelBorrador(d),
+                                  pieceOnly:=True, draft:=d)
     End Function
 
     ''' <summary>Toggle whole-outfit ⇄ selected-piece. Re-renders per the new mode.</summary>
@@ -1831,14 +1881,11 @@ Public Class OutfitPicker_Form
         ' ⛔ `allPieces` YA trae las que no aplican a esta raza/género, marcadas: son parte del atuendo
         ' y viajan en la MISMA lista y el mismo orden. Hubo una versión con un carril paralelo que se
         ' reintercalaba acá; rompía de cuatro formas y se sacó — ver `SembrarInam`.
-        draft.ReemplazarPrendas(allPieces.Select(Function(p) p.FormID))
-        ' Carry each LVLI piece's current realization to the draft so the committed render matches the
-        ' picker's preview (until rerolled later). The draft still saves the LVLI ref in INAM.
-        For Each p In allPieces
-            If p.IsLeveled AndAlso p.Realization IsNot Nothing Then
-                draft.LvliRealization(p.FormID) = New List(Of OutfitArmorPick)(p.Realization)
-            End If
-        Next
+        ' ⛔ EL MISMO volcado que la vista previa y que el contexto, no una copia con el mismo texto: si
+        ' esto se separa otra vez, el usuario guarda algo distinto de lo que vio. `CommitCreate` escribe
+        ' sobre un `draft` que YA existe (override o nuevo), así que no puede usar `ArmarBorradorDeAtuendo`
+        ' —que CREA uno—: comparte el volcado, que es la parte que era la ley.
+        VolcarPiezasEn(draft, ComoTuplas(allPieces))
         ' Brand-new and re-edited owned drafts are NEW owned records; a real OVERRIDE is not. An override edits an
         ' existing record → mark it modified so Save (IsDirty) emits it (matches the ARMO/ARMA editor convention).
         draft.IsNew = Not draft.IsOverride

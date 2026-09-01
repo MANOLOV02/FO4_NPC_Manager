@@ -367,7 +367,10 @@ Friend NotInheritable Class NpcMaterialResolver
                                                Optional shapeSlotMask As UInteger = 0UI) As Canon.ITxst
         If state Is Nothing OrElse state.SkinFormID = 0UI Then Return Nothing
 
-        Dim armo = _ctx.GetParsedArmo(state.SkinFormID)
+        ' EFECTIVA: la TXST del cuerpo sale de los armatures que el motor va a usar, no de los que el
+        ' archivo declara. ⚠️ SIN CORPUS hoy: 0 de 252 ARMO de piel (`NPC_.WNAM` ∪ `RACE.WNAM`) traen
+        ' `TNAM` en los dos juegos — no es inerte, es no medible con este orden de carga.
+        Dim armo = _ctx.GetParsedArmoEfectivo(state.SkinFormID)
         If armo Is Nothing Then Return Nothing
 
         ' Máscaras de slot GAME-AWARE (FO4 vs SSE difieren: FO4 Body=slot33/bit3, Hands=slots34-35;
@@ -391,7 +394,7 @@ Friend NotInheritable Class NpcMaterialResolver
 
             ' S = los armatures que cubren la REGIÓN en esta pasada, EN ORDEN DE armo.ArmorAddons.
             Dim s As New List(Of Canon.IArma)()
-            For Each entry In ArmoEditor_Form.ReadAddons(armo)
+            For Each entry In Canon.CanonInterpretacion.LeerComplementos(armo)
                 Dim a = _ctx.GetParsedArma(entry.ArmaFormID)
                 If a Is Nothing Then Continue For
                 ' ArmaMatchesRace vive en EquipResolver (Records\, no se toca): sigue pidiendo el

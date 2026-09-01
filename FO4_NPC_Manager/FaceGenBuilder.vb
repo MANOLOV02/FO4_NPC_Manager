@@ -2187,11 +2187,20 @@ Public Module FaceGenBuilder
                             If r Is Nothing OrElse r.Header.Signature <> "ARMA" Then Return Nothing
                             Return Canon.CanonRecords.Arma(r, pluginManager)
                         End Function
+        ' El CRUDO: lo que dice el archivo. Se conserva porque es el eslabon de la cadena de `TNAM`, y
+        ' esa llamada interna tiene que ser SIEMPRE cruda (si no, cada apertura cuesta O(profundidad²)).
+        Dim parseArmoCrudo = Function(fid As UInteger) As Canon.IArmo
+                                 If fid = 0UI Then Return Nothing
+                                 Dim r = pluginManager.GetRecord(fid)
+                                 If r Is Nothing OrElse r.Header.Signature <> "ARMO" Then Return Nothing
+                                 Return Canon.CanonRecords.Armo(r, pluginManager)
+                             End Function
+        ' ⛔ El BAKE hornea lo que el motor DIBUJA, asi que va por la vista EFECTIVA. Medido: 35 NPC de
+        ' 7.205, por 15 OTFT, cambian de bytes horneados. Es el mismo resolvedor que usa el render, por
+        ' RENDER == BAKE: el CLI headless entra por aca (`BuildCharGen`) y no arma su propio
+        ' `EquipContext`, asi que queda cubierto sin cablear nada aparte.
         Dim parseArmo = Function(fid As UInteger) As Canon.IArmo
-                            If fid = 0UI Then Return Nothing
-                            Dim r = pluginManager.GetRecord(fid)
-                            If r Is Nothing OrElse r.Header.Signature <> "ARMO" Then Return Nothing
-                            Return Canon.CanonRecords.Armo(r, pluginManager)
+                            Return Canon.CanonHerencia.ArmoEfectivo(fid, parseArmoCrudo)
                         End Function
         Dim effectiveArmorRaces = NpcRenderContext.WalkArmorRaceChain(
             npcData.Record.Race, Function(fid As UInteger) pluginManager.GetRecord(fid), parseRace)
@@ -2217,9 +2226,8 @@ Public Module FaceGenBuilder
             .EffectiveArmorRaces = effectiveArmorRaces,
             .ArmoResolver = parseArmo,
             .ArmaResolver = parseArma,
-            .IsPowerArmorArmo = Function(fid As UInteger)
-                                    Dim a = parseArmo(fid)
-                                    Return a IsNot Nothing AndAlso MainForm.IsPowerArmorArmoData(a, paKywdFid)
+            .IsPowerArmorArmo = Function(fid As UInteger, vista As Canon.IArmo)
+                                    Return vista IsNot Nothing AndAlso MainForm.IsPowerArmorArmoData(vista, paKywdFid)
                                 End Function,
             .IsPowerArmorRace = raceIsPa}
 
@@ -2237,7 +2245,7 @@ Public Module FaceGenBuilder
                     If terminalFID = 0UI Then Continue For
                     Dim armo = parseArmo(terminalFID)
                     If armo Is Nothing Then Continue For
-                    If ArmoEditor_Form.ReadAddons(armo).Count = 0 Then
+                    If Canon.CanonInterpretacion.LeerComplementos(armo).Count = 0 Then
                         ' ⛔ Un ARMO SIN ARMATURES no ocluye NADA, y esto es lo que decía el render, no una
                         ' decisión de acá. Acá antes se ocluia con su BOD2 afirmando «el render cae al mesh
                         ' fallback ARMO.MOD2, p.ej. robots»: FALSO, esa caída vive DENTRO del bucle de armatures

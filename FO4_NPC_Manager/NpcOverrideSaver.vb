@@ -976,7 +976,7 @@ Public Module NpcOverrideSaver
                 While armoToVisit.Count > 0
                     Dim fid = armoToVisit.Dequeue()
                     Dim d = armoByFid(fid)
-                    For Each addon In ArmoEditor_Form.ReadAddons(d.Record)
+                    For Each addon In Canon.CanonInterpretacion.LeerComplementos(d.Record)
                         If armaByFid.ContainsKey(addon.ArmaFormID) Then neededArma.Add(addon.ArmaFormID)
                     Next
                     ' El material swap a nivel ARMO sólo existe en Fallout 4.

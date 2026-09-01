@@ -545,7 +545,39 @@ Public Class ArmoEditor_Form
         Else
             LabelStatusBanner.Text = $"NEW record — {edid} (new FormID)"
         End If
+        LabelStatusBanner.Text &= AvisoDeHerencia()
     End Sub
+
+    ''' <summary>El aviso de herencia por <c>ARMO.TNAM</c>, para el banner. "" si el record no hereda.
+    ''' <para>⛔ TEXTO, y NO siembra ningun buffer. <c>RenderPreviewAsync</c> llama
+    ''' <c>CommitProtegido(validate:=False)</c> en CADA repintado y <c>CommitPanelsToDraft</c> ejecuta
+    ''' <c>EscribirComplementos(rec, _addons)</c> y <c>WriteKeywordList(rec, _keywords)</c>
+    ''' INCONDICIONALMENTE: sembrar los paneles con lo del terminal meteria esos bytes en el plugin del
+    ''' usuario. Medido en el corpus: hasta 566 <c>Survival_ArmorWarm</c> de un solo mod.</para>
+    ''' <para>Dice las DOS mitades a proposito. Con la primera sola, el usuario ve que la vista previa no
+    ''' cambia al editar, concluye «no se guardo» y guarda igual — cuando lo que pasa es que SI se guarda
+    ''' y el motor lo descarta.</para>
+    ''' <para>⛔ No bloquea la edicion: los bytes los decide el usuario.</para></summary>
+    Private Function AvisoDeHerencia() As String
+        If _draft Is Nothing OrElse _draft.Record Is Nothing Then Return ""
+        Dim term = _draft.Record.TemplateArmor
+        If term = 0UI Then Return ""
+        Return $"   ⚠ HEREDA de {DescribeArmoBreve(term)} — la vista previa muestra lo que el motor " &
+               "dibuja (el terminal). Lo que edites en los campos heredados se guarda en tu plugin y el " &
+               "motor lo descarta mientras TNAM este puesto."
+    End Function
+
+    ''' <summary>EditorID + FormID del ARMO, para nombrar el terminal en el aviso. Solo el FormID si no
+    ''' resuelve — que es tambien la precondicion de la ley: un TNAM colgado y el motor usa los del hijo.</summary>
+    Private Function DescribeArmoBreve(fid As UInteger) As String
+        Dim pm = _mainForm?.PluginManagerForEditor
+        If pm Is Nothing Then Return $"[{fid:X8}]"
+        Dim rec = pm.GetRecord(fid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return $"[{fid:X8}] (no resuelve)"
+        Dim v = Canon.CanonRecords.Armo(rec, pm)
+        If v Is Nothing OrElse String.IsNullOrEmpty(v.EditorID) Then Return $"[{fid:X8}]"
+        Return $"{v.EditorID} [{fid:X8}]"
+    End Function
 
     ''' <summary>Originating (source) plugin name for a real global FormID, via the ESL-aware PluginManager
     ''' helper. "" when unknown (draft sentinel / unattributed) → the banner omits the plugin clause.</summary>
@@ -606,6 +638,40 @@ Public Class ArmoEditor_Form
                    ArmoDraft.Edicion(rec, pm),
                    ArmoDraft.Clon(rec, pm, _mainForm.AllocateDraftFormID()))
         If d Is Nothing Then Return Nothing
+        ' ⛔ El CLON nace SIN herencia. `ArmoDraft.Clon` copia el arbol entero, `TNAM` incluido, asi
+        ' que la armadura nueva nacia heredando: el usuario le editaba mallas, slots y keywords, las
+        ' guardaba en su plugin, y el motor las pisaba con las del terminal (SkyrimSE 0x14027E540 /
+        ' Fallout4 0x140462410). Bytes muertos escritos sin avisar.
+        ' Decision del usuario (opcion A): el clon es AUTONOMO, aunque eso lo deje con un campo menos
+        ' que el record del que se clono.
+        ' ⛔ Solo el CLON. El OVERRIDE conserva su `TNAM`: ahi se edita el record que YA existe, y
+        ' sacarselo seria cambiarle bytes que nadie pidio cambiar.
+        If Not asOverride AndAlso d.Record IsNot Nothing AndAlso d.Record.TemplateArmor <> 0UI Then
+            ' ⛔ MATERIALIZAR y DESPUES soltar la herencia, no al reves. Los campos efectivos -armatures,
+            ' slots, keywords, OBTS, FNAM- viven en el TERMINAL: sacar el `TNAM` sobre el arbol crudo deja
+            ' al clon con los campos MUERTOS del hijo, y si el hijo no traia armatures propios -el caso
+            ' normal de la herencia- el clon nace SIN MALLAS. «Autonomo» significa que se lleva lo que el
+            ' motor usaba, no que se queda con lo que el motor descartaba.
+            Dim efectiva = Canon.CanonHerencia.ArmoEfectivo(fid, AddressOf _mainForm.GetParsedArmoForEditor)
+            Dim vistaEf = TryCast(efectiva, Canon.CanonRecordView)
+            If vistaEf IsNot Nothing AndAlso Not ReferenceEquals(efectiva, d.Record) Then
+                Dim clonEf = TryCast(Canon.CanonInterpretacion.Copia(vistaEf), Canon.IArmo)
+                If clonEf IsNot Nothing Then
+                    ' El contexto del clon manda: FormID nuevo, y la marca de "vista efectiva" NO viaja al
+                    ' borrador -esto pasa a ser un record propio del usuario, que SI se escribe al ESP-.
+                    Dim ctxDestino = TryCast(d.Record, Canon.CanonRecordView)?.Context
+                    Dim ctxOrigen = TryCast(clonEf, Canon.CanonRecordView)?.Context
+                    If ctxDestino IsNot Nothing AndAlso ctxOrigen IsNot Nothing Then
+                        ctxOrigen.FormID = ctxDestino.FormID
+                        ctxOrigen.EditorId = ctxDestino.EditorId
+                        ctxOrigen.RecordFlags = ctxDestino.RecordFlags
+                        ctxOrigen.EsVistaEfectiva = False
+                    End If
+                    d.Record = clonEf
+                End If
+            End If
+            d.Record.TemplateArmor = 0UI
+        End If
         ' El EditorID sólo se SINTETIZA si el record no traía uno: `EDID` no es requerido en el esquema,
         ' pero el commit exige uno no vacío para poder guardar.
         If String.IsNullOrEmpty(d.Record.EditorID) Then
@@ -644,70 +710,6 @@ Public Class ArmoEditor_Form
         Next
     End Sub
 
-    ''' <summary>El modelo de addons (INDX + referencia a la ARMA) es distinto por juego: FO4 =
-    ''' índice y
-    ''' referencia separados (Models); Skyrim = un array de referencias sin índice explícito
-    ''' (Armature, el
-    ''' índice ES la posición). No hay un campo compartido para "la lista de addons".</summary>
-    Friend Shared Function ReadAddons(rec As Canon.IArmo) As List(Of ARMO_AddonEntry)
-        Dim result As New List(Of ARMO_AddonEntry)
-        Dim fo4 = TryCast(rec, Canon.ArmoFO4)
-        If fo4 IsNot Nothing Then
-            For Each m In fo4.Models
-                result.Add(New ARMO_AddonEntry With {.AddonIndex = m.ModelAddonIndex,
-                           .ArmaFormID = m.ModelArmorAddon})
-            Next
-            Return result
-        End If
-        Dim sse = TryCast(rec, Canon.ArmoSSE)
-        If sse IsNot Nothing Then
-            Dim idx As UShort = 0US
-            For Each m In sse.Armature
-                result.Add(New ARMO_AddonEntry With {.AddonIndex = idx,
-                           .ArmaFormID = m.ModelFilename})
-                idx += 1US
-            Next
-        End If
-        Return result
-    End Function
-
-    Friend Shared Sub WriteAddons(rec As Canon.IArmo, addons As IEnumerable(Of ARMO_AddonEntry))
-        Dim fo4 = TryCast(rec, Canon.ArmoFO4)
-        If fo4 IsNot Nothing Then
-            While fo4.Models.Count > 0
-                If Not fo4.QuitarModels(0) Then Exit While
-            End While
-            If addons IsNot Nothing Then
-                For Each ad In addons
-                    Dim m = fo4.AgregarModels()
-                    If m Is Nothing Then Continue For
-                    m.ModelAddonIndex = ad.AddonIndex
-                    m.ModelArmorAddon = ad.ArmaFormID
-                Next
-            End If
-            Return
-        End If
-        Dim sse = TryCast(rec, Canon.ArmoSSE)
-        If sse IsNot Nothing Then
-            While sse.Armature.Count > 0
-                If Not sse.QuitarArmature(0) Then Exit While
-            End While
-            If addons IsNot Nothing Then
-                ' ⛔ Skyrim NO tiene índice propio: el orden en el array ES el índice, y el `AddonIndex`
-                ' que trae la entrada lo SINTETIZÓ `ReadAddons` desde la posición al abrir. Ordenar por él
-                ' deshacía en silencio lo que el usuario acababa de hacer: `MoveAddon` intercambia las
-                ' posiciones pero el índice viaja CON la fila, así que el `OrderBy` restauraba el orden
-                ' viejo y el ESP salía con el armature como estaba — sin un aviso. Y una fila agregada
-                ' nace con índice 0, o sea que saltaba al principio sin importar dónde se la veía.
-                ' El orden de la LISTA es la respuesta: es lo que el usuario ve y armó. La rama de FO4 ya
-                ' emite así — ahí el INDX sí es un campo real del archivo y viaja con su entrada.
-                For Each ad In addons
-                    Dim m = sse.AgregarArmature()
-                    If m IsNot Nothing Then m.ModelFilename = ad.ArmaFormID
-                Next
-            End If
-        End If
-    End Sub
 
     Friend Shared Function ReadDamageResistances(fo4 As Canon.ArmoFO4) As List(Of ARMO_DamageResist)
         If fo4 Is Nothing Then Return New List(Of ARMO_DamageResist)
@@ -813,7 +815,7 @@ Public Class ArmoEditor_Form
 
             ' Addons.
             _addons.Clear()
-            _addons.AddRange(ReadAddons(rec))
+            _addons.AddRange(Canon.CanonInterpretacion.LeerComplementos(rec))
             RefreshAddonsGrid()
 
             ' Object Template (OBTS): las combinaciones se editan sobre una COPIA del record, así el sub-editor
@@ -1101,7 +1103,7 @@ Public Class ArmoEditor_Form
         rec.MaxZ = CShort(NumObndZ2.Value)
 
         ' Addons (order matters — copy the working list in row order).
-        WriteAddons(rec, _addons)
+        Canon.CanonInterpretacion.EscribirComplementos(rec, _addons)
 
         ' Keywords: flush the working buffer (mutated by the Add/Remove handlers) into the draft.
         WriteKeywordList(rec, _keywords)

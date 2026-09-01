@@ -46,6 +46,11 @@ Friend NotInheritable Class NpcRenderContext
     ''' con los draft-resolvers; lo consume <see cref="EquipCtx"/> para que la ley única lo aplique una sola
     ''' vez, en vez de que cada caller lo repita antes de pedir el footprint.</summary>
     Public ArmoIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
+    ''' <summary>El MISMO gate, pero sobre la vista que el llamador ya abrio.
+    ''' <para>⛔ Existe para que `BuildFootprint` no resuelva el ARMO dos veces y pueda resolverlo
+    ''' DISTINTO: el gate lee <c>KWDA</c>, que es heredado, asi que preguntar por FormID daba la
+    ''' respuesta del HIJO mientras el dibujo usaba la EFECTIVA.</para></summary>
+    Public ArmoIsPowerArmorDeVista As Func(Of UInteger, Canon.IArmo, Boolean) = Nothing
     ''' <summary>Idem, del lado de la raza. Ver <see cref="ArmoIsPowerArmor"/>.</summary>
     Public RaceIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
@@ -136,7 +141,7 @@ Friend NotInheritable Class NpcRenderContext
     ''' <summary>Parse (and cache) an ARMO by FormID. Nothing if the FormID does not resolve to an
     ''' ARMO. Does NOT swallow parse exceptions — callers that must tolerate a malformed record keep
     ''' their own Try/Catch.</summary>
-    Public Function GetParsedArmo(formID As UInteger) As Canon.IArmo
+    Public Function GetParsedArmoCrudo(formID As UInteger) As Canon.IArmo
         If formID = 0UI Then Return Nothing
         ' Draft-aware resolution: an ARMO draft (MainForm._armoDrafts, provisional 0xFF FormID or an override
         ' draft keeping its real FormID) is NOT a real record and is NOT in this cache. Consult the app's draft
@@ -153,6 +158,26 @@ Friend NotInheritable Class NpcRenderContext
                 If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return Nothing
                 Return Canon.CanonRecords.Armo(rec, PluginManager)
             End Function)
+    End Function
+
+    ''' <summary>La vista EFECTIVA de un ARMO: lo que el MOTOR va a usar, con la herencia de
+    ''' <c>ARMO.TNAM</c> ya aplicada. Ver <see cref="Canon.CanonHerencia.ArmoEfectivo"/>.
+    ''' <para>⛔ Tiene NOMBRE PROPIO, y el crudo se llama <c>GetParsedArmoCrudo</c>, para que cada
+    ''' call site tenga que ELEGIR al compilar. Un grep no alcanzaba por dos razones medidas: los dos
+    ''' sitios donde la eleccion decide son <c>AddressOf</c> y no matchean <c>GetParsedArmo(</c>, y 10
+    ''' de los 12 consumidores viven en <c>MainForm.vb</c> junto a consumidores legitimos del OTRO
+    ''' lado, asi que una regla por archivo protege justo a los que ya estaban bien.</para>
+    ''' <para>El criterio para elegir NO es donde vive el codigo, es QUE PREGUNTA hace: si la
+    ''' respuesta dice que va a hacer el MOTOR, va la efectiva; si dice que dice el ARCHIVO, la
+    ''' cruda.</para>
+    ''' <para>⛔ NO se cachea: se construye sobre vistas crudas que YA estan cacheadas, asi que
+    ''' cachearla agregaria un indice inverso terminal→hijos que habria que invalidar cuando el
+    ''' usuario edita o revierte el TERMINAL. Y cachear la CADENA tampoco: medido, la profundidad
+    ''' real es 1 en el 100% de los 2.679, o sea que ahorraria un lookup y pagaria el borrador EN EL
+    ''' MEDIO —X real cuyo TNAM apunta a Y, e Y borrador con FormID real—, que ningun guard por
+    ''' FormID puede cazar.</para></summary>
+    Public Function GetParsedArmoEfectivo(formID As UInteger) As Canon.IArmo
+        Return Canon.CanonHerencia.ArmoEfectivo(formID, AddressOf GetParsedArmoCrudo)
     End Function
 
     ''' <summary>Parse (and cache) an ARMA by FormID. Nothing if the FormID does not resolve to an ARMA.</summary>
@@ -200,15 +225,21 @@ Friend NotInheritable Class NpcRenderContext
     ''' (<see cref="EquipResolver"/>, FO4_Base_Library). Un solo constructor: los resolvedores draft-aware,
     ''' la cadena de razas del redirect RNAM y el gate de power-armor viven acá, que es el objeto que ya es
     ''' dueño de ese conocimiento. Ni el render, ni el bake, ni los editores arman el suyo.</summary>
+    ' ⛔ El ARMO va por la vista EFECTIVA: este contexto contesta que va a DIBUJAR el motor, y con
+    ' `TNAM` la lista de armatures sale del TERMINAL. Y es `AddressOf`, sin parentesis: un grep no lo
+    ' ve — por eso el nombre viejo se retiro y cada call site elige AL COMPILAR.
+    ' ⛔ Esto NO es BR-14: la efectiva CONSERVA la identidad (`EDID`, `FULL` y el FormID son del HIJO
+    ' en los dos juegos), mientras que BR-14 fue sustitucion de identidad — el editor mostrando OTRO
+    ' record. Y los editores no editan por aca: leen por `LeerComplementos` sobre el borrador CRUDO.
     Public Function EquipCtx(npcRaceFID As UInteger, isFemale As Boolean) As EquipResolver.EquipContext
         Return New EquipResolver.EquipContext With {
             .PluginManager = PluginManager,
             .RaceFormID = npcRaceFID,
             .IsFemale = isFemale,
             .EffectiveArmorRaces = GetEffectiveArmorRaces(npcRaceFID),
-            .ArmoResolver = AddressOf GetParsedArmo,
+            .ArmoResolver = AddressOf GetParsedArmoEfectivo,
             .ArmaResolver = AddressOf GetParsedArma,
-            .IsPowerArmorArmo = ArmoIsPowerArmor,
+            .IsPowerArmorArmo = ArmoIsPowerArmorDeVista,
             .IsPowerArmorRace = (RaceIsPowerArmor IsNot Nothing AndAlso RaceIsPowerArmor(npcRaceFID))}
     End Function
 

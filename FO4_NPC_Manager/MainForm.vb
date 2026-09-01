@@ -2278,8 +2278,13 @@ Public Class MainForm
         ' a non-draft FormID (real-record path runs) and a freshly-synthesized *_Data for a draft (never cached).
         ' El borrador YA ES la vista canónica (ArmoDraft.Record As Canon.IArmo): no hace falta
         ' sintetizar nada, se devuelve directo.
-        _ctx.ArmoDraftResolver = Function(fid) TryGetArmoDraft(fid)?.Record
+        ' La FOTO, no el arbol vivo: `ArmoEfectivo` lo recorre entero para materializar y el hilo de
+        ' UI lo muta en cada commit del editor. Ver `RegisterArmoDraft`.
+        _ctx.ArmoDraftResolver = AddressOf ArmoDraftParaRender
         _ctx.ArmoIsPowerArmor = AddressOf ArmoIsPowerArmor
+        ' El mismo gate sobre la vista que el llamador ya abrio: `KWDA` es heredado, asi que
+        ' resolverlo de nuevo por FormID podia dar OTRA respuesta que la del dibujo.
+        _ctx.ArmoIsPowerArmorDeVista = Function(fid, vista) IsPowerArmorArmoData(vista, ArmorTypePowerKeywordFid())
         _ctx.RaceIsPowerArmor = AddressOf RaceIsPowerArmor
         _ctx.ArmaDraftResolver = Function(fid) TryGetArmaDraft(fid)?.Record
         _ctx.MswpDraftResolver = Function(fid) BuildMswpDataFromDraft(fid)
@@ -2970,7 +2975,8 @@ Public Class MainForm
             For Each armoFID In _skinArmoUniverse
                 Dim armo As Canon.IArmo
                 Try
-                    armo = _ctx.GetParsedArmo(armoFID)
+                    ' EFECTIVA: decide que ARMO de piel va a USAR el motor; lee armatures y RNAM.
+                    armo = _ctx.GetParsedArmoEfectivo(armoFID)
                 Catch
                     Continue For
                 End Try
@@ -3053,7 +3059,8 @@ Public Class MainForm
 
         Dim armo As Canon.IArmo = Nothing
         Try
-            armo = _ctx.GetParsedArmo(armoFID)
+            ' EFECTIVA: guarda de nulo del mismo camino cuyo footprint se arma abajo con la efectiva.
+            armo = _ctx.GetParsedArmoEfectivo(armoFID)
         Catch
             Return False
         End Try
@@ -3073,10 +3080,17 @@ Public Class MainForm
         ' SIN gate de power-armor, a propósito (ver EditBody_Form: el picker de Skin Armor lista las pieles
         ' de PA, que por definición son ARMO con ArmorTypePower). Por eso el contexto se arma acá y no con
         ' EquipCtx, que sí trae el gate.
+        ' ⛔ El ARMO va por la vista EFECTIVA. El «la pregunta es del registro, no del actor» de
+        ' arriba es sobre que GATES se aplican (raza, genero, power armor), NO sobre de que record
+        ' salen los campos: la herencia por `TNAM` no es un gate, es parte de lo que el record
+        ' SIGNIFICA para el motor. Y es `AddressOf`, sin parentesis: un grep de `GetParsedArmo(` no
+        ' lo ve — por eso el nombre viejo se retiro y cada call site elige AL COMPILAR.
+        ' ⛔ Este inicializador NO admite comentarios intercalados entre sus miembros (VB los
+        ' desarma cuando uno de ellos es un lambda multilinea). Por eso esto va aca arriba.
         ' Los resolvers de EquipContext siguen pidiendo el modelo *_Data legado (Records\, no se toca):
         Dim recCtx As New EquipResolver.EquipContext With {
             .PluginManager = _pluginManager,
-            .ArmoResolver = AddressOf _ctx.GetParsedArmo,
+            .ArmoResolver = AddressOf _ctx.GetParsedArmoEfectivo,
             .ArmaResolver = AddressOf _ctx.GetParsedArma}
         Return (EquipResolver.BuildFootprint(armoFID, recCtx).RecordGeometryMask And bodyBit) <> 0UI
     End Function
@@ -3092,7 +3106,7 @@ Public Class MainForm
         If ArmoIsPowerArmor(armoFID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Return False
         Dim raceMatch = (armo.Race = npcRaceFID)
         Dim genderMatch As Boolean = False
-        For Each addon In ArmoEditor_Form.ReadAddons(armo)
+        For Each addon In Canon.CanonInterpretacion.LeerComplementos(armo)
             Dim arma As Canon.IArma
             Try
                 arma = _ctx.GetParsedArma(addon.ArmaFormID)
@@ -3158,7 +3172,9 @@ Public Class MainForm
         Dim armo As Canon.IArmo
 
         Try
-            armo = _ctx.GetParsedArmo(armoFID)
+            ' CRUDA: es el NOMBRE para mostrar, o sea que dice el archivo. Y da igual: la efectiva
+            ' CONSERVA la identidad (EDID/FULL/FormID son del hijo en los dos juegos).
+            armo = _ctx.GetParsedArmoCrudo(armoFID)
         Catch
             Return armoFID.ToString("X8")
         End Try
@@ -3303,7 +3319,9 @@ Public Class MainForm
         For Each armoFID In OutfitResolver.EnumerateAllTerminalArmos(otftFID, _pluginManager)
             Dim armo As Canon.IArmo
             Try
-                armo = _ctx.GetParsedArmo(armoFID)
+                ' CRUDA: los FormID ya vienen de `EnumerateAllTerminalArmos`, o sea que ya son
+                ' terminales; con la efectiva el early-return devolveria la cruda igual.
+                armo = _ctx.GetParsedArmoCrudo(armoFID)
             Catch
                 Continue For
             End Try
@@ -3312,7 +3330,7 @@ Public Class MainForm
             ' (it'd be dropped at render). A mixed outfit still validates via its non-PA pieces; a purely-PA
             ' outfit won't list for a non-PA NPC.
             If ArmoIsPowerArmor(armoFID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
-            For Each addon In ArmoEditor_Form.ReadAddons(armo)
+            For Each addon In Canon.CanonInterpretacion.LeerComplementos(armo)
                 Dim arma As Canon.IArma
                 Try
                     arma = _ctx.GetParsedArma(addon.ArmaFormID)
@@ -3530,7 +3548,35 @@ Public Class MainForm
         Dim existing = _armoDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
         If existing IsNot Nothing Then _armoDrafts.Remove(existing)
         _armoDrafts.Add(d)
+        ' ⛔ El PRODUCTOR publica. Se clona UNA vez, ACA, en el hilo que muta -este metodo lo llama el
+        ' commit del editor-, y el render lee esa referencia sin recorrer el arbol vivo. Sin esto,
+        ' `CanonHerencia.ArmoEfectivo` hace `Copia()` -un walk RECURSIVO COMPLETO- desde el hilo del
+        ' render mientras el de UI hace `While Armature.Count > 0 : QuitarArmature(0)`: enumerar lo que
+        ' otro hilo modifica tira, y cae en el catch mudo del preview.
+        ' ⛔ NO se le pide el snapshot al hilo de UI desde el render: eso es un `Invoke` bloqueante y, si
+        ' algun camino tiene al de UI esperando al render, es un abrazo mortal en vez de una carrera.
+        Dim copia = TryCast(Canon.CanonInterpretacion.Copia(d.Record), Canon.IArmo)
+        If copia IsNot Nothing Then
+            _armoDraftSnapshots(d.FormID) = copia
+        Else
+            _armoDraftSnapshots.TryRemove(d.FormID, Nothing)
+        End If
     End Sub
+
+    ''' <summary>La foto INMUTABLE del arbol de cada borrador de ARMO, publicada por el productor en
+    ''' <see cref="RegisterArmoDraft"/>. La lee el RENDER; el editor sigue trabajando sobre el borrador
+    ''' vivo. Es una foto por commit, y el commit es justo lo que dispara el repintado, asi que no
+    ''' envejece entre uno y otro.</summary>
+    Private ReadOnly _armoDraftSnapshots As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IArmo)
+
+    ''' <summary>La vista de borrador que el RENDER puede recorrer sin carrera: la foto si existe, y el
+    ''' borrador vivo si no (un borrador registrado antes de que existiera la foto).</summary>
+    Friend Function ArmoDraftParaRender(formID As UInteger) As Canon.IArmo
+        If formID = 0UI Then Return Nothing
+        Dim foto As Canon.IArmo = Nothing
+        If _armoDraftSnapshots.TryGetValue(formID, foto) AndAlso foto IsNot Nothing Then Return foto
+        Return TryGetArmoDraft(formID)?.Record
+    End Function
 
     ''' <summary>Register/replace an ARMA draft (by FormID). Mirror of <see cref="RegisterArmoDraft"/>.</summary>
     Friend Sub RegisterArmaDraft(d As ArmaDraft)
@@ -3552,6 +3598,12 @@ Public Class MainForm
     Friend Sub UnregisterArmoDraft(formID As UInteger)
         Dim existing = _armoDrafts.FirstOrDefault(Function(x) x.FormID = formID)
         If existing IsNot Nothing Then _armoDrafts.Remove(existing)
+        ' ⛔ La FOTO se retira ACA, con el borrador. El dueño es el registro: se publica en
+        ' `RegisterArmoDraft` y se retira aca, en el mismo par. Sin esto la foto le SOBREVIVE al
+        ' borrador -y `ArmoDraftParaRender` la consulta PRIMERO-, asi que cancelar, borrar o revertir
+        ' dejaba el descarte resolviendo para toda la sesion: render, outfit, piel, OBTS y el gate de
+        ' power armor consultando datos que ya no existen.
+        _armoDraftSnapshots.TryRemove(formID, Nothing)
     End Sub
 
     ''' <summary>Drop an ARMA draft (by FormID).</summary>
@@ -3579,7 +3631,7 @@ Public Class MainForm
 
         For Each d In _armoDrafts
             If d Is Nothing Then Continue For
-            Dim addons = ArmoEditor_Form.ReadAddons(d.Record)
+            Dim addons = Canon.CanonInterpretacion.LeerComplementos(d.Record)
             If addons.Any(Function(a) a IsNot Nothing AndAlso a.ArmaFormID = formID) Then
                 refs.Add($"ARMO draft '{d.Record.EditorID}' (addon)")
             End If
@@ -3630,8 +3682,16 @@ Public Class MainForm
     ''' <summary>Draft-aware parsed ARMO view (real record OR draft) — exposes the render context's
     ''' resolver so the Armor Editor's override-load converters and preview can read the same data the
     ''' render reads. Nothing when the FormID is neither a real ARMO nor a draft.</summary>
-    Friend Function GetParsedArmoForEditor(formID As UInteger) As Canon.IArmo
-        Return _ctx.GetParsedArmo(formID)
+    ''' <summary>La vista EFECTIVA por FormID, para quien pregunta que va a DIBUJAR el motor.
+    ''' <para>⛔ Existe aparte de <see cref="GetParsedArmoForEditor"/> porque el criterio es la
+    ''' PREGUNTA y no donde vive el codigo: `ArmaEditor_Form.CollectSkinPartMeshes` vive en un
+    ''' editor y pregunta del render -que mallas de cuerpo tiene el actor que se esta viendo-.</para></summary>
+    Friend Function GetParsedArmoEfectivoParaRender(formID As UInteger) As Canon.IArmo
+        Return _ctx.GetParsedArmoEfectivo(formID)
+    End Function
+
+        Friend Function GetParsedArmoForEditor(formID As UInteger) As Canon.IArmo
+        Return _ctx.GetParsedArmoCrudo(formID)
     End Function
 
     ''' <summary>Draft-aware parsed ARMA view (real record OR draft). See <see cref="GetParsedArmoForEditor"/>.</summary>
@@ -3774,7 +3834,8 @@ Public Class MainForm
                 Dim armoFID = rec.Header.FormID
                 Dim armo As Canon.IArmo
                 Try
-                    armo = _ctx.GetParsedArmo(armoFID)
+                    ' CRUDA: nombre para el catalogo. El footprint de la fila va por `eqCtx`.
+                    armo = _ctx.GetParsedArmoCrudo(armoFID)
                 Catch
                     Continue For
                 End Try
@@ -8005,8 +8066,6 @@ Public Class MainForm
     ' name; one vanilla keyword mods reference but never redefine), so no FormID is hardcoded.
     Private _armorTypePowerKywdResolved As Boolean = False
     Private _armorTypePowerKywdFid As UInteger = 0UI
-    Private ReadOnly _isPowerArmorArmoCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Boolean)
-    Private ReadOnly _isPowerArmorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Boolean)
 
     ''' <summary>FormID of the vanilla <c>ArmorTypePower</c> KYWD, found once by EditorID. 0 if the load
     ''' order has no such keyword (then the gate is inert).</summary>
@@ -8052,32 +8111,38 @@ Public Class MainForm
         Return IsPowerArmorArmoData(getParsedArmo(pielRaza), armorTypePowerKywdFid)
     End Function
 
-    ''' <summary>True if the ARMO is power armor — carries the ArmorTypePower keyword. Cached per ARMO.</summary>
+    ''' <summary>True if the ARMO is power armor: carries the ArmorTypePower keyword.
+    ''' <para>SIN CACHE, y es un cambio de esta tanda. El booleano se cacheaba por FormID del ARMO
+    ''' y NO SE INVALIDABA NUNCA: dos referencias en todo el archivo, la declaracion y el
+    ''' <c>GetOrAdd</c>, ningun <c>Clear()</c>. Con la vista EFECTIVA su valor pasa a depender del
+    ''' ARMO TERMINAL (<c>KWDA</c> se hereda en los dos juegos: SSE +0x1D8, FO4 +0x208), o sea que
+    ''' se volvia el indice inverso terminal-hijos que el diseno evita a proposito: editar o
+    ''' revertir el TERMINAL dejaba el booleano rancio para toda la sesion, y ese booleano DESCARTA
+    ''' EL ARMO ENTERO. Falla muda: la prenda aparece o desaparece y nada lo explica.</para>
+    ''' <para>Medido antes de sacarlo: el escaneo de keywords cuesta <b>0,00169 ms por ARMO</b>
+    ''' (7,13 ms sobre 4.222 en SSE; 1,82 ms sobre 1.067 en FO4), y el parseo ya lo cachea
+    ''' <see cref="NpcRenderContext.GetParsedArmoCrudo"/>. El cache ahorraba eso y pagaba una falla
+    ''' silenciosa.</para></summary>
     Private Function ArmoIsPowerArmor(armoFID As UInteger) As Boolean
         If armoFID = 0UI Then Return False
         Dim kFid = ArmorTypePowerKeywordFid()
         If kFid = 0UI Then Return False
-        ' Draft FormIDs are evaluated FRESH (no PA-boolean cache) so a live keyword edit to the draft is
-        ' reflected immediately — same "drafts mutate live, never cache" rule the parse resolver follows.
-        If Borradores.EsFormIdDeBorrador(armoFID) Then
-            Return IsPowerArmorArmoData(_ctx.GetParsedArmo(armoFID), kFid)
-        End If
-        Return _isPowerArmorArmoCache.GetOrAdd(armoFID,
-            Function(fid) IsPowerArmorArmoData(_ctx.GetParsedArmo(fid), kFid))
+        Return IsPowerArmorArmoData(_ctx.GetParsedArmoEfectivo(armoFID), kFid)
     End Function
 
     ''' <summary>True if the race is a power-armor race — its RACE.WNAM (Skin) ARMO is power armor. Covers
     ''' vanilla PowerArmorRace + DLC/mod PA races without a hardcoded race list. Cached per race.</summary>
     Private Function RaceIsPowerArmor(raceFID As UInteger) As Boolean
         If raceFID = 0UI Then Return False
-        Return _isPowerArmorRaceCache.GetOrAdd(raceFID,
-            Function(fid)
-                Dim rRec = _pluginManager.GetRecord(fid)
-                If rRec Is Nothing OrElse rRec.Header.Signature <> "RACE" Then Return False
-                ' Same shared core the bake uses; the draft-aware nuance of ArmoIsPowerArmor doesn't
-                ' apply here (a RACE.WNAM skin is never an in-memory ARMO draft).
-                Return IsPowerArmorRaceData(_ctx.ParseRaceCanonCached(rRec), ArmorTypePowerKeywordFid(), AddressOf _ctx.GetParsedArmo)
-            End Function)
+        ' SIN CACHE, por lo mismo que `ArmoIsPowerArmor` y peor: este cacheaba por FormID de RAZA, y
+        ' con la efectiva su valor pasa a depender del ARMO TERMINAL de la piel de esa raza. El
+        ' comentario que lo justificaba -"a RACE.WNAM skin is never an in-memory ARMO draft"- dejo de
+        ' valer: el TERMINAL de esa piel SI puede ser un borrador que el usuario esta editando. Y
+        ' `ArmoIsPowerArmor` al menos tenia la rama "drafts evaluated FRESH"; este no la tenia.
+        Dim rRec = _pluginManager.GetRecord(raceFID)
+        If rRec Is Nothing OrElse rRec.Header.Signature <> "RACE" Then Return False
+        Return IsPowerArmorRaceData(_ctx.ParseRaceCanonCached(rRec), ArmorTypePowerKeywordFid(),
+                                    AddressOf _ctx.GetParsedArmoEfectivo)
     End Function
 
 
@@ -8139,12 +8204,13 @@ Public Class MainForm
         If raceFid = 0UI Then Return True
         Dim armo As Canon.IArmo
         Try
-            armo = _ctx.GetParsedArmo(armoFid)
+            ' EFECTIVA: pregunta si el MOTOR puede poner esta prenda en esa raza.
+            armo = _ctx.GetParsedArmoEfectivo(armoFid)
         Catch
             Return False
         End Try
         If armo Is Nothing Then Return False
-        For Each addon In ArmoEditor_Form.ReadAddons(armo)
+        For Each addon In Canon.CanonInterpretacion.LeerComplementos(armo)
             If IsArmaRaceCompatible(addon.ArmaFormID, raceFid) Then Return True
         Next
         Return False
@@ -8789,17 +8855,37 @@ Public Class MainForm
 
         Select Case itemRec.Header.Signature
             Case "ARMO"
-                Dim armo = _ctx.GetParsedArmo(itemFormID)
+                ' CRUDA: el arbol muestra QUE DICE EL ARCHIVO. ⛔ Con `TNAM ≠ 0` el nodo lo MARCA:
+                ' los armatures que se listan aca no son los que el motor va a usar.
+                Dim armo = _ctx.GetParsedArmoCrudo(itemFormID)
                 Dim slotStr = NpcManagerFormat.FormatSlotMask(armo.SlotMaskDe())
-                Dim armoNode = AddNode(parentNode, $"ARMO {armo.EditorID}  ""{armo.Name}""  [{armo.FormID:X8}]  Slots:{slotStr}")
+                Dim heredaDe = If(armo.TemplateArmor <> 0UI, "  [HEREDA]", "")
+                Dim armoNode = AddNode(parentNode, $"ARMO {armo.EditorID}  ""{armo.Name}""  [{armo.FormID:X8}]  Slots:{slotStr}{heredaDe}")
 
                 ' Follow template armor
                 If armo.TemplateArmor <> 0UI Then
-                    AddNode(armoNode, $"Template Armor: {DescribeFormID(armo.TemplateArmor)}")
+                    AddNode(armoNode, $"Template Armor: {DescribeFormID(armo.TemplateArmor)}" &
+                                      "   <- el motor toma de ACA los armatures, los slots, las keywords y la malla")
+                    ' ⛔ Este arbol es un inspector del ARCHIVO, asi que lista lo que el archivo declara.
+                    ' Pero si el motor va a usar OTRA cosa, se dice y se muestra: deducirlo de un renglon
+                    ' de mas arriba no es verlo.
+                    Dim efectivaArbol = _ctx.GetParsedArmoEfectivo(itemFormID)
+                    If efectivaArbol IsNot Nothing Then
+                        Dim propios = Canon.CanonInterpretacion.ComplementosDe(armo)
+                        Dim usados = Canon.CanonInterpretacion.ComplementosDe(efectivaArbol)
+                        If Not New HashSet(Of UInteger)(propios).SetEquals(usados) Then
+                            Dim nEfe = AddNode(armoNode,
+                                $"⚠ Lo que el motor va a DIBUJAR: {usados.Count} armature(s) del terminal " &
+                                $"(este record declara {propios.Count})")
+                            For Each af In usados
+                                AddNode(nEfe, $"ARMA {DescribeFormID(af)}")
+                            Next
+                        End If
+                    End If
                 End If
 
                 ' Armor Addons
-                For Each addon In ArmoEditor_Form.ReadAddons(armo)
+                For Each addon In Canon.CanonInterpretacion.LeerComplementos(armo)
                     Dim aaFormID = addon.ArmaFormID
                     Dim aaRec = _pluginManager.GetRecord(aaFormID)
                     If aaRec Is Nothing OrElse aaRec.Header.Signature <> "ARMA" Then
@@ -11444,6 +11530,10 @@ Public Class MainForm
         _outfitDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         _leveledListDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         _armoDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        ' Idem: los borradores que acaban de pasar a ser records reales dejan de tener foto.
+        For Each fidYaReal In realGlobal.Keys
+            _armoDraftSnapshots.TryRemove(fidYaReal, Nothing)
+        Next
         _armaDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         _mswpDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
 

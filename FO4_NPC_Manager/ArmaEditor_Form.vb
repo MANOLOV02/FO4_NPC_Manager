@@ -1491,10 +1491,13 @@ Public Class ArmaEditor_Form
     Private Function CollectSkinPartMeshes(skinFid As UInteger, requestedIsFemale As Boolean) As List(Of String)
         Dim result As New List(Of String)
         If skinFid = 0UI Then Return result
-        Dim armo = _mainForm.GetParsedArmoForEditor(skinFid)
+        ' EFECTIVA: esto NO edita, pregunta que mallas de cuerpo tiene el actor RENDERIZADO. Con 0
+        ' mallas cae a la piel de la raza y el estimador de underarmor fusiona vertices contra OTRO
+        ' cuerpo, asi que la respuesta tiene que ser la del motor.
+        Dim armo = _mainForm.GetParsedArmoEfectivoParaRender(skinFid)
         If armo Is Nothing Then Return result
 
-        Dim armaFids = ArmoEditor_Form.ReadAddons(armo).Select(Function(ent) ent.ArmaFormID).ToList()
+        Dim armaFids = Canon.CanonInterpretacion.LeerComplementos(armo).Select(Function(ent) ent.ArmaFormID).ToList()
 
         Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         For Each fid In armaFids
