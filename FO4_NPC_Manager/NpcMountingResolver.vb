@@ -897,9 +897,40 @@ Friend NotInheritable Class NpcMountingResolver
     ''' Para robots la 2da pasada aporta los sockets reales (P-ArmsTypeA1|0/1/2, P-BotCore,
     ''' P-BotLegs, P-ModSlotA/B, etc.) que viven en SkeletonRef.nif y no en el stub RACE.ANAM.
     ''' Last-wins on duplicate names (BPTD.MODL pisa al RACE.ANAM cuando hay colisión, igual
-    ''' criterio que PrepareSkeleton tiene para bones via MergeAdditionalSkeleton).</summary>
+    ''' criterio que PrepareSkeleton tiene para bones via MergeAdditionalSkeleton).
+    ''' <para>MEMOIZADA por (raza, género) en <see cref="NpcRenderContext.ActorSocketsCached"/>. Esos DOS
+    ''' campos son los únicos de <paramref name="state"/> que este cálculo lee — <c>ResolveSkeletonKey</c>
+    ''' usa <c>state.RaceFormID</c> + <c>state.IsFemale</c> para elegir el <c>MaleSkeletalModel</c> /
+    ''' <c>FemaleSkeletalModel</c>, y la fuente 2 usa <c>state.RaceFormID</c> —; todo lo demás sale del
+    ''' PluginManager y del FilesDictionary, fijos para el orden de carga. La invalidación es UNA sola y
+    ''' está declarada allá: <c>InvalidateParseCaches</c>, o sea el cambio del set de plugins. Dentro del
+    ''' selector de atuendos la raza y el género no pueden cambiar (<c>OutfitPicker_Form</c> los tiene
+    ''' como campos <c>ReadOnly</c> del constructor), y en el render la clave cambia sola con el NPC.</para>
+    ''' <para>MEDIDO antes de memoizar (FO4, 57 plugins, Release x64, 6 corridas): 9,6–22,8 ms POR
+    ''' LLAMADA para devolver 6 sockets, y se llamaba una vez por cada ARMO que pasara el early-return de
+    ''' <c>CollectOmodChunkCandidates</c> — 183 de los 1.041 ARMO del orden de carga. Una pasada de la
+    ''' lista del selector con un atuendo de 5 prendas costaba 17,5–112,3 ms EN EL HILO DE UI.</para>
+    ''' <para>⛔ Los <paramref name="warnings"/> se REPITEN desde la caché en cada llamada. No es
+    ''' cosmético: sin eso la 1ª llamada avisaría y las siguientes no, o sea que memoizar cambiaría la
+    ''' salida observable de la función. La respuesta tiene que ser la misma que recalcular, siempre.</para></summary>
     Friend Function LoadActorBSConnectPoints(state As MainForm.NPCVisualState, warnings As List(Of String)) As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)
+        If state Is Nothing Then Return New Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)(StringComparer.OrdinalIgnoreCase)
+        Dim r = _ctx.ActorSocketsCached(state.RaceFormID, state.IsFemale,
+                                        Function() ConstruirSocketsDelActor(state))
+        If warnings IsNot Nothing Then warnings.AddRange(r.Warnings)
+        Return r.Sockets
+    End Function
+
+    ''' <summary>LA LEY de los sockets del actor: las dos fuentes, en orden, con last-wins. La corre
+    ''' <see cref="LoadActorBSConnectPoints"/> una vez por (raza, género); acá no hay caché ni clave —
+    ''' vive del lado del resolvedor porque el conocimiento es suyo, y la caché vive del lado del
+    ''' contexto porque la invalidación es suya.
+    ''' <para>Los warnings se devuelven en vez de escribirse en la lista del llamador: son parte del
+    ''' RESULTADO memoizado, no un efecto de esta corrida en particular.</para></summary>
+    Private Function ConstruirSocketsDelActor(state As MainForm.NPCVisualState) _
+                     As (Sockets As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo), Warnings As List(Of String))
         Dim dict As New Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)(StringComparer.OrdinalIgnoreCase)
+        Dim warnings As New List(Of String)
 
         ' Source 1: RACE.ANAM
         Dim skelKey = _stateResolver.ResolveSkeletonKey(state, warnings)
@@ -913,7 +944,9 @@ Friend NotInheritable Class NpcMountingResolver
         End If
 
         ' Source 2: BPTD.MODL (via RACE.GNAM) — aporta sockets cross-folder y los del SkeletonRef.
-        Dim bptdBytes = BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(state.RaceFormID, _ctx.PluginManager)
+        ' Por la caché del contexto: adentro de TryLoadBptdSkeletonBytes hay un Canon.CanonRecords.Race
+        ' SIN caché que medía 5,0-8,8 ms, o sea el 60-70% de esta función entera. Leer los bytes es 0,0002 ms.
+        Dim bptdBytes = _ctx.BptdSkeletonBytesCached(state.RaceFormID)
         If bptdBytes IsNot Nothing AndAlso bptdBytes.Length > 0 Then
             IndexSocketsFromBytes(bptdBytes, "BPTD.MODL", dict)
             Dim countAfterSrc2 = dict.Count
@@ -923,7 +956,9 @@ Friend NotInheritable Class NpcMountingResolver
             Logger.LogLazy(Function() $"[SOCKETS-SRC2-BPTD.MODL] BPTD bytes EMPTY → skipped")
         End If
 
-        ' [DIAG] Dump completo del dict — sockets disponibles para el resolver.
+        ' [DIAG] Dump completo del dict — sockets disponibles para el resolver. Sale UNA vez por
+        ' (raza, género), que es cuando el dict se calcula: repetir el mismo volcado en cada consulta no
+        ' agregaba nada y el `OrderBy` corría aunque el Logger estuviera apagado.
         Dim sorted = dict.OrderBy(Function(kv) kv.Key).ToList()
         Logger.LogLazy(Function() $"[SOCKETS-DICT] count={sorted.Count}")
         For Each kv In sorted
@@ -936,7 +971,7 @@ Friend NotInheritable Class NpcMountingResolver
             Logger.LogLazy(Function() $"[SOCKETS-DICT]   '{name}' parent='{parentBone}' T=({t.X:F3},{t.Y:F3},{t.Z:F3}) QuatNiflyXYZW=({qx:F4},{qy:F4},{qz:F4},{qw:F4}) [disco(w,x,y,z)=({qx:F4},{qy:F4},{qz:F4},{qw:F4})] S={sc:F3}")
         Next
 
-        Return dict
+        Return (dict, warnings)
     End Function
 
     ''' <summary>Helper: load NIF bytes from FilesDictionary by key + index its BSConnectPoint
@@ -1206,7 +1241,9 @@ Friend NotInheritable Class NpcMountingResolver
     ''' canónica de sockets). Devuelve Nothing si la race no tiene BPTD o el NIF no se puede
     ''' leer — el resolver tolera host Nothing devolviendo NoMatch para todos los addons.</summary>
     Private Function LoadHostNifForMounting(state As MainForm.NPCVisualState) As Nifcontent_Class_Manolo
-        Dim bytes = BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(state.RaceFormID, _ctx.PluginManager)
+        ' Por la caché del contexto, misma razón que en LoadActorBSConnectPoints: el parseo de la RACE
+        ' que hay adentro del resolvedor de BPTD costaba 5,0-8,8 ms cada vez.
+        Dim bytes = _ctx.BptdSkeletonBytesCached(state.RaceFormID)
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
         Try
             Dim nif As New Nifcontent_Class_Manolo()

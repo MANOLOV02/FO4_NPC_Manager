@@ -2560,6 +2560,10 @@ Public Module FaceGenBuilder
             ' Antes el spec llevaba Salida=Ninguna, o sea exento del chequeo de pertenencia, y entonces un
             ' facetint de un horneado ANTERIOR entraba al BSA con el NIF nuevo por el solo hecho de existir
             ' -el barrido de SSE no toca FaceTint\ a proposito-: cara mezcla de dos horneados.
+            ' ⛔ Esta declaracion YA NO es lo que hace requerido al facetint: eso lo garantiza
+            ' FaceGenPaths.SalidasSiempreRequeridas, porque a este metodo solo se entra si el NPC tiene head
+            ' part de tipo Face y el que NO la tiene tambien necesita el archivo. Queda como lo que dice ser
+            ' -la DECISION del bake- y para que los cinco bails de abajo sigan leyendose como "falta".
             If result IsNot Nothing Then
                 result.SalidasDeTexturaDeclaradas = result.SalidasDeTexturaDeclaradas Or FaceGenPaths.SalidaDeTexturaDeCara.SseFaceTint
             End If

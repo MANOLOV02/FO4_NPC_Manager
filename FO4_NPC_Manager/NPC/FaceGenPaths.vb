@@ -75,9 +75,14 @@ Friend Module FaceGenPaths
     ''' <para>El facetint de SSE llevaba <c>Ninguna</c> y estaba MAL: eso son DOS cosas -"requerido
     ''' siempre" y "exento de pertenencia"- y solo queriamos la primera. Con la segunda, un facetint de un
     ''' horneado ANTERIOR entraba al BSA junto al NIF nuevo por el solo hecho de existir (el barrido de SSE
-    ''' no toca FaceTint\ a proposito), y la cara salia mezcla de dos horneados. Ahora lleva su tag y el
-    ''' bake lo DECLARA al entrar a WriteSseFacetintDds: sigue exigido siempre -si falta, el motor deja el
-    ''' tint en NULL y la cara sale marron- pero ademas tiene que ser SUYO.</para></summary>
+    ''' no toca FaceTint\ a proposito), y la cara salia mezcla de dos horneados. Ahora lleva su tag, asi que
+    ''' tiene que ser SUYO.</para>
+    ''' <para>⛔ Y "requerido siempre" NO lo da el tag: lo da <see cref="SalidasSiempreRequeridas"/>. La
+    ''' declaracion del bake no alcanza, porque el bake solo DECLARA el facetint al entrar a
+    ''' <c>WriteSseFacetintDds</c>, y a ese metodo solo se entra si el NPC tiene head part de tipo Face. Un
+    ''' NPC de SSE sin head part Face -o uno cuya shape Face se cayo por excepcion de material, que es una
+    ''' ruta INDEPENDIENTE de los datos- no declaraba nada, el packer no exigia el facetint y el bundle
+    ''' commiteaba SIN el: cara marron in-game, sueltos ya borrados y sin forma de reintentar.</para></summary>
     <Flags>
     Friend Enum SalidaDeTexturaDeCara
         Ninguna = 0
@@ -88,6 +93,33 @@ Friend Module FaceGenPaths
         SseHeadDiffuse = 16
         SseHeadNormal = 32
     End Enum
+
+    ''' <summary>Las salidas cuya RUTA arma el MOTOR por su cuenta, sin leer el NIF. Se exigen SIEMPRE:
+    ''' contra estas el bake no puede "no comprometerse", porque el que va a buscarlas no pregunta.
+    ''' <para>Hoy es UNA: el facetint de SSE. El motor arma
+    ''' <c>FaceGenData\FaceTint\&lt;plugin&gt;\&lt;id&gt;.dds</c> el mismo (<c>BuildFaceTintPath</c>) y se lo
+    ''' instala al material (<c>ApplyFaceTintToHeadMaterial</c>) IGNORANDO por completo el slot 6 del NIF;
+    ''' si el archivo no esta, el tint del material queda NULL y la cara sale MARRON. Las direcciones de esa
+    ''' cadena NO se copian aca a proposito -actualizar el exe las MUEVE y no se corrigen tres copias-: viven
+    ''' en <c>NpcFaceGenPacker</c> (spec del facetint y nota B1) y en <c>Shader_Class</c> (ley de albedo del
+    ''' facegen de SSE).</para>
+    ''' <para>El resto de las salidas se alcanza A TRAVES del texture-set del NIF: si el bake no las
+    ''' escribio, el NIF no las nombra y no falta nada. POR ESO esas si pueden depender de la declaracion y
+    ''' esta no. Una salida nueva entra aca SOLO si se puede citar que el motor arma su ruta solo.</para>
+    ''' <para>⛔ NO confundir con la exencion de PERTENENCIA, que es <c>Ninguna</c> y es otra ley: el
+    ''' facetint se exige siempre Y ADEMAS tiene que ser de este horneado. Ver <see cref="SeExigeSiempre"/>.</para></summary>
+    Friend Const SalidasSiempreRequeridas As SalidaDeTexturaDeCara = SalidaDeTexturaDeCara.SseFaceTint
+
+    ''' <summary>Contesta UNA de las dos leyes del packer: "¿si falta, es error?". Da True para
+    ''' <c>Ninguna</c> (el NIF de FaceGeom) y para todo lo que este en
+    ''' <see cref="SalidasSiempreRequeridas"/>; para el resto manda lo que el bake DECLARO.
+    ''' <para>La OTRA ley -"¿es de este horneado?"- NO se contesta aca, y para el facetint de SSE da
+    ''' DISTINTO a proposito. Por eso son dos predicados con nombre y no un centinela: adentro de
+    ''' <c>PackBatch</c>, <c>Ninguna</c> significaba las DOS cosas a la vez en la MISMA expresion.</para></summary>
+    Friend Function SeExigeSiempre(salida As SalidaDeTexturaDeCara) As Boolean
+        Return salida = SalidaDeTexturaDeCara.Ninguna OrElse
+               (salida And SalidasSiempreRequeridas) <> SalidaDeTexturaDeCara.Ninguna
+    End Function
 
     ''' <summary>Una salida de textura de cara de FO4: qué slot del texture-set ocupa, con qué sufijo se
     ''' nombra su archivo, y qué identidad tiene.</summary>

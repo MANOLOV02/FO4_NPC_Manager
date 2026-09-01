@@ -59,6 +59,13 @@
          PackResult y FaceGenFileSpec son Friend y asi se quedan: el testigo LLAMA al sujeto.
          Ver Tools/PackRequeridosGate y 00-reglas-el-testigo-tiene-que-compartir-el-codigo-del-sujeto. -->
     <InternalsVisibleTo Include="PackRequeridosGate" />
+    <!-- ⛔ EL TESTIGO DE LAS DOS CACHES DE ESQUELETO de NpcRenderContext (bytes del BPTD.MODL por raza,
+         sockets BSConnectPoint del actor por raza+genero). Compara CACHEADO contra RECALCULAR llamando al
+         sujeto real: NpcRenderContext, NpcMountingResolver y NpcMeshCollector son Friend y asi se quedan.
+         Un cache que contesta distinto de recalcular es una falla MUDA —la prenda aparece o desaparece de
+         la vista previa y nada lo explica—, y ningun otro arnes del repo cruza esa frontera.
+         Ver Tools/SocketsCacheGate y 00-reglas-el-testigo-tiene-que-compartir-el-codigo-del-sujeto. -->
+    <InternalsVisibleTo Include="SocketsCacheGate" />
   </ItemGroup>
 
   <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save

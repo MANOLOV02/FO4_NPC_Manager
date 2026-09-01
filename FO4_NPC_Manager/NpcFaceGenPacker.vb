@@ -102,10 +102,13 @@ Public Module NpcFaceGenPacker
         Public Entry As String
         Public IsTexture As Boolean
         ''' <summary>Qué salida de textura de cara ES este spec, y con eso, CUÁNDO se exige.
-        ''' <para><c>Ninguna</c> ⇒ se exige SIEMPRE: el NIF de FaceGeom, y el facetint de SSE (el motor arma
-        ''' <c>FaceGenData\FaceTint\&lt;plugin&gt;\&lt;id&gt;.dds</c> por su cuenta e IGNORA el slot 6, así que si
-        ''' falta, el tint del material queda NULL y la cara sale marrón).</para>
-        ''' <para>Cualquier otro valor ⇒ se exige SÓLO si el bake DECLARÓ esa salida en el bundle.</para>
+        ''' <para><c>Ninguna</c> ⇒ se exige SIEMPRE **y** queda exento del chequeo de pertenencia. Hoy lo
+        ''' lleva SÓLO el NIF de FaceGeom, que el bake escribe siempre que llega a Success, así que su
+        ''' presencia en disco ya prueba que es de este horneado.</para>
+        ''' <para>Cualquier otro valor ⇒ se exige sólo si el bake DECLARÓ esa salida en el bundle… SALVO las
+        ''' de <see cref="FaceGenPaths.SalidasSiempreRequeridas"/> —hoy el facetint de SSE—, que se exigen
+        ''' SIEMPRE y ADEMÁS tienen que ser de este horneado. Las dos preguntas se contestan por separado:
+        ''' <see cref="FaceGenPaths.SeExigeSiempre"/> y el tag.</para>
         ''' <para>⛔ Reemplazó a un `IsOptional As Boolean` que convivía con esto: eran DOS predicados para
         ''' la MISMA pregunta ("¿lo exijo?"), y el booleano ganaba en silencio. Los specs que llevaba
         ''' (diffuse y normal per-NPC de SSE) hoy no los declara nadie ⇒ nunca se exigen, que es
@@ -430,16 +433,30 @@ Public Module NpcFaceGenPacker
                 ' "requerido = declarado" no se notaba porque el bundle se descartaba entero.
                 ' Rompía la invariante que este mismo módulo declara: dos Save con los MISMOS inputs tienen
                 ' que producir el MISMO archive.
+                ' ⛔ `SeExigeSiempre` NO es "spec.Salida = Ninguna" con otro nombre, y esa diferencia ES el
+                ' defecto que este bloque tuvo. Al ponerle tag al facetint de SSE -que hacía falta, para el
+                ' chequeo de pertenencia de abajo- se le fue con el tag la garantía de "requerido SIEMPRE":
+                ' pasó a depender de que el bake lo DECLARE, y el bake sólo lo declara al entrar a
+                ' WriteSseFacetintDds, al que sólo se entra si el NPC tiene head part de tipo Face. Un NPC de
+                ' SSE sin head part Face -o uno cuya shape Face se cayó por excepción de material, ruta que no
+                ' depende de los datos- commiteaba el bundle SIN facetint: cara marrón in-game, y como el paso
+                ' 5 ya borró los sueltos, sin forma de reintentar.
+                ' La ley vive en FaceGenPaths, junto al enum, y se deriva del motor: se exige siempre lo que el
+                ' motor busca por su cuenta sin leer el NIF.
                 Dim requerido As Boolean =
                     (Not b.DeclaracionDeSalidasPoblada) OrElse
-                    (spec.Salida = FaceGenPaths.SalidaDeTexturaDeCara.Ninguna) OrElse
+                    FaceGenPaths.SeExigeSiempre(spec.Salida) OrElse
                     ((b.SalidasDeTexturaDeclaradas And spec.Salida) <> FaceGenPaths.SalidaDeTexturaDeCara.Ninguna)
 
                 ' ¿ES DE ESTE HORNEADO? Para las salidas con TAG lo dice el bake, por IDENTIDAD: están en
                 ' SalidasDeTexturaEscritas si y sólo si LAS ESCRIBIÓ. Sin comparar rutas — las dos puntas
-                ' las arman de raíces distintas (el bake de BakeOutputRoot.Current(), que --outdir mueve). Las que NO llevan tag (el NIF de FaceGeom y el facetint de SSE)
-                ' el bake no las registra, así que para ellas el único indicio posible sigue siendo que el
-                ' archivo esté — igual que antes de este cambio.
+                ' las arman de raíces distintas (el bake de BakeOutputRoot.Current(), que --outdir mueve).
+                ' La ÚNICA que no lleva tag es el NIF de FaceGeom: el bake no lo registra, así que para él el
+                ' único indicio posible sigue siendo que el archivo esté. El facetint de SSE SÍ lleva tag y el
+                ' bake SÍ lo registra (FaceGenBuilder: lo declara al entrar a WriteSseFacetintDds y lo marca
+                ' escrito tras el File.Write), que es justo lo que evita que un facetint de un horneado
+                ' anterior viaje al BSA con el NIF nuevo. Que se exija SIEMPRE es OTRA ley y la contesta
+                ' `requerido` arriba, no ésta.
                 ' ⛔ ESTO VA FUERA DE LA RAMA "no requerido", y esa es la corrección importante. Cuando el
                 ' chequeo vivía sólo del lado no-requerido quedaba abierto el caso: el bake DECLARA el _msn,
                 ' la escritura de ESTE horneado FALLA, y el barrido del stale tampoco puede borrar el viejo
@@ -468,8 +485,10 @@ Public Module NpcFaceGenPacker
                     ' produjera el bake lo que produjera—, así que un NPC cuya raza no declara ninguna head
                     ' part de tipo Face perdía los tres y el Save reportaba "N NPCs failed to pack" en CADA
                     ' guardado, por archivos que el bake nunca tuvo que escribir.
-                    ' `Salida = Ninguna` ⇒ se exige SIEMPRE (el NIF; y el facetint de SSE, que el motor arma
-                    ' por su cuenta e ignora el slot 6, así que omitirlo es cara marrón).
+                    ' Se exige SIEMPRE lo que dice `FaceGenPaths.SeExigeSiempre`: el NIF, por `Salida =
+                    ' Ninguna`, y el facetint de SSE, por estar en `SalidasSiempreRequeridas` — el motor arma
+                    ' su ruta por su cuenta e ignora el slot 6, así que omitirlo es cara marrón. Para esos dos
+                    ' no importa qué declaró el bake.
                     ' Fail-CLOSED: sin declaración poblada se exige todo — un bundle armado por un camino que
                     ' no pobló la declaración falla RUIDOSO en vez de empaquetar de menos en silencio.
                     If requerido Then missingForThisBundle.Add(sourcePath)

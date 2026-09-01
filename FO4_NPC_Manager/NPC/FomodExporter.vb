@@ -513,30 +513,65 @@ Public Module FomodExporter
         Return SanitizeXmlText(sb.ToString())
     End Function
 
+    ''' <summary>⛔ UNA sola ley de nombres para los rescates: la usan el que APARTA y el que LIMPIA.
+    ''' Escritas por separado, la limpieza dejaba vivos justo los nombres que el otro sabe crear. n=1 es
+    ''' el primero y va SIN sufijo, que es como ya estan nombrados los que hay en disco.</summary>
+    Private Function NombreDeRescate(zipPath As String, n As Integer) As String
+        Return zipPath & ".recovered" & If(n <= 1, "", n.ToString())
+    End Function
+
+    ''' <summary>Cuantos rescates puede haber. Es el CONJUNTO CERRADO que este archivo sabe crear, y por
+    ''' eso la limpieza lo puede barrer entero SIN comodines: un `.recovered*` a lo ancho se llevaria
+    ''' puesto un archivo del usuario que este codigo nunca escribio.</summary>
+    Private Const MaxRescates As Integer = 99
+
     ''' <summary>Aparta el paquete YA TERMINADO cuando el volcado sobre el destino se corto. Devuelve la
-    ''' ruta donde quedo, o "" si no se pudo apartar (ahi el .tmp se queda donde esta, que es mejor que
-    ''' borrarlo). No pisa un rescate anterior: cada uno puede ser de una exportacion distinta.</summary>
+    ''' ruta donde quedo, o "" si no se pudo apartar — y ahi el .tmp SE QUEDA donde esta, que es mejor
+    ''' que borrarlo. ⛔ Eso ultimo lo tiene que respetar el Finally de ExportToZip: cuando no lo
+    ''' respetaba, el usuario perdia el zip viejo (truncado por el volcado) Y el nuevo (borrado aca).
+    ''' No pisa un rescate anterior: cada uno puede ser de una exportacion distinta.</summary>
     Private Function ApartarPaqueteSano(tmp As String, zipPath As String) As String
         Try
             If Not File.Exists(tmp) Then Return ""
-            Dim rescate = zipPath & ".recovered"
-            Dim n = 2
-            While File.Exists(rescate) AndAlso n < 100
-                rescate = zipPath & ".recovered" & n.ToString()
-                n += 1
-            End While
-            If File.Exists(rescate) Then Return ""
-            File.Move(tmp, rescate)
-            Return rescate
+            For n = 1 To MaxRescates
+                Dim rescate = NombreDeRescate(zipPath, n)
+                If Not File.Exists(rescate) Then
+                    ' Puede tirar (MAX_PATH, permisos, un DIRECTORIO con ese nombre): lo agarra el Catch
+                    ' y sale "", que es la senal de "no se pudo apartar".
+                    File.Move(tmp, rescate)
+                    Return rescate
+                End If
+            Next
+            Return ""
         Catch
             Return ""
         End Try
     End Function
 
-    ''' <summary>Stream the package into <paramref name="zipPath"/>. NOT atomic: writes to a .tmp
-    ''' sibling and moves over the target only on success, so a failure/cancel never leaves a
-    ''' half-written ZIP under the final name. Sources are streamed (never materialized in RAM —
-    ''' BA2s can be multi-GB); archives get CompressionLevel.Fastest (their payload is already
+    ''' <summary>Un export que SALE BIEN limpia los rescates de ESE zip: el destino ya es el paquete
+    ''' bueno, asi que lo que quedo al lado de una corrida cortada dejo de ser la unica copia sana. Es la
+    ''' misma ley que EscrituraEnElLugar.GuardarConCopia aplica a su copia heredada —"un guardado que
+    ''' sale bien limpia las dos, que es lo que saca al archivo del estado degradado"—, y sin ella cada
+    ''' corte deja otro paquete de cientos de MB que ninguna ruta del arbol borra jamas.
+    ''' Best-effort: que no se pueda borrar uno NO convierte un export exitoso en un error.</summary>
+    Private Sub LimpiarRescates(zipPath As String)
+        For n = 1 To MaxRescates
+            Try
+                Dim r = NombreDeRescate(zipPath, n)
+                If File.Exists(r) Then File.Delete(r)
+            Catch
+                ' Best-effort, igual que EscrituraEnElLugar.Borrar: un huerfano no rompe nada.
+            End Try
+        Next
+    End Sub
+
+    ''' <summary>Stream the package into <paramref name="zipPath"/>. The package is built in a .tmp
+    ''' sibling and only then dumped over the target, so cancelling or failing WHILE BUILDING never
+    ''' touches the previous ZIP. ⚠️ The dump itself is NOT atomic: if it is cut after opening the
+    ''' target, the previous ZIP is left truncated and the .tmp is the only sane copy — that case keeps
+    ''' the finished package and the error says where it is (see the Catch below). Sources are
+    ''' streamed (never materialized in RAM — BA2s can be multi-GB); archives get
+    ''' CompressionLevel.Fastest (their payload is already
     ''' compressed), everything else Optimal. <paramref name="screenshotPng"/>: PNG bytes of the
     ''' preview capture, written as <see cref="ScreenshotEntryZipPath"/> when non-Nothing (the
     ''' caller passes Nothing when the checkbox is off or no preview was available — the
@@ -550,12 +585,27 @@ Public Module FomodExporter
         Dim items = manifest.Where(Function(i) i.Exists).ToList()
         Dim hasShot = screenshotPng IsNot Nothing AndAlso screenshotPng.Length > 0
         Dim total = items.Count + 2 + If(hasShot, 1, 0)
-        ' Tres estados, no dos: si se fallo ARMANDO el zip (o el usuario cancelo) el .tmp es basura y se
-        ' borra; si se fallo DENTRO del volcado, el destino quedo a medias y el .tmp es la UNICA copia sana,
-        ' asi que se APARTA con nombre propio (el reintento abre el mismo .tmp con File.Create y lo
-        ' truncaria) y el error DICE DONDE QUEDO; si salio todo bien, se borra.
+        ' CUATRO estados, no tres. Los tres de antes seguian juntos los dos que mas se parecen y que
+        ' piden respuestas OPUESTAS:
+        '   a) fallo ARMANDO el zip (o el usuario cancelo)     -> el .tmp es basura y se borra;
+        '   b) el volcado NO LLEGO A ABRIR el destino          -> el destino esta INTACTO: no se aparta
+        '      nada y NO se le dice que quedo a medias, que lo mandaria a pisar un zip BUENO;
+        '   c) el volcado se corto DESPUES de abrir el destino -> el destino quedo truncado y el .tmp es
+        '      la UNICA copia sana: se APARTA con nombre propio (el reintento abre el mismo .tmp con
+        '      File.Create y lo truncaria) y el error DICE DONDE QUEDO;
+        '   d) salio todo bien                                 -> se borra el .tmp y se limpian los
+        '      rescates que hayan quedado de un corte anterior.
+        ' (b) de (c) las separa `destinoTocado`. Es la misma distincion que EscrituraEnElLugar hace con su
+        ' `seToco` interno en GuardarConCopia, y por el mismo motivo: sin ella, o se avisa de una perdida
+        ' que no paso, o no se recupera cuando si hacia falta.
         Dim volcando = False
         Dim volcado = False
+        ' ⛔ CONTRATO de VolcarEncima: si este flag quedo en False y el volcado tiro, el destino esta
+        ' BYTE-IDENTICO. El callback corre despues de abrir Y truncar, antes del primer byte copiado.
+        Dim destinoTocado = False
+        ' Si el apartado no se pudo hacer, el .tmp SE QUEDA: es lo que promete ApartarPaqueteSano y lo que
+        ' el Finally borraba igual, dejando al usuario sin el zip viejo Y sin el nuevo.
+        Dim conservarTmp = False
         Dim tmp = zipPath & ".tmp"
         Try
             Using zip As New ZipArchive(File.Create(tmp), ZipArchiveMode.Create)
@@ -603,12 +653,31 @@ Public Module FomodExporter
             ' parcial y el .tmp es la UNICA copia sana. Por eso el .tmp se borra solo si el volcado
             ' termino bien.
             volcando = True
-            BSA_BA2_Library_DLL.EscrituraEnElLugar.VolcarEncima(tmp, zipPath)
+            ' ⛔ `Sub() destinoTocado = True` es una ASIGNACION: el cuerpo de un lambda `Sub()` es una
+            ' sentencia. En un `Function()` la MISMA linea seria una comparacion, el flag no cambiaria
+            ' nunca y el mensaje volveria a mentir — trampa de VB, anotada porque acá se paga cara.
+            BSA_BA2_Library_DLL.EscrituraEnElLugar.VolcarEncima(
+                tmp, zipPath, alTocarElDestino:=Sub() destinoTocado = True)
             volcado = True
+            ' Estado (d): el destino ya es el paquete bueno, asi que un rescate de un corte anterior dejo
+            ' de ser la unica copia sana. Es lo que lo saca del estado degradado.
+            LimpiarRescates(zipPath)
         Catch ex As Exception When volcando AndAlso Not volcado
-            ' El volcado se corto: el zip de destino puede haber quedado parcial y el .tmp es el paquete
-            ' TERMINADO. Se aparta con nombre propio y el error dice donde quedo — si no, el usuario no
-            ' tiene forma de saber que su export esta ahi y el proximo intento lo pisaria.
+            If Not destinoTocado Then
+                ' Estado (b): el volcado ni llego a abrir el destino, asi que esta INTACTO. No se aparta
+                ' el paquete —seria un .recovered muerto de cientos de MB por cada intento, y no los borra
+                ' nadie— y sobre todo NO se le dice que quedo a medias: eso lo mandaba a pisar su zip
+                ' BUENO con uno viejo. Misma decision que GuardarConCopia toma con `Not seToco`.
+                ' El ex.Message va EMBEBIDO porque el dialogo muestra solo .Message, no el inner
+                ' (FomodExport_Form.vb:355), y sin la causa el usuario no sabe que cerrar.
+                Throw New IOException(
+                    $"'{Path.GetFileName(zipPath)}' was NOT modified: the package could not be written " &
+                    "over it. Nothing on disk was changed — close whatever is holding that file, or fix " &
+                    "the cause below, and export again." & Environment.NewLine & ex.Message, ex)
+            End If
+            ' Estado (c): el destino quedo truncado y el .tmp es el paquete TERMINADO. Se aparta con
+            ' nombre propio y el error dice donde quedo — si no, el usuario no tiene forma de saber que
+            ' su export esta ahi y el proximo intento lo pisaria.
             Dim rescate = ApartarPaqueteSano(tmp, zipPath)
             If rescate <> "" Then
                 Throw New IOException(
@@ -616,15 +685,26 @@ Public Module FomodExporter
                     $"next to it as '{Path.GetFileName(rescate)}' — rename it to " &
                     $"'{Path.GetFileName(zipPath)}' to use it.", ex)
             End If
-            Throw
+            ' Ni apartar se pudo: el .tmp SE QUEDA —contrato de ApartarPaqueteSano— y el mensaje dice
+            ' donde esta. Antes salia el error crudo del volcado y el Finally borraba el paquete: el
+            ' usuario se quedaba sin el zip viejo (truncado) y sin el nuevo, y sin enterarse de ninguna
+            ' de las dos cosas.
+            conservarTmp = True
+            Throw New IOException(
+                $"'{Path.GetFileName(zipPath)}' was left incomplete and the finished package could not " &
+                $"be renamed. It is still next to it as '{Path.GetFileName(tmp)}' — rename that file to " &
+                $"'{Path.GetFileName(zipPath)}' to use it." & Environment.NewLine & ex.Message, ex)
         Finally
-            ' Lo que quede del .tmp en cualquier otro camino (cancelado, fallo armando el zip, exito) es
-            ' basura. Si el Catch de arriba lo aparto, aca ya no esta.
-            Try
-                If File.Exists(tmp) Then File.Delete(tmp)
-            Catch
-                ' Best-effort cleanup — a leftover .tmp is harmless and overwritten next run.
-            End Try
+            ' Lo que quede del .tmp en cualquier otro camino (cancelado, fallo armando el zip, destino
+            ' INTACTO, exito) es basura. Si el Catch lo aparto, aca ya no esta; y si el Catch NO lo pudo
+            ' apartar, `conservarTmp` lo protege: es la unica copia del paquete que existe.
+            If Not conservarTmp Then
+                Try
+                    If File.Exists(tmp) Then File.Delete(tmp)
+                Catch
+                    ' Best-effort cleanup — a leftover .tmp is harmless and overwritten next run.
+                End Try
+            End If
         End Try
     End Sub
 

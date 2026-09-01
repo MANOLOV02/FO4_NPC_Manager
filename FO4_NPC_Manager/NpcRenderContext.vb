@@ -34,6 +34,33 @@ Friend NotInheritable Class NpcRenderContext
     Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IHdpt)()
     Private ReadOnly _armorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HashSet(Of UInteger))()
 
+    ''' <summary>Bytes del esqueleto extra de una RAZA (<c>RACE.GNAM</c> → <c>BPTD.MODL</c>), keyed por
+    ''' FormID de la raza. Un <c>Nothing</c> ("esta raza no tiene BPTD/MODL") lo memoiza
+    ''' <c>GetOrAdd</c> nativamente, así que un miss tampoco se re-intenta.
+    ''' <para>⛔ Vive ACÁ, con las cachés de parseo, porque tenía DOS dueños: el render la memoizaba en
+    ''' <c>MainForm._skelBptdBytesCache</c> y los DOS call sites de <see cref="NpcMountingResolver"/> no
+    ''' la memoizaban en absoluto. Los mismos bytes, dos leyes, aplicadas en un solo lado.</para>
+    ''' <para>MEDIDO (FO4, 57 plugins, Release x64, 6 corridas): <c>TryLoadBptdSkeletonBytes</c> cuesta
+    ''' 6,1–11,3 ms POR LLAMADA, y de eso 5,0–8,8 ms son el <c>Canon.CanonRecords.Race</c> que hace
+    ''' adentro SIN caché. Leer los bytes es 0,0002 ms: el costo es el parseo del record, no el I/O. En el
+    ''' selector de atuendos eso se pagaba una vez POR PRENDA y por pasada de la lista.</para></summary>
+    Private ReadOnly _bptdSkelBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Byte())()
+
+    ''' <summary>Los sockets <c>BSConnectPoint::Parents</c> del ACTOR, keyed por (raza, género) — que son
+    ''' EXACTAMENTE los dos campos de <c>NPCVisualState</c> que
+    ''' <see cref="NpcMountingResolver.LoadActorBSConnectPoints"/> lee; todo lo demás lo deriva del
+    ''' PluginManager y del FilesDictionary, fijos para el orden de carga.
+    ''' <para>Se guardan los WARNINGS junto al diccionario y se REPITEN en cada hit. ⛔ No es adorno: sin
+    ''' eso la primera llamada avisaría "No skeleton path resolved for race X" y la segunda no, o sea que
+    ''' memoizar cambiaría la salida observable — que es justo lo que el A/B de esta tanda exige que NO
+    ''' cambie. Si alguien "simplifica" esto tirando los warnings, rompe esa igualdad en silencio.</para>
+    ''' <para>La LEY (las dos fuentes: <c>RACE.ANAM</c> + <c>BPTD.MODL</c>) NO vive acá: se recibe como
+    ''' fábrica desde el resolvedor, que es su dueño. Acá vive sólo la caché, porque acá vive su
+    ''' invalidación.</para></summary>
+    Private ReadOnly _actorSocketsCache As New System.Collections.Concurrent.ConcurrentDictionary(Of (Race As UInteger, Female As Boolean),
+                                                                                                     (Sockets As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo),
+                                                                                                      Warnings As List(Of String)))()
+
     ''' <summary>Optional draft-resolver hook (set by MainForm). Given a FormID, returns the draft's
     ''' <see cref="Canon.IArmo"/> when the FormID is an in-memory ARMO draft (provisional 0xFF sentinel or
     ''' an override draft), or Nothing when it is not a draft (the real-record cache path then runs).
@@ -283,6 +310,53 @@ Friend NotInheritable Class NpcRenderContext
         Return _hdptCache.GetOrAdd(hRec.Header.FormID, Function(fid) Canon.CanonRecords.Hdpt(hRec, PluginManager))
     End Function
 
+    ''' <summary>Los bytes del esqueleto extra de una raza (<c>RACE.GNAM</c> → <c>BPTD.MODL</c>), UNA vez
+    ''' por raza y por orden de carga. La resolución sigue siendo la de
+    ''' <see cref="BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes"/> — acá sólo se memoiza.
+    ''' <para>⛔ Los TRES call sites pasan por acá (el render en <c>MainForm.PrepareSkeleton</c> y los dos
+    ''' de <see cref="NpcMountingResolver"/>). Una segunda caché de estos mismos bytes en otro objeto
+    ''' vuelve a partir la ley en dos: si hace falta invalidar, se invalida en
+    ''' <see cref="InvalidateParseCaches"/> y en ningún otro lado.</para></summary>
+    Public Function BptdSkeletonBytesCached(raceFormID As UInteger) As Byte()
+        Return _bptdSkelBytesCache.GetOrAdd(raceFormID,
+            Function(fid) BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(fid, PluginManager))
+    End Function
+
+    ''' <summary>Los sockets del actor por (raza, género), calculados UNA vez con la
+    ''' <paramref name="factory"/> del resolvedor —que es quien tiene la ley de las dos fuentes— y
+    ''' devueltos después desde la caché.
+    ''' <para>⛔ Devuelve una COPIA del diccionario y de la lista de warnings: el llamador sigue siendo
+    ''' dueño de lo que recibe, igual que cuando esto se recalculaba entero. Hoy ningún consumidor muta ni
+    ''' el diccionario ni un <c>ConnectPointInfo</c> (todos leen <c>.Translation</c>/<c>.Rotation</c>/
+    ''' <c>.Scale</c> hacia un <c>Transform_Class</c> NUEVO), pero eso es una propiedad AUDITADA y la
+    ''' copia la vuelve una propiedad CONSTRUIDA — que no se puede perder en un cambio futuro. Son 6
+    ''' entradas en el corpus de FO4: el copiado no se mide.</para>
+    ''' <para>⛔ Los warnings se REPITEN en cada llamada, no sólo en la primera: la salida observable
+    ''' tiene que ser idéntica a la de recalcular. Ver el comentario de <c>_actorSocketsCache</c>.</para></summary>
+    Public Function ActorSocketsCached(raceFormID As UInteger, isFemale As Boolean,
+                                       factory As Func(Of (Sockets As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo),
+                                                           Warnings As List(Of String)))) _
+                                       As (Sockets As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo),
+                                           Warnings As List(Of String))
+        Dim guardado = _actorSocketsCache.GetOrAdd((raceFormID, isFemale), Function(k) factory())
+        Return (New Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)(guardado.Sockets, StringComparer.OrdinalIgnoreCase),
+                New List(Of String)(guardado.Warnings))
+    End Function
+
+    ''' <summary>Cuántas entradas tienen las dos cachés de esqueleto. SÓLO LECTURA, para que un testigo
+    ''' pueda comprobar que <see cref="InvalidateParseCaches"/> las VACÍA de verdad.
+    ''' <para>⛔ Existe porque la propiedad "se vació" no se puede observar de afuera de ninguna otra
+    ''' forma honesta: por identidad del arreglo NO se puede —<c>FilesDictionary</c> devuelve la MISMA
+    ''' instancia de bytes para el mismo archivo, así que un recálculo real se ve idéntico a un hit (el
+    ''' gate se puso rojo con ese testigo falso antes de existir esta propiedad)— y por tiempo sería un
+    ''' umbral inventado. Si esta cuenta no baja a 0, un cambio del set de plugins deja vivo el esqueleto
+    ''' de la raza del orden anterior.</para></summary>
+    Friend ReadOnly Property CuentaDeCachesDeEsqueleto As (Bptd As Integer, Sockets As Integer)
+        Get
+            Return (_bptdSkelBytesCache.Count, _actorSocketsCache.Count)
+        End Get
+    End Property
+
     ''' <summary>Clear every parse cache. Call on load-order change (MainForm.ParseAllNPCs). Clears
     ''' ALL caches the context owns — consistent owner semantics (the old MainForm cleared RACE/HDPT/
     ''' NPC_ but not ARMO/ARMA; harmless given the immutable PluginManager, unified here).</summary>
@@ -293,6 +367,10 @@ Friend NotInheritable Class NpcRenderContext
         _raceCanonCache.Clear()
         _hdptCache.Clear()
         _armorRaceCache.Clear()
+        ' Derivadas del MISMO orden de carga (bytes del BPTD.MODL y los sockets del actor): si sobreviven
+        ' a un cambio del set de plugins, un FormID de raza reciclado devuelve el esqueleto del anterior.
+        _bptdSkelBytesCache.Clear()
+        _actorSocketsCache.Clear()
     End Sub
 
     ''' <summary>Drop the SINGLE record <paramref name="fid"/> from the parse caches (after an in-memory override

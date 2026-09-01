@@ -92,7 +92,16 @@ Public Module Borradores
     ''' aviso. Es el mismo defecto que ya se cazó una vez, y estaba gateado sólo para ARMA.</para>
     ''' <para>Toma <c>Object</c> porque las cinco vistas no comparten interfaz, pero lo único que se toca
     ''' es el <c>CanonRecordView</c>, que SÍ es un tipo concreto común: después del cast queda todo
-    ''' tipado, sin enlace tardío.</para></summary>
+    ''' tipado, sin enlace tardío.</para>
+    ''' <para>⛔ Y NACIDO PROPIO: la marca de «vista efectiva» se apaga acá. Un clon es, por definición,
+    ''' un record del usuario que SE VA A ESCRIBIR a su .esp, y un record con esa marca NO SE PUEDE
+    ''' escribir nunca — el saver lo rechaza a propósito (<c>SaveNpcEspWriter.ArmoRecordEntry</c>: la
+    ''' vista efectiva es un <c>CanonView</c> escribible e indistinguible de la cruda, y emitirla plegaría
+    ''' los <c>MODL</c> del terminal contra la lista de masters del hijo). O sea que un clon que la
+    ''' conserve es un borrador con la explosión garantizada al guardar. Va acá y no en el llamador por lo
+    ''' mismo que `Deleted`: es qué ES un clon, no quién lo pidió. Hoy entra por una sola puerta —el clon
+    ''' de un ARMO que hereda por <c>TNAM</c>, que nace de la vista MATERIALIZADA—; en las otras dos ya
+    ''' viene apagada y esto es un no-op.</para></summary>
     Public Sub ReidentificarComoClon(record As Object, formIDNuevo As UInteger)
         Dim v = TryCast(record, Canon.CanonRecordView)
         ' ⛔ TIRA, no vuelve callado. El cast NO puede fallar por datos — `Copia()` devuelve siempre
@@ -111,6 +120,104 @@ Public Module Borradores
         v.Context.EditorId = ""
         ' ⛔ `Deleted` (bit 5) NO se hereda. Un clon es un record nuevo; nace vivo.
         v.Context.RecordFlags = v.Context.RecordFlags And Not &H20UI
+        ' ⛔ Y nace PROPIO: lo que se escribe al .esp es un record del usuario, no la vista que arma el
+        ' motor con la herencia ya aplicada. Sin esto, el clon de un ARMO con TNAM se guarda... nunca:
+        ' la ficha del saver lo rechaza.
+        v.Context.EsVistaEfectiva = False
+    End Sub
+
+    ''' <summary>Reescribe en UN record toda referencia que apunte a un borrador promovido. Devuelve si
+    ''' escribió algo — que es lo que decide si hay que re-publicar su foto.</summary>
+    Private Function RemapearUno(record As Object,
+                                 realGlobal As Dictionary(Of UInteger, UInteger)) As Boolean
+        Dim tocado As Boolean = False
+        For Each r In CensoDeReferencias.DeBorrador(record)
+            If r.Valor = 0UI Then Continue For
+            Dim mapped As UInteger
+            If realGlobal.TryGetValue(r.Valor, mapped) Then
+                r.Poner(mapped)
+                tocado = True
+            End If
+        Next
+        Return tocado
+    End Function
+
+    ''' <summary>Tras un guardado: reescribe en los borradores que SOBREVIVEN toda referencia al
+    ''' identificador provisional de un borrador que se acaba de PROMOVER, re-publica la foto de los que
+    ''' quedaron tocados, y dropea los promovidos (ya son records reales, los enumera el orden de carga).
+    '''
+    ''' <para><paramref name="realGlobal"/> va de (provisional del borrador) al FormID GLOBAL real que
+    ''' quedó montado; lo arma el llamador, que es el único que sabe resolver archivo-local → global.</para>
+    '''
+    ''' <para>QUÉ campos se remapean: los que rinde <see cref="CensoDeReferencias.DeBorrador"/>, que es la MISMA
+    ''' lista que consume el censo de referrers. Acá no hay una segunda enumeración.</para>
+    '''
+    ''' <para>⛔ <b>Vive acá y no en la ventana principal</b> porque es una ley que vale para CUALQUIER
+    ''' borrador —igual que <see cref="EsFormIdDeBorrador"/> o <see cref="ReidentificarComoClon"/>— y
+    ''' porque adentro de un formulario no hay testigo que la pueda correr: el gate tendría que armar un
+    ''' <c>MainForm</c> entero (con su <c>InitializeComponent</c>) para tocarla, así que en los hechos
+    ''' quedaba sin medir. Acá el gate LLAMA al sujeto.</para>
+    '''
+    ''' <para>⛔ <b>El remapeo ES UN PRODUCTOR DE FOTOS.</b> Reescribe el árbol VIVO del borrador que
+    ''' sobrevive, y el render NO lee ese árbol: lee la foto
+    ''' (<see cref="FotosDeBorrador(Of TVista).ParaRender"/>). Sin re-publicar, la foto se queda con la
+    ''' referencia 0xFF que estas mismas líneas acaban de matar y la prenda superviviente se dibuja
+    ''' VACÍA hasta el commit siguiente del editor. Corre en el hilo de UI —el mismo que muta—, así que
+    ''' publicar acá cumple el contrato de la foto sin un solo cruce de hilos.</para></summary>
+    Friend Sub RemapearSupervivientes(outfitDrafts As List(Of OutfitDraft),
+                                      leveledListDrafts As List(Of LeveledListDraft),
+                                      armoDrafts As List(Of ArmoDraft),
+                                      armaDrafts As List(Of ArmaDraft),
+                                      mswpDrafts As List(Of MswpDraft),
+                                      realGlobal As Dictionary(Of UInteger, UInteger),
+                                      fotosArmo As FotosDeBorrador(Of Canon.IArmo),
+                                      fotosArma As FotosDeBorrador(Of Canon.IArma),
+                                      fotosMswp As FotosDeBorrador(Of Canon.IMswp))
+        If realGlobal Is Nothing OrElse realGlobal.Count = 0 Then Return
+
+        ' ⛔ Se publica SÓLO el que se escribió, y sólo si SOBREVIVE. `Publicar` clona el árbol entero
+        ' (walk recursivo): republicar la sesión completa en cada guardado pagaría ese walk por
+        ' borradores que nadie tocó. Y al PROMOVIDO no se le publica porque más abajo se lo dropea y se
+        ' le retira la foto. La condición no es un umbral: es "se escribió ⇒ se publica".
+        For Each d In outfitDrafts
+            If d IsNot Nothing Then RemapearUno(d.Record, realGlobal)
+        Next
+        For Each d In leveledListDrafts
+            If d IsNot Nothing Then RemapearUno(d.Record, realGlobal)
+        Next
+        For Each d In armoDrafts
+            If d Is Nothing Then Continue For
+            If RemapearUno(d.Record, realGlobal) AndAlso
+               Not realGlobal.ContainsKey(d.FormID) Then fotosArmo?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In armaDrafts
+            If d Is Nothing Then Continue For
+            If RemapearUno(d.Record, realGlobal) AndAlso
+               Not realGlobal.ContainsKey(d.FormID) Then fotosArma?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In mswpDrafts
+            If d Is Nothing Then Continue For
+            ' Hoy el recorrido de un MSWP sale VACÍO —no declara campos de referencia— así que esto no
+            ' publica nunca. Va igual, por lo mismo que `TemplateArmor` entra al censo: el día que el
+            ' formato agregue uno, el camino ya está y nadie tiene que acordarse.
+            If RemapearUno(d.Record, realGlobal) AndAlso
+               Not realGlobal.ContainsKey(d.FormID) Then fotosMswp?.Publicar(d.FormID, d.Record)
+        Next
+
+        ' Drop the promoted drafts. The throwaway preview sentinel is never in the map, so it survives.
+        outfitDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        leveledListDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        armoDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        ' Idem: los borradores que acaban de pasar a ser records reales dejan de tener foto. Los tres
+        ' juegos de fotos se retiran acá porque el identificador promovido es único entre las cinco
+        ' clases (todas salen del MISMO contador), así que a lo sumo una de las tres lo tiene.
+        For Each fidYaReal In realGlobal.Keys
+            fotosArmo?.Retirar(fidYaReal)
+            fotosArma?.Retirar(fidYaReal)
+            fotosMswp?.Retirar(fidYaReal)
+        Next
+        armaDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        mswpDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
     End Sub
 
 End Module

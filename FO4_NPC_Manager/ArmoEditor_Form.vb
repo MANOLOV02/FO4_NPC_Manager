@@ -657,20 +657,22 @@ Public Class ArmoEditor_Form
             If vistaEf IsNot Nothing AndAlso Not ReferenceEquals(efectiva, d.Record) Then
                 Dim clonEf = TryCast(Canon.CanonInterpretacion.Copia(vistaEf), Canon.IArmo)
                 If clonEf IsNot Nothing Then
-                    ' El contexto del clon manda: FormID nuevo, y la marca de "vista efectiva" NO viaja al
-                    ' borrador -esto pasa a ser un record propio del usuario, que SI se escribe al ESP-.
-                    Dim ctxDestino = TryCast(d.Record, Canon.CanonRecordView)?.Context
-                    Dim ctxOrigen = TryCast(clonEf, Canon.CanonRecordView)?.Context
-                    If ctxDestino IsNot Nothing AndAlso ctxOrigen IsNot Nothing Then
-                        ctxOrigen.FormID = ctxDestino.FormID
-                        ctxOrigen.EditorId = ctxDestino.EditorId
-                        ctxOrigen.RecordFlags = ctxDestino.RecordFlags
-                        ctxOrigen.EsVistaEfectiva = False
-                    End If
+                    ' ⛔ La identidad del clon NO se copia campo por campo aca: es la ley de `Borradores`,
+                    ' la misma que ya corrio `ArmoDraft.Clon` sobre el arbol crudo -identificador nuevo,
+                    ' sin el EditorId de la fuente, sin `Deleted`, y sin la marca de "vista efectiva",
+                    ' porque esto pasa a ser un record propio del usuario que SI se escribe al ESP-.
+                    ' Escrita a mano era la segunda copia, y el barrido de escrituras sueltas la cazaba.
+                    ' `d.FormID` es el mismo numero que el del contexto: los pone la misma funcion.
+                    Borradores.ReidentificarComoClon(clonEf, d.FormID)
                     d.Record = clonEf
                 End If
             End If
-            d.Record.TemplateArmor = 0UI
+            ' ⛔ Se SACA el subrecord, no se escribe un cero. `TNAM` se declara sin NULL en los dos juegos
+            ' -`wbFormIDCk(TNAM, 'Template Armor', [ARMO])`, wbDefinitionsFO4.pas:5840 y
+            ' wbDefinitionsTES5.pas:4090-, asi que un `TNAM` presente valiendo 0 es una referencia nula
+            ' ilegal que xEdit marca «Found a NULL reference». La ley -cero significa NINGUNO, no una
+            ' referencia a cero- vive en `CanonInterpretacion` y se usa, no se reescribe.
+            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(d.Record, 0UI, "TNAM", Sub(v) d.Record.TemplateArmor = v)
         End If
         ' El EditorID sólo se SINTETIZA si el record no traía uno: `EDID` no es requerido en el esquema,
         ' pero el commit exige uno no vacío para poder guardar.

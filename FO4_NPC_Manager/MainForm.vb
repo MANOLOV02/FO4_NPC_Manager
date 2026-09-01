@@ -324,9 +324,14 @@ Public Class MainForm
     ''' the loads are identical across ARMAs. Memoizing collapses N loads to 1. Same lifetime as the
     ''' parse caches above (dies with the load order; cleared by <see cref="InvalidateParseCaches"/>).
     ''' A Nothing value ("no such skeleton for this race/gender") is memoized natively by
-    ''' ConcurrentDictionary.GetOrAdd, so a miss isn't re-loaded on the next ARMA.</summary>
+    ''' ConcurrentDictionary.GetOrAdd, so a miss isn't re-loaded on the next ARMA.
+    ''' <para>⛔ Los bytes del BPTD.MODL YA NO ESTÁN ACÁ: se fueron a
+    ''' <see cref="NpcRenderContext.BptdSkeletonBytesCached"/>. Tenían DOS dueños —esta caché para el
+    ''' render y NINGUNA para los dos call sites de <see cref="NpcMountingResolver"/>—, que es la misma
+    ''' ley escrita dos veces y aplicada en un solo lado: el selector de atuendos pagaba 6,1–11,3 ms de
+    ''' re-parseo por prenda porque su camino no pasaba por acá. Si aparece otro consumidor de esos
+    ''' bytes, va al contexto; no se reabre una segunda caché.</para></summary>
     Private ReadOnly _skelHkxBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of (Race As UInteger, Female As Boolean), Byte())()
-    Private ReadOnly _skelBptdBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Byte())()
     Private ReadOnly _skelFaceBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of (Race As UInteger, Female As Boolean), Byte())()
 
     ''' <summary>Clear the FormID-keyed parse caches (RACE / HDPT) and the (race,gender) skeleton-byte
@@ -337,9 +342,10 @@ Public Class MainForm
         ' Record-parse caches (ARMO/ARMA/RACE/HDPT/NPC_) live in the shared NpcRenderContext now;
         ' it clears all of them together. The skeleton-byte + chargen-TRI caches are render-specific
         ' and still owned here.
+        ' La caché de bytes del BPTD.MODL la limpia _ctx.InvalidateParseCaches() de arriba: se mudó al
+        ' contexto para tener UN dueño (ver la declaración de _skelHkxBytesCache).
         _ctx.InvalidateParseCaches()
         _skelHkxBytesCache.Clear()
-        _skelBptdBytesCache.Clear()
         _skelFaceBytesCache.Clear()
         _faceTriMorphNamesCache.Clear()
         ' Anim-clip cache is keyed by race FormID (+gender) — those can collide across plugin sets, so a
@@ -2278,16 +2284,23 @@ Public Class MainForm
         ' a non-draft FormID (real-record path runs) and a freshly-synthesized *_Data for a draft (never cached).
         ' El borrador YA ES la vista canónica (ArmoDraft.Record As Canon.IArmo): no hace falta
         ' sintetizar nada, se devuelve directo.
-        ' La FOTO, no el arbol vivo: `ArmoEfectivo` lo recorre entero para materializar y el hilo de
-        ' UI lo muta en cada commit del editor. Ver `RegisterArmoDraft`.
+        ' ⛔ LA FOTO, NO EL ARBOL VIVO, y para LAS TRES: `ArmoEfectivo` recorre el arbol entero para
+        ' materializar mientras el hilo de UI lo muta en cada commit del editor, asi que enumerar lo que
+        ' otro hilo modifica tira y cae en el catch mudo del preview. ARMO ya tenia foto; ARMA y MSWP
+        ' servian el arbol VIVO -o sea la MISMA carrera, sin la foto-. Ver `FotosDeBorrador`.
+        ' El fallback al borrador VIVO se fija ACA, una sola vez: asi `ParaRender` tiene la misma forma
+        ' que el resolvedor y se cablea directo, sin un envoltorio que pueda diferir del que corre.
+        _fotosArmo = New FotosDeBorrador(Of Canon.IArmo)(Function(f) TryGetArmoDraft(f)?.Record)
+        _fotosArma = New FotosDeBorrador(Of Canon.IArma)(Function(f) TryGetArmaDraft(f)?.Record)
+        _fotosMswp = New FotosDeBorrador(Of Canon.IMswp)(Function(f) TryGetMswpDraft(f)?.Record)
         _ctx.ArmoDraftResolver = AddressOf ArmoDraftParaRender
         _ctx.ArmoIsPowerArmor = AddressOf ArmoIsPowerArmor
         ' El mismo gate sobre la vista que el llamador ya abrio: `KWDA` es heredado, asi que
         ' resolverlo de nuevo por FormID podia dar OTRA respuesta que la del dibujo.
         _ctx.ArmoIsPowerArmorDeVista = Function(fid, vista) IsPowerArmorArmoData(vista, ArmorTypePowerKeywordFid())
         _ctx.RaceIsPowerArmor = AddressOf RaceIsPowerArmor
-        _ctx.ArmaDraftResolver = Function(fid) TryGetArmaDraft(fid)?.Record
-        _ctx.MswpDraftResolver = Function(fid) BuildMswpDataFromDraft(fid)
+        _ctx.ArmaDraftResolver = AddressOf _fotosArma.ParaRender
+        _ctx.MswpDraftResolver = AddressOf BuildMswpDataFromDraft
         _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, _appliedPresets)
         _stateResolver = New NpcStateResolver(_ctx, _materialResolver, _appliedPresets, _lvlnDataCache,
                                               Function() CurrentGenderFilter, AddressOf ResolveLmSkinTemplate)
@@ -3548,34 +3561,24 @@ Public Class MainForm
         Dim existing = _armoDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
         If existing IsNot Nothing Then _armoDrafts.Remove(existing)
         _armoDrafts.Add(d)
-        ' ⛔ El PRODUCTOR publica. Se clona UNA vez, ACA, en el hilo que muta -este metodo lo llama el
-        ' commit del editor-, y el render lee esa referencia sin recorrer el arbol vivo. Sin esto,
-        ' `CanonHerencia.ArmoEfectivo` hace `Copia()` -un walk RECURSIVO COMPLETO- desde el hilo del
-        ' render mientras el de UI hace `While Armature.Count > 0 : QuitarArmature(0)`: enumerar lo que
-        ' otro hilo modifica tira, y cae en el catch mudo del preview.
-        ' ⛔ NO se le pide el snapshot al hilo de UI desde el render: eso es un `Invoke` bloqueante y, si
-        ' algun camino tiene al de UI esperando al render, es un abrazo mortal en vez de una carrera.
-        Dim copia = TryCast(Canon.CanonInterpretacion.Copia(d.Record), Canon.IArmo)
-        If copia IsNot Nothing Then
-            _armoDraftSnapshots(d.FormID) = copia
-        Else
-            _armoDraftSnapshots.TryRemove(d.FormID, Nothing)
-        End If
+        ' ⛔ El PRODUCTOR publica: este metodo lo llama el commit del editor, o sea el hilo que muta.
+        ' La ley entera -el clon unico, el abrazo mortal que se evita, y el par publicar/retirar- vive
+        ' en `FotosDeBorrador`; aca solo se la invoca. Estaba escrita ACA y el remapeo del guardado,
+        ' que es otro productor, no la encontro: ver el doc de esa clase.
+        _fotosArmo.Publicar(d.FormID, d.Record)
     End Sub
 
-    ''' <summary>La foto INMUTABLE del arbol de cada borrador de ARMO, publicada por el productor en
-    ''' <see cref="RegisterArmoDraft"/>. La lee el RENDER; el editor sigue trabajando sobre el borrador
-    ''' vivo. Es una foto por commit, y el commit es justo lo que dispara el repintado, asi que no
-    ''' envejece entre uno y otro.</summary>
-    Private ReadOnly _armoDraftSnapshots As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IArmo)
+    ''' <summary>Las fotos inmutables que consulta el RENDER, una instancia por clase de borrador. Toda
+    ''' la ley —publicar, retirar y el orden foto-antes-que-vivo— vive en <see cref="FotosDeBorrador(Of TVista)"/>:
+    ''' UNA ley, tres instancias. Se construyen en el constructor, antes de cablear los resolvedores.</summary>
+    Private _fotosArmo As FotosDeBorrador(Of Canon.IArmo)
+    Private _fotosArma As FotosDeBorrador(Of Canon.IArma)
+    Private _fotosMswp As FotosDeBorrador(Of Canon.IMswp)
 
     ''' <summary>La vista de borrador que el RENDER puede recorrer sin carrera: la foto si existe, y el
-    ''' borrador vivo si no (un borrador registrado antes de que existiera la foto).</summary>
+    ''' borrador vivo si no. Ver <see cref="FotosDeBorrador(Of TVista).ParaRender"/>.</summary>
     Friend Function ArmoDraftParaRender(formID As UInteger) As Canon.IArmo
-        If formID = 0UI Then Return Nothing
-        Dim foto As Canon.IArmo = Nothing
-        If _armoDraftSnapshots.TryGetValue(formID, foto) AndAlso foto IsNot Nothing Then Return foto
-        Return TryGetArmoDraft(formID)?.Record
+        Return _fotosArmo.ParaRender(formID)
     End Function
 
     ''' <summary>Register/replace an ARMA draft (by FormID). Mirror of <see cref="RegisterArmoDraft"/>.</summary>
@@ -3584,6 +3587,9 @@ Public Class MainForm
         Dim existing = _armaDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
         If existing IsNot Nothing Then _armaDrafts.Remove(existing)
         _armaDrafts.Add(d)
+        ' Mismo contrato que ARMO: el productor publica. `ArmaDraftResolver` servia el arbol VIVO al
+        ' hilo del render -la misma carrera que la foto de ARMO vino a cerrar, sin la foto-.
+        _fotosArma.Publicar(d.FormID, d.Record)
     End Sub
 
     ''' <summary>Register/replace an MSWP draft (by FormID). Mirror of <see cref="RegisterArmoDraft"/>.</summary>
@@ -3592,30 +3598,32 @@ Public Class MainForm
         Dim existing = _mswpDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
         If existing IsNot Nothing Then _mswpDrafts.Remove(existing)
         _mswpDrafts.Add(d)
+        ' Idem. `BuildMswpDataFromDraft` decia que copiaba las sustituciones y devolvia el arbol vivo.
+        _fotosMswp.Publicar(d.FormID, d.Record)
     End Sub
 
     ''' <summary>Drop an ARMO draft (by FormID). Used by "Delete draft".</summary>
     Friend Sub UnregisterArmoDraft(formID As UInteger)
         Dim existing = _armoDrafts.FirstOrDefault(Function(x) x.FormID = formID)
         If existing IsNot Nothing Then _armoDrafts.Remove(existing)
-        ' ⛔ La FOTO se retira ACA, con el borrador. El dueño es el registro: se publica en
-        ' `RegisterArmoDraft` y se retira aca, en el mismo par. Sin esto la foto le SOBREVIVE al
-        ' borrador -y `ArmoDraftParaRender` la consulta PRIMERO-, asi que cancelar, borrar o revertir
-        ' dejaba el descarte resolviendo para toda la sesion: render, outfit, piel, OBTS y el gate de
-        ' power armor consultando datos que ya no existen.
-        _armoDraftSnapshots.TryRemove(formID, Nothing)
+        ' ⛔ La FOTO se retira ACA, con el borrador: el dueño es el registro. El porque -que sin esto la
+        ' foto le SOBREVIVE al borrador y `ParaRender` la consulta PRIMERO- esta en el doc de
+        ' `FotosDeBorrador`, junto con su par `Publicar`.
+        _fotosArmo.Retirar(formID)
     End Sub
 
     ''' <summary>Drop an ARMA draft (by FormID).</summary>
     Friend Sub UnregisterArmaDraft(formID As UInteger)
         Dim existing = _armaDrafts.FirstOrDefault(Function(x) x.FormID = formID)
         If existing IsNot Nothing Then _armaDrafts.Remove(existing)
+        _fotosArma.Retirar(formID)
     End Sub
 
     ''' <summary>Drop an MSWP draft (by FormID).</summary>
     Friend Sub UnregisterMswpDraft(formID As UInteger)
         Dim existing = _mswpDrafts.FirstOrDefault(Function(x) x.FormID = formID)
         If existing IsNot Nothing Then _mswpDrafts.Remove(existing)
+        _fotosMswp.Retirar(formID)
     End Sub
 
     ''' <summary>Human-readable list of everything that currently REFERENCES the draft with
@@ -3629,42 +3637,45 @@ Public Class MainForm
         Dim refs As New List(Of String)
         If formID = 0UI Then Return refs
 
+        ' ⛔ EL MISMO CENSO QUE EL REMAPEO. Acá había una segunda lista escrita a mano, y ya había
+        ' DERIVADO de la del remapeo: las dos cubrían dos de los CUATRO material swap del ARMA
+        ' (MO2S/MO3S sí, MO4S/MO5S no) aunque los cuatro botones del editor abren el mismo selector con
+        ' los borradores de MSWP adentro. O sea que este censo decía «a este MSWP no lo apunta nadie» y
+        ' dejaba borrar un borrador que sí estaba referenciado. Con una sola enumeración
+        ' (`CensoDeReferencias.DeBorrador`) el campo que se agregue lo ven los dos lados o ninguno.
+        Dim censar =
+            Sub(clase As String, edid As String, record As Object)
+                ' Distinct: un mismo borrador puede apuntar al mismo destino por DOS campos del mismo
+                ' nombre (los dos material swap, dos addons iguales) y el usuario no necesita la
+                ' línea repetida — necesita saber QUÉ lo referencia.
+                For Each que In CensoDeReferencias.DeBorrador(record).
+                        Where(Function(r) r.Valor = formID).
+                        Select(Function(r) r.Que).Distinct()
+                    refs.Add($"{clase} draft '{edid}' ({que})")
+                Next
+            End Sub
+
         For Each d In _armoDrafts
             If d Is Nothing Then Continue For
-            Dim addons = Canon.CanonInterpretacion.LeerComplementos(d.Record)
-            If addons.Any(Function(a) a IsNot Nothing AndAlso a.ArmaFormID = formID) Then
-                refs.Add($"ARMO draft '{d.Record.EditorID}' (addon)")
-            End If
-            ' El material swap a nivel ARMO (MOD2S/MOD4S) sólo existe en Fallout 4.
-            Dim armoFo4 = TryCast(d.Record, Canon.ArmoFO4)
-            Dim armoSwapMatch = armoFo4 IsNot Nothing AndAlso
-                (armoFo4.WorldModelMaterialSwap = formID OrElse
-                 armoFo4.WorldModelMaterialSwap2 = formID)
-            If armoSwapMatch Then
-                refs.Add($"ARMO draft '{d.Record.EditorID}' (material swap)")
-            End If
+            censar("ARMO", d.Record.EditorID, d.Record)
         Next
         For Each d In _armaDrafts
             If d Is Nothing Then Continue For
-            ' El material swap del ARMA (MO2S/MO3S) sólo existe en Fallout 4.
-            Dim armaFo4 = TryCast(d.Record, Canon.ArmaFO4)
-            Dim armaSwapMatch = armaFo4 IsNot Nothing AndAlso
-                (armaFo4.MaleMaterialSwap = formID OrElse armaFo4.FemaleMaterialSwap = formID)
-            If armaSwapMatch Then
-                refs.Add($"ARMA draft '{d.Record.EditorID}' (material swap)")
-            End If
+            censar("ARMA", d.Record.EditorID, d.Record)
         Next
         For Each d In _outfitDrafts
             If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
-            If d.Prendas().Contains(formID) Then refs.Add($"Outfit draft '{d.Record.EditorID}'")
+            censar("Outfit", d.Record.EditorID, d.Record)
         Next
         For Each d In _leveledListDrafts
             If d Is Nothing Then Continue For
-            Dim hasRef = d.Record.LeveledListEntries.Any(
-                Function(en) en IsNot Nothing AndAlso en.LeveledListEntryItem = formID)
-            If hasRef Then
-                refs.Add($"Leveled-list draft '{d.Record.EditorID}'")
-            End If
+            censar("Leveled-list", d.Record.EditorID, d.Record)
+        Next
+        For Each d In _mswpDrafts
+            If d Is Nothing Then Continue For
+            ' Hoy no rinde nada (un MSWP no declara campos de referencia), pero se recorre igual: si el
+            ' día de mañana declara uno, el censo ya lo ve. Ver `CensoDeReferencias.DeBorrador`.
+            censar("MSWP", d.Record.EditorID, d.Record)
         Next
         For Each kv In _appliedPresets
             Dim p = kv.Value
@@ -3762,19 +3773,19 @@ Public Class MainForm
         Return If(Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, formID.ToString("X8"))
     End Function
 
-    ''' <summary>Synthesize an <see cref="Canon.IMswp"/> from an in-memory MSWP draft, or Nothing if
-    ''' <paramref name="fid"/> is not an MSWP draft. Deep-copies the substitution pairs so the render path
-    ''' never mutates the draft. Synthesized FRESH on each call (no caching) so a live edit to the draft's
-    ''' swaps shows on the next render.
+    ''' <summary>La vista de un borrador de MSWP para el RENDER, o Nothing si <paramref name="fid"/> no
+    ''' es un borrador de MSWP. Devuelve la FOTO —publicada por el productor en
+    ''' <see cref="RegisterMswpDraft"/>— y cae al borrador vivo si todavía no hay foto.
+    ''' <para>⛔ El docstring que estaba acá decía «deep-copies the substitution pairs so the render path
+    ''' never mutates the draft» y el cuerpo devolvía <c>d.Record</c>: el árbol VIVO, que el hilo de UI
+    ''' muta en cada commit del sub-editor de swaps mientras el del render lo recorre. O sea que la
+    ''' línea que describía la protección era justamente la que faltaba, y quien la leyera daba el caso
+    ''' por cubierto. Ahora la copia existe de verdad, y la hace <see cref="FotosDeBorrador(Of TVista)"/>.</para>
     ''' <para>ARMO/ARMA no necesitan su espejo de este método: el borrador YA ES la vista canónica
     ''' (<see cref="ArmoDraft.Record"/> / <see cref="ArmaDraft.Record"/> son <c>Canon.IArmo</c>/<c>Canon.IArma</c>
-    ''' directo), así que <see cref="NpcRenderContext.ArmoDraftResolver"/>/<c>ArmaDraftResolver</c> devuelven
-    ''' <c>TryGetArmoDraft(fid)?.Record</c> sin sintetizar nada.</para></summary>
+    ''' directo), así que sus resolvedores van a la foto sin sintetizar nada.</para></summary>
     Private Function BuildMswpDataFromDraft(fid As UInteger) As Canon.IMswp
-        Dim d = TryGetMswpDraft(fid)
-        If d Is Nothing Then Return Nothing
-        ' El borrador ES el record: no hay nada que sintetizar.
-        Return d.Record
+        Return _fotosMswp.ParaRender(fid)
     End Function
 
     ''' <summary>Content signature of an MSWP DRAFT (EditorID + tree folder + every substitution) so an ARMA/ARMO
@@ -8036,9 +8047,9 @@ Public Class MainForm
         Catch ex As Exception
             Logger.LogLazy(Function() $"[PREP-SKEL] HKX base merge failed (fallback NIF): {ex.GetType().Name}: {ex.Message}")
         End Try
-        ' Source 2: BPTD.MODL (vía RACE.GNAM)
-        Dim bptdBytes = _skelBptdBytesCache.GetOrAdd(state.RaceFormID,
-            Function(raceFid) BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(raceFid, _pluginManager))
+        ' Source 2: BPTD.MODL (vía RACE.GNAM) — memoizado en el contexto, que es el único dueño de estos
+        ' bytes: el render y los dos call sites de NpcMountingResolver comparten LA MISMA caché.
+        Dim bptdBytes = _ctx.BptdSkeletonBytesCached(state.RaceFormID)
         If bptdBytes IsNot Nothing Then s.MergeAdditionalSkeleton(bptdBytes)
         ' Source 3: Face bones convention (chargen-only; convención filesystem, no engine record)
         Dim faceBytes = _skelFaceBytesCache.GetOrAdd(raceGenderKey,
@@ -11466,76 +11477,12 @@ Public Class MainForm
             End If
         Next
 
-        ' (2) Surviving drafts that reference a promoted one: rewrite every provisional cross-reference to the
-        ' real FormID. Mirrors the OTFT/LVLI handling but across all five draft kinds and their FormID-bearing
-        ' fields: OutfitDraft.ItemFormIDs→OTFT/ARMO/LVLI; LeveledListDraft.Entries[].RefFormID→ARMO/LVLI;
-        ' ArmoDraft.ArmorAddons[].ArmaFormID→ARMA + ArmoDraft material-swap FormIDs→MSWP; ArmaDraft material-swap
-        ' FormIDs→MSWP. (A promoted ARMO can be referenced by a surviving OTFT/LVLI item; a promoted ARMA by a
-        ' surviving ARMO's addon; a promoted MSWP by a surviving ARMO/ARMA material swap.)
-        For Each d In _outfitDrafts
-            If d Is Nothing Then Continue For
-            For Each it In d.Record.Items
-                Dim mapped As UInteger
-                If realGlobal.TryGetValue(it.Item, mapped) Then it.Item = mapped
-            Next
-        Next
-        For Each d In _leveledListDrafts
-            If d Is Nothing Then Continue For
-            For Each e In d.Record.LeveledListEntries
-                Dim mapped As UInteger
-                If realGlobal.TryGetValue(e.LeveledListEntryItem,
-                                          mapped) Then e.LeveledListEntryItem = mapped
-            Next
-        Next
-        For Each d In _armoDrafts
-            If d Is Nothing Then Continue For
-            ' El modelo de addons (INDX+referencia vs. array de referencias) es distinto por juego;
-            ' el
-            ' material swap a nivel ARMO sólo existe en Fallout 4.
-            Dim armoFo4 = TryCast(d.Record, Canon.ArmoFO4)
-            Dim armoSse = TryCast(d.Record, Canon.ArmoSSE)
-            If armoFo4 IsNot Nothing Then
-                For Each mdl In armoFo4.Models
-                    Dim mapped As UInteger
-                    If realGlobal.TryGetValue(mdl.ModelArmorAddon,
-                                              mapped) Then mdl.ModelArmorAddon = mapped
-                Next
-                Dim m As UInteger
-                If realGlobal.TryGetValue(armoFo4.WorldModelMaterialSwap,
-                                          m) Then armoFo4.WorldModelMaterialSwap = m
-                If realGlobal.TryGetValue(armoFo4.WorldModelMaterialSwap2,
-                                          m) Then armoFo4.WorldModelMaterialSwap2 = m
-            ElseIf armoSse IsNot Nothing Then
-                For Each mdl In armoSse.Armature
-                    Dim mapped As UInteger
-                    If realGlobal.TryGetValue(mdl.ModelFilename,
-                                              mapped) Then mdl.ModelFilename = mapped
-                Next
-            End If
-        Next
-        For Each d In _armaDrafts
-            If d Is Nothing Then Continue For
-            ' El material swap del ARMA (MO2S/MO3S) sólo existe en Fallout 4.
-            Dim armaFo4 = TryCast(d.Record, Canon.ArmaFO4)
-            If armaFo4 IsNot Nothing Then
-                Dim m As UInteger
-                If realGlobal.TryGetValue(armaFo4.MaleMaterialSwap,
-                                          m) Then armaFo4.MaleMaterialSwap = m
-                If realGlobal.TryGetValue(armaFo4.FemaleMaterialSwap,
-                                          m) Then armaFo4.FemaleMaterialSwap = m
-            End If
-        Next
-
-        ' (3) Drop the promoted drafts. The throwaway preview sentinel is never in the map, so it survives.
-        _outfitDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
-        _leveledListDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
-        _armoDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
-        ' Idem: los borradores que acaban de pasar a ser records reales dejan de tener foto.
-        For Each fidYaReal In realGlobal.Keys
-            _armoDraftSnapshots.TryRemove(fidYaReal, Nothing)
-        Next
-        _armaDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
-        _mswpDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        ' (2) y (3): remapear las referencias de los borradores que SOBREVIVEN, re-publicar la foto de
+        ' los de ARMO que quedaron tocados, y dropear los promovidos. La ley vive en `Borradores` porque
+        ' vale para cualquier borrador y porque adentro de este formulario no habia testigo que la
+        ' pudiera correr — ver el doc de `Borradores.RemapearSupervivientes`.
+        Borradores.RemapearSupervivientes(_outfitDrafts, _leveledListDrafts, _armoDrafts, _armaDrafts,
+                                          _mswpDrafts, realGlobal, _fotosArmo, _fotosArma, _fotosMswp)
 
         ' (4) Refresh the affected universes so the newly-real records surface in the editor: the outfit
         ' universe (OTFT/LVLI/ARMO items) and the skin-ARMO universe (so a promoted skin ARMO appears in the
