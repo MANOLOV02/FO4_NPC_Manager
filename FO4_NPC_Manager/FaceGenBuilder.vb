@@ -84,6 +84,52 @@ Public Module FaceGenBuilder
         ''' <para>NO entran en <c>FaceGenFileSpecs</c>: esa lista sirve tambien al flujo de BORRADO, y
         ''' este activo es COMPARTIDO por todas las gules de la raza - entregarlo si, borrarlo no.</para></summary>
         Public ReadOnly Property ExtraLooseFiles As New List(Of String)
+
+        ''' <summary>Rutas ABSOLUTAS de las texturas de cara que ESTE bake escribió, anotadas en el punto
+        ''' de escritura. Es lo que hace posible barrer los restos del bake anterior DESPUÉS de hornear en
+        ''' vez de antes: se borra lo que quedó y este bake no reescribió.
+        ''' <para>⛔ Vive acá, en el resultado DE ESTE NPC, y no en un campo del módulo: `FaceGenBuilder`
+        ''' es un Module (todo Shared) y `BuildCharGen` corre bajo Parallel.ForEach por NPC, así que un
+        ''' conjunto compartido se corrompería entre hilos.</para></summary>
+        Public ReadOnly Property TexturasEscritas As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+        ''' <summary>Las salidas de textura de cara que a ESTE bake le correspondía producir. Se marca en el
+        ''' punto donde el bake DECIDE que el canal existe —el material de la cabeza declara ese path—, ANTES
+        ''' de ir a buscar los bytes y ANTES de encodear: si después el archivo no aparece, no decodifica, o
+        ''' falla el encode o la escritura, la salida SIGUE declarada, así que el packer la sigue exigiendo y
+        ''' la falla no queda muda.
+        ''' <para>⛔ NO CONFUNDIR con <see cref="TexturasEscritas"/>, y sobre todo NO reemplazar esto por
+        ''' aquello. Aquél es el RESULTADO (qué archivos quedaron en disco) y sirve al barrido de restos;
+        ''' éste es la DECISIÓN. Decidir con el resultado qué exige el packer convierte CUALQUIER bake
+        ''' fallido en silencio: la lista sale vacía, los specs se vuelven no exigidos y el bundle commitea
+        ''' sin sus texturas.</para>
+        ''' <para>Vacío NO es una falla, es "no correspondía". Pasa cuando el NPC no tiene ninguna head part
+        ''' de tipo Face —el gate de PartTypeFace del loop de HDPT de <c>BuildCharGen</c> nunca abre y
+        ''' <c>BakeFaceTextures</c> no corre— y cuando el material de la cabeza no declara normal o
+        ''' specular.</para></summary>
+        Friend Property SalidasDeTexturaDeclaradas As FaceGenPaths.SalidaDeTexturaDeCara
+
+        ''' <summary>Este resultado viene de un <c>BuildCharGen</c> COMPLETO (llegó a escribir el NIF), así
+        ''' que su <see cref="SalidasDeTexturaDeclaradas"/> —vacía o no— es la buena.
+        ''' <para>⛔ NO significa "corrió BakeFaceTextures": eso ya se probó y estaba mal. Un NPC sin ninguna
+        ''' head part de tipo Face no llama a BakeFaceTextures, así que la bandera quedaba apagada, el packer
+        ''' caía al fail-closed y seguía exigiendo las tres DDS — justo el caso que había que arreglar.</para>
+        ''' <para>Existe porque el default de un enum de banderas es cero, o sea "no declaró nada", y ese
+        ''' default solo sería FAIL-OPEN: un camino futuro que arme bundles sin poblar esto dejaría de exigir
+        ''' las texturas de cara EN SILENCIO. Apagada, el packer exige TODO — el comportamiento previo a la
+        ''' ley "requerido = declarado".</para></summary>
+        Friend Property DeclaracionDeSalidasPoblada As Boolean
+
+        ''' <summary>Las salidas de textura de cara que este bake REALMENTE escribio, por IDENTIDAD y no
+        ''' por ruta. Es el RESULTADO; <see cref="SalidasDeTexturaDeclaradas"/> es la DECISION, y el packer
+        ''' necesita las dos: la declaracion le dice si un AUSENTE es un error, y esto le dice si un
+        ''' PRESENTE es suyo o resto de un horneado anterior.
+        ''' <para>Por identidad a proposito. La primera version comparaba rutas absolutas, y las dos puntas
+        ''' las arman de fuentes distintas: el bake sale de <c>BakeOutputRoot.Current()</c> -que
+        ''' <c>--outdir</c> MUEVE- y el packer de su propio <c>dataDir</c>. Con las raices distintas no
+        ''' coincide ningun string, y como esto vive en el camino de lo REQUERIDO el resultado era que se
+        ''' caian todos los bundles de FO4 en cada Save.</para></summary>
+        Friend Property SalidasDeTexturaEscritas As FaceGenPaths.SalidaDeTexturaDeCara
     End Class
 
 
@@ -1397,16 +1443,28 @@ Public Module FaceGenBuilder
                                     fo4FaceTexturesBaked = True
                                     ' F3: los <id>_d/_msn/_s de un bake ANTERIOR sobreviven si este bake no produce
                                     ' alguno de los tres (p.ej. el source no tiene normal ⇒ slot 1 se saltea), y el
-                                    ' packer los toma del DISCO igual. Se borran ACÁ, justo antes de escribir los
-                                    ' nuevos, por el mismo motivo que DeleteFoldedOnlyArtifacts en SSE.
-                                    DeleteStaleFaceCustomizationArtifacts(npcFormID, originPlugin)
+                                    ' packer los toma del DISCO igual: el bundle sale mezcla de dos bakes.
+                                    '
+                                    ' ⛔ El barrido va DESPUÉS de hornear, no antes. Borrar antes sacaba los
+                                    ' archivos del mod bajo Mod Organizer —el borrado los saca del árbol virtual y
+                                    ' lo que el bake escribe después es un archivo NUEVO, que cae en `overwrite`—,
+                                    ' así que cada horneado se llevaba las texturas de cara fuera del mod.
+                                    ' Corriendo al final se borra sólo lo que este bake NO reescribió, que es
+                                    ' exactamente lo que F3 quería sacar.
+                                    ' Va en Finally: si BakeFaceTextures tira, se barre igual con lo que alcanzó a
+                                    ' escribir — que es la misma salida que daba el borrado previo.
                                     Dim tTexF = Stopwatch.GetTimestamp()
-                                    BakeFaceTextures(nif, cloned, srcNif, srcShape,
-                                                     hdpt, effectiveHeadPartType, applyMaterialOverrides,
-                                                     npcFormID, originPlugin,
-                                                     pluginManager, appliedPresets, host,
-                                                     state, willBePacked, result,
-                                                     lmSkinTemplateResolver, lutDataPath)
+                                    Try
+                                        BakeFaceTextures(nif, cloned, srcNif, srcShape,
+                                                         hdpt, effectiveHeadPartType, applyMaterialOverrides,
+                                                         npcFormID, originPlugin,
+                                                         pluginManager, appliedPresets, host,
+                                                         state, willBePacked, result,
+                                                         lmSkinTemplateResolver, lutDataPath)
+                                    Finally
+                                        DeleteStaleFaceCustomizationArtifacts(npcFormID, originPlugin,
+                                                                              result?.TexturasEscritas)
+                                    End Try
                                     PhaseAdd(BakePhase.Textures, tTexF)
                                 Else
                                     Dim dnLog = destName
@@ -1991,6 +2049,13 @@ Public Module FaceGenBuilder
             End Try
         End If
 
+        ' LA DECLARACIÓN DE SALIDAS QUEDA CERRADA ACÁ, y no adentro de BakeFaceTextures. Cerrarla allá
+        ' significaba "corrió el bake de texturas", y entonces el caso que motivó todo esto —un NPC sin
+        ' ninguna head part de tipo Face, donde el gate no abre y BakeFaceTextures NO se llama— dejaba la
+        ' bandera apagada, indistinguible de "nadie pobló esto". El packer caía al fail-closed y seguía
+        ' exigiendo las tres DDS. Acá significa lo que tiene que significar: este BuildResult viene de un
+        ' BuildCharGen que llegó a escribir el NIF, así que su declaración —vacía o no— es la buena.
+        result.DeclaracionDeSalidasPoblada = True
         result.Success = True
         result.OutputPath = outAbs
         result.Summary = $"Wrote {outAbs} ({result.ShapesKept} shapes from {hdptProcessed} HDPTs)"
@@ -2480,6 +2545,16 @@ Public Module FaceGenBuilder
                                     result As BuildResult,
                                     Optional host As NpcRenderHost = Nothing)
         Try
+            ' SE DECLARA AL ENTRAR, antes de cualquier bail. Si este metodo corre es porque el NPC tiene head
+            ' part de tipo Face, y entonces el facetint SIEMPRE correspondia. Declararlo aca hace que los
+            ' cinco bails de abajo -que son FALLAS, todos reportan- signifiquen "falta": el bundle se
+            ' descarta entero y los sueltos se conservan para reintentar.
+            ' Antes el spec llevaba Salida=Ninguna, o sea exento del chequeo de pertenencia, y entonces un
+            ' facetint de un horneado ANTERIOR entraba al BSA con el NIF nuevo por el solo hecho de existir
+            ' -el barrido de SSE no toca FaceTint\ a proposito-: cara mezcla de dos horneados.
+            If result IsNot Nothing Then
+                result.SalidasDeTexturaDeclaradas = result.SalidasDeTexturaDeclaradas Or FaceGenPaths.SalidaDeTexturaDeCara.SseFaceTint
+            End If
             If npcData Is Nothing Then
                 RecordTextureFailure(result, "facetint SSE: could not resolve the NPC (npcData Nothing)")
                 Return
@@ -2537,6 +2612,10 @@ Public Module FaceGenBuilder
             If Not SkipDdsEncode Then
                 IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
                 IO.File.WriteAllBytes(outFile, dds)
+                ' Identidad: es lo que le dice al packer que ESTE facetint es de ESTE horneado.
+                If result IsNot Nothing Then
+                    result.SalidasDeTexturaEscritas = result.SalidasDeTexturaEscritas Or FaceGenPaths.SalidaDeTexturaDeCara.SseFaceTint
+                End If
             End If
             ' TGA lossless del _2 (CPU) cuando "Generate TGA" está marcado (= FO4). Recompone el acc SOLO en ese
             ' caso (no re-decodea el BC3) para dumpear el buffer pre-encode, byte-igual al que se encodeó.
@@ -2835,7 +2914,11 @@ Public Module FaceGenBuilder
     ''' <para>NO borrar acá <c>FaceTint\</c>: es el único artefacto que existe en LOS DOS caminos, y
     ''' <see cref="WriteSseFacetintDds"/> tiene salidas tempranas, así que borrarlo al entrar y no re-escribirlo
     ''' dejaría al NPC SIN tint (cara marrón) en vez de con uno viejo.</para></summary>
-    Private Sub DeleteFoldedOnlyArtifacts(npcFormID As UInteger, originPlugin As String)
+    ''' <param name="escritas">Rutas que ESTE bake escribió (<see cref="BuildResult.TexturasEscritas"/>):
+    ''' no se tocan. Igual que en FO4, el barrido corre DESPUÉS de escribir y borra sólo lo que quedó del
+    ''' bake anterior — borrar antes sacaba los archivos del mod bajo Mod Organizer.</param>
+    Private Sub DeleteFoldedOnlyArtifacts(npcFormID As UInteger, originPlugin As String,
+                                          escritas As HashSet(Of String))
         If String.IsNullOrEmpty(originPlugin) OrElse Config_App.Current Is Nothing Then Return
         Dim dataPath = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPath) Then Return
@@ -2844,6 +2927,7 @@ Public Module FaceGenBuilder
             For Each suffix In {".dds", "_2.dds"}
                 Dim rel = FaceGenPaths.TexturaDir(subDir, originPlugin) & hex & suffix
                 Dim full = IO.Path.Combine(dataPath, rel)
+                If escritas IsNot Nothing AndAlso escritas.Contains(full) Then Continue For
                 Try
                     If IO.File.Exists(full) Then
                         IO.File.Delete(full)
@@ -2866,19 +2950,30 @@ Public Module FaceGenBuilder
     ''' leyendo el DISCO, asi que se lo lleva al BA2 aunque este bake no lo haya producido y el NIF no lo
     ''' referencie: el bundle termina siendo mezcla de dos bakes.</para>
     ''' <para>Corre UNA sola vez por NPC: si corriera por shape, la segunda borraria lo que escribio la primera.</para></summary>
-    Private Sub DeleteStaleFaceCustomizationArtifacts(npcFormID As UInteger, originPlugin As String)
+    ''' <param name="escritas">Rutas que ESTE bake escribió (<see cref="BuildResult.TexturasEscritas"/>).
+    ''' No se tocan: lo que se borra es lo que quedó del bake anterior y este no reescribió.</param>
+    Private Sub DeleteStaleFaceCustomizationArtifacts(npcFormID As UInteger, originPlugin As String,
+                                                     escritas As HashSet(Of String))
         If String.IsNullOrEmpty(originPlugin) OrElse Config_App.Current Is Nothing Then Return
         Dim dataPath = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPath) Then Return
-        Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
-        For Each chan In {"_d", "_msn", "_s"}
-            For Each suffix In {".dds", "_2.dds"}
-                Dim rel = FaceGenPaths.CustomizacionDir(originPlugin) & hex & chan & suffix
+        Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        ' Se recorre la MISMA tabla que el plan de slots del bake y la lista de specs del packer. Estaba
+        ' escrita aca otra vez -{"_d","_msn","_s"} a mano-, asi que una fila nueva en SalidasFo4 dejaba su
+        ' resto sin barrer sin que nada avisara.
+        For Each salidaFo4 In FaceGenPaths.SalidasFo4
+            For Each sandbox In {False, True}
+                Dim rel = FaceGenPaths.CustomizacionDds(originPlugin, formIdLow, salidaFo4, sandbox)
                 Dim full = IO.Path.Combine(dataPath, rel)
+                ' ⛔ La ruta se compara TAL CUAL se arma en los dos lados (mismo BakeOutputRoot + mismo
+                ' CustomizacionDir). Nada de Path.GetFullPath: resuelve contra el directorio actual del
+                ' proceso, que lo mueve cualquier diálogo de archivo, y ahí el barrido borraría lo que
+                ' se acaba de hornear.
+                If escritas IsNot Nothing AndAlso escritas.Contains(full) Then Continue For
                 Try
                     If IO.File.Exists(full) Then
                         IO.File.Delete(full)
-                        Logger.LogLazy(Function() $"[FACEBAKE] stale de un bake anterior borrado antes de re-hornear: {rel}")
+                        Logger.LogLazy(Function() $"[FACEBAKE] stale de un bake anterior borrado (este bake no lo reescribió): {rel}")
                     End If
                 Catch ex As Exception
                     Dim tD = ex.GetType().Name, mD = ex.Message
@@ -2942,7 +3037,13 @@ Public Module FaceGenBuilder
             ' camino elegido es el UNICO que deja archivos" sea una invariante y no una lista de call sites.
             ' El sandbox forzado (_2c) se excluye: corre DESPUES del pass normal sobre el mismo NIF y borraria
             ' justamente los _2.dds que ese pass acaba de escribir.
-            If Not forced Then DeleteFoldedOnlyArtifacts(npcFormID, originPlugin)
+            '
+            ' ⛔ El barrido va al FINAL de esta funcion, no aca: borrarlos antes los sacaba del mod bajo Mod
+            ' Organizer (el borrado los saca del arbol virtual y lo que se escribe despues es un archivo
+            ' nuevo, que cae en `overwrite`). Corriendo al final se borra solo lo que este bake NO reescribio,
+            ' que es lo que este barrido queria sacar. El Try/Finally cubre las ~12 salidas de la funcion,
+            ' que es la invariante que el comentario de arriba pide.
+            Try
 
             If Not forced AndAlso Not Config_App.Current.Setting_BakeSseRaceMenuOverlays Then Return
             ' Fuentes a bakear: (a) RaceMenu Face [Ovl] overlays del preset (si hay) + (b) skee MASKT masks del
@@ -3133,6 +3234,16 @@ Public Module FaceGenBuilder
                 Try
                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
                     IO.File.WriteAllBytes(outFile, outDds)
+                    result?.TexturasEscritas.Add(outFile)   ' lo que este bake escribió: el barrido no lo toca
+                    ' Y la IDENTIDAD, que es de lo UNICO que depende el packer para meter este DDS al
+                    ' archive: lleva tag (SseHeadDiffuse) => nunca es "requerido" => si no esta marcado
+                    ' como escrito, se saltea. Sin esta linea el fold per-NPC de SSE se escribia en disco,
+                    ' el NIF quedaba apuntandolo y el archive NO lo llevaba: en la maquina del autor se ve
+                    ' bien -el suelto esta- y en la del que instala el mod, cara marron.
+                    ' `Not forced` a proposito: el pase _2c escribe <id>_2c.dds, que NO es el spec.
+                    If result IsNot Nothing AndAlso Not forced Then
+                        result.SalidasDeTexturaEscritas = result.SalidasDeTexturaEscritas Or FaceGenPaths.SalidaDeTexturaDeCara.SseHeadDiffuse
+                    End If
                 Catch exW As Exception
                     Dim tW = exW.GetType().Name, mW = exW.Message
                     Logger.LogLazy(Function() $"[FACEBAKE][SSE] no se pudo escribir '{rel}': {tW}: {mW}")
@@ -3220,6 +3331,11 @@ Public Module FaceGenBuilder
                                         Dim nFile = IO.Path.Combine(BakeOutputRoot.Current(), nRel)
                                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(nFile))
                                         IO.File.WriteAllBytes(nFile, mDds)
+                                        result?.TexturasEscritas.Add(nFile)   ' idem: el barrido no lo toca
+                                        ' Identidad, mismo motivo que el diffuse de arriba.
+                                        If result IsNot Nothing AndAlso Not forced Then
+                                            result.SalidasDeTexturaEscritas = result.SalidasDeTexturaEscritas Or FaceGenPaths.SalidaDeTexturaDeCara.SseHeadNormal
+                                        End If
                                         MaybeWriteTgaBeside(nFile, nOutW, nOutH, nOutBgra)
                                         ' Slot 1 = texture-set normal ⇒ SIN prefijo. Ver EmbeddedTexSetPath.
                                         ts.Textures(1).Content = EmbeddedTexSetPath(ndir & $"{fgLocal:X8}{embeddedSuffix}")
@@ -3238,6 +3354,13 @@ Public Module FaceGenBuilder
             ' CRUZADO (mitad CPU, mitad GPU) y por eso no medía nada que se ejecute de verdad — ningún camino real
             ' mezcla. Los dos sandboxes que quedan son puros y comparables entre sí: _2c = TODO CPU (= el release) y
             ' _2d = TODO GPU. (El _2b del FACETINT sigue: ese sí es un compose puro GPU del facetint.)
+            Finally
+                ' Acá se barre lo que quedó del bake anterior y ESTE no reescribió. Cubre las ~12 salidas
+                ' de la función, incluidos los Return tempranos y el camino de excepción: si el bake no
+                ' llegó a escribir nada, el conjunto viene vacío y se borran los cuatro candidatos, que es
+                ' exactamente lo que hacía el borrado previo.
+                If Not forced Then DeleteFoldedOnlyArtifacts(npcFormID, originPlugin, result?.TexturasEscritas)
+            End Try
         Catch ex As Exception
             Logger.LogLazy(Function() $"[FACEBAKE][SSE] face diffuse+overlays bake failed: {ex.GetType().Name}: {ex.Message}")
         End Try
@@ -3453,6 +3576,19 @@ Public Module FaceGenBuilder
         ' El material fuente se resuelve por el MISMO camino que el render, no desde el NIF crudo: en NPCs
         ' con FaceTextureSet ese set pisa el diffuse de la cabeza, y el CK compone el FaceTint sobre la
         ' cabeza RESUELTA. Si el bake partiera de la cruda, el _d se compone sobre la base equivocada.
+        ' EL DIFFUSE SE DECLARA AL ENTRAR, antes de cualquier BAIL. Si este metodo corre es porque el NPC
+        ' tiene head part de tipo Face, y entonces el _d SIEMPRE correspondia: lo dice el propio loop de
+        ' slots ("slot 0 is always expected; its absence is a real failure").
+        ' ⛔ Estaba mas abajo, despues de resolver el material, y eso dejaba DOS salidas de FALLA -material
+        ' Nothing, y diffusePath vacio- declarando "nada". El packer leia "no correspondia", no exigia
+        ' ninguna DDS, el bundle COMMITEABA con el NIF solo y el paso 5 le borraba el suelto: un bake
+        ' fallido terminaba con el NIF dentro del BA2 y sin nada que reintentar. Fail-OPEN.
+        ' Declarando aca, esos dos caminos son lo que son: falta el _d ⇒ el bundle se descarta entero y los
+        ' sueltos se conservan, igual que antes de la ley "requerido = declarado".
+        If result IsNot Nothing Then
+            result.SalidasDeTexturaDeclaradas = result.SalidasDeTexturaDeclaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Diffuse
+        End If
+
         Dim mat = ResolveRenderResolvedShapeMaterial(srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
         If mat Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: resolved source material is Nothing (npcFormID=0x{npcFormID:X8})")
@@ -3467,6 +3603,24 @@ Public Module FaceGenBuilder
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffusePath empty (npcFormID=0x{npcFormID:X8})")
             RecordTextureFailure(result, "the face material has no diffuse texture path")
             Return
+        End If
+
+        ' DECLARACIÓN DE SALIDAS — VA ACÁ, y no más abajo. Lo que el packer le exige a este NPC es lo que el
+        ' bake DECIDE acá que le corresponde componer, y la decisión es "el material de la cabeza declara
+        ' este canal". El diffuse siempre: el guard de arriba ya garantiza que trae path.
+        ' ⛔ NO mover esto al loop de slots. Ahí ya sería un RESULTADO: el guard `bgra Is Nothing` del loop
+        ' colapsa TRES cosas distintas —el material no declara el canal, lo declara y el archivo no está en
+        ' disco/archives, lo declara y el DDS no decodifica— y sólo la primera es "no correspondía".
+        ' Declarando acá, las otras dos siguen siendo exigidas por el packer, que hoy es el ÚNICO que las
+        ' detecta: los slots 1/7 no llaman a RecordTextureFailure, así que no hay texWarn ni, en Release,
+        ' log. Con la declaración en el loop, una cabeza con el `_msn` roto se horneaba en silencio.
+        If result IsNot Nothing Then
+            ' El diffuse ya se declaro al entrar. Normal y specular se declaran ACA, porque su predicado es
+            ' "el material declara ese canal" y recien ahora se sabe.
+            Dim declaradas As FaceGenPaths.SalidaDeTexturaDeCara = FaceGenPaths.SalidaDeTexturaDeCara.Ninguna
+            If Not String.IsNullOrEmpty(normalPath) Then declaradas = declaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal
+            If Not String.IsNullOrEmpty(specPath) Then declaradas = declaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Specular
+            result.SalidasDeTexturaDeclaradas = result.SalidasDeTexturaDeclaradas Or declaradas
         End If
 
         ' --- 2. Resolve the NPC's race + gender so we can build layers + region swaps. ---
@@ -3666,9 +3820,8 @@ Public Module FaceGenBuilder
         Dim outDir = Path.Combine(dataPath, FaceGenPaths.CustomizacionDir(originPlugin))
         Try : Directory.CreateDirectory(outDir) : Catch : End Try
 
-        Dim suffixD = If(DebugMode, "_d_2.dds", "_d.dds")
-        Dim suffixN = If(DebugMode, "_msn_2.dds", "_msn.dds")
-        Dim suffixS = If(DebugMode, "_s_2.dds", "_s.dds")
+        ' Los sufijos salen de FaceGenPaths.SufijoDe, igual que los del packer: el `_2` del sandbox lo
+        ' decide UN solo lugar. Estaban escritos acá a mano y otra vez allá, y tenían que coincidir.
         ' Formato por canal = SETTINGS (decisión usuario: independiente de DebugMode; DebugMode solo decide
         ' el NOMBRE _2 y si corre el GL). Diffuse: BC3 (default) / BC7 / Uncompressed. N/S: BC5 (default) /
         ' Uncompressed. Uncompressed = B8G8R8A8 (true-color, sin pérdida). Para inspección lossless sin tocar
@@ -3690,11 +3843,35 @@ Public Module FaceGenBuilder
         ' W/H por canal = tamaño del RESULTADO del pipeline (no el del source, que puede diferir si el enum
         ' de resolución pidió otro), con fallback al nativo. ResultId = textura GL, 0 en el camino CPU.
         Dim pr = pipelineResult
-        Dim slotPlan = New(Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String, W As Integer, H As Integer)() {
-            (0, If(pr IsNot Nothing, pr.Diffuse.TextureId, 0), dxgiD, suffixD, "_d.dds", SlotDim(pr?.Diffuse, cpu?.Diffuse, w, True), SlotDim(pr?.Diffuse, cpu?.Diffuse, h, False)),
-            (1, If(pr IsNot Nothing, pr.Normal.TextureId, 0), dxgiN, suffixN, "_msn.dds", SlotDim(pr?.Normal, cpu?.Normal, w, True), SlotDim(pr?.Normal, cpu?.Normal, h, False)),
-            (7, If(pr IsNot Nothing, pr.Specular.TextureId, 0), dxgiS, suffixS, "_s.dds", SlotDim(pr?.Specular, cpu?.Specular, w, True), SlotDim(pr?.Specular, cpu?.Specular, h, False))
-        }
+        ' EL PLAN DE SLOTS SE RECORRE DE LA TABLA, no se escribe acá. El conjunto {slot 0/1/7,
+        ' "_d"/"_msn"/"_s"} estaba escrito DOS veces —acá y en NpcFaceGenPacker.FaceGenFileSpecs— y tenían
+        ' que coincidir para que el packer encontrara lo que este bake escribe. Ahora los dos recorren
+        ' FaceGenPaths.SalidasFo4: un canal nuevo es UNA FILA.
+        ' El cableado por canal (qué DXGI y de qué canal del pipeline sale) SÍ es propio del bake y vive
+        ' acá; el Case Else TIRA a propósito, para que una fila nueva en la tabla sin su cableado falle
+        ' RUIDOSO en vez de desaparecer del plan en silencio.
+        Dim slotPlan As New List(Of (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String, W As Integer, H As Integer, Salida As FaceGenPaths.SalidaDeTexturaDeCara))
+        For Each salidaFo4 In FaceGenPaths.SalidasFo4
+            Dim suf = FaceGenPaths.SufijoDe(salidaFo4, DebugMode)
+            Select Case salidaFo4.Salida
+                Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Diffuse
+                    slotPlan.Add((salidaFo4.Slot, If(pr IsNot Nothing, pr.Diffuse.TextureId, 0), dxgiD, suf, salidaFo4.SufijoCanon,
+                                  SlotDim(pr?.Diffuse, cpu?.Diffuse, w, True), SlotDim(pr?.Diffuse, cpu?.Diffuse, h, False), salidaFo4.Salida))
+                Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal
+                    slotPlan.Add((salidaFo4.Slot, If(pr IsNot Nothing, pr.Normal.TextureId, 0), dxgiN, suf, salidaFo4.SufijoCanon,
+                                  SlotDim(pr?.Normal, cpu?.Normal, w, True), SlotDim(pr?.Normal, cpu?.Normal, h, False), salidaFo4.Salida))
+                Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Specular
+                    slotPlan.Add((salidaFo4.Slot, If(pr IsNot Nothing, pr.Specular.TextureId, 0), dxgiS, suf, salidaFo4.SufijoCanon,
+                                  SlotDim(pr?.Specular, cpu?.Specular, w, True), SlotDim(pr?.Specular, cpu?.Specular, h, False), salidaFo4.Salida))
+                Case Else
+                    ' EN INGLÉS: este texto viaja en ex.Message y el Save lo muestra tal cual en su
+                    ' MessageBox ("CharGen bake failed: ..."), o sea que ES UI. Los comentarios y los logs
+                    ' de este archivo van en castellano; los strings que ve el usuario, no.
+                    Throw New InvalidOperationException(
+                        $"FaceGenPaths.SalidasFo4 declares output '{salidaFo4.Salida}' (slot {salidaFo4.Slot}) but " &
+                        "BakeFaceTextures has no pipeline channel wired for it. Add its branch here when you add the table row.")
+            End Select
+        Next
 
         Dim bsls = TryCast(nif.GetShader(cloned), BSLightingShaderProperty)
         Dim texset As BSShaderTextureSet = Nothing
@@ -3814,6 +3991,18 @@ Public Module FaceGenBuilder
                 Dim outFile = Path.Combine(outDir, $"{formIdLow:X8}{entry.Suffix}")
                 Try
                     File.WriteAllBytes(outFile, ddsBytes)
+                    ' Se anota ACÁ, donde se escribe: es lo que el barrido de restos usa para saber qué NO
+                    ' borrar. Ver DeleteStaleFaceCustomizationArtifacts.
+                    result?.TexturasEscritas.Add(outFile)
+                    ' Y la IDENTIDAD de la salida, que es lo que consume el packer para decidir si este
+                    ' archivo es de ESTE horneado. A la RUTA no se le puede preguntar: el bake escribe bajo
+                    ' BakeOutputRoot.Current() -que --outdir MUEVE- y el packer arma la suya con el dataDir
+                    ' que le pasa el Save. Comparar los dos strings da falso justo cuando las raices
+                    ' difieren, y como la salida esta DECLARADA eso significa "falta": se caian TODOS los
+                    ' bundles de FO4, en cada Save.
+                    If result IsNot Nothing Then
+                        result.SalidasDeTexturaEscritas = result.SalidasDeTexturaEscritas Or entry.Salida
+                    End If
                     Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outFile}'")
                 Catch ex As Exception
                     Dim slotW = entry.Slot
@@ -3879,7 +4068,12 @@ Public Module FaceGenBuilder
             Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)
             ' Full "Data\Textures\..." prefix, matching CK vanilla exactly (CK's loose FaceGen renders
             ' fine with this prefix — verified — so the prefix is NOT the loose-breaker).
-            Dim canonicalNifPath = $"Data\Textures\Actors\Character\FaceCustomization\{originPlugin}\{formIdLow:X8}{embeddedSuffix}"
+            ' La carpeta sale de FaceGenPaths, igual que en el packer y en FaceTextureRepointer -que
+            ' escribe ESTE MISMO slot para ESTE MISMO archivo en el export a NIF-. Estaba como literal
+            ' aca: los dos escritores del slot con la ruta escrita de dos formas distintas.
+            ' El prefijo "Data\" es de esta punta (asi lo escribe el CK) y no vive en el helper.
+            Dim canonicalNifPath = "Data\" & FaceGenPaths.CustomizacionDir(originPlugin) &
+                                  $"{formIdLow:X8}{embeddedSuffix}"
             While texset.Textures.Count <= entry.Slot
                 texset.Textures.Add(New NiflySharp.NiString4 With {.Content = ""})
             End While
@@ -3950,9 +4144,16 @@ Public Module FaceGenBuilder
         If cpu Is Nothing Then Return Nothing
         Dim ch As FaceTintCpuCompositor.CpuChannelResult
         Select Case slot
+            Case 0 : ch = cpu.Diffuse
             Case 1 : ch = cpu.Normal
             Case 7 : ch = cpu.Specular
-            Case Else : ch = cpu.Diffuse
+            Case Else
+                ' ERA FAIL-OPEN: cualquier slot desconocido caia en el diffuse, asi que una fila nueva en
+                ' FaceGenPaths.SalidasFo4 sin su cableado se horneaba CON LOS PIXELES DEL DIFFUSE, se
+                ' escribia, se declaraba y se empaquetaba. Silencioso, y adentro del BA2 que se publica.
+                Throw New ArgumentOutOfRangeException(
+                    NameOf(slot), slot,
+                    "No CPU channel is wired for this FaceCustomization slot. Add its branch here when you add the row to FaceGenPaths.SalidasFo4.")
         End Select
         Return ch?.Bgra
     End Function

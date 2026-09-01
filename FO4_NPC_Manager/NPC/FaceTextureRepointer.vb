@@ -33,10 +33,9 @@ Public NotInheritable Class FaceTextureRepointer
     Private Sub New()
     End Sub
 
-    ' Slots FO4 del bake de cara. El specular es el 7, no el 2.
-    Private Const Fo4SlotDiffuse As Integer = 0
-    Private Const Fo4SlotNormal As Integer = 1
-    Private Const Fo4SlotSpecular As Integer = 7
+    ' (Los slots FO4 del bake de cara ya NO viven acá: son la columna Slot de FaceGenPaths.SalidasFo4, la
+    '  misma tabla que recorren el bake y el packer. Tenerlos también como constantes propias era una cuarta
+    '  copia del mismo dato, y el specular —que es el 7, no el 2— es justo el que invita a equivocarse.)
     ' Slots SSE.
     Private Const SseSlotDiffuse As Integer = 0
     Private Const SseSlotNormal As Integer = 1
@@ -104,10 +103,15 @@ Public NotInheritable Class FaceTextureRepointer
 
         If Not isSse Then
             ' ── FO4: los tres canales del bake, con prefijo Data\ ──
-            Dim baseRel = $"Textures\Actors\Character\FaceCustomization\{plan.OriginPlugin}\{hex}"
-            WriteSlot(ts, Fo4SlotDiffuse, "Data\" & baseRel & "_d.dds")
-            WriteSlot(ts, Fo4SlotNormal, "Data\" & baseRel & "_msn.dds")
-            WriteSlot(ts, Fo4SlotSpecular, "Data\" & baseRel & "_s.dds")
+            ' Los slots y los nombres salen de FaceGenPaths.SalidasFo4, la MISMA tabla que recorren el plan
+            ' de slots del bake y la lista de specs del packer. Acá estaban los tres escritos a mano, con la
+            ' carpeta como literal: era el tercero de los "tres sitios que TIENEN que moverse juntos" que
+            ' nombra el doc de FaceGenPaths, y el único que había quedado suelto en la rama de FO4 (la de
+            ' SSE, más abajo, ya usaba el helper).
+            For Each salidaFo4 In FaceGenPaths.SalidasFo4
+                WriteSlot(ts, salidaFo4.Slot,
+                          "Data\" & FaceGenPaths.CustomizacionDds(plan.OriginPlugin, plan.FaceGenLocalFormID, salidaFo4, False))
+            Next
             outcome.Repointed = True
             Return outcome
         End If

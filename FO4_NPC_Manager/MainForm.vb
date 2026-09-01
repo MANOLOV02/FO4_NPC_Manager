@@ -3896,6 +3896,14 @@ Public Class MainForm
         Return EquipResolver.BuildFootprint(armoFid, EquipCtx(npcRaceFID, isFemale))
     End Function
 
+    ''' <summary>Qué emite un ARMO sobre ESTE NPC según el COLECTOR — la respuesta completa, no una
+    ''' derivada de los armatures. <c>Dibuja</c> incluye el carril de chunk-mount de OMOD; <c>Compite</c> es
+    ''' el filtro exacto con el que el render arma su torneo de slots. Ver
+    ''' <see cref="NpcMeshCollector.EmisionDeArmo"/>, que trae el porqué y el límite declarado.</summary>
+    Friend Function EmisionDeArmo(armoFid As UInteger, state As NPCVisualState) As (Dibuja As Boolean, Compite As Boolean)
+        Return _meshCollector.EmisionDeArmo(armoFid, state)
+    End Function
+
 
     ''' <summary>Slot footprint of ANY outfit reference (ARMO or LVLI) for a race/gender — robust for references
     ''' OUTSIDE the (race-filtered, bounded) candidate universe, so the leveled-list drill-down can show real slots
@@ -3998,8 +4006,20 @@ Public Class MainForm
     ''' through the single lib sampler with the draft view injected. Handles UseAll / ChanceNone / Count /
     ''' CalcEach / nesting uniformly for real and draft lists.</summary>
     Friend Function SampleLeveledTerminals(fid As UInteger) As List(Of UInteger)
-        Return OutfitResolver.SampleItemWithKeywords(fid, _pluginManager, leveledResolver:=AddressOf ResolveLeveledDraftView) _
-            .Select(Function(p) p.ArmoFormID).ToList()
+        Return SampleLeveledPicks(fid).Select(Function(p) p.ArmoFormID).ToList()
+    End Function
+
+    ''' <summary>Un sorteo de un item por nivel CON las keywords que cada terminal heredó del encadenado
+    ''' de LLKC.
+    ''' <para>⛔ El sampler de la librería SIEMPRE las devolvió; acá se tiraban en el <c>.Select</c>, y
+    ''' por eso el camino del borrador resolvía las combinaciones OBTS con el contexto VACÍO. Con contexto
+    ''' vacío <c>ResolveCombinationList</c> ni entra a la rama de keywords (su guarda es
+    ''' <c>ctxKeywordSet IsNot Nothing</c>), así que sólo aplican las <c>Default</c>: una prenda
+    ''' multi-variante se dibujaba con su modelo por defecto mientras era borrador y con el que le toca
+    ''' después de guardarla. No es una regla nueva — es la que ya usa el camino del OTFT real
+    ''' (<c>SampleOutfitWithKeywords</c>); acá se dejaba de usar.</para></summary>
+    Friend Function SampleLeveledPicks(fid As UInteger) As List(Of OutfitArmorPick)
+        Return OutfitResolver.SampleItemWithKeywords(fid, _pluginManager, leveledResolver:=AddressOf ResolveLeveledDraftView)
     End Function
 
     ''' <summary>Deterministic: ALL terminal ARMOs a leveled item can produce (real or own draft), for the
@@ -4036,25 +4056,52 @@ Public Class MainForm
     Friend Function ResolveDraftArmoList(draft As OutfitDraft) As List(Of UInteger)
         Dim outList As New List(Of UInteger)
         If draft Is Nothing Then Return outList
-        For Each itemFid In draft.Prendas()
-            If IsLeveledItem(itemFid) Then
-                Dim realized As List(Of UInteger) = Nothing
-                If Not draft.LvliRealization.TryGetValue(itemFid, realized) Then
-                    realized = SampleLeveledTerminals(itemFid)
-                    draft.LvliRealization(itemFid) = realized
-                End If
-                outList.AddRange(realized)
-            Else
-                outList.Add(itemFid)
-            End If
+        For Each pick In ResolveDraftPicks(draft)
+            outList.Add(pick.ArmoFormID)
         Next
         ' ⛔ MISMA ley de aplanado que el camino real. `OutfitResolver.SampleOutfitWithKeywords`
         ' deduplica por ARMO al final; acá no se hacía, así que un atuendo con la misma prenda dos veces
         ' se dibujaba DUPLICADO mientras era borrador y una sola vez después de guardarlo — preview y
-        ' render divergiendo sobre los mismos bytes. Acá no hay keywords que mergear, así que alcanza con
-        ' conservar la primera aparición: el orden es la secuencia de equip.
+        ' render divergiendo sobre los mismos bytes. Se conserva la PRIMERA aparición: el orden es la
+        ' secuencia de equip. `ResolveDraftContextKeywords` deduplica con la MISMA regla, así que la lista
+        ' de ARMO y su mapa de keywords no se pueden separar.
         Dim vistos As New HashSet(Of UInteger)
         Return outList.Where(Function(x) vistos.Add(x)).ToList()
+    End Function
+
+    ''' <summary>Los picks de un borrador de atuendo: cada ARMO con las keywords que heredó del LLKC.
+    ''' Es el ÚNICO recorrido del borrador; la lista de ARMO y el mapa de keywords son dos proyecciones
+    ''' de esto y por construcción no pueden discrepar.</summary>
+    Private Function ResolveDraftPicks(draft As OutfitDraft) As List(Of OutfitArmorPick)
+        Dim picks As New List(Of OutfitArmorPick)
+        If draft Is Nothing Then Return picks
+        For Each itemFid In draft.Prendas()
+            If IsLeveledItem(itemFid) Then
+                Dim realized As List(Of OutfitArmorPick) = Nothing
+                If Not draft.LvliRealization.TryGetValue(itemFid, realized) Then
+                    realized = SampleLeveledPicks(itemFid)
+                    draft.LvliRealization(itemFid) = realized
+                End If
+                picks.AddRange(realized)
+            Else
+                ' Una prenda concreta que el usuario agregó no pasó por ningún LLKC: su contexto es
+                ' VACÍO de verdad, no por omisión. Va con la lista vacía que ya trae `OutfitArmorPick`.
+                picks.Add(New OutfitArmorPick With {.ArmoFormID = itemFid})
+            End If
+        Next
+        Return picks
+    End Function
+
+    ''' <summary>Las keywords de contexto por ARMO de un borrador, para que el render resuelva sus
+    ''' combinaciones OBTS igual que con un OTFT real. Misma regla de dedup que
+    ''' <see cref="ResolveDraftArmoList"/>: gana la PRIMERA aparición.</summary>
+    Friend Function ResolveDraftContextKeywords(draft As OutfitDraft) As Dictionary(Of UInteger, List(Of UInteger))
+        Dim mapa As New Dictionary(Of UInteger, List(Of UInteger))
+        For Each pick In ResolveDraftPicks(draft)
+            If pick Is Nothing OrElse mapa.ContainsKey(pick.ArmoFormID) Then Continue For
+            mapa(pick.ArmoFormID) = New List(Of UInteger)(pick.ContextKeywords)
+        Next
+        Return mapa
     End Function
 
     ''' <summary>Reroll an LVLI item's cached realization (clear it so the next resolve re-samples). Pass 0
@@ -4073,13 +4120,16 @@ Public Class MainForm
     ''' their UNION effective slot mask (for the piece's display/conflict, approach A — the LVLI behaves as
     ''' its current sample). Called on Add and Reroll; the result is cached on the piece/draft so the preview
     ''' is stable between renders. The draft persists the LVLI FormID, not this realization.</summary>
-    Friend Function SampleLeveledRealization(lvliFid As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As (Terminals As List(Of UInteger), SlotMask As UInteger)
-        Dim terminals = SampleLeveledTerminals(lvliFid)
+    Friend Function SampleLeveledRealization(lvliFid As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As (Picks As List(Of OutfitArmorPick), SlotMask As UInteger)
+        ' Devuelve los PICKS y no los FormID pelados: el selector cachea esto en la pieza y de ahí pasa al
+        ' borrador, y las keywords del LLKC tienen que sobrevivir el viaje entero o el render resuelve las
+        ' combinaciones OBTS con el contexto vacío.
+        Dim picks = SampleLeveledPicks(lvliFid)
         Dim mask As UInteger = 0UI
-        For Each t In terminals
-            mask = mask Or ArmoFootprintFor(t, npcRaceFID, isFemale).OcclusionMask
+        For Each pk In picks
+            mask = mask Or ArmoFootprintFor(pk.ArmoFormID, npcRaceFID, isFemale).OcclusionMask
         Next
-        Return (terminals, mask)
+        Return (picks, mask)
     End Function
 
     ''' <summary>Register a newly created/edited outfit draft so the render (TryGetOutfitDraft), the
@@ -5688,11 +5738,15 @@ Public Class MainForm
             If draft IsNot Nothing Then
                 ' Draft outfit: the lib sampler can't see drafts (GetRecord(0xFF…)=Nothing → empty → naked).
                 ' Re-roll the draft's own leveled items (clear the cached realization) and re-resolve through
-                ' the draft path. Context keywords stay empty (drafts carry no OMOD/LLKC context), matching
-                ' AddOutfitEntryIfPresent.
+                ' the draft path.
+                ' ⛔ Las keywords de contexto YA NO quedan vacías. Salían vacías porque el sampler del
+                ' borrador tiraba las que el de la librería devuelve, no porque un borrador no pueda tenerlas:
+                ' sus items por nivel recorren LLKC igual que los de un OTFT real. Con el contexto vacío sólo
+                ' aplicaban las combinaciones OBTS `Default`, así que una prenda multi-variante se dibujaba
+                ' distinta antes y después de guardar el atuendo.
                 RerollDraftLeveled(draft)
                 entry.SampledArmorFormIDs = ResolveDraftArmoList(draft)
-                entry.SampledArmorContextKeywords = New Dictionary(Of UInteger, List(Of UInteger))
+                entry.SampledArmorContextKeywords = ResolveDraftContextKeywords(draft)
             Else
                 ' Real OTFT: re-sample outfit ARMOs (LVLI random pick + LLKC propagation).
                 Dim warnings As New List(Of String)
@@ -7538,13 +7592,18 @@ Public Class MainForm
         ' the current realization. Slot conflicts handled downstream by SelectWinningCandidates.
         Dim draft = TryGetOutfitDraft(otftFormID)
         If draft IsNot Nothing Then
+            ' ⛔ SEGUNDA PUERTA de la misma ley, y la encontró el gate, no yo: acá también se publicaba el
+            ' contexto de keywords VACÍO mientras la rama del OTFT real, treinta líneas más abajo, sí lo
+            ' llena. Con el vacío sólo aplican las combinaciones OBTS `Default`. Medido: 331 de 1.067 ARMO
+            ' del orden de carga de FO4 tienen combinaciones GATEADAS POR KEYWORD — 1.191 en total —, así
+            ' que no es un caso de borde.
             Dim realized = ResolveDraftArmoList(draft)
             entries.Add(New OutfitComboEntry With {
                 .Label = $"{slotName} — {draft.Record.EditorID} ({realized.Count} pcs) [draft]",
                 .SlotKind = kind,
                 .OutfitFormID = otftFormID,
                 .SampledArmorFormIDs = realized,
-                .SampledArmorContextKeywords = New Dictionary(Of UInteger, List(Of UInteger))
+                .SampledArmorContextKeywords = ResolveDraftContextKeywords(draft)
             })
             Return
         End If
@@ -10238,7 +10297,7 @@ Public Class MainForm
         Dim raceRec = If(st.RaceFormID <> 0UI, _pluginManager.GetRecord(st.RaceFormID), Nothing)
         Dim raceEditorID = If(raceRec IsNot Nothing, raceRec.EditorID, "?")
 
-        Using dlg As New OutfitPicker_Form(Me, npcFormID, _appliedPresets, st.RaceFormID, raceEditorID, st.IsFemale, st.DefaultOutfitFormID, rawOutfit)
+        Using dlg As New OutfitPicker_Form(Me, npcFormID, _appliedPresets, st, raceEditorID, st.DefaultOutfitFormID, rawOutfit)
             ' Cancel: the picker rendered only into its own host; the main preview + overlay were never
             ' touched, so there is nothing to undo.
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
@@ -11698,7 +11757,10 @@ Public Class MainForm
             .OriginPlugin = originPlugin,
             .FormIdLow = formIdLow,
             .DebugSandbox = FaceGenBuilder.DebugMode,
-            .ExtraLooseFiles = bakeResult.ExtraLooseFiles
+            .ExtraLooseFiles = bakeResult.ExtraLooseFiles,
+            .SalidasDeTexturaDeclaradas = bakeResult.SalidasDeTexturaDeclaradas,
+            .DeclaracionDeSalidasPoblada = bakeResult.DeclaracionDeSalidasPoblada,
+            .SalidasDeTexturaEscritas = bakeResult.SalidasDeTexturaEscritas
         }
         ' The NIF wrote (Success=True), but face-texture slots may have failed to encode/write. Surface the
         ' cause upward: the orchestrator adds it to the save summary + flips the icon to Warning, so the user

@@ -688,6 +688,42 @@ Friend NotInheritable Class NpcMeshCollector
         Next
     End Sub
 
+    ''' <summary>Qué emite REALMENTE un ARMO sobre este NPC, contestado por el MISMO código que arma el
+    ''' render: se corre <see cref="CollectArmoCandidates"/> sobre listas frescas y se mira qué salió.
+    ''' <para>⛔ Son DOS preguntas distintas, y el selector de atuendos contestaba las dos con una sola
+    ''' respuesta —«¿tiene armature de esta raza?»— que no es ninguna de las dos:</para>
+    ''' <list type="bullet">
+    ''' <item><b>Dibuja</b> = emitió ALGÚN candidate. Incluye el carril de chunk-mount de OMOD, que sale
+    ''' ANTES de mirar los armatures y se dibuja por la pasada slotless de la resolución de slots. Un ARMO
+    ''' que sólo monta por socket se ve perfecto y no tiene un solo armature: por eso
+    ''' <c>ArmoFootprint.DibujaAlgunArmature</c> —que sólo mira armatures— es un SUBCONJUNTO de esto y
+    ''' sirve para AFIRMAR, nunca para DESCARTAR.</item>
+    ''' <item><b>Compite</b> = emitió algún candidate no-Skin con <c>SlotMask &lt;&gt; 0</c>. Es LITERALMENTE
+    ''' el filtro con el que el render arma su torneo (<c>slottedCandidates</c>, en
+    ''' <c>ApplyEquipSlotResolution</c>): un ARMO que no aporta ninguno no genera grupo, no genera
+    ''' <c>EquipItem</c> y NO compite — no ocupa slot y no elimina a nadie. Los chunk-mounts salen con
+    ''' <c>SlotMask = 0</c>, así que DIBUJAN SIN PELEAR EL SLOT.</item>
+    ''' </list>
+    ''' <para>Vive acá, al lado de la ley, y no en el formulario que la necesita: reconstruirla afuera sería
+    ''' otra copia del colector, que es lo que <c>ResolverMalla</c> vino a terminar. Es de sólo lectura sobre
+    ''' <paramref name="state"/> —las tres listas son del llamador— y corre en el hilo de UI igual que
+    ''' <c>NpcSkinLivePreview.ResolveBodySkinCandidates</c>, que ya la llama así desde un diálogo.</para>
+    ''' <para>⚠️ LÍMITE declarado: las combinaciones OBTS se resuelven con
+    ''' <c>state.LoadoutArmorContextKeywords</c>, que se llena al MUESTREAR el atuendo. Una prenda que el
+    ''' usuario recién agrega todavía no pasó por ahí, así que sólo aplican las combinaciones
+    ''' <c>Default=True</c>; en ARMOs multi-addon dependientes de keyword la respuesta puede diferir de la
+    ''' que dará el render una vez guardado. Sembrar keywords especulativas sería inventar.</para></summary>
+    Friend Function EmisionDeArmo(armoFormID As UInteger,
+                                  state As MainForm.NPCVisualState) As (Dibuja As Boolean, Compite As Boolean)
+        If armoFormID = 0UI OrElse state Is Nothing Then Return (False, False)
+        Dim candidates As New List(Of MainForm.MeshCandidate)
+        Dim order As Integer = 0
+        Dim warnings As New List(Of String)
+        CollectArmoCandidates(armoFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings)
+        Return (Dibuja:=candidates.Count > 0,
+                Compite:=candidates.Any(Function(c) c.Kind <> MainForm.MeshCandidateKind.Skin AndAlso c.SlotMask <> 0UI))
+    End Function
+
     ''' <summary>Camino robot del NPC: recorre NPC_.OBTE por el resolver canonico, elige UNA combinacion,
     ''' expande sus IncludedOmods recursivamente y emite un candidate por chunk (con el transform de montaje
     ''' del lookup BSConnectPoint::Parents), compartiendo la resolucion entre todos los candidates para que el

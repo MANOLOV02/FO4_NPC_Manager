@@ -960,7 +960,8 @@ Public NotInheritable Class SceneNifExporter
         End If
 
         Try
-            destNif.Save_As_Manolo(outPath, Overwrite:=True)
+            ' Con copia: exportación a una ruta que eligió el usuario, no salida de horneado.
+            destNif.Save_As_Manolo_ConCopia(outPath, Overwrite:=True)
         Catch ex As Exception
             Return New ExportResult With {
                 .ShapesWritten = shapesWritten,

@@ -1236,10 +1236,11 @@ Public Module BssliderSidecar
             bytes = ms.ToArray()
         End Using
 
-        Dim tmp = path & ".tmp"
-        File.WriteAllBytes(tmp, bytes)
-        If File.Exists(path) Then File.Delete(path)
-        File.Move(tmp, path)
+        ' Se escribe ENCIMA del sidecar que ya está, con copia previa. El `.tmp` + borrar + renombrar que
+        ' había acá sacaba el archivo del mod bajo Mod Organizer (el borrado lo saca del árbol virtual y
+        ' lo que se escribe después es un archivo nuevo, que cae en `overwrite`). Este sidecar vive al
+        ' lado del .esp, o sea adentro del mismo mod. Misma ley que SaveNpcEspWriter (Step 7).
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(path, Sub(fs) fs.Write(bytes, 0, bytes.Length))
     End Sub
 
     ''' <summary>Build a LM-style form identifier <c>"Master.esp|HEX6"</c> from a master plugin filename

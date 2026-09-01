@@ -60,6 +60,38 @@ Public Module NpcFaceGenPacker
         ''' suyos, un render de fondo no puede colar los de una NPC que no se esta guardando, y dos
         ''' Save con los mismos inputs producen el MISMO archive.</para></summary>
         Public Property ExtraLooseFiles As List(Of String)
+
+        ''' <summary>Las salidas de textura de cara que el bake de ESTE NPC declaró que le correspondía
+        ''' producir. El packer exige exactamente ésas y ninguna más. Viene de
+        ''' <c>FaceGenBuilder.BuildResult.SalidasDeTexturaDeclaradas</c>.
+        ''' <para>Friend y no Public a proposito: el tipo vive en el modulo Friend FaceGenPaths, y una
+        ''' propiedad Public de una clase Public no puede exponerlo (BC30909). La CLASE sigue siendo Public
+        ''' porque la nombra Tools\ChargenFlagSaveGate desde otro ensamblado.</para></summary>
+        Friend Property SalidasDeTexturaDeclaradas As FaceGenPaths.SalidaDeTexturaDeCara
+
+        ''' <summary>El bake POBLÓ <see cref="SalidasDeTexturaDeclaradas"/>. Existe porque el default de un
+        ''' enum de banderas es cero, o sea "no declaró NADA", que como default es FAIL-OPEN: un camino
+        ''' futuro que arme bundles y se olvide de poblarla dejaría de exigir las texturas de cara EN
+        ''' SILENCIO. Con este flag apagado el packer exige TODO.
+        ''' <para>OJO: "exige todo" NO es identico al comportamiento previo. Los dos specs per-NPC de SSE
+        ''' llevaban IsOptional=True y no se exigian NUNCA; con la bandera apagada pasan a exigirse, y en un
+        ''' NPC vanilla de Skyrim (sin overlays, el bake no los produce) eso descarta el bundle entero. Hoy
+        ''' no hay camino que llegue con la bandera apagada -se prende en la cola comun de BuildCharGen, y
+        ''' sin Success no se arma bundle-, asi que es LATENTE; si algun dia se arma un bundle por otra via,
+        ''' hay que resolver esto antes.</para></summary>
+        Friend Property DeclaracionDeSalidasPoblada As Boolean
+
+        ''' <summary>Las salidas de textura de cara que ESTE bake escribio, por IDENTIDAD -el
+        ''' <c>FaceGenBuilder.BuildResult.SalidasDeTexturaEscritas</c> del mismo NPC-.
+        ''' <para>Contesta la SEGUNDA pregunta del packer, que la declaracion no contesta: no "si falta,
+        ''' es error?" sino "este archivo es de este horneado?". Sin esto, un DDS sobreviviente de un bake
+        ''' anterior se colaba al archive por el solo hecho de existir, y dos Save con los mismos inputs
+        ''' podian dar archives distintos.</para>
+        ''' <para>IDENTIDAD y no rutas: el bake escribe bajo <c>BakeOutputRoot.Current()</c>, que
+        ''' <c>--outdir</c> MUEVE, y el packer arma las suyas con el <c>dataDir</c> que le pasa el Save.
+        ''' Comparar strings de dos raices distintas da falso siempre, y como esto pesa sobre lo REQUERIDO
+        ''' eso tumbaba todos los bundles.</para></summary>
+        Friend Property SalidasDeTexturaEscritas As FaceGenPaths.SalidaDeTexturaDeCara
     End Class
 
     ''' <summary>One file of an NPC's FaceGen bake, as Data-relative paths. <c>Source</c> carries the
@@ -69,11 +101,17 @@ Public Module NpcFaceGenPacker
         Public Source As String
         Public Entry As String
         Public IsTexture As Boolean
-        ''' <summary>True = the bake emits this file only conditionally (e.g. the SSE per-NPC diffuse, written
-        ''' only for NPCs with RaceMenu face overlays). When the source is absent on disk it is SILENTLY skipped
-        ''' — not counted as a missing source and not counted toward the bundle's expected file count — so a
-        ''' vanilla NPC (no diffuse) still commits fully. Required files (False) that are missing = a bake bug.</summary>
-        Public IsOptional As Boolean
+        ''' <summary>Qué salida de textura de cara ES este spec, y con eso, CUÁNDO se exige.
+        ''' <para><c>Ninguna</c> ⇒ se exige SIEMPRE: el NIF de FaceGeom, y el facetint de SSE (el motor arma
+        ''' <c>FaceGenData\FaceTint\&lt;plugin&gt;\&lt;id&gt;.dds</c> por su cuenta e IGNORA el slot 6, así que si
+        ''' falta, el tint del material queda NULL y la cara sale marrón).</para>
+        ''' <para>Cualquier otro valor ⇒ se exige SÓLO si el bake DECLARÓ esa salida en el bundle.</para>
+        ''' <para>⛔ Reemplazó a un `IsOptional As Boolean` que convivía con esto: eran DOS predicados para
+        ''' la MISMA pregunta ("¿lo exijo?"), y el booleano ganaba en silencio. Los specs que llevaba
+        ''' (diffuse y normal per-NPC de SSE) hoy no los declara nadie ⇒ nunca se exigen, que es
+        ''' exactamente lo que hacía el booleano. La diferencia es que ahora hay UN predicado y declararlos
+        ''' el día que se mida es una línea, no un cambio de semántica.</para></summary>
+        Public Salida As FaceGenPaths.SalidaDeTexturaDeCara
     End Structure
 
     ''' <summary>Data-relative file specs for one NPC's FaceGen bake, GAME-AWARE — the single source of
@@ -104,32 +142,41 @@ Public Module NpcFaceGenPacker
             specs.Add(New FaceGenFileSpec With {
                 .Source = tintDir & hex & If(debugSandbox, "_2.dds", ".dds"),
                 .Entry = tintDir & hex & ".dds",
-                .IsTexture = True})
+                .IsTexture = True,
+                .Salida = FaceGenPaths.SalidaDeTexturaDeCara.SseFaceTint})
             ' (Eliminado el spec del `facedetailneutral.dds` COMPARTIDO por plugin: el fold ya no neutraliza el
             '  slot 3 — deja el detail REAL y pre-compensa el amplify en el diffuse. Ver
             '  SseFaceGenBaker.PreCompensateEngineChain. Era el único artefacto compartido entre NPCs/ESPs.)
-            ' OPTIONAL per-NPC head diffuse — emitted only when the NPC has RaceMenu face overlays/skee masks baked
-            ' in (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays). Absent for vanilla NPCs → silently skipped.
+            ' Diffuse per-NPC de la cabeza — sólo cuando el NPC tiene overlays de cara / máscaras skee
+            ' horneadas (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays). Ausente en un NPC vanilla.
+            ' Lleva TAG en vez del viejo IsOptional=True, y hoy NADIE lo declara ⇒ nunca se exige, que es
+            ' EXACTAMENTE lo que hacía IsOptional. La diferencia es que ahora hay UN solo predicado: el día
+            ' que se pueda medir cuándo el bake SSE se compromete a emitirlo, declararlo es una línea y no
+            ' un cambio de semántica.
             Dim diffDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalDiffuse, originPlugin)
             specs.Add(New FaceGenFileSpec With {
                 .Source = diffDir & hex & If(debugSandbox, "_2.dds", ".dds"),
                 .Entry = diffDir & hex & ".dds",
                 .IsTexture = True,
-                .IsOptional = True})
-            ' OPTIONAL per-NPC head normal (_msn) — emitted only when a face overlay carries a normal map.
+                .Salida = FaceGenPaths.SalidaDeTexturaDeCara.SseHeadDiffuse})
+            ' Normal (_msn) per-NPC — sólo cuando algún overlay de cara aporta normal. Mismo criterio.
             Dim normDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalNormal, originPlugin)
             specs.Add(New FaceGenFileSpec With {
                 .Source = normDir & hex & If(debugSandbox, "_2.dds", ".dds"),
                 .Entry = normDir & hex & ".dds",
                 .IsTexture = True,
-                .IsOptional = True})
+                .Salida = FaceGenPaths.SalidaDeTexturaDeCara.SseHeadNormal})
         Else
-            Dim texDir = "Textures\Actors\Character\FaceCustomization\" & originPlugin & "\"
-            For Each suffix In {"_d", "_msn", "_s"}
+            ' Se RECORRE la tabla de FaceGenPaths en vez de repetir acá el conjunto {slot, sufijo}: el bake
+            ' arma su plan de slots de la MISMA tabla, así que un canal nuevo es una fila y no dos listas que
+            ' hay que acordarse de tocar juntas. La carpeta sale de CustomizacionDir, que existe para eso y
+            ' esta rama esquivaba con un literal propio.
+            For Each salidaFo4 In FaceGenPaths.SalidasFo4
                 specs.Add(New FaceGenFileSpec With {
-                    .Source = texDir & hex & suffix & If(debugSandbox, "_2.dds", ".dds"),
-                    .Entry = texDir & hex & suffix & ".dds",
-                    .IsTexture = True})
+                    .Source = FaceGenPaths.CustomizacionDds(originPlugin, formIdLow, salidaFo4, debugSandbox),
+                    .Entry = FaceGenPaths.CustomizacionDds(originPlugin, formIdLow, salidaFo4, False),
+                    .IsTexture = True,
+                    .Salida = salidaFo4.Salida})
             Next
         End If
         Return specs
@@ -371,10 +418,61 @@ Public Module NpcFaceGenPacker
             Dim missingForThisBundle As New List(Of String)
             For Each spec In bundleSpec
                 Dim sourcePath = Path.Combine(dataDir, spec.Source)
-                If Not File.Exists(sourcePath) Then
-                    ' Optional (per-NPC diffuse/normal): absent = the NPC has no face overlays → silently skip.
-                    ' Required: absent = a bake bug → tumba el bundle ENTERO (ver la nota de arriba).
-                    If Not spec.IsOptional Then missingForThisBundle.Add(sourcePath)
+
+                ' ⛔ SON DOS PREGUNTAS DISTINTAS, y confundirlas ya costó una regresión:
+                '   (a) "¿si falta, es un error?"      -> la contesta la DECLARACIÓN (una decisión del bake)
+                '   (b) "¿este archivo es DE ESTE bake?" -> la contesta lo que el bake ESCRIBIÓ (un resultado)
+                ' La primera versión de esto sólo miraba (a), y encima adentro del `If Not File.Exists`, así
+                ' que un DDS sobreviviente de un horneado ANTERIOR se colaba al archive: presente ⇒ se
+                ' empaquetaba, sin preguntar de quién era. Pasa de verdad cuando un NPC deja de tener head
+                ' part de tipo Face — el bake de texturas no corre, el barrido de restos tampoco (vive
+                ' adentro del mismo gate) y los `_d/_msn/_s` viejos quedan en disco. Antes de la ley
+                ' "requerido = declarado" no se notaba porque el bundle se descartaba entero.
+                ' Rompía la invariante que este mismo módulo declara: dos Save con los MISMOS inputs tienen
+                ' que producir el MISMO archive.
+                Dim requerido As Boolean =
+                    (Not b.DeclaracionDeSalidasPoblada) OrElse
+                    (spec.Salida = FaceGenPaths.SalidaDeTexturaDeCara.Ninguna) OrElse
+                    ((b.SalidasDeTexturaDeclaradas And spec.Salida) <> FaceGenPaths.SalidaDeTexturaDeCara.Ninguna)
+
+                ' ¿ES DE ESTE HORNEADO? Para las salidas con TAG lo dice el bake, por IDENTIDAD: están en
+                ' SalidasDeTexturaEscritas si y sólo si LAS ESCRIBIÓ. Sin comparar rutas — las dos puntas
+                ' las arman de raíces distintas (el bake de BakeOutputRoot.Current(), que --outdir mueve). Las que NO llevan tag (el NIF de FaceGeom y el facetint de SSE)
+                ' el bake no las registra, así que para ellas el único indicio posible sigue siendo que el
+                ' archivo esté — igual que antes de este cambio.
+                ' ⛔ ESTO VA FUERA DE LA RAMA "no requerido", y esa es la corrección importante. Cuando el
+                ' chequeo vivía sólo del lado no-requerido quedaba abierto el caso: el bake DECLARA el _msn,
+                ' la escritura de ESTE horneado FALLA, y el barrido del stale tampoco puede borrar el viejo
+                ' (lock o permisos). Requerido + presente ⇒ se empaquetaba el VIEJO, el bundle commiteaba
+                ' como si nada y el paso 5 borraba el suelto: la textura de otro horneado quedaba como la
+                ' del archive, con el NIF nuevo al lado y sin forma de reintentar.
+                ' Con la regla unificada eso es lo que es: declarado y NO producido ⇒ FALTA. Tumba el bundle,
+                ' conserva los sueltos y se puede reintentar.
+                Dim esDeEsteBake As Boolean =
+                    (spec.Salida = FaceGenPaths.SalidaDeTexturaDeCara.Ninguna) OrElse
+                    ((b.SalidasDeTexturaEscritas And spec.Salida) <> FaceGenPaths.SalidaDeTexturaDeCara.Ninguna)
+
+                Dim disponible As Boolean = esDeEsteBake AndAlso File.Exists(sourcePath)
+
+                If Not disponible AndAlso File.Exists(sourcePath) Then
+                    Dim spL = sourcePath, opL2 = b.OriginPlugin, fidL2 = b.FormIdLow, reqL = requerido
+                    Logger.LogLazy(Function() $"[PACK-BATCH] {opL2} 0x{fidL2:X8}: '{Path.GetFileName(spL)}' EXISTE pero este bake NO lo escribió " &
+                                              $"(requerido={reqL}) — es resto de un horneado anterior: NO entra al archive.")
+                End If
+
+                If Not disponible Then
+                    ' No hay nada de este bake para este spec. Si además ERA requerido, falta: tumba el
+                    ' bundle ENTERO (ver la nota de B1 arriba). Si no era requerido, no pasa nada: no
+                    ' correspondía producirlo.
+                    ' Antes esto se exigía por constante de juego —los 3 DDS de FaceCustomization SIEMPRE,
+                    ' produjera el bake lo que produjera—, así que un NPC cuya raza no declara ninguna head
+                    ' part de tipo Face perdía los tres y el Save reportaba "N NPCs failed to pack" en CADA
+                    ' guardado, por archivos que el bake nunca tuvo que escribir.
+                    ' `Salida = Ninguna` ⇒ se exige SIEMPRE (el NIF; y el facetint de SSE, que el motor arma
+                    ' por su cuenta e ignora el slot 6, así que omitirlo es cara marrón).
+                    ' Fail-CLOSED: sin declaración poblada se exige todo — un bundle armado por un camino que
+                    ' no pobló la declaración falla RUIDOSO en vez de empaquetar de menos en silencio.
+                    If requerido Then missingForThisBundle.Add(sourcePath)
                     Continue For
                 End If
                 pending.Add(New LooseFileRef With {
@@ -459,9 +557,12 @@ Public Module NpcFaceGenPacker
         ' --- Step 2: unregister current archives once ----------------------------------------
         ' NO "frees pooled FileStreams" en el sentido que hacía falta: un reader ALQUILADO ya salió del
         ' pool y su FileStream vive todo el ExtractToMemory, así que esto vuelve con ese handle abierto.
-        ' Lo que permite que el packager renombre/borre el .ba2 con lectores en vuelo es el FileShare.Delete
-        ' de FilesDictionary_class.AbrirArchiveParaLectura. Este loop sigue siendo necesario por la otra
-        ' razón: dejar de SERVIR entradas cuyos índices dejan de valer apenas se reescribe el archive.
+        ' Lo que permitia que el packager renombrara/borrara el .ba2 con lectores en vuelo era el
+        ' FileShare.Delete de FilesDictionary_class.AbrirArchiveParaLectura.
+        ' ⛔ El packager YA NO RENOMBRA: vuelca el archive nuevo encima del original para que no se salga
+        ' del mod bajo Mod Organizer, y volcar pide ESCRITURA, que las lecturas no comparten. Este loop
+        ' pasa a ser lo que MAS baja la probabilidad de chocar (cierra los readers pooleados), ademas de
+        ' su razon original: dejar de SERVIR entradas cuyos indices dejan de valer al reescribir.
         Dim modBaseName = Path.GetFileNameWithoutExtension(anchorPluginPath)
         Dim preSet = ArchivePackager.DiscoverArchiveSet(dataDir, modBaseName)
         For Each archivePath In preSet.Archives

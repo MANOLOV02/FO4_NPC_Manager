@@ -42,12 +42,28 @@ Public Class OutfitDraft
     ''' <summary>Sólo para mostrar, no se guarda: qué prendas concretas salieron sorteadas para cada
     ''' lista por nivel del atuendo, por identificador de la lista. Se cachea para que la vista previa
     ''' no cambie sola entre dibujados; volver a sortear borra la entrada.
-    ''' <para>⚠️ LATENTE, declarado: la llave es el FormID, así que si el INAM repitiera la MISMA lista
-    ''' por nivel dos veces, las dos entradas comparten una sola realización — la vista previa dibujaría
-    ''' dos sorteos distintos y el render commiteado, el mismo dos veces. Medido: 0 duplicados en 1.241
-    ''' OTFT del orden de carga (750 de Skyrim, 491 de FO4), así que hoy no llega — pero llegaría con un
-    ''' atuendo de un mod que repita. Cerrarlo pide llavear por POSICIÓN del INAM, no por FormID.</para></summary>
-    Public ReadOnly Property LvliRealization As New Dictionary(Of UInteger, List(Of UInteger))
+    ''' <para>Guarda los PICKS y no sólo los FormID: cada terminal viene con las keywords que heredó del
+    ''' encadenado de LLKC en el camino, y ésas son las que deciden qué combinación OBTS aplica. Tirarlas
+    ''' —el sorteo ya las traía— dejaba al borrador resolviendo sólo las combinaciones <c>Default</c>,
+    ''' así que una prenda multi-variante se veía distinta antes y después de guardar.</para>
+    ''' <para>⚠️ LATENTE, declarado, y NO se cierra llaveando por posición: la llave es el FormID, así que
+    ''' si el INAM repitiera la MISMA lista por nivel dos veces, las dos entradas comparten una sola
+    ''' realización — el volcado del selector pisa la primera con la segunda y el render dibuja el mismo
+    ''' sorteo dos veces.</para>
+    ''' <para>⛔ POR QUÉ NO SE ARREGLA HOY, y por qué la solución obvia es PEOR:</para>
+    ''' <list type="bullet">
+    ''' <item><b>No se alcanza.</b> Medido: 0 entradas repetidas en 1.241 OTFT del orden de carga (750 de
+    ''' Skyrim, 491 de FO4). Y el editor NO deja crearla: <c>AddItemFidAsPiece</c> rechaza el duplicado
+    ''' exacto. La única vía es sembrar un OTFT de un mod que ya repita la lista.</item>
+    ''' <item><b>Llavear por POSICIÓN mete un defecto ALCANZABLE.</b> El selector deja reordenar las piezas
+    ''' con ▲/▼: con la posición de llave, reordenar le pega la realización de una prenda a otra. Se
+    ''' cambiaría un defecto medido en cero por uno que sale con dos clics — un carril paralelo que se
+    ''' desincroniza, que es un modo de falla que este repo ya se comió.</item>
+    ''' <item><b>El cierre correcto</b> es sacar esta caché lateral y colgar la realización de la identidad
+    ''' de la pieza, que sobrevive al reordenamiento. Toca los 5 usos más la copia del clon y obliga a
+    ''' repensar el reroll de UNA sola lista (<c>RerollDraftLeveled</c>). Es un refactor con su propia
+    ''' medición, no un parche.</item></list></summary>
+    Public ReadOnly Property LvliRealization As New Dictionary(Of UInteger, List(Of OutfitArmorPick))
 
     ''' <summary>True = edita un atuendo existente. False = uno nuevo.</summary>
     Public Property IsOverride As Boolean
@@ -153,7 +169,7 @@ Public Class OutfitDraft
             .IsModified = IsModified
         }
         For Each kv In LvliRealization
-            c.LvliRealization(kv.Key) = New List(Of UInteger)(kv.Value)
+            c.LvliRealization(kv.Key) = New List(Of OutfitArmorPick)(kv.Value)
         Next
         Return c
     End Function

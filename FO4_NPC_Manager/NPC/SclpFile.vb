@@ -174,11 +174,9 @@ Public Module SclpFile
             bytes = ms.ToArray()
         End Using
 
-        ' Atomic write (.tmp + rename), same idiom as BssliderSidecar.Write.
-        Dim tmp = path & ".tmp"
-        File.WriteAllBytes(tmp, bytes)
-        If File.Exists(path) Then File.Delete(path)
-        File.Move(tmp, path)
+        ' Se escribe ENCIMA del archivo que ya está, con copia previa: el destino lo elige el usuario y
+        ' puede caer adentro de un mod. Misma ley que SaveNpcEspWriter (Step 7).
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(path, Sub(fs) fs.Write(bytes, 0, bytes.Length))
     End Sub
 
     Private Function SafeAxis(v As Single) As Single

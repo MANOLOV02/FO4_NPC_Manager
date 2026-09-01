@@ -52,6 +52,13 @@
          NpcFilterAdvanced_Form.ProbeLayout (Friend) desde afuera, sin volver Public nada.
          Ver Tools/NpcFilterGate y la memoria 00-reglas-self-tests-no-van-en-el-binario. -->
     <InternalsVisibleTo Include="NpcFilterGate" />
+    <!-- ⛔ EL UNICO GATE QUE EJERCITA NpcFaceGenPacker.PackBatch. Antes no habia ninguno: GateBake corre
+         el barrido bake-all, que va por BakeAllRunner y nunca llega al packer, y ChargenFlagSaveGate
+         stubea RunChargenBake con Skipped:=True, asi que la fase de pack ni se llama. Se podia invertir
+         el predicado de "que archivos exige un bundle" y los 115 arneses seguian verdes. PackBatch,
+         PackResult y FaceGenFileSpec son Friend y asi se quedan: el testigo LLAMA al sujeto.
+         Ver Tools/PackRequeridosGate y 00-reglas-el-testigo-tiene-que-compartir-el-codigo-del-sujeto. -->
+    <InternalsVisibleTo Include="PackRequeridosGate" />
   </ItemGroup>
 
   <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save

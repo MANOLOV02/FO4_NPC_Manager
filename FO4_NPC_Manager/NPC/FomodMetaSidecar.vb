@@ -71,10 +71,10 @@ Public Module FomodMetaSidecar
         If String.IsNullOrEmpty(path) OrElse meta Is Nothing Then Return
         meta.Version = SchemaVersion
         Dim json = JsonSerializer.Serialize(meta, SerializerOptions)
-        Dim tmp = path & ".tmp"
-        File.WriteAllText(tmp, json, New Text.UTF8Encoding(False))
-        If File.Exists(path) Then File.Delete(path)
-        File.Move(tmp, path)
+        ' Se escribe ENCIMA del sidecar que ya está, con copia previa: vive al lado del .esp, adentro del
+        ' mod. Misma ley que SaveNpcEspWriter (Step 7).
+        Dim bytes = New Text.UTF8Encoding(False).GetBytes(json)
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(path, Sub(fs) fs.Write(bytes, 0, bytes.Length))
     End Sub
 
 End Module

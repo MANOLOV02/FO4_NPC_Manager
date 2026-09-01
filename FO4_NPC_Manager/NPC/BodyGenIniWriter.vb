@@ -155,16 +155,13 @@ Public Module BodyGenIniWriter
         Return String.Join(", ", parts)
     End Function
 
+    ''' <summary>Se escribe ENCIMA del .ini que ya está, con copia previa. Estos .ini viven bajo
+    ''' <c>Data\F4SE\Plugins\F4EE\BodyGen\</c>, o sea adentro de un mod: el `.tmp` + `File.Replace` que
+    ''' había acá se salía del VFS de Mod Organizer y dejaba el archivo en el `Data` real del juego.
+    ''' Misma ley que SaveNpcEspWriter (Step 7).</summary>
     Private Sub WriteAtomic(path As String, content As String)
-        Dim tmp = path & ".tmp"
-        File.WriteAllText(tmp, content, New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False))
-        ' Misma ley atómica que SaveNpcEspWriter y LoadOrderActivator: Delete+Move deja una ventana en la que
-        ' el archivo no existe. File.Replace exige que el destino exista; el Move queda para el caso nuevo.
-        If File.Exists(path) Then
-            File.Replace(tmp, path, Nothing, ignoreMetadataErrors:=True)
-        Else
-            File.Move(tmp, path)
-        End If
+        Dim bytes = New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False).GetBytes(content)
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(path, Sub(fs) fs.Write(bytes, 0, bytes.Length))
     End Sub
 
     Private Sub TryDeleteFile(path As String)
