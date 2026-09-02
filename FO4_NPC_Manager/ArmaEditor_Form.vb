@@ -1050,12 +1050,16 @@ Public Class ArmaEditor_Form
     Private Sub PickFidInto(target As TextBox, sigs As String(), title As String, allowNull As Boolean,
                             Optional includeMswpDrafts As Boolean = False)
         Dim drafts As List(Of FormIdPickerEntry) = Nothing
+        Dim alBorrar As Func(Of FormIdPickerEntry, Boolean) = Nothing
         If includeMswpDrafts Then
             drafts = _mainForm.MswpDrafts().Select(Function(d) New FormIdPickerEntry With {
                 .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID, .Signature = "MSWP"}).ToList()
+            ' ⛔ Y CON SU CAMINO DE BAJA: ver la nota gemela en `ArmoEditor_Form.PickFidInto`. Sin esto el
+            ' botón «Delete / Revert…» ni se ve, y el MSWP queda sin salida después del OK.
+            alBorrar = Function(en) BorradoDeMswp.BorrarORevertir(Me, _mainForm, en)
         End If
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, sigs, title, GetFid(target),
-                                           allowNull, drafts)
+                                           allowNull, drafts, onDeleteEntry:=alBorrar)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 SetFidText(target, dlg.SelectedFormID)
                 OnFieldEdited(Me, EventArgs.Empty)

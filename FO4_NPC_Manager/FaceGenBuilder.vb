@@ -2623,7 +2623,13 @@ Public Module FaceGenBuilder
             Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
             If Not SkipDdsEncode Then
                 IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
-                IO.File.WriteAllBytes(outFile, dds)
+                ' ⛔ NO `File.WriteAllBytes`: pide CREATE_ALWAYS y sobre un destino OCULTO da ACCESS_DENIED, y
+                ' un archivo NUEVO rompe el VFS de MO2 / el hardlink de Vortex. Con un reemplazo de FaceGen ajeno
+                ' oculto, la escritura tiraba, el Catch hacia RecordTextureFailure+Continue y el BA2 salia con LA
+                ' CARA DEL OTRO MOD sin excepcion visible. El TGA de al lado ya iba por la ley
+                ' (`FaceTintCompositor`) y el DDS no. `Escribir` y no `GuardarConCopia`: es salida del HORNEADO,
+                ' miles por corrida y se rehornea. La ley vive en `Ba2_Bsa_Library\EscrituraEnElLugar.vb`.
+                BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(outFile, Sub(fs) fs.Write(dds, 0, dds.Length))
                 ' Identidad: es lo que le dice al packer que ESTE facetint es de ESTE horneado.
                 If result IsNot Nothing Then
                     result.SalidasDeTexturaEscritas = result.SalidasDeTexturaEscritas Or FaceGenPaths.SalidaDeTexturaDeCara.SseFaceTint
@@ -2716,7 +2722,8 @@ Public Module FaceGenBuilder
         Dim rel = FaceGenPaths.TexturaDds(FaceGenPaths.CanalTint, originPlugin, fgLocal, "_2b")
         Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
-        IO.File.WriteAllBytes(outFile, dds)
+        ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(outFile, Sub(fs) fs.Write(dds, 0, dds.Length))
         MaybeWriteTgaBeside(outFile, w, h, gbra)
         Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _2b GPU -> {rel} ({dds.Length}b)")
     End Sub
@@ -2839,7 +2846,8 @@ Public Module FaceGenBuilder
         Dim rel = FaceGenPaths.TexturaDds(FaceGenPaths.CanalDiffuse, originPlugin, fgLocal, "_2d")
         Dim outFile = IO.Path.Combine(BakeOutputRoot.Current(), rel)
         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
-        IO.File.WriteAllBytes(outFile, dds)
+        ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(outFile, Sub(fs) fs.Write(dds, 0, dds.Length))
         MaybeWriteTgaBeside(outFile, gpW, gpH, gpBuf)
         Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2d pliegue PURO GPU (float) -> {rel} ({dds.Length}b, {w}x{h})")
     End Sub
@@ -3250,7 +3258,8 @@ Public Module FaceGenBuilder
             If Not SkipDdsEncode Then
                 Try
                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
-                    IO.File.WriteAllBytes(outFile, outDds)
+                    ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
+                    BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(outFile, Sub(fs) fs.Write(outDds, 0, outDds.Length))
                     result?.TexturasEscritas.Add(outFile)   ' lo que este bake escribió: el barrido no lo toca
                     ' Y la IDENTIDAD, que es de lo UNICO que depende el packer para meter este DDS al
                     ' archive: lleva tag (SseHeadDiffuse) => nunca es "requerido" => si no esta marcado
@@ -3347,7 +3356,8 @@ Public Module FaceGenBuilder
                                         Dim nRel = ndir & $"{fgLocal:X8}{suffix}"
                                         Dim nFile = IO.Path.Combine(BakeOutputRoot.Current(), nRel)
                                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(nFile))
-                                        IO.File.WriteAllBytes(nFile, mDds)
+                                        ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
+                                        BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(nFile, Sub(fs) fs.Write(mDds, 0, mDds.Length))
                                         result?.TexturasEscritas.Add(nFile)   ' idem: el barrido no lo toca
                                         ' Identidad, mismo motivo que el diffuse de arriba.
                                         If result IsNot Nothing AndAlso Not forced Then
@@ -4040,7 +4050,8 @@ Public Module FaceGenBuilder
 
                 Dim outFile = Path.Combine(outDir, $"{formIdLow:X8}{entry.Suffix}")
                 Try
-                    File.WriteAllBytes(outFile, ddsBytes)
+                    ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
+                    BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(outFile, Sub(fs) fs.Write(ddsBytes, 0, ddsBytes.Length))
                     ' Se anota ACÁ, donde se escribe: es lo que el barrido de restos usa para saber qué NO
                     ' borrar. Ver DeleteStaleFaceCustomizationArtifacts.
                     result?.TexturasEscritas.Add(outFile)
@@ -4098,7 +4109,8 @@ Public Module FaceGenBuilder
                         width:=ddW, height:=ddH, bgraPixels:=gpuBgra,
                         outputDxgiFormat:=entry.Dxgi,
                         generateMipMaps:=True, generatedMipLevels:=mips2b)
-                    File.WriteAllBytes(Path.Combine(outDir, $"{formIdLow:X8}{suffix2b}"), dds2b)
+                    ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
+                    BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(Path.Combine(outDir, $"{{formIdLow:X8}}{{suffix2b}}"), Sub(fs) fs.Write(dds2b, 0, dds2b.Length))
                     Logger.LogLazy(Function() $"[FACEBAKE-GPU] wrote '{formIdLow:X8}{suffix2b}' slot={slotL2}")
                     If WriteTGASandboxOutput Then
                         FaceTintCompositor.WriteBgraToTga(Path.Combine(outDir, $"{formIdLow:X8}{Path.ChangeExtension(suffix2b, "tga")}"), gpuBgra, ddW, ddH)

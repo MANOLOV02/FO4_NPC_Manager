@@ -81,6 +81,21 @@ Public Module LooksmenuLoader
         ''' vuelve indistinguible de "el preset no trae color de pelo": el auditor de compatibilidad lo
         ''' saltaba en silencio. "" = resolvió, o el preset no declara HairColor.</summary>
         Public UnresolvedHairColor As String = ""
+        ''' <summary>Los identificadores crudos ("Plugin.esp|FORMID") de los TRES overrides <c>_npcm_</c> del
+        ''' preset —skin (WNAM), outfit por defecto (DOFT) y outfit de dormir (SOFT)— cuando NO resolvieron
+        ''' contra el orden de carga. "" = resolvió, o el preset no declara ese campo.
+        ''' <para>⛔ <b>SIN ESTO EL CASO ERA MUDO EN RELEASE, y es el modo de fallar más común de un preset
+        ''' ajeno.</b> El campo que no resuelve queda en <c>Nothing</c> —«preservar», que es lo correcto: f4ee
+        ''' saltea el form que no resuelve—, pero entonces el auditor de compatibilidad no lo ve, porque sólo
+        ''' mira los que TIENEN valor (<c>HasValue AndAlso &lt;&gt; 0</c>). El único aviso era un
+        ''' <c>Logger</c>, y el logger está apagado por construcción en Release: el usuario cargaba un preset,
+        ''' el NPC salía con SU piel y SU ropa en vez de las del preset, y nada se lo decía.</para>
+        ''' <para>Mismo patrón que <see cref="UnresolvedHeadParts"/> y <see cref="UnresolvedHairColor"/>: se
+        ''' PRESERVA el identificador crudo acá y el informe lo nombra
+        ''' (<c>PresetCompatibilityReport.AuditFormIdFields</c>), que es el canal que el usuario sí ve.</para></summary>
+        Public UnresolvedSkin As String = ""
+        Public UnresolvedDefaultOutfit As String = ""
+        Public UnresolvedSleepOutfit As String = ""
         ''' <summary>SSE-ONLY face texture set (NPC_.FTST) override. THREE states, same shape as
         ''' <see cref="SkinFormIDOverride"/> / <see cref="DefaultOutfitFormIDOverride"/> / <see cref="SleepOutfitFormIDOverride"/>:
         ''' <list type="bullet">
@@ -691,12 +706,14 @@ Public Module LooksmenuLoader
                     ' (Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:328-330).
                     If resolved <> 0UI Then
                         preset.SkinFormIDOverride = resolved
-                    ElseIf Logger.Enabled Then
-                        ' Sin esto el caso queda MUDO: el informe de compatibilidad sólo mira
-                        ' `HasValue AndAlso <> 0` (PresetCompatibilityReport:501-510), así que un override
-                        ' que no resuelve no aparece en ningún lado. Con los head parts el usuario sí se
-                        ' entera (UnresolvedHeadParts → MainForm:8837), y no hay razón para que estos tres
-                        ' sean la excepción.
+                    Else
+                        ' ⛔ SE PRESERVA EL CRUDO, Y FUERA DEL `Logger`. El informe de compatibilidad sólo mira
+                        ' los overrides que TIENEN valor (`HasValue AndAlso <> 0`,
+                        ' `PresetCompatibilityReport.AuditFormIdFields`), así que sin guardar el identificador
+                        ' el caso no aparece en ningún lado — y el log está apagado en Release. Con los head
+                        ' parts el usuario sí se entera (`UnresolvedHeadParts` → el mismo informe), y no hay
+                        ' razón para que estos tres sean la excepción. Ahora no lo son.
+                        preset.UnresolvedSkin = sfStr
                         Dim sfMissing = sfStr
                         Logger.LogLazy(Function() $"[LMLoad] _npcm_SkinFormID '{sfMissing}' no resuelve " &
                                                   "(su plugin no está en el load order) -> se preserva el skin del NPC.")
@@ -718,7 +735,8 @@ Public Module LooksmenuLoader
                     Dim ofResolved = ResolveFormIdentifier(ofStr, pluginManager)
                     If ofResolved <> 0UI Then
                         preset.DefaultOutfitFormIDOverride = ofResolved
-                    ElseIf Logger.Enabled Then
+                    Else
+                        preset.UnresolvedDefaultOutfit = ofStr   ' ver la nota de `_npcm_SkinFormID`
                         Dim ofMissing = ofStr
                         Logger.LogLazy(Function() $"[LMLoad] _npcm_DefaultOutfit '{ofMissing}' no resuelve " &
                                                   "(su plugin no está en el load order) -> se preserva el DOFT del NPC.")
@@ -736,7 +754,8 @@ Public Module LooksmenuLoader
                     Dim sofResolved = ResolveFormIdentifier(sofStr, pluginManager)
                     If sofResolved <> 0UI Then
                         preset.SleepOutfitFormIDOverride = sofResolved
-                    ElseIf Logger.Enabled Then
+                    Else
+                        preset.UnresolvedSleepOutfit = sofStr   ' ver la nota de `_npcm_SkinFormID`
                         Dim sofMissing = sofStr
                         Logger.LogLazy(Function() $"[LMLoad] _npcm_SleepOutfit '{sofMissing}' no resuelve " &
                                                   "(su plugin no está en el load order) -> se preserva el SOFT del NPC.")
@@ -877,6 +896,11 @@ Public Module LooksmenuLoader
         c.SseUnresolvedHeadParts.AddRange(p.SseUnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
         c.UnresolvedHairColor = p.UnresolvedHairColor
+        ' Los tres crudos viajan con el clon por lo mismo que los de arriba: el informe de compatibilidad se
+        ' arma sobre el preset que tiene en la mano, y si el clon los pierde el aviso desaparece.
+        c.UnresolvedSkin = p.UnresolvedSkin
+        c.UnresolvedDefaultOutfit = p.UnresolvedDefaultOutfit
+        c.UnresolvedSleepOutfit = p.UnresolvedSleepOutfit
         c.SseHeadTextureFormIDOverride = p.SseHeadTextureFormIDOverride
         c.SseHairColorRgb = p.SseHairColorRgb
         c.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(p.SkinToneOffset)

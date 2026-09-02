@@ -202,7 +202,11 @@ Public Class PoseCatalog
 
         If Not File.Exists(xmlPath) Then
             Dim newDoc As New XDocument(New XDeclaration("1.0", "UTF-8", Nothing), New XElement("PoseData"))
-            newDoc.Save(xmlPath)
+            ' ⛔ NO `XDocument.Save(String)`: pide CREATE_ALWAYS (ACCESS_DENIED sobre un destino
+            ' OCULTO, y un archivo nuevo rompe el VFS de MO2 / el hardlink de Vortex). Y este catalogo es
+            ' COMPARTIDO con Wardrobe Manager, que ya lo escribe por la ley: los bytes tienen que salir
+            ' iguales mire quien mire, y por eso los dos derivan los XmlWriterSettings en el MISMO lugar.
+            FO4_Base_Library.EscrituraXml.GuardarXDocumentConCopia(xmlPath, newDoc)
         End If
 
         Dim doc = XDocument.Load(xmlPath)
@@ -236,7 +240,11 @@ Public Class PoseCatalog
                                       New XAttribute("scale", tr.Value.Scale.ToString(CultureInfo.InvariantCulture)), tr.Value.AtributosPerEje()))
         Next
 
-        doc.Save(xmlPath)
+        ' ⛔ Misma ley que arriba, y aca es la que duele: `WardrobeManagerPoses.xml` guarda TODAS las
+        ' poses del usuario. Con el destino oculto se perdia la pose que acababa de guardar; con un corte
+        ' a mitad de escritura, el archivo entero. Wardrobe Manager protege este MISMO archivo desde su
+        ' lado — el port a NPC Manager se habia dejado sin la red.
+        FO4_Base_Library.EscrituraXml.GuardarXDocumentConCopia(xmlPath, doc)
         pose.Filename = xmlPath
         pose.Source = Poses_class.Pose_Source_Enum.WardrobeManager
         Poses(pose.ToString()) = pose
@@ -263,7 +271,9 @@ Public Class PoseCatalog
         If selected Is Nothing Then Throw New InvalidDataException($"Pose '{pose.Name}' was not found in its source XML.")
         selected.Remove()
         If doc.Root.Elements("Pose").Any() Then
-            doc.Save(path)
+            ' ⛔ Misma ley: borrar UNA pose reescribe el catalogo COMPLETO, asi que un fallo aca se
+            ' lleva todas las demas. La red va justamente donde mas contenido ajeno hay en juego.
+            FO4_Base_Library.EscrituraXml.GuardarXDocumentConCopia(path, doc)
         Else
             File.Delete(path)
         End If

@@ -72,6 +72,8 @@ Module Program
     <STAThread>
     Sub Main(args As String())
         CrashReport.Install()
+        ' ⛔ La carpeta de diarios va antes de cualquier guardado (ver RecuperacionDeLotes).
+        RecuperacionDeLotes.ConfigurarCarpeta("NpcManager")
         ' ThrowException y no Automatic: fija que una excepción no atrapada del hilo de UI SALGA de
         ' Application.Run en vez de quedar a criterio del host. Así toda caída pasa por el reporte, y ninguna
         ' deja la app viva en un estado roto. Debe ir antes de crear cualquier control.
@@ -202,6 +204,10 @@ Module Program
         ' (sLanguage=en + fan-translated UTF-8 plugins), resuelto acá vía archivo en vez de
         ' un flag de línea de comandos.
         PluginEncodingSettings.ApplyOverrideIni(AppDomain.CurrentDomain.BaseDirectory)
+
+        ' ⛔ LA OFERTA DE RECUPERACION VA ACA: despues de TODOS los modos headless —un MessageBox
+        ' colgaria un `--bake-all` o un `--bake-geom` para siempre— y antes de que la GUI abra nada.
+        RecuperacionDeLotes.OfrecerRecuperacion()
 
         Using preflight As New Preflight_Form()
             If preflight.ShowDialog() <> DialogResult.OK Then Return

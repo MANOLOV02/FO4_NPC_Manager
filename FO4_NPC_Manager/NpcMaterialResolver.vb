@@ -1375,7 +1375,13 @@ Friend NotInheritable Class NpcMaterialResolver
             If needWrite Then
                 Dim dir = IO.Path.GetDirectoryName(clonedFullPath)
                 If Not String.IsNullOrEmpty(dir) AndAlso Not IO.Directory.Exists(dir) Then IO.Directory.CreateDirectory(dir)
-                IO.File.WriteAllBytes(clonedFullPath, vanillaBytes)
+                ' ⛔ NI `WriteAllBytes`: pide CREATE_ALWAYS y sobre un destino OCULTO da ACCESS_DENIED,
+                ' y un archivo nuevo rompe el VFS de MO2 / el hardlink de Vortex. Si tiraba, el Catch de
+                ' afuera hacia `Return ""` y el arreglo de nuca quedaba DESACTIVADO en silencio.
+                ' `Escribir` y no `GuardarConCopia`: `ManoloCloned\` es literalmente la carpeta que la ley
+                ' nombra como salida REGENERABLE — la app la produce y la rehace sola. Mismo veredicto que
+                ' el gemelo de Wardrobe Manager en `OSP_Clases`.
+                BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(clonedFullPath, Sub(fs) fs.Write(vanillaBytes, 0, vanillaBytes.Length))
             End If
             ' --outdir: EL CLON VA A LOS DOS LADOS. A Data (arriba) porque el diccionario lo resuelve
             ' contra FO4Path -ver el AddOrUpdateDictionaryEntry de abajo- y sin eso la propia corrida
@@ -1397,7 +1403,8 @@ Friend NotInheritable Class NpcMaterialResolver
                     Dim copia = IO.Path.Combine(BakeOutputRoot.Current(), clonedRelPath)
                     Dim dirCopia = IO.Path.GetDirectoryName(copia)
                     If Not String.IsNullOrEmpty(dirCopia) AndAlso Not IO.Directory.Exists(dirCopia) Then IO.Directory.CreateDirectory(dirCopia)
-                    IO.File.WriteAllBytes(copia, vanillaBytes)
+                    ' ⛔ Misma ley que el clon de Data de arriba: `EscrituraEnElLugar`, no `WriteAllBytes`.
+                    BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(copia, Sub(fs) fs.Write(vanillaBytes, 0, vanillaBytes.Length))
                 Catch exCopia As Exception
                     Dim rutaL = clonedRelPath, msgC = exCopia.Message
                     Logger.LogLazy(Function() $"[HEADREAR-CLONE] copia a la raiz de salida FALLO '{rutaL}' -> {msgC} (el clon de Data si se escribio)")

@@ -3680,8 +3680,29 @@ Public Class MainForm
     ''' drafts — an OVERRIDE draft is REVERTED (unregistered), which is always safe because every reference
     ''' resolves by FormID to the still-existing real record. Pure read-only scan.</summary>
     Friend Function GetDraftReferrers(formID As UInteger) As List(Of String)
+        Return ReferrersDeBorrador(formID, Nothing)
+    End Function
+
+    ''' <summary>¿A <paramref name="formID"/> lo referencia algo que NO esté en
+    ''' <paramref name="ignorarLvli"/>? Misma pregunta que <see cref="GetDraftReferrers"/> y por el MISMO
+    ''' censo; lo único que cambia es que los borradores de lista por nivel de ese conjunto no cuentan como
+    ''' referrers.
+    ''' <para>⛔ Existe para el cierre del selector de atuendos: cuando se van a dar de baja VARIAS listas
+    ''' juntas, una que sólo la referencia OTRA que también se va no está viva — está abandonada igual. Sin
+    ''' el conjunto, la primera pasada las salva mutuamente y queda el huérfano de segundo nivel. Ver
+    ''' <c>OutfitPicker_Form.PlanDeCierreDeListas</c>.</para></summary>
+    Friend Function TieneReferrerFueraDe(formID As UInteger, ignorarLvli As ICollection(Of UInteger)) As Boolean
+        Return ReferrersDeBorrador(formID, ignorarLvli).Count > 0
+    End Function
+
+    Private Function ReferrersDeBorrador(formID As UInteger, ignorarLvli As ICollection(Of UInteger)) As List(Of String)
         Dim refs As New List(Of String)
         If formID = 0UI Then Return refs
+        ' Las listas que el llamador da por bajadas no cuentan como referrers: se van en el mismo gesto.
+        Dim lvliVivas = _leveledListDrafts
+        If ignorarLvli IsNot Nothing AndAlso ignorarLvli.Count > 0 Then
+            lvliVivas = _leveledListDrafts.Where(Function(d) d Is Nothing OrElse Not ignorarLvli.Contains(d.FormID)).ToList()
+        End If
 
         ' ⛔ EL CENSO DE BORRADOR→BORRADOR VIVE EN `Borradores.CensarReferrers`, NO ACA. Dos razones, y las
         ' dos ya costaron un defecto:
@@ -3693,7 +3714,7 @@ Public Class MainForm
         '      entero), asi que quedaba sin medir — y por ese hueco vivio el defecto de los picks sellados:
         '      el censo miraba SOLO el record y un ARMO apuntado solo por una realizacion sorteada salia
         '      «no lo referencia nadie». Alla el gate LLAMA al sujeto.
-        refs.AddRange(Borradores.CensarReferrers(formID, _outfitDrafts, _leveledListDrafts,
+        refs.AddRange(Borradores.CensarReferrers(formID, _outfitDrafts, lvliVivas,
                                                  _armoDrafts, _armaDrafts, _mswpDrafts))
 
         ' Las asignaciones POR NPC se agregan ACA y no alla: no son de un borrador a otro sino de un NPC a
@@ -11043,7 +11064,13 @@ Public Class MainForm
                 ' outfit/piel viajó. El caso típico es un record recién creado que todavía no se guardó al ESP.
                 Dim omitted As List(Of String) = Nothing
                 Dim json = LooksmenuLoader.SerializePreset(preset, _pluginManager, omitted)
-                IO.File.WriteAllText(dlg.FileName, json, New System.Text.UTF8Encoding(False))
+                ' ⛔ NI `WriteAllText` (CREATE_ALWAYS: ACCESS_DENIED sobre un destino OCULTO, y un
+                ' archivo nuevo rompe el VFS/hardlink) NI `Escribir`: es UN archivo por click del usuario,
+                ' a una ruta que el eligio, con `OverwritePrompt = True` — o sea que el destino puede ser un
+                ' preset SUYO que ya existe, y el dialogo arranca DENTRO de un mod. El veredicto ya estaba
+                ' escrito para el gemelo exacto en `DictionaryPicker_Control`: la red la pone `GuardarConCopia`.
+                Dim jsonBytes = New System.Text.UTF8Encoding(False).GetBytes(json)
+                BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(dlg.FileName, Sub(fs) fs.Write(jsonBytes, 0, jsonBytes.Length))
                 If omitted IsNot Nothing AndAlso omitted.Count > 0 Then
                     MessageBox.Show(
                         "The preset was saved, but these fields could NOT be included because the record they " &
@@ -11109,7 +11136,10 @@ Public Class MainForm
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
 
             Try
-                IO.File.WriteAllBytes(dlg.FileName, j.Save())
+                ' ⛔ Misma ley que el preset de LooksMenu de arriba: archivo por click, ruta elegida por
+                ' el usuario, `OverwritePrompt` prendido. `GuardarConCopia`, no `WriteAllBytes`.
+                Dim jslotBytes = j.Save()
+                BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(dlg.FileName, Sub(fs) fs.Write(jslotBytes, 0, jslotBytes.Length))
             Catch ex As Exception
                 MessageBox.Show($"Failed to write preset: {ex.Message}", "Save RaceMenu",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)

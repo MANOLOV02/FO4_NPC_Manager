@@ -79,7 +79,15 @@ Public Module FomodExporter
         Dim manifest As New List(Of ManifestItem)
         Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
-        Dim addDisk = Sub(kind As ItemKind, relPath As String, required As Boolean, note As String)
+        ' ⛔ `addDisk` YA RESUELVE EL AUSENTE: calcula `onDisk` y lo guarda en `.Exists`, que es lo que la
+        ' grilla pinta y lo que `ExportToZip` filtra. Por eso un llamador NUNCA debe envolver la llamada en
+        ' un `If File.Exists(...)`: ese guard no evita empaquetar un archivo inexistente —de eso ya se
+        ' encarga el filtro del ZIP— sino que BORRA la fila, y entonces el faltante no existe para nadie.
+        ' `noteSiFalta` deja que el llamador nombre el motivo sin repetir el File.Exists; `Nothing` = usar
+        ' `note` siempre. NO es `Optional`: un lambda de VB no admite parametros opcionales (BC33010), asi
+        ' que los cinco van explicitos y hay UNA sola version del helper.
+        Dim addDisk = Sub(kind As ItemKind, relPath As String, required As Boolean, note As String,
+                          noteSiFalta As String)
                           If String.IsNullOrEmpty(relPath) OrElse Not seen.Add(relPath) Then Return
                           Dim full = Path.Combine(dataPath, relPath)
                           Dim onDisk = File.Exists(full)
@@ -87,11 +95,11 @@ Public Module FomodExporter
                               .Kind = kind, .DataRelativePath = relPath, .SourceFullPath = full,
                               .Required = required, .Exists = onDisk,
                               .SizeBytes = If(onDisk, New FileInfo(full).Length, 0L),
-                              .Note = note})
+                              .Note = If(onDisk OrElse noteSiFalta Is Nothing, note, noteSiFalta)})
                       End Sub
 
         ' 1. The plugin itself.
-        addDisk(ItemKind.Plugin, pluginFileName, True, "")
+        addDisk(ItemKind.Plugin, pluginFileName, True, "", Nothing)
 
         Dim baseName = Path.GetFileNameWithoutExtension(pluginFileName)
 
@@ -100,10 +108,10 @@ Public Module FomodExporter
         '    BA2 pair, SSE = a single BSA.
         If Not NPC_Config.IsLooseOnly(game) Then
             If game = Config_App.Game_Enum.Skyrim Then
-                addDisk(ItemKind.Archive, baseName & ArchivePackager.EXT_BSA, True, "")
+                addDisk(ItemKind.Archive, baseName & ArchivePackager.EXT_BSA, True, "", Nothing)
             Else
-                addDisk(ItemKind.Archive, baseName & ArchivePackager.SUFFIX_BA2_MAIN, True, "")
-                addDisk(ItemKind.Archive, baseName & ArchivePackager.SUFFIX_BA2_TEXTURES, True, "")
+                addDisk(ItemKind.Archive, baseName & ArchivePackager.SUFFIX_BA2_MAIN, True, "", Nothing)
+                addDisk(ItemKind.Archive, baseName & ArchivePackager.SUFFIX_BA2_TEXTURES, True, "", Nothing)
             End If
             ' Companion slots the packer may have produced ("<base>2.esp" + its archives). NPC_Manager
             ' packs SingleAnchorOnly so none are expected today, but if they exist they are part of the
@@ -111,10 +119,10 @@ Public Module FomodExporter
             Try
                 Dim setInfo = ArchivePackager.DiscoverArchiveSet(dataPath, baseName)
                 For Each archivePath In setInfo.Archives
-                    addDisk(ItemKind.Archive, Path.GetFileName(archivePath), False, "companion of the archive set")
+                    addDisk(ItemKind.Archive, Path.GetFileName(archivePath), False, "companion of the archive set", Nothing)
                 Next
                 For Each pluginPath In setInfo.Plugins
-                    addDisk(ItemKind.Plugin, Path.GetFileName(pluginPath), False, "companion of the archive set")
+                    addDisk(ItemKind.Plugin, Path.GetFileName(pluginPath), False, "companion of the archive set", Nothing)
                 Next
             Catch
                 ' Discovery is best-effort sugar; the required set above already covers the anchor.
@@ -126,19 +134,27 @@ Public Module FomodExporter
             ' Las INVENTADAS se juntan aparte y se agregan UNA vez: son compartidas entre NPC (las
             ' mismas tres texturas para todas las gules de la raza), asi que recorrerlas por NPC las
             ' agregaria repetidas al manifiesto.
+            ' ⛔⛔ SIN GUARD DE EXISTENCIA, Y ESA ES LA LEY. Antes las dos listas se filtraban por
+            ' `File.Exists` ANTES de `addDisk`, asi que un FaceGen REFERENCIADO pero ausente —un NPC cuyo
+            ' bake no dejo su NIF o alguno de sus DDS— no aparecia en ninguna parte: ni fila en la grilla,
+            ' ni nota, ni error de `Validate`. El export terminaba "correcto" y entregaba un paquete
+            ' incompleto. `addDisk` marca `.Exists = False` y `ExportToZip` ya filtra por ese flag, asi que
+            ' nombrarlo no empaqueta nada roto: solo lo hace VISIBLE para que el usuario decida.
+            ' El camino BA2 hermano ya hacia lo correcto para el MISMO activo
+            ' (`NpcFaceGenPacker.PackBatch` → `result.MissingSources`); esta rama era la unica que callaba.
             Dim inventadas As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
             For Each fid In npcFormIDs
                 For Each entry In NpcFaceGenPacker.CanonicalFaceGenEntryPathsForNpc(fid, pluginManager, game)
-                    If File.Exists(Path.Combine(dataPath, entry)) Then
-                        addDisk(ItemKind.FaceGenLoose, entry, False, "")
-                    End If
+                    addDisk(ItemKind.FaceGenLoose, entry, False, "",
+                            "FALTA en disco: el NIF/DDS de FaceGen de este NPC no esta horneado")
                 Next
                 For Each extra In NpcFaceGenPacker.InventedLooseFilesForNpc(fid, pluginManager, dataPath)
                     inventadas.Add(extra)
                 Next
             Next
             For Each extra In inventadas
-                addDisk(ItemKind.FaceGenLoose, extra, False, "textura que inventa el bake: no la trae ningun mod")
+                addDisk(ItemKind.FaceGenLoose, extra, False, "textura que inventa el bake: no la trae ningun mod",
+                        "FALTA en disco: el NIF la referencia y no la trae ningun mod — esa nuca queda sin textura")
             Next
         End If
 
@@ -147,7 +163,7 @@ Public Module FomodExporter
         '    grid just shows it as absent.
         Dim sidecarRel = baseName & BssliderSidecar.Extension
         If File.Exists(Path.Combine(dataPath, sidecarRel)) Then
-            addDisk(ItemKind.PresetSidecar, sidecarRel, True, "character preset sidecar")
+            addDisk(ItemKind.PresetSidecar, sidecarRel, True, "character preset sidecar", Nothing)
         Else
             manifest.Add(New ManifestItem With {
                 .Kind = ItemKind.PresetSidecar, .DataRelativePath = sidecarRel,
@@ -209,7 +225,7 @@ Public Module FomodExporter
         For Each ini In {"templates.ini", "morphs.ini"}
             Dim rel = bodyGenDir & "\" & ini
             If File.Exists(Path.Combine(dataPath, rel)) Then
-                addDisk(ItemKind.BodyGenIni, rel, False, "BodyGen morphs")
+                addDisk(ItemKind.BodyGenIni, rel, False, "BodyGen morphs", Nothing)
             End If
         Next
 
@@ -222,7 +238,7 @@ Public Module FomodExporter
         If extraAssets IsNot Nothing Then
             For Each asset In extraAssets
                 If IsSafeDataRelative(dataPath, asset) Then
-                    addDisk(ItemKind.ExtraAsset, asset, True, "added by author")
+                    addDisk(ItemKind.ExtraAsset, asset, True, "added by author", Nothing)
                 ElseIf Not String.IsNullOrWhiteSpace(asset) AndAlso seen.Add(asset) Then
                     manifest.Add(New ManifestItem With {
                         .Kind = ItemKind.ExtraAsset, .DataRelativePath = asset,

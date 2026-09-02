@@ -807,7 +807,8 @@ Public Module NpcApplyScriptEmitter
     ''' files win over the BSA/BA2. See Papyrus\README.md.
     ''' Returns the destination path, or Nothing when the embedded .pex is missing.</summary>
     Public Function InstallPex(dataPath As String, game As Config_App.Game_Enum,
-                               pluginFileName As String, generation As Integer, salt As String) As String
+                               pluginFileName As String, generation As Integer, salt As String,
+                               Optional avisos As List(Of String) = Nothing) As String
         If String.IsNullOrEmpty(dataPath) Then Return Nothing
         Dim bytes = PatchedPexBytes(game, pluginFileName, generation, salt)
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
@@ -826,8 +827,15 @@ Public Module NpcApplyScriptEmitter
             End Try
         End If
 
-        File.WriteAllBytes(dest, bytes)
-        InstallLegacyPex(destDir, game)
+        ' ⛔ NO `File.WriteAllBytes`: pide CREATE_ALWAYS y sobre un destino OCULTO da ACCESS_DENIED, y
+        ' un archivo nuevo rompe el VFS de MO2 / el hardlink de Vortex. Aca no habia Try, asi que con un
+        ' `.pex` nuestro OCULTO —lo dejan los sincronizadores y los desempaquetadores— la excepcion se
+        ' llevaba puesto el Save ESP ENTERO despues de haber escrito el plugin. La ley NOMBRA al `.pex` en
+        ' su lista de salida regenerable: `Escribir`, que abre con OpenOrCreate y funciona sobre oculto.
+        ' ⛔ Y SIGUE SIN Try a proposito: si el `.pex` principal no se puede escribir, el VMAD del ESP
+        ' referencia un script que no existe y el motor no aplica nada. Eso es fatal y se dice.
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(dest, Sub(fs) fs.Write(bytes, 0, bytes.Length))
+        InstallLegacyPex(destDir, game, avisos)
         Return dest
     End Function
 
@@ -841,15 +849,27 @@ Public Module NpcApplyScriptEmitter
     ''' <para>Y no re-aplica nada: el .psc corta con el guard de instancia huerfana (arrays de longitud 0 = el
     ''' VMAD no nombra a este script). Es un artefacto de MIGRACION: se puede dejar de shippear cuando ningun
     ''' savegame publicado arrastre instancias del nombre viejo, y como eso no se puede saber, se queda.</para></summary>
-    Private Sub InstallLegacyPex(scriptsDir As String, game As Config_App.Game_Enum)
+    Private Sub InstallLegacyPex(scriptsDir As String, game As Config_App.Game_Enum,
+                                 Optional avisos As List(Of String) = Nothing)
         Dim template = PexBytes(game)
         If template Is Nothing OrElse template.Length = 0 Then Return
         Dim dest = Path.Combine(scriptsDir, LegacyScriptFor(game) & ".pex")
         Try
             If File.Exists(dest) AndAlso File.ReadAllBytes(dest).SequenceEqual(template) Then Return
-            File.WriteAllBytes(dest, template)
-        Catch
-            ' Bloqueado (juego abierto) o sin permisos. Se reintenta en el proximo Save ESP.
+            ' ⛔ Misma ley que el `.pex` por plugin: `Escribir`, no `WriteAllBytes` (oculto / VFS).
+            BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(dest, Sub(fs) fs.Write(template, 0, template.Length))
+        Catch ex As Exception
+            ' ⛔ YA NO ES MUDO. El docstring de arriba dice el daño con todas las letras —sin este .pex
+            ' le rompemos el NPC a CUALQUIER mod— y el Catch lo tragaba sin log en Release: el usuario veia
+            ' un guardado exitoso y el destrozo aparecia in-game, sin nada que lo explicara.
+            Dim m = ex.Message
+            Logger.LogLazy(Function() $"[PEX-LEGACY] no se pudo instalar '{dest}': {m}")
+            If avisos IsNot Nothing Then
+                avisos.Add("The legacy helper script could not be installed (" & IO.Path.GetFileName(dest) &
+                           "): " & m & ". If a save game still has instances of the old script attached to an " &
+                           "actor, that actor can lose its method table for EVERY other mod's scripts. " &
+                           "Close the game and save again.")
+            End If
         End Try
     End Sub
 

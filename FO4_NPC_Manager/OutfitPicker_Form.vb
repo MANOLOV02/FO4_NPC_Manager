@@ -826,35 +826,75 @@ Public Class OutfitPicker_Form
     ''' <para>⛔ La decisión vive acá, <c>Friend Shared</c> y pura, por lo mismo que
     ''' <see cref="PlanDeSembrado"/>: dentro de <c>FormClosing</c> el gate no la puede correr, y un caso que
     ''' mira el TEXTO del manejador mide la letra en vez de la conducta.</para>
-    ''' <para>⛔ CON OK NO SE TOCA NADA: el atuendo que el diálogo devuelve referencia esas listas. Sin OK
-    ''' van las DOS mitades —revertir lo preexistente y bajar lo creado—, porque hacer una sola deja a una
-    ''' lista preexistente apuntando al 0xFF de la que se acaba de ir.</para>
-    ''' <para>⚠️ LÍMITE CONOCIDO, declarado y NO arreglado acá: «OK» es del DIÁLOGO, no del atuendo. El
-    ''' camino Browse —elegir un atuendo real y aceptar— también sale por OK, así que una lista que la
-    ''' sesión creó y después no quedó referenciada por nada SOBREVIVE al cierre, y el guardado la emite al
-    ''' .esp en la fase 2d como un LVLI propio que no usa nadie.</para>
-    ''' <para>⛔ Y la salida que había escrita acá —«por eso existen Delete/Revert»— ERA FALSA para las
-    ''' listas por nivel: los atuendos, los ARMO, las ARMA y los MSWP tienen su fila y su botón, y las listas
-    ''' NO. <c>MainForm.UnregisterLeveledListDraft</c> tiene UN solo llamador, el <c>FormClosing</c> de este
-    ''' diálogo cuando se cierra SIN OK. O sea que hoy, una vez que la lista sobrevivió a un OK, el usuario no
-    ''' tiene ninguna manera de sacarla: reiniciar la aplicación es la única.</para>
-    ''' <para>⛔ <b>DECISIÓN PENDIENTE DEL USUARIO</b>, y por eso acá no se agregó ninguna UI: si esto se
-    ''' limpia solo al cerrar, si va una fila de listas con su Delete/Revert como las otras cuatro clases, o
-    ''' si se deja como está y una lista huérfana en el .esp es aceptable. Lo que no puede quedar es el texto
-    ''' anterior, que apuntaba a un botón que no existe.</para></summary>
+    ''' <para>⛔ SIN OK van las DOS mitades —revertir lo preexistente y bajar TODO lo creado—, porque hacer
+    ''' una sola deja a una lista preexistente apuntando al 0xFF de la que se acaba de ir.</para>
+    '''
+    ''' <para>⛔ <b>CON OK SE BAJA LO CREADO QUE NADIE RECLAMA</b>, y esto es un arreglo: antes con OK no se
+    ''' tocaba nada, con el argumento de que «el atuendo que el diálogo devuelve referencia esas listas». Eso
+    ''' vale para el camino Create y NO para el camino Browse — «OK» es del DIÁLOGO, no del atuendo—: elegir
+    ''' un OTFT existente y aceptar también sale por OK, y ahí <c>CommitCreate</c> ni corre, así que la lista
+    ''' que la sesión creó para componer ESTE atuendo queda sin que nadie la nombre. <b>MEDIDO</b> (gate
+    ''' <c>OutfitDraftSaveGate</c>, C52-M1, los dos juegos): una LVLI propia sucia que no referencia nadie
+    ''' <b>llega igual al .esp</b> — la fase 2d siembra todo borrador sucio «even if unreferenced»
+    ''' (<c>NpcOverrideSaver</c>) — y no hay ninguna interfaz para sacarla después:
+    ''' <c>UnregisterLeveledListDraft</c> se llama SÓLO desde este cierre. Se creó para componer este
+    ''' atuendo; aceptar otro la abandona.</para>
+    '''
+    ''' <para>⛔ <b>Y ES UN BARRIDO, no una pasada.</b> Se arranca dando por bajadas TODAS las creadas y se
+    ''' SALVA la que tenga un referrer <b>fuera del conjunto que se va</b>, hasta que no se salve ninguna
+    ''' más. Con una sola pasada, dos listas creadas y abandonadas donde A está adentro de B se salvan
+    ''' mutuamente —A la referencia B, que también se va— y queda el huérfano de segundo nivel, que es el
+    ''' mismo defecto una capa más abajo. Termina porque el conjunto sólo se achica.</para>
+    '''
+    ''' <para>Lo que NO se toca con OK: las PREEXISTENTES que la sesión mutó. Su ley es la de antes —se
+    ''' revierten sólo al cancelar—: no las creó este diálogo y el usuario aceptó esas ediciones.</para>
+    ''' <para><paramref name="tieneReferrerFuera"/> es <c>MainForm.TieneReferrerFueraDe</c>, o sea el MISMO
+    ''' censo que decide si un borrador se puede borrar (<c>Borradores.CensarReferrers</c>): la fuente única,
+    ''' no una segunda idea de qué cuenta como referencia. Se inyecta para que esta decisión quede pura y el
+    ''' gate la corra.</para></summary>
     Friend Shared Function PlanDeCierreDeListas(esOk As Boolean,
                                                 snapshots As IEnumerable(Of LeveledListDraft),
-                                                creadas As IEnumerable(Of UInteger)) _
+                                                creadas As IEnumerable(Of UInteger),
+                                                tieneReferrerFuera As Func(Of UInteger, ICollection(Of UInteger), Boolean)) _
             As (Restaurar As List(Of LeveledListDraft), Bajar As List(Of UInteger))
         Dim restaurar As New List(Of LeveledListDraft)
         Dim bajar As New List(Of UInteger)
-        If esOk Then Return (restaurar, bajar)
+        Dim creadasList As New List(Of UInteger)
+        If creadas IsNot Nothing Then creadasList.AddRange(creadas)
+
+        If esOk Then
+            If creadasList.Count = 0 Then Return (restaurar, bajar)
+            ' ⛔ Sin el censo NO se adivina: dar todo por abandonado le borra al usuario listas que SÍ usa, y
+            ' dar todo por vivo repone el defecto. Las dos direcciones son destructivas, así que se tira.
+            If tieneReferrerFuera Is Nothing Then
+                Throw New ArgumentNullException(NameOf(tieneReferrerFuera),
+                    "PlanDeCierreDeListas necesita el censo de referrers para decidir qué lista creada quedó abandonada.")
+            End If
+            ' BARRIDO: todas candidatas, y se salva la que algo de AFUERA reclame.
+            Dim aBajar As New HashSet(Of UInteger)(creadasList)
+            Dim huboRescate = True
+            While huboRescate
+                huboRescate = False
+                For Each fid In aBajar.ToList()
+                    If tieneReferrerFuera(fid, aBajar) Then
+                        aBajar.Remove(fid)      ' algo que NO se va la nombra: se queda
+                        huboRescate = True
+                    End If
+                Next
+            End While
+            ' En el orden en que se crearon, para que la baja sea reproducible.
+            For Each fid In creadasList
+                If aBajar.Contains(fid) Then bajar.Add(fid)
+            Next
+            Return (restaurar, bajar)
+        End If
+
         If snapshots IsNot Nothing Then
             For Each s In snapshots
                 If s IsNot Nothing Then restaurar.Add(s)
             Next
         End If
-        If creadas IsNot Nothing Then bajar.AddRange(creadas)
+        bajar.AddRange(creadasList)
         Return (restaurar, bajar)
     End Function
 
@@ -2921,13 +2961,16 @@ Public Class OutfitPicker_Form
 
         ' ⛔ CANCELAR DEJA EL ORIGINAL COMO ESTABA, también para las listas por nivel, y son DOS mitades:
         ' las que creó este diálogo se BAJAN con su foto (UnregisterLeveledListDraft, el par simétrico de
-        ' Publicar) y las PREEXISTENTES que la sesión mutó se REVIERTEN a su estado de apertura. Con OK
-        ' sobreviven las dos cosas: el usuario las quiso y el atuendo que se devuelve las referencia.
+        ' Publicar) y las PREEXISTENTES que la sesión mutó se REVIERTEN a su estado de apertura.
         ' ⛔ Las DOS mitades o ninguna: bajar sólo lo creado deja a una lista preexistente apuntando al
         ' 0xFF de la que se acaba de ir, y esa referencia colgada revienta el guardado siguiente.
         ' Primero se revierte y después se baja, para que ningún paso vea un estado a medias.
+        ' ⛔ Y CON OK TAMBIÉN SE BAJA lo que quedó sin dueño: ver `PlanDeCierreDeListas`. El censo va DESPUÉS
+        ' de dar de baja el borrador de vista previa (arriba): ése referencia todo lo que el usuario armó en
+        ' Create, así que consultarlo antes salvaría hasta la lista abandonada.
         Dim planCierre = PlanDeCierreDeListas(DialogResult = DialogResult.OK,
-                                              _lvliSnapshotDeApertura.Values, _lvliRegistradasPorMi)
+                                              _lvliSnapshotDeApertura.Values, _lvliRegistradasPorMi,
+                                              AddressOf _mainForm.TieneReferrerFueraDe)
         For Each snap In planCierre.Restaurar
             Try
                 _mainForm.RestaurarBorradorDeLista(snap)

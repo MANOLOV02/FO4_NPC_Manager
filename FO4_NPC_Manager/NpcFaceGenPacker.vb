@@ -204,7 +204,18 @@ Public Module NpcFaceGenPacker
     ''' referencia.</para>
     ''' <para>Es un ESCANEO del texto del NIF, no un parseo: las rutas de textura se guardan como cadenas
     ''' ASCII y lo unico que se busca es un prefijo de raiz que controla la app, asi que no hace falta
-    ''' abrir el formato. Devuelve solo lo que ademas EXISTE en disco, igual que el resto de esta rama.</para></summary>
+    ''' abrir el formato.</para>
+    '''
+    ''' <para>⛔⛔ DEVUELVE TODO LO REFERENCIADO, EXISTA O NO, Y ESO ES EL ARREGLO. Antes filtraba por
+    ''' <c>File.Exists</c> acá adentro, y el efecto era el contrario del que el comentario prometía: una
+    ''' textura que el NIF referencia pero que NO está en disco desaparecía antes de llegar al manifiesto,
+    ''' asi que no habia fila en la grilla, ni nota, ni error de <c>Validate</c> — el FOMOD se exportaba
+    ''' "correcto" y entregaba un NIF con referencias rotas. El propio comentario de mas abajo afirmaba que
+    ''' "el usuario lo ve en la grilla como ausente", y era falso: sin item de manifiesto no hay fila.</para>
+    '''
+    ''' <para>Quien decide si empaqueta es <c>FomodExporter.BuildManifest</c> via <c>addDisk</c>, que marca
+    ''' <c>Exists</c>; y <c>ExportToZip</c> filtra por ese flag, asi que devolver un ausente NO mete al ZIP
+    ''' nada roto. El camino BA2 hermano ya hacia esto mismo (<c>PackBatch</c> → <c>MissingSources</c>).</para></summary>
     Public Function InventedLooseFilesForNpc(npcFormID As UInteger, pluginManager As PluginManager,
                                              dataDir As String) As List(Of String)
         Dim salida As New List(Of String)
@@ -227,11 +238,14 @@ Public Module NpcFaceGenPacker
                 Text.RegularExpressions.Regex.Matches(texto, patron, Text.RegularExpressions.RegexOptions.IgnoreCase)
                 Dim rel = m.Value
                 If salida.Contains(rel, StringComparer.OrdinalIgnoreCase) Then Continue For
-                If File.Exists(Path.Combine(dataDir, rel)) Then salida.Add(rel)
+                ' Referenciada por el NIF ⇒ entra. Que ESTE o no en disco lo resuelve `addDisk`.
+                salida.Add(rel)
             Next
         Catch ex As Exception
-            ' Best-effort, igual que el resto de esta rama del FOMOD: si el NIF no se puede leer, el
-            ' manifiesto sale sin estas texturas y el usuario lo ve en la grilla como ausente.
+            ' ⚠️ Best-effort SOLO para el NIF ILEGIBLE, y acá el hueco queda declarado: si el NIF no se
+            ' puede abrir no se sabe qué referencia, asi que el manifiesto sale sin estas texturas y NO hay
+            ' fila que lo diga. Es distinto del caso de arriba (referenciada-y-ausente), que ahora sí se
+            ' nombra. Este camino requiere que el NIF exista y no se pueda leer: no se midió su frecuencia.
             Dim nL = nifAbs, mL = ex.Message
             Logger.LogLazy(Function() $"[FOMOD] no se pudo escanear '{nL}' por texturas inventadas: {mL}")
         End Try

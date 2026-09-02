@@ -1807,12 +1807,18 @@ Public Class ArmoEditor_Form
     Private Sub PickFidInto(target As TextBox, sigs As String(), title As String, allowNull As Boolean,
                             Optional includeMswpDrafts As Boolean = False)
         Dim drafts As List(Of FormIdPickerEntry) = Nothing
+        Dim alBorrar As Func(Of FormIdPickerEntry, Boolean) = Nothing
         If includeMswpDrafts Then
             drafts = _mainForm.MswpDrafts().Select(Function(d) New FormIdPickerEntry With {
                 .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID, .Signature = "MSWP"}).ToList()
+            ' ⛔ Y CON SU CAMINO DE BAJA. Sin `onDeleteEntry` el botón «Delete / Revert…» queda INVISIBLE
+            ' (`FormIdPicker_Form`), que es como el MSWP terminó siendo la única clase de borrador sin salida:
+            ' un override aceptado y arrepentido se emitía igual en la fase 2g y le pegaba a TODA armadura que
+            ' use ese swap. La ley es la misma que la de ARMO/ARMA y vive en un solo lugar.
+            alBorrar = Function(en) BorradoDeMswp.BorrarORevertir(Me, _mainForm, en)
         End If
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, sigs, title, GetFid(target),
-                                           allowNull, drafts)
+                                           allowNull, drafts, onDeleteEntry:=alBorrar)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 SetFidText(target, dlg.SelectedFormID)
                 OnFieldEdited(Me, EventArgs.Empty)

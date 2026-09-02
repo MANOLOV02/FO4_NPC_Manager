@@ -1225,10 +1225,28 @@ Public Module NpcOverrideSaver
                     EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
                 Catch exIni As Exception
                     Logger.LogLazy(Function() $"[BODYGEN-INI] emit failed for '{IO.Path.GetFileName(target.TargetPath)}': {exIni}")
-                    ctx.PayloadWarnings.Add(
-                        $"BodyGen .ini: no se pudo escribir el .ini de '{IO.Path.GetFileName(target.TargetPath)}' " &
-                        $"({exIni.Message}). El .esp SÍ se guardó; lo que falta es el archivo de BodyGen, " &
-                        "así que los morphs pueden no aplicarse en el juego hasta volver a guardar.")
+                    ' ⛔ EL AVISO DICE LA FORMA REAL DEL DAÑO. Antes decía siempre «lo que FALTA es el archivo
+                    ' de BodyGen», y eso describe el caso benigno. `templates.ini` y `morphs.ini` son un PAR
+                    ' REFERENCIAL: si el par quedó DESAJUSTADO, lo que pasa no es que falte algo nuevo sino que
+                    ' se ROMPIÓ lo que ya andaba —morphs viejo nombrando plantillas que el templates nuevo ya no
+                    ' declara— y esos NPC pierden los morphs en el juego. Son dos consecuencias distintas y el
+                    ' usuario tiene que poder distinguirlas: una se arregla sola volviendo a guardar, la otra no.
+                    Dim par = TryCast(exIni, EscrituraDelParBodyGen.ParDeBodyGenException)
+                    If par IsNot Nothing AndAlso Not par.Consistente Then
+                        ctx.PayloadWarnings.Add(
+                            $"BodyGen .ini de '{IO.Path.GetFileName(target.TargetPath)}': {par.Message} " &
+                            "El .esp SÍ se guardó. ⛔ Volvé a guardar con BodyGen activado para dejar el par " &
+                            "consistente antes de entrar al juego.")
+                    ElseIf par IsNot Nothing Then
+                        ctx.PayloadWarnings.Add(
+                            $"BodyGen .ini de '{IO.Path.GetFileName(target.TargetPath)}': {par.Message} " &
+                            "El .esp SÍ se guardó; lo que no se actualizó es el BodyGen.")
+                    Else
+                        ctx.PayloadWarnings.Add(
+                            $"BodyGen .ini: no se pudo escribir el .ini de '{IO.Path.GetFileName(target.TargetPath)}' " &
+                            $"({exIni.Message}). El .esp SÍ se guardó; lo que falta es el archivo de BodyGen, " &
+                            "así que los morphs pueden no aplicarse en el juego hasta volver a guardar.")
+                    End If
                 End Try
             End If
         End If
@@ -1240,8 +1258,13 @@ Public Module NpcOverrideSaver
         ' would replace RaceMenu's/LooksMenu's real implementation. See Papyrus\README.md.
         If ctx.WroteApplyScript Then
             ReportPhase(progress, "Writing helper script…", IO.Path.GetFileName(target.TargetPath))
+            ' ⛔ El emisor ANOTA lo que no pudo instalar en vez de tragarlo, y va por `ctx.PayloadWarnings`
+            ' —el canal que ya existe para «el .esp SE ESCRIBIÓ y una pieza del payload falló», ver el ⛔ de
+            ' más arriba— y no por uno propio: el .pex legado se instalaba dentro de un Catch mudo, y su
+            ' ausencia le rompe la tabla de métodos del actor a CUALQUIER mod (docstring de InstallLegacyPex).
             Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game,
-                                                             ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt)
+                                                             ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration,
+                                                             ctx.ApplyScriptSalt, ctx.PayloadWarnings)
             If installed Is Nothing Then
                 ' The VMAD references a script whose .pex we could not ship — the engine would log a missing
                 ' script and apply nothing. Loud, because the plugin is otherwise silently half-broken.
@@ -1948,8 +1971,25 @@ Public Module NpcOverrideSaver
                 npcFids = npcFids.Where(Function(f) Not alreadyLeveled.Contains(f)).ToList()
                 Dim skipped = before - npcFids.Count
                 If skipped > 0 Then Logger.LogLazy(Function() $"[SAVE] Add-to-LVL: skipped {skipped} NPC(s) already in a leveled list of {IO.Path.GetFileName(target.TargetPath)} (no-dup).")
+                ' ⛔ Y AL RESUMEN, no sólo al log: en Release el logger está apagado, así que descartar por
+                ' duplicado era invisible. El usuario pidió agregar N y se agregaron menos.
+                If skipped > 0 Then
+                    ctx.PayloadWarnings.Add(
+                        $"Agregar a lista por nivel: {skipped} NPC no se agregaron porque ya estaban en alguna " &
+                        $"lista de '{IO.Path.GetFileName(target.TargetPath)}' («evitar duplicados» activado).")
+                End If
             End If
-            If npcFids.Count = 0 Then Return  ' every selected NPC was already leveled — nothing to add
+            If npcFids.Count = 0 Then
+                ' ⛔ NO SE VUELVE EN SILENCIO. Acá se cae la acción ENTERA que el usuario pidió, y en el camino
+                ' de lista NUEVA ni siquiera se llega a crear el LVLN: no queda una lista vacía, no queda
+                ' NINGUNA lista. El «Saved N» cuenta records de NPC y no se entera, así que sin este renglón el
+                ' guardado se reporta perfecto y la lista que el usuario nombró no existe.
+                ctx.PayloadWarnings.Add(
+                    "Agregar a lista por nivel: NINGÚN NPC se agregó — todos los seleccionados ya estaban en " &
+                    $"una lista de '{IO.Path.GetFileName(target.TargetPath)}' («evitar duplicados» activado)." &
+                    If(target.LvlListIsNew, " La lista nueva que pediste NO se creó, porque habría quedado vacía.", ""))
+                Return
+            End If
         End If
 
         ' Provisional FormID allocator: prefer MainForm's shared draft counter (no collision with OTFT/LVLI
@@ -2017,7 +2057,17 @@ Public Module NpcOverrideSaver
             Dim targetEdid = If(target.LvlListExistingEditorID, "")
             Dim host = leveledEntries.FirstOrDefault(
                 Function(l) l.IsNpcList AndAlso String.Equals(l.EditorID, targetEdid, StringComparison.OrdinalIgnoreCase))
-            If host Is Nothing Then Return  ' chosen list not present (shouldn't happen — dialog only offers in-plugin LVLN)
+            If host Is Nothing Then
+                ' ⛔ NO SE VUELVE EN SILENCIO, por lo MISMO que el `Throw` de doce líneas más abajo: la acción
+                ' que el usuario pidió no ocurre y el guardado termina diciendo que salió todo bien. No se tira
+                ' —a diferencia de aquél— porque acá el .esp queda íntegro y coherente: lo único que falta es
+                ' el agregado. Se avisa y se sigue.
+                ctx.PayloadWarnings.Add(
+                    $"Agregar a lista por nivel: no se encontró la lista '{targetEdid}' en " &
+                    $"'{IO.Path.GetFileName(target.TargetPath)}', así que NINGÚN NPC se agregó. " &
+                    "El resto del guardado se hizo normalmente.")
+                Return
+            End If
             ' host.Record es el LVLN abierto en la fase de preservación (Canon.CanonRecords.Lvln): cada
             ' entrada que se agrega acá tiene que ir TAMBIÉN al árbol, o el cuerpo emitido no la lleva.
             Dim hostRecLvln = TryCast(host.Record, Canon.ILvln)
@@ -2472,10 +2522,31 @@ Public Module NpcOverrideSaver
         Return moved
     End Function
 
+    ''' <summary>El aviso de las claves del sidecar que NO llegaron al .ini de BodyGen, en el resumen del
+    ''' guardado. Cuenta + primera causa, la misma forma que el aviso de texturas del bake.
+    ''' <para>⛔ Va al canal que el usuario SÍ ve (<c>ctx.PayloadWarnings</c> → <c>VerifierSummary</c>), no al
+    ''' <c>Logger</c>: en Release el logger está apagado por construcción, así que un salteo contado y logueado
+    ''' seguiría siendo un salteo mudo. El «Saved N» cuenta records escritos en el .esp y no sabe nada de esto,
+    ''' o sea que sin este renglón el guardado se reporta perfecto mientras esos NPC se quedan sin morphs.</para></summary>
+    Private Sub AvisarClavesSalteadas(ctx As SaveContext, salteadas As Integer, primera As String)
+        If ctx Is Nothing OrElse salteadas <= 0 Then Return
+        ctx.PayloadWarnings.Add(
+            $"BodyGen .ini: {salteadas} fila(s) del sidecar con identificador mal formado se saltearon — " &
+            "esos NPC tienen body morphs guardados pero NO les llega ningún renglón a morphs.ini, así que en " &
+            $"el juego salen sin morphs. Primera: '{primera}'.")
+    End Sub
+
     ''' <summary>Translate the merged sidecar into BodyGenIniWriter entries and emit the .ini
     ''' pair. Sidecar rows without BodyMorphs (SkinTemplate-only entries) are skipped — the
-    ''' Skin override is an F4SE feature unrelated to BodyGen. Malformed identifiers are also
-    ''' skipped silently; the sidecar Read() already filters them out.</summary>
+    ''' Skin override is an F4SE feature unrelated to BodyGen.
+    ''' <para>⛔ Y LAS CLAVES QUE NO PARSEAN SE CUENTAN Y SE AVISAN. Acá decía que se salteaban «silently;
+    ''' the sidecar Read() already filters them out», y <b>es FALSO</b>:
+    ''' <c>BssliderSidecar.Read</c> mete CUALQUIER clave —sólo rechaza un valor que no sea objeto JSON, nunca
+    ''' mira la clave— y <c>NormalizeKeys</c> declara justo lo contrario como ley suya («clave que no parsea ⇒
+    ''' se deja intacta»). O sea que una clave sin pipe llega hasta acá, se caía por un <c>Continue For</c>
+    ''' mudo, y ese NPC se quedaba sin su renglón en morphs.ini —sin body morphs en el juego— mientras el
+    ''' guardado decía «Saved N» sin una palabra. No se filtra en <c>Read</c> (su ley de conservar ya está
+    ''' declarada): se cuenta y se dice, que es lo que faltaba.</para></summary>
     Private Sub EmitBodyGenFromSidecar(target As SaveEsp_Form.SaveTarget,
                                        sidecar As BssliderSidecar.SidecarFile,
                                        ctx As SaveContext)
@@ -2493,13 +2564,20 @@ Public Module NpcOverrideSaver
         End If
 
         Dim entries As New List(Of BodyGenIniWriter.NpcEntry)
+        Dim salteadas = 0
+        Dim primeraSalteada As String = ""
         For Each kv In sidecar.Npcs
             Dim e = kv.Value
             If e Is Nothing OrElse e.BodyMorphs Is Nothing OrElse e.BodyMorphs.Count = 0 Then Continue For
 
             Dim masterName As String = ""
             Dim localFid As UInteger = 0UI
-            If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then Continue For
+            If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then
+                ' Tiene morphs de verdad y NO va a llegar al .ini: eso se cuenta y se dice. Ver la cabecera.
+                salteadas += 1
+                If primeraSalteada = "" Then primeraSalteada = kv.Key
+                Continue For
+            End If
 
             Dim editorId = If(e.EditorId, "")
             Dim templateName = BodyGenTemplateName(editorId, masterName, localFid, AddressOf BodyGenIniWriter.SanitizeTemplateName)
@@ -2512,6 +2590,7 @@ Public Module NpcOverrideSaver
             })
         Next
 
+        AvisarClavesSalteadas(ctx, salteadas, primeraSalteada)
         BodyGenIniWriter.Emit(ctx.DataPath, baseName, entries)
     End Sub
 
@@ -2547,6 +2626,8 @@ Public Module NpcOverrideSaver
                                           sidecar As BssliderSidecar.SidecarFile,
                                           ctx As SaveContext)
         Dim entries As New List(Of SseBodyGenIniWriter.NpcEntry)
+        Dim salteadas = 0
+        Dim primeraSalteada As String = ""
         For Each kv In sidecar.Npcs
             Dim e = kv.Value
             If e Is Nothing Then Continue For
@@ -2571,7 +2652,12 @@ Public Module NpcOverrideSaver
 
             Dim masterName As String = ""
             Dim localFid As UInteger = 0UI
-            If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then Continue For
+            If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then
+                ' El MISMO conteo que el carril de FO4: tiene morphs y no va a llegar al .ini.
+                salteadas += 1
+                If primeraSalteada = "" Then primeraSalteada = kv.Key
+                Continue For
+            End If
 
             Dim editorId = If(e.EditorId, "")
             Dim templateName = BodyGenTemplateName(editorId, masterName, localFid, AddressOf SseBodyGenIniWriter.SanitizeTemplateName)
@@ -2584,6 +2670,7 @@ Public Module NpcOverrideSaver
             })
         Next
 
+        AvisarClavesSalteadas(ctx, salteadas, primeraSalteada)
         SseBodyGenIniWriter.Emit(ctx.DataPath, baseName, entries)
     End Sub
 

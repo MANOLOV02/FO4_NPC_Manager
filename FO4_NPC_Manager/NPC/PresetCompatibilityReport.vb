@@ -516,11 +516,39 @@ Public Module PresetCompatibilityReport
                         "the sleep outfit — the NPC keeps its current one.")
         End If
 
+        ' ⛔ Y LOS QUE NO RESOLVIERON, que los guards de arriba NO pueden ver. Un override cuyo plugin no está
+        ' instalado queda en Nothing —«preservar», que es lo correcto y lo que hace f4ee— y por eso mismo se
+        ' cae de todos los `HasValue` de arriba: el informe no lo nombraba y el único aviso era un `Logger` que
+        ' en Release está apagado por construcción. Resultado: el usuario cargaba el preset, el NPC salía con
+        ' SU piel y SU ropa en vez de las del preset, y nada se lo decía. El identificador crudo se preserva en
+        ' `LooksmenuLoader.Preset.Unresolved*` justo para poder nombrarlo acá.
+        AuditOverrideSinResolver(r, p.UnresolvedSkin, "Skin (WNAM)",
+                                 "the NPC keeps its own skin ARMO instead of the preset's")
+        AuditOverrideSinResolver(r, p.UnresolvedDefaultOutfit, "Outfit (DOFT)",
+                                 "the NPC keeps its own default outfit instead of the preset's")
+        AuditOverrideSinResolver(r, p.UnresolvedSleepOutfit, "Outfit (SOFT)",
+                                 "the NPC keeps its own sleep outfit instead of the preset's")
+
         ' F4SE skin override: parsed, deliberately not applied on load (FO4 only).
         If Not ctx.IsSse AndAlso p.UnsupportedCounts IsNot Nothing AndAlso p.UnsupportedCounts.HasSkinOverride Then
             r.Issues.Add(New PresetIssue(PresetIssueKind.NotApplied, "Skin", "F4SE skin override present in the file",
                                    "This app doesn't apply the LooksMenu skin override on load; every other field of the preset still applies."))
         End If
+    End Sub
+
+    ''' <summary>Un override <c>_npcm_</c> cuyo identificador NO resolvió: se nombra el plugin que falta.
+    ''' <para>Es <c>MissingMaster</c> y no <c>MissingRecord</c> por la misma razón que los head parts: lo que
+    ''' falta no es el record adentro de un plugin cargado, es el plugin entero.</para></summary>
+    Private Sub AuditOverrideSinResolver(r As PresetAuditReport, crudo As String, categoria As String, consecuencia As String)
+        If String.IsNullOrWhiteSpace(crudo) Then Return
+        Dim ident = crudo.Trim()
+        ' "Plugin.esp|HEX" — el plugin es lo que el usuario tiene que instalar, así que va en el título.
+        Dim barra = ident.IndexOf("|"c)
+        Dim plugin = If(barra > 0, ident.Substring(0, barra), ident)
+        r.Issues.Add(New PresetIssue(PresetIssueKind.MissingMaster, categoria,
+                                     $"'{plugin}' is not in the load order",
+                                     $"The preset points at {ident}, whose plugin isn't installed/enabled, so " &
+                                     $"{consecuencia}. Install or enable that mod and load the preset again."))
     End Sub
 
     Private Sub CheckFormId(ctx As PresetAuditContext, r As PresetAuditReport, category As String, fid As UInteger, expectedSig As String, consequence As String)
