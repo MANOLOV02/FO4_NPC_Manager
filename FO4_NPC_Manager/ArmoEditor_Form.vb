@@ -231,8 +231,17 @@ Public Class ArmoEditor_Form
         ' chooses loading it as an OVERRIDE record (True) vs as a NEW record (False). Runs BEFORE
         ' the snapshot
         ' below so Cancel reverts to the template-loaded state.
-        If editDraft Is Nothing AndAlso initialTemplateArmoFormID <> 0UI Then _
-            LoadRealArmoTemplate(initialTemplateArmoFormID, asOverride:=templateAsOverride)
+        ' El motivo se recoge y se muestra igual que en la acción "New from template…": este camino puede
+        ' entrar con asOverride=False, así que puede toparse con la misma negativa (plantilla escrita con
+        ' otra Form Version) y el usuario tiene que ver POR QUÉ el editor abrió vacío.
+        If editDraft Is Nothing AndAlso initialTemplateArmoFormID <> 0UI Then
+            Dim motivoApertura As String = Nothing
+            If Not LoadRealArmoTemplate(initialTemplateArmoFormID, asOverride:=templateAsOverride,
+                                        motivoParaElUsuario:=motivoApertura) AndAlso motivoApertura <> "" Then
+                MessageBox.Show(Me, motivoApertura, "Cannot clone this armor",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            End If
+        End If
         UpdateStatusBanner()
 
         LabelPreviewHint.Text = If(_previewNpcFormID = 0UI,
@@ -365,9 +374,17 @@ Public Class ArmoEditor_Form
         Dim fid = PickRealArmo("Copy ARMO into a NEW record")
         If fid = 0UI Then Return
         RevertOrDiscardCurrentDraft()
-        If Not LoadRealArmoTemplate(fid, asOverride:=False) Then
-            MessageBox.Show(Me, "Could not parse that ARMO record.", "New from template",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Dim motivo As String = Nothing
+        If Not LoadRealArmoTemplate(fid, asOverride:=False, motivoParaElUsuario:=motivo) Then
+            ' Cuando la causa se sabe NOMBRAR se dice ésa, y no el genérico: "could not parse" sobre un
+            ' record que parsea perfecto manda al usuario a buscar un problema que no existe.
+            If motivo <> "" Then
+                MessageBox.Show(Me, motivo, "Cannot clone this armor",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Else
+                MessageBox.Show(Me, "Could not parse that ARMO record.", "New from template",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End If
         End If
     End Sub
 
@@ -513,8 +530,9 @@ Public Class ArmoEditor_Form
     ''' with a fresh draft FormID; =True → an override keeping the real global FormID + EditorID), remember the
     ''' source for the banner, refresh panels + preview. Returns False if unparseable (draft unchanged). Shared
     ''' by the actions + the initialTemplateArmoFormID constructor path (Outfit Picker double-click).</summary>
-    Private Function LoadRealArmoTemplate(fid As UInteger, asOverride As Boolean) As Boolean
-        Dim copy = BuildDraftFromExisting(fid, asOverride)
+    Private Function LoadRealArmoTemplate(fid As UInteger, asOverride As Boolean,
+                                          Optional ByRef motivoParaElUsuario As String = Nothing) As Boolean
+        Dim copy = BuildDraftFromExisting(fid, asOverride, motivoParaElUsuario)
         If copy Is Nothing Then Return False
         _draft = copy
         _templateRealFormID = fid
@@ -629,11 +647,30 @@ Public Class ArmoEditor_Form
     ''' <para>Con el árbol copiado no hay nada que enumerar: viene TODO, incluidos el sculpt, las razas
     ''' adicionales, las combinaciones de object template, las resistencias y las banderas de
     ''' cabecera.</para></summary>
-    Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean) As ArmoDraft
+    ''' <param name="motivoParaElUsuario">Sale con el texto que hay que MOSTRAR cuando la función devuelve
+    ''' Nothing por una causa que sabemos nombrar (hoy: el clon de un ARMO cuya plantilla se escribió con
+    ''' otra Form Version). Vacío = no hay causa nombrable y el llamador pone su mensaje genérico.</param>
+    Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean,
+                                            Optional ByRef motivoParaElUsuario As String = Nothing) As ArmoDraft
+        motivoParaElUsuario = ""
         Dim pm = _mainForm.PluginManagerForEditor
         If pm Is Nothing Then Return Nothing
         Dim rec = pm.GetRecord(fid)
         If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return Nothing
+        ' ⛔ SE PREGUNTA ANTES DE CLONAR, y la respuesta es del MOTOR, no de acá: un clon de un ARMO cuyo
+        ' terminal se escribió con otra Form Version sale INGUARDABLE —los injertos traen las ramas de
+        ' unión fijadas por la versión del terminal y el record se emite con la del hijo—, y hasta ahora eso
+        ' se descubría al apretar Guardar, con un `InvalidOperationException` del emisor encima de un
+        ' borrador que el usuario ya había editado. La ley y su cita viven en `CanonHerencia`.
+        ' ⛔ Sólo el CLON: el OVERRIDE no materializa nada, edita el record que ya existe.
+        ' El motivo se DEVUELVE, no se muestra acá: una función que arma un borrador no abre diálogos, y
+        ' además el llamador ya tiene un mensaje genérico ("Could not parse that ARMO record") que sin esto
+        ' se mostraría ENCIMA del bueno, diciendo algo falso.
+        If Not asOverride Then
+            motivoParaElUsuario = Canon.CanonHerencia.MotivoNoClonable(
+                fid, AddressOf _mainForm.GetParsedArmoForEditor)
+            If motivoParaElUsuario <> "" Then Return Nothing
+        End If
         Dim d = If(asOverride,
                    ArmoDraft.Edicion(rec, pm),
                    ArmoDraft.Clon(rec, pm, _mainForm.AllocateDraftFormID()))

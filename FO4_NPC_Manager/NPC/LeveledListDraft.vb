@@ -75,9 +75,10 @@ Public Class LeveledListDraft
         ' ⛔ `Clone` es la TERCERA puerta: también CONSTRUYE un borrador, y `Copia()` puede devolver
         ' Nothing por los mismos tres caminos. En ARMA, ARMO y MSWP su resultado se registra en
         ' producción (`_openSnapshot`, que `RevertOrDiscardCurrentDraft` vuelve a meter en el mapa que
-        ' consultan el render y el guardado). En LeveledListDraft hoy no tiene llamadores — la guarda va
-        ' igual, por la misma razón que está en las otras dos puertas: un borrador sin record no es un
-        ' borrador, y el que agregue el primer llamador no tiene por qué acordarse.
+        ' consultan el render y el guardado). Acá el llamador es `OutfitPicker_Form.SnapshotAntesDeMutar`,
+        ' que guarda el estado de APERTURA de una lista preexistente para revertirla si el diálogo se
+        ' cancela — el mismo gesto, por la misma puerta. Por eso la guarda: un borrador sin record no es
+        ' un borrador, y el que restaura no puede recibir uno vacío.
         Dim copiaClone = Record?.Copia()
         Borradores.ExigirRecord(copiaClone, "LVLI", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
         Return New LeveledListDraft With {

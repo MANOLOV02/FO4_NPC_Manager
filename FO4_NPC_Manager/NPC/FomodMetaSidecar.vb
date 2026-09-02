@@ -64,9 +64,11 @@ Public Module FomodMetaSidecar
         End Try
     End Function
 
-    ''' <summary>Write the metadata sidecar to disk atomically (.tmp + rename), indented —
-    ''' same idiom as <see cref="BssliderSidecar.Write"/> so a crash mid-write never leaves a
-    ''' truncated sidecar behind.</summary>
+    ''' <summary>Write the metadata sidecar to disk, indented — same idiom as
+    ''' <see cref="BssliderSidecar.Write"/>.
+    ''' <para>⛔ La escritura NO es atómica y NO es <c>.tmp</c> + rename: es EN EL LUGAR, con copia
+    ''' previa verificada. La garantía —y por qué no puede ser atómica bajo MO2/Vortex— vive en UN solo
+    ''' lugar, la cabecera de <c>BSA_BA2_Library_DLL.EscrituraEnElLugar</c>. No se repite acá.</para></summary>
     Public Sub Write(path As String, meta As MetaFile)
         If String.IsNullOrEmpty(path) OrElse meta Is Nothing Then Return
         meta.Version = SchemaVersion

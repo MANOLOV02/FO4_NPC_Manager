@@ -115,8 +115,10 @@ Public Class ArmaEditor_Form
 
     ''' <summary>Throwaway ARMO wrapper FormID for previewing a STANDALONE ARMA draft — a draft sentinel just
     ''' below the OTFT preview sentinel (<see cref="OutfitDraft.PreviewDraftFormID"/>) so the resolver picks
-    ''' it up but it's never persisted (filtered out of the save set).</summary>
-    Private Const PreviewArmoWrapperFormID As UInteger = Borradores.FormIdAltoDeBorrador Or &H7FEUI
+    ''' it up but it's never persisted (filtered out of the save set).
+    ''' <para><c>Shared ReadOnly</c> y no <c>Const</c>: se compone desde
+    ''' <see cref="Borradores.FormIdAltoDeBorrador"/>, que es un campo — ver la nota de allá.</para></summary>
+    Private Shared ReadOnly PreviewArmoWrapperFormID As UInteger = Borradores.FormIdAltoDeBorrador Or &H7FEUI
 
     ''' <param name="mainForm">Owner — supplies the draft registrars, the PluginManager for the FormID pickers,
     ''' parsed-record access and the WYSIWYG preview host.</param>
@@ -1074,6 +1076,8 @@ Public Class ArmaEditor_Form
             If Not AdditionalRaceFids().Contains(dlg.SelectedFormID) Then
                 Dim e2 = _draft.Record.AgregarAdditionalRaces()
                 If e2 IsNot Nothing Then e2.Race = dlg.SelectedFormID
+                ' ⛔ QUIEN MUTA, PUBLICA: el render lee la FOTO del borrador, no el arbol vivo.
+                _mainForm.PublicarBorradorDeArma(_draft)
                 RefreshAddRacesList()
             End If
         End Using
@@ -1089,6 +1093,8 @@ Public Class ArmaEditor_Form
                 Exit For
             End If
         Next
+        ' ⛔ QUIEN MUTA, PUBLICA: ver `MainForm.PublicarBorradorDeArma`.
+        _mainForm.PublicarBorradorDeArma(_draft)
         RefreshAddRacesList()
     End Sub
 

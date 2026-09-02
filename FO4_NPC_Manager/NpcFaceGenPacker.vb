@@ -278,6 +278,16 @@ Public Module NpcFaceGenPacker
         Public ReadOnly FailedBundles As New List(Of String)
         ''' <summary>Free-form failure message when Success = False.</summary>
         Public Property ErrorMessage As String = ""
+
+        ''' <summary>Aviso de archives que no se pudieron VOLVER A MONTAR después de empaquetar. Vacío si
+        ''' no hubo ninguno.
+        ''' <para>⛔ SEPARADO DE <see cref="ErrorMessage"/> A PROPÓSITO, y la distinción es de conducta:
+        ''' <see cref="Success"/> significa <b>"el archive en disco quedó bien"</b>. Un fallo de remonte
+        ''' NO lo toca — los bytes están escritos y el juego los carga; lo que queda roto es la vista en
+        ''' memoria de ESTA sesión, hasta un refresh. Mezclarlo con el error del pack ponía
+        ''' <c>Success = False</c> sobre un pack correcto y hacía que el llamador cortara con un
+        ''' early-return, perdiendo el diagnóstico por NPC en el caso mixto.</para></summary>
+        Public Property RemountWarning As String = ""
     End Class
 
     ''' <summary>Progress phases reported through the optional progress callback.</summary>
@@ -310,10 +320,15 @@ Public Module NpcFaceGenPacker
     ' face textures (256×256 to 1024×1024 BC1/BC3 mipped).
     Private Const MICRO_BATCH As Integer = 32
 
-    ' FO4 BA2 hard cap inside the packager. Engine is unstable past 4 GB; 3 GB leaves headroom.
-    ' This bounds a SINGLE archive (existing + new bundle), independent of MEMORY_CAP_BYTES which
-    ' bounds the per-flush working set.
-    ' El tope es del FORMATO, no de esta app: vive en PackagerRequest.MaxArchiveBytesDefault.
+    ' Tope por archive adentro del packer. Acota UN SOLO archive (el existente + el bundle nuevo), y es
+    ' independiente de MEMORY_CAP_BYTES, que acota el working set por flush.
+    ' ⛔ Acá decía «Engine is unstable past 4 GB; 3 GB leaves headroom». Esa frase es la que
+    ' `PackagerRequest` declara FALSA y reemplaza por la cita canónica: el límite duro es el OFFSET que
+    ' el formato puede expresar, `BSA_MAX_OFFSET = High(Integer)` = 2 GiB−1 para el BSA
+    ' (`3rd party references\TES5Edit\Core\wbBSArchive.pas:162`, y es lo que `DefaultSplitSize` devuelve
+    ' para `baSSE`, `:1000-1005`); el BA2 usa offsets de 64 bits y no tiene ese techo. «4 GB» no sale de
+    ' ningún lado. El 3 GiB de acá es el tope BLANDO del formato, y vive UNA sola vez en
+    ' `PackagerRequest.MaxArchiveBytesDefault` — con su razón, en `ArchivePackager.vb`. No se repite acá.
     Private ReadOnly MAX_ARCHIVE_BYTES As Long = BSA_BA2_Library_DLL.BethesdaArchive.Core.PackagerRequest.MaxArchiveBytesDefault
 
     ''' <summary>One loose file in the bundle, with its canonical BA2 entry name. SourcePath is
@@ -584,6 +599,31 @@ Public Module NpcFaceGenPacker
         ' su razon original: dejar de SERVIR entradas cuyos indices dejan de valer al reescribir.
         Dim modBaseName = Path.GetFileNameWithoutExtension(anchorPluginPath)
         Dim preSet = ArchivePackager.DiscoverArchiveSet(dataDir, modBaseName)
+
+        ' ⛔⛔ EL `SourceOrder` SE CAPTURA **ANTES** DE DESMONTAR, porque el desmontaje lo BORRA. Es la
+        ' prioridad con la que cada archive gana o pierde un conflicto de ruta; volver a montar sin ella
+        ' aplana todo a `ArchiveSourceOrder_RuntimeRegistered` (Integer.MaxValue-1), que le gana a TODO
+        ' archive de plugin. El escenario que eso habilita —un mod de facegen-patch que le ganaba a este
+        ' set y que después de un Save+bake pasa a perder, con la app mostrando una cabeza distinta de la
+        ' que carga el juego— es DEDUCIDO de la ley de prioridades, no medido sobre el corpus: el orden
+        ' relativo lo decide `BuildArchivePriority` y aplanarlo lo invierte por construcción.
+        ' Mismo patrón y misma ley que `WM_PackUnpack`: capturar antes del desmontaje, restaurar al montar.
+        ' ⚠️ Un archive cuyo orden no se pueda leer cae al default y NO se reporta: la captura es
+        ' best-effort y no alimenta ningún aviso. Lo que sí se reporta es el fallo de MONTAJE (abajo).
+        Dim ordenPrevioFg As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        For Each archivePath In preSet.Archives
+            Try
+                Dim nombreArch = Path.GetFileName(archivePath)
+                Dim ordenArch As Integer
+                If FilesDictionary_class.TryGetArchiveSourceOrder(nombreArch, ordenArch) Then
+                    ordenPrevioFg(nombreArch) = ordenArch
+                End If
+            Catch
+                ' Best-effort por archive: el que falte cae al default. NO alimenta ningún reporte — ver
+                ' el ⚠️ de arriba; prometer uno que no existe es lo que este comentario evita.
+            End Try
+        Next
+
         For Each archivePath In preSet.Archives
             Try
                 FilesDictionary_class.UnregisterArchive(archivePath)
@@ -724,14 +764,64 @@ Public Module NpcFaceGenPacker
         End If
 
         ' --- Step 4: re-mount EVERY archive in the set (skipped ones too — we unregistered them) -
+        ' ⛔⛔ EL Try VA ADENTRO DEL For Y CUBRE LAS DOS LLAMADAS. El `RegisterArchive` estaba AFUERA de
+        ' cualquier Try, y desde que el montaje falla RUIDOSO sobre un archive que no se puede parsear
+        ' (antes se tragaba el fallo y volvía como si nada) eso se volvió una bomba: el camino de
+        ' `FlushChunk` fallando en un chunk —que ESTE MISMO método atrapa a propósito, unas líneas más
+        ' arriba, porque es un fallo previsto— deja un archive a medias; al llegar acá, ese archive
+        ' revienta el parseo, la excepción sale del `For` y los archives 3..N quedan DESMONTADOS por el
+        ' resto de la sesión. Encima el paso 5 no corre y el diagnóstico por NPC se pierde detrás de un
+        ' error genérico.
+        ' Es el MISMO gesto que `WM_PackUnpack` hace en su re-montaje post-pack, con el mismo idiom y por
+        ' la misma razón — allá está documentado: un archive que desaparece o no parsea entre el Discover
+        ' y el Register no puede llevarse puestos a los demás.
+        ' Lo que NO se hace es tragarlo en silencio: los que fallaron se acumulan y entran al reporte
+        ' estructurado, que es el que le dice al usuario QUÉ NPC quedó sin su FaceGen.
         Dim postSet = ArchivePackager.DiscoverArchiveSet(dataDir, modBaseName)
+        Dim archivesNoMontados As New List(Of String)
         For Each archivePath In postSet.Archives
+            ' ⛔ DOS `Try` SEPARADOS, Y NO ES ESTILO. Con los dos en el mismo bloque, un `Unregister` que
+            ' tira SALTEA el `Register` — y `DesmontarBajoCandado` baja el flag de `_registeredArchives`
+            ' al FINAL, así que un fallo a mitad deja el flag PUESTO: el archive queda desmontado a medias
+            ' y el guard de idempotencia de `RegisterArchive` convierte todo reintento posterior en un
+            ' no-op durante el resto de la sesión. Separados, el fallo de la baja no impide intentar el
+            ' alta, que es la que de verdad restaura el servicio.
+            ' ⚠️ ESTADO RESIDUAL DECLARADO: si el `Unregister` tiró DESPUÉS de purgar algo pero ANTES de
+            ' bajar el flag, el `Register` de abajo sale por ese guard sin montar nada y SIN tirar — o sea
+            ' que no puede reportarse como fallo de montaje. Por eso el fallo de la BAJA también entra al
+            ' reporte: es la única señal que queda de ese caso.
+            Dim nombreArchivo = IO.Path.GetFileName(archivePath)
             Try
                 FilesDictionary_class.UnregisterArchive(archivePath)
-            Catch
+            Catch ex As Exception
+                archivesNoMontados.Add($"{nombreArchivo} (unmount): {ex.Message}")
             End Try
-            FilesDictionary_class.RegisterArchive(archivePath)
+            Try
+                ' Y con el orden CAPTURADO, no con el default: ver el ⛔ del paso 2.
+                Dim ordenArch As Integer
+                If ordenPrevioFg.TryGetValue(nombreArchivo, ordenArch) Then
+                    FilesDictionary_class.RegisterArchive(archivePath, ordenArch)
+                Else
+                    FilesDictionary_class.RegisterArchive(archivePath)
+                End If
+            Catch ex As Exception
+                archivesNoMontados.Add($"{nombreArchivo}: {ex.Message}")
+            End Try
         Next
+        ' ⛔⛔ EL FALLO DE REMONTE **NO** ES UN FALLO DEL PACK. Iba a `packFailureMessage`, que abajo pone
+        ' `Success = False`, y eso decía dos mentiras: (1) el pack SALIÓ BIEN — los bytes están en el
+        ' archive, en disco, y el juego los carga; lo único roto es la vista EN MEMORIA de esta sesión; y
+        ' (2) el llamador corta con un early-return sobre `Success = False`, así que en el caso MIXTO
+        ' —algunos NPC fallaron al empaquetar Y además falló un remonte— se perdía el diagnóstico POR NPC,
+        ' que es justo lo que el paso 4 vino a rescatar.
+        ' Va en campo APARTE: `Success` sigue significando "el archive en disco quedó bien", y el aviso se
+        ' ANEXA al resumen. Éxito con warning no es lo mismo que fallo.
+        If archivesNoMontados.Count > 0 Then
+            result.RemountWarning =
+                $"⚠ {archivesNoMontados.Count} archive(s) could not be re-mounted after packing — the BA2 on " &
+                "disk is correct and the game will load it, but this session will not resolve its contents " &
+                "until you restart or refresh: " & String.Join(" | ", archivesNoMontados)
+        End If
 
         ' --- Step 5: delete loose for every committed ref ------------------------------------
         ' DebugSandbox refs (the _2.xxx files) are deleted too — per user 2026-05-26: if the

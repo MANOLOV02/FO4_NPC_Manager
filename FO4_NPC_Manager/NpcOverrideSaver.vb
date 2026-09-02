@@ -768,6 +768,12 @@ Public Module NpcOverrideSaver
                 }
                 ' INAM = the draft's items as authored — ARMO or LVLI FormIDs (the writer's INAM is
                 ' FormID-agnostic, so an LVLI ref persists as a leveled entry; the engine rolls at runtime).
+                ' ⛔ LA MISMA LEY QUE LA LISTA POR NIVEL, y por el MISMO censo: un INAM puede apuntar a un
+                ' ARMO o a una LVLI propios, y si ese borrador se cancelo la referencia queda colgada igual.
+                ' Sin esto, un atuendo que apunta a un ARMO propio ya borrado no tenia el error nombrado y
+                ' caia al cortafuegos del writer con el FormID pelado.
+                ExigirReferenciasSinColgar("OTFT", d.Record.EditorID, d.FormID, d.Record,
+                                           BorradoresRegistrados(ctx))
                 oe.ItemArmoFormIDs.AddRange(d.Prendas())
                 outfitEntries.Add(oe)
             Next
@@ -813,8 +819,15 @@ Public Module NpcOverrideSaver
             ' EDID uniqueness guard: dedup each draft's final namespaced EditorID against the LVLI/LVLN already
             ' bound for this plugin (preserved existing + earlier drafts), auto-suffixing _2/_3 on collision.
             Dim usedLeveledEdids As New HashSet(Of String)(leveledEntries.Select(Function(l) l.EditorID), StringComparer.OrdinalIgnoreCase)
+            ' ⛔ TODO borrador REGISTRADO, de cualquier clase: una entrada LVLO puede apuntar a una lista
+            ' propia (fase 2d) o a un ARMO propio (fase 2f, sembrada justo desde estas entradas). Lo que NO
+            ' puede es apuntar a un provisional que NADIE reclama.
+            ' VB no distingue mayusculas: el local no puede llamarse igual que la funcion.
+            Dim registradosLvl = BorradoresRegistrados(ctx)
             For Each fid In needed
                 Dim d = draftByFid(fid)
+                ' ⛔ ANTES de armar las entradas, y para las DOS ramas (override preservado y nueva).
+                ExigirReferenciasSinColgar("LVLI", d.Record.EditorID, d.FormID, d.Record, registradosLvl)
                 ' OVERRIDE draft (re-edit of an existing LVLI): keep its real FormID + EDID verbatim. An UNCHANGED
                 ' override (pulled in by a reference but not itself edited) is skipped — its FormID resolves to the
                 ' record it overrides (the master original, or this plugin's copy preserved in Phase 2a), so no
@@ -1024,10 +1037,16 @@ Public Module NpcOverrideSaver
                 ' Emitting it would just re-write an identical override. NEW drafts are always dirty (IsNew) so they
                 ' are never skipped. Mirror of the ArmA/ArmO/MSWP editor "dirty only on real change" gate.
                 ' --- Phase 2e: build ArmoRecordEntry for each needed ARMO draft. ---
+                ' ⛔ LA MISMA LEY para las tres fases que siguen: un ARMO propio apunta a ARMA y a MSWP
+                ' propios, y un ARMA a MSWP. Si alguno de esos se cancelo, la referencia queda colgada igual
+                ' que en un INAM o en una entrada LVLO. El censo es el mismo (`CensoDeReferencias`), asi que
+                ' no hay una segunda lista que se pueda separar de la primera.
+                Dim registrados = BorradoresRegistrados(ctx)
                 Dim usedArmoEdids As New HashSet(Of String)(armoEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededArmo
                     Dim d = armoByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
+                    ExigirReferenciasSinColgar("ARMO", d.Record.EditorID, d.FormID, d.Record, registrados)
                     If armoAlreadyEmitted.Contains(d.FormID) Then armoEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     armoEntries.Add(BuildArmoEntry(d, ctx, espNameNoExt, usedArmoEdids, target))
                 Next
@@ -1036,6 +1055,7 @@ Public Module NpcOverrideSaver
                 For Each fid In neededArma
                     Dim d = armaByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
+                    ExigirReferenciasSinColgar("ARMA", d.Record.EditorID, d.FormID, d.Record, registrados)
                     If armaAlreadyEmitted.Contains(d.FormID) Then armaEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     armaEntries.Add(BuildArmaEntry(d, ctx, espNameNoExt, usedArmaEdids, target))
                 Next
@@ -1044,6 +1064,7 @@ Public Module NpcOverrideSaver
                 For Each fid In neededMswp
                     Dim d = mswpByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
+                    ExigirReferenciasSinColgar("MSWP", d.Record.EditorID, d.FormID, d.Record, registrados)
                     If mswpAlreadyEmitted.Contains(d.FormID) Then mswpEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     mswpEntries.Add(BuildMswpEntry(d, ctx, espNameNoExt, usedMswpEdids, target))
                 Next
@@ -1188,7 +1209,27 @@ Public Module NpcOverrideSaver
             ' ellos. Ademas funciona como red: sin SKSE/F4SE o con VMAD viejo, BodyGen sigue entregando.
             If target.EmitBodyGen OrElse (removedFromSidecar AndAlso iniExists) Then
                 ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
-                EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
+                ' ⛔ TRY LOCAL, Y NO PORQUE ESTO PUEDA FALLAR MAS QUE OTRA COSA: por CUANDO corre. El .esp
+                ' YA ESTA EN DISCO cuando se llega acá, y el .ini de BodyGen es un archivo APARTE, en otra
+                ' carpeta, del que el plugin no depende. Sin esta red, un `Data\` de sólo lectura o un
+                ' antivirus tomando el .ini dejaba subir la excepción hasta el catch del guardado entero,
+                ' que la muestra como "el guardado falló": el usuario leía que perdió el trabajo cuando en
+                ' realidad su .esp estaba escrito y completo, y la reacción natural —volver a guardar, o
+                ' peor, restaurar un respaldo— es la que sí puede romper algo.
+                ' ⛔ CON `ex.Message`, no mudo: un aviso que dice "falló" sin decir qué falló manda al
+                ' usuario a adivinar entre permisos, ruta y disco lleno. (Censo de catch mudos abierto.)
+                ' ⛔ Y NO se toca `result.Success`: el .esp se escribió. Esto entra por `PayloadWarnings`,
+                ' que unas líneas más abajo pinta el resumen con el icono de aviso — o sea, el guardado se
+                ' reporta como lo que fue: bueno, con un pendiente en el sidecar.
+                Try
+                    EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
+                Catch exIni As Exception
+                    Logger.LogLazy(Function() $"[BODYGEN-INI] emit failed for '{IO.Path.GetFileName(target.TargetPath)}': {exIni}")
+                    ctx.PayloadWarnings.Add(
+                        $"BodyGen .ini: no se pudo escribir el .ini de '{IO.Path.GetFileName(target.TargetPath)}' " &
+                        $"({exIni.Message}). El .esp SÍ se guardó; lo que falta es el archivo de BodyGen, " &
+                        "así que los morphs pueden no aplicarse en el juego hasta volver a guardar.")
+                End Try
             End If
         End If
 
@@ -1800,6 +1841,76 @@ Public Module NpcOverrideSaver
         ' Las sustituciones tal como estan en el record leido, sin copiarlas campo por campo.
         Return e
     End Function
+
+    ''' <summary>Ninguna entrada de <paramref name="d"/> puede referenciar un provisional que NINGÚN borrador
+    ''' reclama. Tira nombrando el record, la entrada y el FormID.
+    ''' <para>⛔ LA LEY: una referencia provisional que no resuelve ni a borrador de este guardado ni al
+    ''' remapeo es ERROR RUIDOSO. Nunca un write crudo —el .esp saldría con una referencia a un record que
+    ''' no existe— y nunca un salteo mudo: saltearla cambia el contenido de la lista del usuario sin
+    ''' decírselo. Es el mismo criterio con el que este guardador ya REVIERTE los DOFT/WNAM que apuntan a
+    ''' borradores que no se van a guardar, en vez de emitirlos colgantes.</para>
+    ''' <para>⛔ Existe ADEMÁS del cortafuegos del writer (<c>SaveNpcEspWriter</c>: el remapper tira cuando
+    ''' un provisional no está en <c>draftRemap</c>). Aquél protege el ARCHIVO y sólo puede nombrar el
+    ''' FormID: cuando se ejecuta ya perdió de vista quién lo trajo. Éste corre donde todavía se sabe QUÉ
+    ''' lista y QUÉ entrada, que es lo único con lo que el usuario puede arreglarlo.</para></summary>
+    ''' <summary>Los FormID de TODO borrador registrado, de las cinco clases. Es el conjunto contra el que
+    ''' se decide si una referencia provisional tiene dueño.
+    ''' <para>Un provisional que está acá va a ser emitido por alguna de las fases 2c-2g (o ya lo fue), así
+    ''' que la referencia resuelve. Uno que NO está no lo emite nadie: el writer no le va a poder dar
+    ''' FormID real.</para></summary>
+    Private Function BorradoresRegistrados(ctx As SaveContext) As HashSet(Of UInteger)
+        Dim r As New HashSet(Of UInteger)
+        If ctx Is Nothing Then Return r
+        If ctx.LeveledListDrafts IsNot Nothing Then
+            For Each dd In ctx.LeveledListDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        If ctx.ArmoDrafts IsNot Nothing Then
+            For Each dd In ctx.ArmoDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        If ctx.ArmaDrafts IsNot Nothing Then
+            For Each dd In ctx.ArmaDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        If ctx.MswpDrafts IsNot Nothing Then
+            For Each dd In ctx.MswpDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        If ctx.OutfitDrafts IsNot Nothing Then
+            For Each dd In ctx.OutfitDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        Return r
+    End Function
+
+    ''' <para>⛔ Y CUBRE LAS CINCO CLASES, por el CENSO DERIVADO y no por un recorrido a mano de las
+    ''' entradas LVLO. La primera versión sólo miraba LVLI, así que un OTFT cuyo INAM apuntaba a un ARMO
+    ''' propio ya borrado no tenía el error nombrado y caía al cortafuegos del writer con el FormID pelado.
+    ''' <see cref="CensoDeReferencias.DeBorrador"/> es la MISMA enumeración que usa el remapeo de la
+    ''' promoción: si un campo puede APUNTAR a un borrador, puede quedar COLGADO, así que las dos leyes
+    ''' tienen que leer la misma lista o se separan.</para></summary>
+    Friend Sub ExigirReferenciasSinColgar(clase As String, edid As String, fid As UInteger,
+                                          record As Object,
+                                          borradoresRegistrados As HashSet(Of UInteger))
+        If record Is Nothing Then Return
+        Dim n = 0
+        For Each r In CensoDeReferencias.DeBorrador(record)
+            n += 1
+            If r.Valor = 0UI Then Continue For
+            If Not Borradores.EsFormIdDeBorrador(r.Valor) Then Continue For
+            If borradoresRegistrados.Contains(r.Valor) Then Continue For
+            Throw New InvalidOperationException(
+                $"{clase} {edid} ({fid:X8}), {r.Que} #{n}: referencia provisional {r.Valor:X8} sin " &
+                "borrador — el ESP saldría corrupto. El record referido se canceló o se borró mientras " &
+                "éste lo seguía apuntando; sacá la referencia o volvé a crear el record.")
+        Next
+    End Sub
 
     ''' <summary>Build (or extend) the Leveled NPC list(s) for a save where <c>AddToLvlList</c> is set, and
     ''' append the resulting <see cref="SaveNpcEspWriter.LvliRecordEntry"/> (IsNpcList) to

@@ -58,7 +58,10 @@ Public Module SseBodyGenIniWriter
     ''' <c>BodyGenData\&lt;modInfo-&gt;name&gt;\</c> at BodyMorphInterface.cpp:132). Merge-safe like the FO4 writer: the caller passes
     ''' the FULL entry list (built from the whole sidecar), so a full rewrite preserves every other
     ''' NPC's row and replaces this NPC's. If the filtered list is empty BOTH files are deleted.
-    ''' Atomic writes via .tmp + rename.</summary>
+    ''' <para>⛔ La escritura NO es atómica y NO es <c>.tmp</c> + rename: es EN EL LUGAR, con copia
+    ''' previa verificada (<see cref="EscribirConCopia"/>). La garantía —y por qué no puede ser atómica
+    ''' bajo MO2/Vortex— vive en UN solo lugar, la cabecera de
+    ''' <c>BSA_BA2_Library_DLL.EscrituraEnElLugar</c>. No se repite acá.</para></summary>
     Public Sub Emit(dataPath As String, targetPluginBaseName As String, entries As List(Of NpcEntry))
         If String.IsNullOrEmpty(dataPath) OrElse String.IsNullOrEmpty(targetPluginBaseName) Then Return
 
@@ -102,7 +105,7 @@ Public Module SseBodyGenIniWriter
             sbTemplates.Append(" = ")
             sbTemplates.AppendLine(BuildMorphSpecList(e.BodyMorphs))
         Next
-        WriteAtomic(templatesPath, sbTemplates.ToString())
+        EscribirConCopia(templatesPath, sbTemplates.ToString())
 
         ' --- morphs.ini
         Dim sbMorphs As New StringBuilder()
@@ -120,7 +123,7 @@ Public Module SseBodyGenIniWriter
             sbMorphs.Append(" = ")
             sbMorphs.AppendLine(SanitizeTemplateName(e.TemplateName))
         Next
-        WriteAtomic(morphsPath, sbMorphs.ToString())
+        EscribirConCopia(morphsPath, sbMorphs.ToString())
     End Sub
 
     ''' <summary>Sanitize a string into a BodyGen-safe identifier. Whitespace and any character
@@ -159,8 +162,11 @@ Public Module SseBodyGenIniWriter
     ''' <summary>Se escribe ENCIMA del .ini que ya está, con copia previa. Estos .ini viven bajo
     ''' <c>Data\Meshes\actors\character\BodyGenData\</c>, o sea adentro de un mod: el `.tmp` +
     ''' `File.Replace` que había acá se salía del VFS de Mod Organizer y dejaba el archivo en el `Data`
-    ''' real del juego. Misma ley que SaveNpcEspWriter (Step 7).</summary>
-    Private Sub WriteAtomic(path As String, content As String)
+    ''' real del juego. Misma ley que SaveNpcEspWriter (Step 7).
+    ''' <para>⛔ Se llamaba <c>WriteAtomic</c> y el nombre MENTÍA: no hay temporal, no hay rename y la
+    ''' escritura no es atómica. Un nombre es un docstring que no se puede apuntar a ningún lado, así
+    ''' que dice lo que hace: escribe con copia previa.</para></summary>
+    Private Sub EscribirConCopia(path As String, content As String)
         Dim bytes = New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False).GetBytes(content)
         BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(path, Sub(fs) fs.Write(bytes, 0, bytes.Length))
     End Sub

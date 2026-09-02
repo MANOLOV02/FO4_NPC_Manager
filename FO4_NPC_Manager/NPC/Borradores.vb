@@ -1,20 +1,37 @@
 ﻿''' <summary>Lo que vale para CUALQUIER borrador, sin importar de qué record sea.
 ''' <para>⛔ Esto vivía dentro de <c>OutfitDraft</c>, y no es de los atuendos: de los 12 llamadores de
 ''' <see cref="EsFormIdDeBorrador"/>, la mayoría no tienen nada que ver con un atuendo — el skin
-''' (un ARMO) del guardado, una sustitución de materiales (MSWP), los editores de ARMA y ARMO, y cinco
-''' sitios de la ventana principal—, más dos que componen desde <see cref="FormIdAltoDeBorrador"/>
-''' (el asignador de la ventana principal y el centinela de previsualización de los atuendos).
+''' (un ARMO) del guardado, una sustitución de materiales (MSWP), los editores de ARMA y ARMO, el censo de
+''' referencias del guardado, y cuatro sitios de la ventana principal—, más <b>seis</b> que componen desde
+''' <see cref="FormIdAltoDeBorrador"/>: el asignador de la ventana principal, los dos contadores de
+''' respaldo del guardado, y los TRES centinelas que enumera la nota de más abajo.
 ''' Tener la ley ahí obligaba a que todos ellos nombraran
 ''' <c>OutfitDraft</c> para preguntar algo que no es de atuendos, y el día que otro tipo de borrador
-''' necesitara su propia versión, la copia era el camino corto.</para></summary>
+''' necesitara su propia versión, la copia era el camino corto.</para>
+''' <para>⚠️ Los dos números salen de CONTAR el árbol, no de acordarse: decían «cinco sitios» donde hay
+''' cuatro y «dos que componen» donde hay seis —y el propio párrafo de abajo ya listaba tres centinelas,
+''' o sea que el archivo se contradecía solo. Quien agregue o saque un consumidor, que los vuelva a
+''' contar.</para></summary>
 Public Module Borradores
 
     ''' <summary>Byte alto del identificador provisional de un borrador sin guardar.
     ''' <para>⛔ NO se redeclara: se REEXPORTA el de la librería. El valor decide qué FormID se
     ''' reindexa al guardar, y escrito en los dos lados era drift garantizado sobre bytes que el
     ''' usuario publica. Acá queda el nombre en castellano que usa la app; el valor es uno solo.</para>
+    ''' <para>⛔ <b><c>ReadOnly</c> y NO <c>Const</c>.</b> Como <c>Const</c>, «el valor es uno solo» sólo
+    ''' era cierto recompilando los dos ensamblados juntos: el compilador hornea el literal de la
+    ''' librería acá adentro, así que una DLL nueva con otro valor y la app sin recompilar quedaban
+    ''' divergentes en silencio — el drift que esta línea existe para impedir, hecho por el compilador en
+    ''' vez de por una persona. Con el campo se LEE en ejecución y la promesa se sostiene sola.
+    ''' <see cref="SaveNpcEspWriter.FormIdAltoDeBorrador"/> es <c>ReadOnly</c> por lo mismo: hacen falta
+    ''' las DOS: si cualquiera vuelve a ser <c>Const</c>, la cadena se re-hornea entera.</para>
+    ''' <para>⛔ Y por eso los tres centinelas que se componen desde acá
+    ''' —<c>OutfitDraft.PreviewDraftFormID</c>, <c>OutfitPicker_Form.OutfitContextFormID</c> y
+    ''' <c>ArmaEditor_Form.PreviewArmoWrapperFormID</c>— también son <c>Shared ReadOnly</c>: un
+    ''' <c>Const</c> no puede inicializarse desde un campo, y volverlos <c>Const</c> exigiría volver a
+    ''' escribir el literal a mano, que es de donde se venía.</para>
     ''' <para>Al guardar se reescribe como <c>(índice propio del plugin) &lt;&lt; 24 | número de objeto</c>.</para></summary>
-    Public Const FormIdAltoDeBorrador As UInteger = SaveNpcEspWriter.FormIdAltoDeBorrador
+    Public ReadOnly FormIdAltoDeBorrador As UInteger = SaveNpcEspWriter.FormIdAltoDeBorrador
 
     ''' <summary>El identificador es el provisional de un borrador sin guardar. Deja que el render y los
     ''' resolvedores detecten que una referencia apunta a algo que todavía no existe en ningún archivo y
@@ -172,52 +189,163 @@ Public Module Borradores
                                       realGlobal As Dictionary(Of UInteger, UInteger),
                                       fotosArmo As FotosDeBorrador(Of Canon.IArmo),
                                       fotosArma As FotosDeBorrador(Of Canon.IArma),
-                                      fotosMswp As FotosDeBorrador(Of Canon.IMswp))
+                                      fotosMswp As FotosDeBorrador(Of Canon.IMswp),
+                                      fotosOtft As FotosDeBorrador(Of OutfitDraft),
+                                      fotosLvli As FotosDeBorrador(Of Canon.ILvli))
         If realGlobal Is Nothing OrElse realGlobal.Count = 0 Then Return
 
         ' ⛔ Se publica SÓLO el que se escribió, y sólo si SOBREVIVE. `Publicar` clona el árbol entero
         ' (walk recursivo): republicar la sesión completa en cada guardado pagaría ese walk por
         ' borradores que nadie tocó. Y al PROMOVIDO no se le publica porque más abajo se lo dropea y se
         ' le retira la foto. La condición no es un umbral: es "se escribió ⇒ se publica".
+        ' ⛔ PRIMERO SE REMAPEA TODO, DESPUES SE DROPEA Y RECIEN AL FINAL SE PUBLICA.
+        ' El orden importa y no es estetico: `Publicar` clona, y un clonador puede TIRAR. Publicando
+        ' antes del drop, ese throw atraviesa el GUARDADO y deja los promovidos SIN dropear — o sea
+        ' borradores que ya son records reales siguen en los mapas y sus fotos siguen vivas, ganandole
+        ' al record que acaba de nacer. Dropeando primero, un aborto deja el estado consistente: nadie
+        ' tiene foto de un muerto.
+        Dim tocados As New HashSet(Of UInteger)
         For Each d In outfitDrafts
-            If d IsNot Nothing Then RemapearUno(d.Record, realGlobal)
+            If d Is Nothing Then Continue For
+            Dim t1 = RemapearUno(d.Record, realGlobal)
+            Dim t2 = d.RemapearPicks(realGlobal)
+            If t1 OrElse t2 Then tocados.Add(d.FormID)
         Next
         For Each d In leveledListDrafts
-            If d IsNot Nothing Then RemapearUno(d.Record, realGlobal)
+            If d Is Nothing Then Continue For
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
         Next
         For Each d In armoDrafts
             If d Is Nothing Then Continue For
-            If RemapearUno(d.Record, realGlobal) AndAlso
-               Not realGlobal.ContainsKey(d.FormID) Then fotosArmo?.Publicar(d.FormID, d.Record)
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
         Next
         For Each d In armaDrafts
             If d Is Nothing Then Continue For
-            If RemapearUno(d.Record, realGlobal) AndAlso
-               Not realGlobal.ContainsKey(d.FormID) Then fotosArma?.Publicar(d.FormID, d.Record)
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
         Next
         For Each d In mswpDrafts
             If d Is Nothing Then Continue For
-            ' Hoy el recorrido de un MSWP sale VACÍO —no declara campos de referencia— así que esto no
-            ' publica nunca. Va igual, por lo mismo que `TemplateArmor` entra al censo: el día que el
-            ' formato agregue uno, el camino ya está y nadie tiene que acordarse.
-            If RemapearUno(d.Record, realGlobal) AndAlso
-               Not realGlobal.ContainsKey(d.FormID) Then fotosMswp?.Publicar(d.FormID, d.Record)
+            ' Hoy el recorrido de un MSWP sale VACIO -no declara campos de referencia-. Va igual, por lo
+            ' mismo que `TemplateArmor` entra al censo: el dia que el formato agregue uno, ya esta.
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
         Next
 
-        ' Drop the promoted drafts. The throwaway preview sentinel is never in the map, so it survives.
+        ' ⛔ Drop de los promovidos + retiro de sus fotos. El centinela de previsualizacion nunca esta en
+        ' el mapa, asi que sobrevive.
         outfitDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         leveledListDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         armoDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
-        ' Idem: los borradores que acaban de pasar a ser records reales dejan de tener foto. Los tres
-        ' juegos de fotos se retiran acá porque el identificador promovido es único entre las cinco
-        ' clases (todas salen del MISMO contador), así que a lo sumo una de las tres lo tiene.
+        armaDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        mswpDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         For Each fidYaReal In realGlobal.Keys
             fotosArmo?.Retirar(fidYaReal)
             fotosArma?.Retirar(fidYaReal)
             fotosMswp?.Retirar(fidYaReal)
+            fotosOtft?.Retirar(fidYaReal)
+            fotosLvli?.Retirar(fidYaReal)
         Next
-        armaDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
-        mswpDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+
+        ' ⛔ Y recien ahora las fotos de los SUPERVIVIENTES que quedaron tocados. `Publicar` clona el arbol
+        ' entero, asi que se publica solo lo que cambio: es "se escribio => se publica", no un umbral.
+        For Each d In outfitDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosOtft?.Publicar(d.FormID, d)
+        Next
+        For Each d In leveledListDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosLvli?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In armoDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosArmo?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In armaDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosArma?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In mswpDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosMswp?.Publicar(d.FormID, d.Record)
+        Next
     End Sub
+
+    ''' <summary>QUIÉN apunta a <paramref name="formID"/> desde los borradores en memoria. Vacío ⇒ nadie,
+    ''' así que borrarlo no deja ninguna referencia colgada. Es lo que decide si «Delete draft» puede
+    ''' proceder.
+    '''
+    ''' <para>⛔ <b>MIRA LAS DOS CASAS, y esa es la razón de que exista.</b> Un borrador apunta a otro por
+    ''' DOS caminos y hay que recorrer los dos:
+    ''' <list type="number">
+    ''' <item>los campos DEL RECORD — <see cref="CensoDeReferencias.DeBorrador"/>;</item>
+    ''' <item>las realizaciones SELLADAS de un atuendo — <see cref="OutfitDraft.ReferenciasDePicks"/>, que
+    ''' viven fuera del record porque son el sorteo ya resuelto.</item></list>
+    ''' Miraba sólo la primera, y el defecto era éste: un ARMO borrador al que únicamente lo apuntaba un
+    ''' pick sellado se reportaba «no lo referencia nadie», «Delete draft» lo borraba, y la realización
+    ''' quedaba apuntando a un FormID muerto — la prenda se dibujaba VACÍA y nada lo explicaba. Es la misma
+    ''' asimetría que el remapeo de la promoción ya cubría (<see cref="RemapearSupervivientes"/> llama a las
+    ''' dos): el remapeo veía los picks y el censo no.</para>
+    '''
+    ''' <para>⛔ <b>Vive acá y no en la ventana principal</b>, por lo mismo que
+    ''' <see cref="RemapearSupervivientes"/>: adentro de un formulario no hay testigo que la pueda correr
+    ''' —el gate tendría que construir un <c>MainForm</c> entero, con su <c>InitializeComponent</c>— así que
+    ''' en los hechos quedaba sin medir, y de hecho el defecto de arriba vivió ahí sin que ningún caso lo
+    ''' viera. Acá el gate LLAMA al sujeto.</para>
+    '''
+    ''' <para>Las asignaciones POR NPC (el skin del WNAM o el atuendo por defecto de un preset aplicado) NO
+    ''' entran acá: no son referencias de un borrador a otro sino de un NPC a un borrador, necesitan el
+    ''' catálogo de presets y el resolvedor de nombres de la ventana, y se agregan del lado del llamador.
+    ''' La frontera es la CLASE de referencia, no dónde es cómodo escribirla.</para></summary>
+    Friend Function CensarReferrers(formID As UInteger,
+                                    outfitDrafts As List(Of OutfitDraft),
+                                    leveledListDrafts As List(Of LeveledListDraft),
+                                    armoDrafts As List(Of ArmoDraft),
+                                    armaDrafts As List(Of ArmaDraft),
+                                    mswpDrafts As List(Of MswpDraft)) As List(Of String)
+        Dim refs As New List(Of String)
+        If formID = 0UI Then Return refs
+
+        ' Distinct: un mismo borrador puede apuntar al mismo destino por DOS campos del mismo nombre (los
+        ' dos material swap, dos addons iguales) y el usuario no necesita la linea repetida — necesita
+        ' saber QUE lo referencia.
+        Dim censar =
+            Sub(clase As String, edid As String, refsDe As IEnumerable(Of CensoDeReferencias.ReferenciaDeBorrador))
+                For Each que In refsDe.Where(Function(r) r.Valor = formID).Select(Function(r) r.Que).Distinct()
+                    refs.Add($"{clase} draft '{edid}' ({que})")
+                Next
+            End Sub
+
+        If armoDrafts IsNot Nothing Then
+            For Each d In armoDrafts
+                If d Is Nothing Then Continue For
+                censar("ARMO", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        If armaDrafts IsNot Nothing Then
+            For Each d In armaDrafts
+                If d Is Nothing Then Continue For
+                censar("ARMA", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        If outfitDrafts IsNot Nothing Then
+            For Each d In outfitDrafts
+                If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
+                censar("Outfit", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+                ' ⛔ LA SEGUNDA CASA. El sorteo sellado no esta en el record y el censo del record no lo
+                ' ve: sin esta linea, un ARMO borrador apuntado SOLO por un pick sale «no lo referencia
+                ' nadie» y se lo puede borrar.
+                censar("Outfit", d.Record.EditorID, d.ReferenciasDePicks())
+            Next
+        End If
+        If leveledListDrafts IsNot Nothing Then
+            For Each d In leveledListDrafts
+                If d Is Nothing Then Continue For
+                censar("Leveled-list", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        If mswpDrafts IsNot Nothing Then
+            For Each d In mswpDrafts
+                If d Is Nothing Then Continue For
+                ' Hoy no rinde nada (un MSWP no declara campos de referencia), pero se recorre igual: si el
+                ' dia de manana declara uno, el censo ya lo ve. Ver `CensoDeReferencias.DeBorrador`.
+                censar("MSWP", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        Return refs
+    End Function
 
 End Module

@@ -1,4 +1,4 @@
-Imports System.Collections.Concurrent
+﻿Imports System.Collections.Concurrent
 
 ''' <summary>Las FOTOS inmutables del árbol de los borradores de UNA clase de record: lo que el RENDER
 ''' recorre mientras el editor sigue trabajando sobre el borrador vivo.
@@ -23,7 +23,7 @@ Imports System.Collections.Concurrent
 ''' que tenía foto; ARMA y MSWP servían el árbol VIVO al hilo del render —<c>ArmaDraftResolver</c> y
 ''' <c>BuildMswpDataFromDraft</c>— o sea la MISMA carrera, sin la foto. Copiar la clase dos veces
 ''' habría dejado tres leyes que se separan al primer arreglo; con el parámetro de tipo hay una sola
-''' y tres instancias. Las cinco vistas de borrador NO comparten interfaz, así que se publica por
+''' y CINCO instancias —ARMO, ARMA, MSWP, OTFT y LVLI—. Las cinco vistas NO comparten interfaz, así que se publica por
 ''' <c>(formID, vista)</c> y no por el borrador: no hay tipo común del que colgar
 ''' <c>.FormID</c>/<c>.Record</c>.</para>
 '''
@@ -34,40 +34,61 @@ Imports System.Collections.Concurrent
 ''' sirviendo la foto vieja con la referencia 0xFF ya muerta y la prenda se dibujaba VACÍA hasta el
 ''' commit siguiente del editor. Con la ley en un solo objeto, el productor que falte no tiene dónde
 ''' escribir sin pasar por acá.</para></summary>
-''' <typeparam name="TVista">La vista canónica del record (<c>Canon.IArmo</c>, <c>Canon.IArma</c>,
-''' <c>Canon.IMswp</c>).</typeparam>
+''' <typeparam name="TVista">Lo que se fotografía: la vista canónica del record —<c>Canon.IArmo</c>,
+''' <c>Canon.IArma</c>, <c>Canon.IMswp</c>, <c>Canon.ILvli</c>— o el BORRADOR entero
+''' (<c>OutfitDraft</c>), que lleva estado fuera del record y por eso pasa su propio clonador.</typeparam>
 Friend NotInheritable Class FotosDeBorrador(Of TVista As Class)
 
     ''' <summary>La foto por FormID de borrador. Concurrente porque la ESCRIBE el hilo de UI (el commit
     ''' del editor, el remapeo del guardado) y la LEE el del render, sin candado entre medio.</summary>
     Private ReadOnly _fotos As New ConcurrentDictionary(Of UInteger, TVista)
 
-    ''' <summary>Cómo se llega al borrador VIVO cuando no hay foto. Se fija UNA vez, en la construcción,
-    ''' para que <see cref="ParaRender"/> quede con la MISMA forma que el resolvedor del render
-    ''' (<c>Func(Of UInteger, TVista)</c>) y se pueda cablear directo, sin envoltorio que pueda diferir
-    ''' entre producción y el testigo.</summary>
-    Private ReadOnly _vivo As Func(Of UInteger, TVista)
+    ''' <summary>Cómo se clona la vista. Entra por constructor porque NO todas las clases de borrador se
+    ''' clonan igual: ARMO/ARMA/MSWP <b>son</b> su record y se copian con el walk canónico; el borrador de
+    ''' ATUENDO lleva estado FUERA del record —las realizaciones selladas— así que copiar sólo el record
+    ''' lo fotografía por la mitad y la carrera se MUDA en vez de cerrarse. Con la estrategia por
+    ''' parámetro hay UNA ley y una clase; lo que cambia es cómo se saca la copia.</summary>
+    Private ReadOnly _clonar As Func(Of TVista, TVista)
 
-    ''' <param name="vivo">El borrador vivo por FormID (en producción, <c>TryGetXxxDraft(f)?.Record</c>).</param>
-    Friend Sub New(vivo As Func(Of UInteger, TVista))
-        _vivo = vivo
+    ''' <param name="clonar">Cómo sacar la copia. Omitido = el walk canónico <c>Copia</c>, que es lo que
+    ''' sirve para las CUATRO clases que SON su record (ARMO, ARMA, MSWP, LVLI); el de atuendo pasa el suyo porque lleva
+    ''' las realizaciones fuera del record.</param>
+    Friend Sub New(Optional clonar As Func(Of TVista, TVista) = Nothing)
+        _clonar = clonar
     End Sub
 
     ''' <summary>Publica la foto: la CLONA acá, en el hilo que la pide. El llamador pasa el record VIVO
     ''' y la copia la hace ESTA función — si el clon viviera afuera, cada productor tendría su versión
     ''' de la ley y el que se equivocara publicaría una referencia al árbol que sigue mutando.
-    ''' <para>Cuando <c>Copia()</c> devuelve Nothing —la vista no es un <c>CanonRecordView</c>, su árbol
-    ''' o su contexto son nulos, o el <c>TryCast</c> interno falla porque <c>Reenvolver</c> desempató por
-    ''' la FIRMA— se RETIRA la que hubiera. Dejar la anterior sería servir una foto de un contenido que
-    ''' ya no es el del borrador.</para></summary>
+    '''
+    ''' <para>⛔ UN CLON EN <c>Nothing</c> ES UN BUG Y SE TIRA — antes se RETIRABA la foto. El cambio es lo
+    ''' que sostiene que el fondo pueda leer la foto Y NADA MÁS: si publicar pudiera dejar al borrador sin
+    ''' foto, «registrado ⇒ tiene foto» dejaría de ser un invariante y el lector foto-sólo devolvería
+    ''' Nothing sobre un borrador que existe. MEDIDO antes de cambiarlo: ninguno de los cinco clonadores
+    ''' puede devolver Nothing legítimamente. <c>OutfitDraft.Clone</c> TIRA (exige el record); el walk
+    ''' canónico devuelve Nothing sólo si la vista no es <c>CanonRecordView</c>, o su <c>Node</c> o su
+    ''' <c>Context</c> son nulos, o <c>Reenvolver</c> desempata a otra clase por la FIRMA
+    ''' (<c>CanonInterpretacion:1257-1266</c>) — y todo borrador nace por una puerta que ya corrió
+    ''' <c>Copia()</c> bajo <c>Borradores.ExigirRecord</c>, que TIRA en esos mismos casos. O sea que la
+    ''' rama Nothing era código muerto que sólo servía para romper el invariante si alguna vez se
+    ''' alcanzaba.</para>
+    ''' <para>El throw se PROPAGA: es un bug de datos, no un estado que esta clase pueda decidir por su
+    ''' cuenta. Quien llame desde un camino que no puede morir —el guardado— tiene que ordenar sus pasos
+    ''' para que un throw no lo deje a medias (ver <c>Borradores.RemapearSupervivientes</c>), y quien
+    ''' llame desde un manejador de UI tiene que envolverlo (ver
+    ''' <c>OutfitPicker_Form.RequestPreviewAsync</c>).</para></summary>
     Friend Sub Publicar(formID As UInteger, vista As TVista)
         If formID = 0UI OrElse vista Is Nothing Then Return
-        Dim copia As TVista = Canon.CanonInterpretacion.Copia(vista)
-        If copia IsNot Nothing Then
-            _fotos(formID) = copia
-        Else
-            _fotos.TryRemove(formID, Nothing)
+        ' Sin clonador explicito: el walk canonico, que es la conducta historica y byte a byte.
+        Dim copia As TVista = If(_clonar Is Nothing, Canon.CanonInterpretacion.Copia(vista), _clonar(vista))
+        If copia Is Nothing Then
+            Throw New InvalidOperationException(
+                $"No se pudo fotografiar el borrador {formID:X8} ({GetType(TVista).Name}): el clonador " &
+                "devolvio Nothing. Todo borrador registrado tiene foto —de eso depende que el hilo de " &
+                "fondo pueda leer SOLO la foto—, asi que esto es un bug del clonador o del record, no un " &
+                "estado posible.")
         End If
+        _fotos(formID) = copia
     End Sub
 
     ''' <summary>Retira la foto. Va con el borrador: cuando se lo desregistra (cancelar / borrar /
@@ -76,13 +97,40 @@ Friend NotInheritable Class FotosDeBorrador(Of TVista As Class)
         _fotos.TryRemove(formID, Nothing)
     End Sub
 
-    ''' <summary>La vista que el RENDER puede recorrer sin carrera: la foto si existe, y el borrador
-    ''' vivo si no (un borrador registrado antes de que existiera la foto).</summary>
+    ''' <summary>¿HAY foto de este FormID? La PRESENCIA, sin traer la vista.
+    ''' <para>Existe aparte de <see cref="ParaRender"/> porque la pregunta es otra —«¿es un borrador de
+    ''' esta clase?» y no «dame su vista»—, y así el llamador no tiene que comparar contra Nothing. Desde
+    ''' que <c>ParaRender</c> es foto-sólo las dos contestan lo mismo; cuando ésta nació, <c>ParaRender</c>
+    ''' todavía caía al árbol VIVO y usarla de predicado recorría el registro justo en el caso más común
+    ''' —el FormID que NO es borrador—, que era la carrera entera.</para>
+    ''' <para>Y contesta «es un borrador de esta clase» porque publicar/retirar son UN PAR: toda puerta
+    ''' que registra publica y toda puerta que baja retira.</para></summary>
+    Friend Function TieneFoto(formID As UInteger) As Boolean
+        If formID = 0UI Then Return False
+        Return _fotos.ContainsKey(formID)
+    End Function
+
+    ''' <summary>La vista que el RENDER recorre: <b>LA FOTO, Y NADA MÁS</b>. Nothing = no es un borrador
+    ''' de esta clase.
+    '''
+    ''' <para>⛔ EL FALLBACK AL ÁRBOL VIVO SE ELIMINÓ, y era el último resto de la carrera que esta clase
+    ''' vino a cerrar. Servía «la foto si existe, y el borrador vivo si no», y ese «si no» salía a recorrer
+    ''' la <c>List</c> de borradores desde el hilo de FONDO —<c>BuildOutfitComboEntries</c> corre adentro
+    ''' de <c>Task.Run</c>— mientras el de UI registraba, restauraba o borraba: una <c>List</c> que muta
+    ''' bajo un <c>For Each</c> tira <c>InvalidOperationException</c>. Y el caso más común es justamente el
+    ''' peor: un FormID que NO es borrador recorre la lista ENTERA para contestar Nothing.</para>
+    '''
+    ''' <para>Se puede eliminar POR CONSTRUCCIÓN, no por optimismo: el registro publica la foto ANTES de
+    ''' tocar la lista (<c>MainForm.RegistrarConFoto</c>) y <see cref="Publicar"/> TIRA si el clon sale en
+    ''' Nothing, así que «registrado ⇒ tiene foto» vale siempre y el fallback no cubría ningún caso real —
+    ''' sólo aportaba la carrera.</para>
+    ''' <para>La lista viva NO desaparece: es el ORDEN del guardado, y vive en el hilo de UI. El saver y
+    ''' los editores la siguen enumerando desde ahí, que es donde se puede.</para></summary>
     Friend Function ParaRender(formID As UInteger) As TVista
         If formID = 0UI Then Return Nothing
         Dim foto As TVista = Nothing
-        If _fotos.TryGetValue(formID, foto) AndAlso foto IsNot Nothing Then Return foto
-        Return _vivo?.Invoke(formID)
+        If _fotos.TryGetValue(formID, foto) Then Return foto
+        Return Nothing
     End Function
 
 End Class

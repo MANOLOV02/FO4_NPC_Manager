@@ -69,16 +69,21 @@ Friend NotInheritable Class NpcRenderContext
     ''' (drafts mutate live), so a draft edit is reflected on the next render.</summary>
     Public ArmoDraftResolver As Func(Of UInteger, Canon.IArmo) = Nothing
 
-    ''' <summary>Gate de power-armor de la app (necesita el catálogo de keywords). Lo setea MainForm junto
-    ''' con los draft-resolvers; lo consume <see cref="EquipCtx"/> para que la ley única lo aplique una sola
-    ''' vez, en vez de que cada caller lo repita antes de pedir el footprint.</summary>
-    Public ArmoIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
-    ''' <summary>El MISMO gate, pero sobre la vista que el llamador ya abrio.
-    ''' <para>⛔ Existe para que `BuildFootprint` no resuelva el ARMO dos veces y pueda resolverlo
-    ''' DISTINTO: el gate lee <c>KWDA</c>, que es heredado, asi que preguntar por FormID daba la
-    ''' respuesta del HIJO mientras el dibujo usaba la EFECTIVA.</para></summary>
+    ''' <summary>Gate de power-armor de la app (necesita el catálogo de keywords), SOBRE LA VISTA que el
+    ''' llamador ya abrió. Lo setea MainForm junto con los draft-resolvers y lo consume
+    ''' <see cref="EquipCtx"/>, para que la ley única lo aplique una sola vez en vez de que cada caller lo
+    ''' repita antes de pedir el footprint.
+    ''' <para>⛔ POR VISTA y no por FormID: así <c>BuildFootprint</c> no resuelve el ARMO dos veces y no lo
+    ''' puede resolver DISTINTO. El gate lee <c>KWDA</c>, que es heredado, así que preguntar por FormID
+    ''' daba la respuesta del HIJO mientras el dibujo usaba la EFECTIVA.</para>
+    ''' <para>⛔ Al lado vivía <c>ArmoIsPowerArmor</c>, la variante POR FORMID de este mismo gate. Se
+    ''' borró: nadie la leía —sólo la asignaban los tres cableadores (MainForm y los dos arneses de
+    ''' Tools)— porque el único consumidor del contexto es <see cref="EquipCtx"/> y ése usa ésta. Un campo
+    ''' público que sólo se escribe es una segunda ley esperando a que alguien la use: es exactamente la
+    ''' pregunta por FormID que el párrafo de arriba dice que da OTRA respuesta. El camino que sí necesita
+    ''' el predicado por FormID —<c>NpcMeshCollector</c>— lo recibe por CONSTRUCTOR, no por acá.</para></summary>
     Public ArmoIsPowerArmorDeVista As Func(Of UInteger, Canon.IArmo, Boolean) = Nothing
-    ''' <summary>Idem, del lado de la raza. Ver <see cref="ArmoIsPowerArmor"/>.</summary>
+    ''' <summary>Idem, del lado de la raza. Ver <see cref="ArmoIsPowerArmorDeVista"/>.</summary>
     Public RaceIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
     Public ArmaDraftResolver As Func(Of UInteger, Canon.IArma) = Nothing

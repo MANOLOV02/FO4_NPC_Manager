@@ -23,6 +23,21 @@ Friend Module FaceGenPaths
     ''' árbol de SSE. Son dos raíces distintas, y por eso este canal necesita su propia función.</summary>
     Friend Const CanalCustomization As String = "FaceCustomization"
 
+    ''' <summary>Sufijo del sandbox del modo debug. Va ANTES de la extensión, igual en los dos juegos.
+    ''' <para>⛔ UN solo dueño. Estaba escrito a mano en <c>SufijoDe</c> (FO4) y otra vez, junto con la
+    ''' extensión, en el barrido de stale de SSE — que además tenía los nombres de canal literales. Un
+    ''' literal repetido en dos lados es la forma en que el barrido y el escritor terminan mirando
+    ''' archivos distintos sin que nada avise.</para></summary>
+    Friend Const SufijoSandbox As String = "_2"
+
+    ''' <summary>Los canales que produce SÓLO el camino PLEGADO de SSE. Existe para que el barrido de
+    ''' stale los RECORRA en vez de listarlos: los tenía escritos a mano
+    ''' (<c>{"FaceDiffuse","FaceNormal"}</c>), así que un canal nuevo dejaba su resto sin barrer sin que
+    ''' nada avisara — el mismo defecto que <see cref="SalidasFo4"/> ya había cerrado del lado de FO4.
+    ''' <para>⛔ <see cref="CanalTint"/> NO está y no puede estar: es el único artefacto que existe en LOS
+    ''' DOS caminos. Ver el ⛔ de <c>FaceGenBuilder.DeleteFoldedOnlyArtifacts</c>.</para></summary>
+    Friend ReadOnly CanalesPlegadosSse As String() = {CanalDiffuse, CanalNormal}
+
     Private Const RaizMallas As String = "Meshes\Actors\Character\FaceGenData\"
     Private Const RaizTexturas As String = "Textures\Actors\Character\FaceGenData\"
 
@@ -150,7 +165,7 @@ Friend Module FaceGenPaths
     ''' Lo consumen el plan de slots del bake y la lista de specs del packer, que es exactamente el par que
     ''' antes armaba cada uno su propia versión.</summary>
     Friend Function SufijoDe(salida As SalidaFo4, sandbox As Boolean) As String
-        Return If(sandbox, salida.SufijoCanon.Replace(".dds", "_2.dds"), salida.SufijoCanon)
+        Return If(sandbox, salida.SufijoCanon.Replace(".dds", SufijoSandbox & ".dds"), salida.SufijoCanon)
     End Function
 
     ''' <summary>Nombre del archivo de una salida de cara de FO4: <c>&lt;id&gt;_d.dds</c>, o

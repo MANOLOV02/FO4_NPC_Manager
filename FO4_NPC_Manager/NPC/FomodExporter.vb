@@ -529,7 +529,11 @@ Public Module FomodExporter
     ''' ruta donde quedo, o "" si no se pudo apartar — y ahi el .tmp SE QUEDA donde esta, que es mejor
     ''' que borrarlo. ⛔ Eso ultimo lo tiene que respetar el Finally de ExportToZip: cuando no lo
     ''' respetaba, el usuario perdia el zip viejo (truncado por el volcado) Y el nuevo (borrado aca).
-    ''' No pisa un rescate anterior: cada uno puede ser de una exportacion distinta.</summary>
+    ''' <para>⛔ No pisa un rescate anterior: cada uno puede ser de una exportacion distinta. Esa es la
+    ''' MISMA definicion que usa <see cref="LimpiarRescates"/> para decidir a quien puede borrar — un
+    ''' rescate es un ejemplar unico salvo que se PRUEBE lo contrario. Las dos rutinas la consultan y
+    ''' ninguna la re-redacta: cuando estaban escritas por separado se contradecian (esta decia que NO
+    ''' son intercambiables y la otra los borraba a todos, que es decir que SI lo son).</para></summary>
     Private Function ApartarPaqueteSano(tmp As String, zipPath As String) As String
         Try
             If Not File.Exists(tmp) Then Return ""
@@ -548,17 +552,53 @@ Public Module FomodExporter
         End Try
     End Function
 
-    ''' <summary>Un export que SALE BIEN limpia los rescates de ESE zip: el destino ya es el paquete
-    ''' bueno, asi que lo que quedo al lado de una corrida cortada dejo de ser la unica copia sana. Es la
-    ''' misma ley que EscrituraEnElLugar.GuardarConCopia aplica a su copia heredada —"un guardado que
-    ''' sale bien limpia las dos, que es lo que saca al archivo del estado degradado"—, y sin ella cada
-    ''' corte deja otro paquete de cientos de MB que ninguna ruta del arbol borra jamas.
-    ''' Best-effort: que no se pueda borrar uno NO convierte un export exitoso en un error.</summary>
+    ''' <summary>Un export que SALE BIEN borra de los rescates de ESE zip SOLO los que esta corrida
+    ''' PROBO byte a byte iguales al paquete recien escrito. El que difiere SOBREVIVE.
+    '''
+    ''' <para>⛔ LA LEY NO VIVE ACA. Vive en <c>EscrituraEnElLugar.GuardarConCopia</c>
+    ''' (EscrituraEnElLugar.vb:129-132) y esto la CONSULTA, con su mismo predicado
+    ''' (<c>MismoContenido</c>). Antes estaba RE-REDACTADA aca, y por eso pudo divergir: este docstring
+    ''' citaba «un guardado que sale bien limpia las dos» como fundamento, que es exactamente la version
+    ''' que el mismo delta DEROGO POR DESTRUCTIVA (EscrituraEnElLugar.vb:133-137, «eso BORRABA EL ULTIMO
+    ''' EJEMPLAR», con la medicion al lado). Con la ley muerta puesta, esto borraba TODOS los
+    ''' `.recovered` del zip en cualquier export exitoso.</para>
+    '''
+    ''' <para>⛔ QUE SE PERDIA, en concreto. Un `.recovered` es un paquete TERMINADO que quedo de una
+    ''' corrida cortada, y la app le dijo al usuario «rename it to X.zip to use it» (ver el mensaje del
+    ''' estado (c) en <see cref="ExportToZip"/>). Si en vez de renombrarlo cambia la seleccion de NPCs y
+    ''' exporta de nuevo con exito, ese paquete —cientos de MB, contenido IRREPETIBLE de OTRA
+    ''' seleccion— desaparecia sin aviso.</para>
+    '''
+    ''' <para>⛔ Y ESTE ARCHIVO SE CONTRADECIA A SI MISMO sobre QUE ES un rescate:
+    ''' <see cref="ApartarPaqueteSano"/> no pisa un rescate anterior «porque cada uno puede ser de una
+    ''' exportacion distinta» —o sea: NO son intercambiables— y esto los borraba todos —o sea: SI lo
+    ''' son—. Las dos afirmaciones no pueden ser verdad a la vez. Queda UNA sola definicion, y las dos
+    ''' rutinas la consultan: <b>un rescate es un ejemplar unico del dato del usuario salvo que esta
+    ''' corrida PRUEBE que no lo es.</b></para>
+    '''
+    ''' <para>⚠️ EL COSTO, dicho y no escondido: un rescate que difiere QUEDA EN DISCO hasta que el
+    ''' usuario lo borre o lo renombre. Es el mismo costo que EscrituraEnElLugar.vb:138-141 ya declara y
+    ''' acepta para su copia heredada — es el dato del usuario, y es el unico que lo tiene. La
+    ''' alternativa (borrarlo igual) es el defecto que este parrafo documenta.</para>
+    '''
+    ''' <para>El BORRADO es best-effort: que no se pueda borrar uno NO convierte un export exitoso en un
+    ''' error. La COMPARACION no lo es: si no se pudo comparar, <c>MismoContenido</c> devuelve False y el
+    ''' rescate se queda, porque el fallo del comparador no puede costarle el dato al usuario.</para>
+    ''' <para>Gate: <c>Tools\FomodVolcadoGate</c> (V-4c el que difiere sobrevive, V-4d el vecino que no
+    ''' es un rescate sobrevive, V-4e el probado identico SI se borra).</para></summary>
     Private Sub LimpiarRescates(zipPath As String)
         For n = 1 To MaxRescates
             Try
                 Dim r = NombreDeRescate(zipPath, n)
-                If File.Exists(r) Then File.Delete(r)
+                ' El destino ya es el paquete bueno de ESTA corrida. Si un rescate es byte por byte igual
+                ' a el, no guarda nada que el destino no guarde y es descartable; si difiere, es un
+                ' ejemplar unico y se queda. Misma implicacion cerrada que GuardarConCopia, y es incluso
+                ' mas conservadora: alla la referencia es descartable por construccion, aca es el
+                ' entregable vivo.
+                If File.Exists(r) AndAlso
+                   BSA_BA2_Library_DLL.EscrituraEnElLugar.MismoContenido(r, zipPath) Then
+                    File.Delete(r)
+                End If
             Catch
                 ' Best-effort, igual que EscrituraEnElLugar.Borrar: un huerfano no rompe nada.
             End Try
@@ -659,8 +699,10 @@ Public Module FomodExporter
             BSA_BA2_Library_DLL.EscrituraEnElLugar.VolcarEncima(
                 tmp, zipPath, alTocarElDestino:=Sub() destinoTocado = True)
             volcado = True
-            ' Estado (d): el destino ya es el paquete bueno, asi que un rescate de un corte anterior dejo
-            ' de ser la unica copia sana. Es lo que lo saca del estado degradado.
+            ' Estado (d): el destino ya es el paquete bueno de esta corrida, asi que un rescate que sea
+            ' BYTE POR BYTE igual a el dejo de ser una copia unica y se puede descartar. El que difiere
+            ' NO: es el paquete terminado de otra seleccion y no existe en ningun otro lado. La ley y su
+            ' precio estan en el docstring de LimpiarRescates, que apunta a EscrituraEnElLugar.
             LimpiarRescates(zipPath)
         Catch ex As Exception When volcando AndAlso Not volcado
             If Not destinoTocado Then

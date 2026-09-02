@@ -66,6 +66,13 @@
          la vista previa y nada lo explica—, y ningun otro arnes del repo cruza esa frontera.
          Ver Tools/SocketsCacheGate y 00-reglas-el-testigo-tiene-que-compartir-el-codigo-del-sujeto. -->
     <InternalsVisibleTo Include="SocketsCacheGate" />
+    <!-- Mide el costo de EmisionDeArmo y del repintado del selector. Mismo motivo que el de arriba:
+         el sujeto (NpcMeshCollector/NpcRenderContext) es Friend, y un probe que se escribiera su
+         propia copia mediria su copia. -->
+    <InternalsVisibleTo Include="EmisionCostProbe" />
+    <!-- Mide el costo de LA FOTO (`FotosDeBorrador.Publicar`, que es `Friend`). Mismo motivo: el gesto
+         que se mide es el de produccion; un probe con su propio diccionario mediria su diccionario. -->
+    <InternalsVisibleTo Include="FotoCostProbe" />
   </ItemGroup>
 
   <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save

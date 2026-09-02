@@ -2290,13 +2290,27 @@ Public Class MainForm
         ' servian el arbol VIVO -o sea la MISMA carrera, sin la foto-. Ver `FotosDeBorrador`.
         ' El fallback al borrador VIVO se fija ACA, una sola vez: asi `ParaRender` tiene la misma forma
         ' que el resolvedor y se cablea directo, sin un envoltorio que pueda diferir del que corre.
-        _fotosArmo = New FotosDeBorrador(Of Canon.IArmo)(Function(f) TryGetArmoDraft(f)?.Record)
-        _fotosArma = New FotosDeBorrador(Of Canon.IArma)(Function(f) TryGetArmaDraft(f)?.Record)
-        _fotosMswp = New FotosDeBorrador(Of Canon.IMswp)(Function(f) TryGetMswpDraft(f)?.Record)
+        ' ⛔ Los tres primeros clonan con el MISMO `Copia` que la clase usaba adentro: conducta byte a byte.
+        ' ⛔ Sin delegado al arbol VIVO: la foto es el registro autoritativo para el fondo, y el
+        ' fallback que enumeraba la lista viva desde `Task.Run` era la ultima carrera del carril.
+        _fotosArmo = New FotosDeBorrador(Of Canon.IArmo)(Function(v) Canon.CanonInterpretacion.Copia(v))
+        _fotosArma = New FotosDeBorrador(Of Canon.IArma)(Function(v) Canon.CanonInterpretacion.Copia(v))
+        _fotosMswp = New FotosDeBorrador(Of Canon.IMswp)(Function(v) Canon.CanonInterpretacion.Copia(v))
+        ' ⛔ El de ATUENDO clona con `Clone()`, que desde la Ola B copia PROFUNDO los picks y sale alineado
+        ' por construcción: el borrador de atuendo lleva las realizaciones FUERA del record, así que
+        ' fotografiar sólo el record lo dejaría a medias.
+        _fotosOtft = New FotosDeBorrador(Of OutfitDraft)(Function(d) d.Clone())
+        ' ⛔ Y la QUINTA, para las listas por nivel. Verificado antes de agregarla —la lección de la foto de
+        ' atuendo—: `LeveledListDraft` NO lleva estado fuera del record (Record + identidad + banderas),
+        ' así que acá el record SÍ es el borrador entero y el clonador por defecto alcanza. El predicado
+        ' `IsLeveledItem` y el resolvedor de vistas los recorre el hilo de fondo desde `Task.Run`.
+        _fotosLvli = New FotosDeBorrador(Of Canon.ILvli)()
         _ctx.ArmoDraftResolver = AddressOf ArmoDraftParaRender
-        _ctx.ArmoIsPowerArmor = AddressOf ArmoIsPowerArmor
-        ' El mismo gate sobre la vista que el llamador ya abrio: `KWDA` es heredado, asi que
-        ' resolverlo de nuevo por FormID podia dar OTRA respuesta que la del dibujo.
+        ' El gate sobre la vista que el llamador ya abrio: `KWDA` es heredado, asi que resolverlo de
+        ' nuevo por FormID podia dar OTRA respuesta que la del dibujo. Al lado se cableaba tambien
+        ' `_ctx.ArmoIsPowerArmor` -la variante por FormID- y NADIE la leia: el unico consumidor del
+        ' contexto es `EquipCtx`, que usa esta. El colector, que si pregunta por FormID, lo recibe por
+        ' CONSTRUCTOR (abajo), no por el contexto.
         _ctx.ArmoIsPowerArmorDeVista = Function(fid, vista) IsPowerArmorArmoData(vista, ArmorTypePowerKeywordFid())
         _ctx.RaceIsPowerArmor = AddressOf RaceIsPowerArmor
         _ctx.ArmaDraftResolver = AddressOf _fotosArma.ParaRender
@@ -3376,6 +3390,12 @@ Public Class MainForm
         Return otftFID.ToString("X8")
     End Function
 
+    ''' <summary>La vista de borrador de atuendo que el camino de FONDO puede recorrer sin carrera: la
+    ''' foto si existe, y el borrador vivo si no. Espejo de <see cref="ArmoDraftParaRender"/>.</summary>
+    Friend Function OutfitDraftParaRender(formID As UInteger) As OutfitDraft
+        Return _fotosOtft.ParaRender(formID)
+    End Function
+
     ''' <summary>Return the in-memory outfit draft for <paramref name="formID"/>, or Nothing. Matches
     ''' both provisional (new, 0xFF sentinel) and override (existing FormID kept) drafts.</summary>
     Friend Function TryGetOutfitDraft(formID As UInteger) As OutfitDraft
@@ -3553,25 +3573,63 @@ Public Class MainForm
         Return result
     End Function
 
+    ''' <summary>REGISTRAR ES UN SOLO GESTO, Y EN ESTE ORDEN: <b>primero la foto, después la lista</b>.
+    '''
+    ''' <para>⛔ LA FOTO ES EL REGISTRO AUTORITATIVO PARA EL FONDO; la lista viva es sólo el ORDEN del
+    ''' guardado y vive en el hilo de UI. Con el orden invertido —lista primero, foto después— hay una
+    ''' ventana real en la que el borrador YA está en la lista y TODAVÍA no tiene foto: el fondo no la
+    ''' encuentra y, mientras existía el fallback, salía a enumerar la lista viva justo cuando la UI la
+    ''' está mutando. Publicando primero, el fondo nunca ve «en la lista y sin foto», y el estado
+    ''' intermedio que sí puede ver —«con foto y todavía no en la lista»— es inofensivo: la lista no la
+    ''' lee nadie desde el fondo.</para>
+    ''' <para>⛔ Y es UNA costura para las cinco clases, no cinco copias del orden: el sexto productor no
+    ''' puede invertirlo porque no escribe el orden — lo hereda. La <c>List</c> se mantiene con Remove+Add
+    ''' (append al final) porque ESE orden decide qué FormID le toca a cada record nuevo en el .esp.</para>
+    ''' <param name="idDe">Cómo sacarle el FormID a un borrador de esta clase: es lo único que cambia
+    ''' entre las cinco.</param></summary>
+    Private Sub RegistrarConFoto(Of TD As Class, TV As Class)(
+            lista As List(Of TD), fotos As FotosDeBorrador(Of TV),
+            d As TD, fid As UInteger, vista As TV, idDe As Func(Of TD, UInteger))
+        If d Is Nothing Then Return
+        ' 1) LA FOTO PRIMERO. Si tira, no se toca la lista: mejor no registrado que registrado e invisible.
+        fotos.Publicar(fid, vista)
+        ' 2) Y DESPUES la lista, con la semantica de siempre (reemplaza por FormID, agrega al final).
+        Dim existing = lista.FirstOrDefault(Function(x) idDe(x) = fid)
+        If existing IsNot Nothing Then lista.Remove(existing)
+        lista.Add(d)
+    End Sub
+
+    ''' <summary>BAJAR ES EL GESTO SIMÉTRICO, Y EN EL ORDEN INVERSO: <b>primero la lista, después la
+    ''' foto</b>. Así el fondo nunca ve «sin foto pero en la lista»; el estado intermedio que puede ver
+    ''' —«fuera de la lista y con foto todavía»— es el mismo que ya veía y no rompe nada: sigue
+    ''' resolviendo el borrador un instante más.</summary>
+    Private Sub BajarConFoto(Of TD As Class, TV As Class)(
+            lista As List(Of TD), fotos As FotosDeBorrador(Of TV),
+            fid As UInteger, idDe As Func(Of TD, UInteger))
+        Dim existing = lista.FirstOrDefault(Function(x) idDe(x) = fid)
+        If existing IsNot Nothing Then lista.Remove(existing)
+        fotos.Retirar(fid)
+    End Sub
+
     ''' <summary>Register/replace an ARMO draft (by FormID). Seen by the draft-aware render resolver
-    ''' (<see cref="NpcRenderContext.ArmoDraftResolver"/> → <c>TryGetArmoDraft(fid)?.Record</c>) and the Save
-    ''' flow. Mirror of <see cref="RegisterOutfitDraft"/>.</summary>
+    ''' (<see cref="NpcRenderContext.ArmoDraftResolver"/> → la FOTO) and the Save flow. Mirror of
+    ''' <see cref="RegisterOutfitDraft"/>. El orden del gesto lo pone <see cref="RegistrarConFoto"/>.</summary>
     Friend Sub RegisterArmoDraft(d As ArmoDraft)
         If d Is Nothing Then Return
-        Dim existing = _armoDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
-        If existing IsNot Nothing Then _armoDrafts.Remove(existing)
-        _armoDrafts.Add(d)
-        ' ⛔ El PRODUCTOR publica: este metodo lo llama el commit del editor, o sea el hilo que muta.
-        ' La ley entera -el clon unico, el abrazo mortal que se evita, y el par publicar/retirar- vive
-        ' en `FotosDeBorrador`; aca solo se la invoca. Estaba escrita ACA y el remapeo del guardado,
-        ' que es otro productor, no la encontro: ver el doc de esa clase.
-        _fotosArmo.Publicar(d.FormID, d.Record)
+        RegistrarConFoto(_armoDrafts, _fotosArmo, d, d.FormID, d.Record, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Las fotos inmutables que consulta el RENDER, una instancia por clase de borrador. Toda
     ''' la ley —publicar, retirar y el orden foto-antes-que-vivo— vive en <see cref="FotosDeBorrador(Of TVista)"/>:
-    ''' UNA ley, tres instancias. Se construyen en el constructor, antes de cablear los resolvedores.</summary>
+    ''' UNA ley, CINCO instancias (ARMO, ARMA, MSWP, OTFT y LVLI). Se construyen en el constructor, antes
+    ''' de cablear los resolvedores.</summary>
     Private _fotosArmo As FotosDeBorrador(Of Canon.IArmo)
+    ''' <summary>La foto del borrador de ATUENDO. Cierra la última carrera conocida del carril:
+    ''' <c>BuildOutfitComboEntries</c> corre adentro de <c>Await Task.Run</c> (MainForm :5653, :5752,
+    ''' :9430) y desde ahí se recorría la lista VIVA de borradores —y el árbol del record, y las
+    ''' realizaciones— mientras el hilo de UI hacía Add/Remove y editaba.</summary>
+    Private _fotosOtft As FotosDeBorrador(Of OutfitDraft)
+    Private _fotosLvli As FotosDeBorrador(Of Canon.ILvli)
     Private _fotosArma As FotosDeBorrador(Of Canon.IArma)
     Private _fotosMswp As FotosDeBorrador(Of Canon.IMswp)
 
@@ -3584,46 +3642,34 @@ Public Class MainForm
     ''' <summary>Register/replace an ARMA draft (by FormID). Mirror of <see cref="RegisterArmoDraft"/>.</summary>
     Friend Sub RegisterArmaDraft(d As ArmaDraft)
         If d Is Nothing Then Return
-        Dim existing = _armaDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
-        If existing IsNot Nothing Then _armaDrafts.Remove(existing)
-        _armaDrafts.Add(d)
-        ' Mismo contrato que ARMO: el productor publica. `ArmaDraftResolver` servia el arbol VIVO al
-        ' hilo del render -la misma carrera que la foto de ARMO vino a cerrar, sin la foto-.
-        _fotosArma.Publicar(d.FormID, d.Record)
+        ' Mismo contrato que ARMO, y el MISMO gesto: `ArmaDraftResolver` servia el arbol VIVO al hilo del
+        ' render -la misma carrera que la foto de ARMO vino a cerrar, sin la foto-.
+        RegistrarConFoto(_armaDrafts, _fotosArma, d, d.FormID, d.Record, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Register/replace an MSWP draft (by FormID). Mirror of <see cref="RegisterArmoDraft"/>.</summary>
     Friend Sub RegisterMswpDraft(d As MswpDraft)
         If d Is Nothing Then Return
-        Dim existing = _mswpDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
-        If existing IsNot Nothing Then _mswpDrafts.Remove(existing)
-        _mswpDrafts.Add(d)
         ' Idem. `BuildMswpDataFromDraft` decia que copiaba las sustituciones y devolvia el arbol vivo.
-        _fotosMswp.Publicar(d.FormID, d.Record)
+        RegistrarConFoto(_mswpDrafts, _fotosMswp, d, d.FormID, d.Record, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Drop an ARMO draft (by FormID). Used by "Delete draft".</summary>
     Friend Sub UnregisterArmoDraft(formID As UInteger)
-        Dim existing = _armoDrafts.FirstOrDefault(Function(x) x.FormID = formID)
-        If existing IsNot Nothing Then _armoDrafts.Remove(existing)
-        ' ⛔ La FOTO se retira ACA, con el borrador: el dueño es el registro. El porque -que sin esto la
-        ' foto le SOBREVIVE al borrador y `ParaRender` la consulta PRIMERO- esta en el doc de
-        ' `FotosDeBorrador`, junto con su par `Publicar`.
-        _fotosArmo.Retirar(formID)
+        ' ⛔ La FOTO se retira con el borrador, y en el orden que pone `BajarConFoto`: el dueño es el
+        ' registro. Sin esto la foto le SOBREVIVE al borrador y el fondo -que hoy lee SOLO la foto- lo
+        ' sigue resolviendo para siempre.
+        BajarConFoto(_armoDrafts, _fotosArmo, formID, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Drop an ARMA draft (by FormID).</summary>
     Friend Sub UnregisterArmaDraft(formID As UInteger)
-        Dim existing = _armaDrafts.FirstOrDefault(Function(x) x.FormID = formID)
-        If existing IsNot Nothing Then _armaDrafts.Remove(existing)
-        _fotosArma.Retirar(formID)
+        BajarConFoto(_armaDrafts, _fotosArma, formID, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Drop an MSWP draft (by FormID).</summary>
     Friend Sub UnregisterMswpDraft(formID As UInteger)
-        Dim existing = _mswpDrafts.FirstOrDefault(Function(x) x.FormID = formID)
-        If existing IsNot Nothing Then _mswpDrafts.Remove(existing)
-        _fotosMswp.Retirar(formID)
+        BajarConFoto(_mswpDrafts, _fotosMswp, formID, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Human-readable list of everything that currently REFERENCES the draft with
@@ -3637,46 +3683,21 @@ Public Class MainForm
         Dim refs As New List(Of String)
         If formID = 0UI Then Return refs
 
-        ' ⛔ EL MISMO CENSO QUE EL REMAPEO. Acá había una segunda lista escrita a mano, y ya había
-        ' DERIVADO de la del remapeo: las dos cubrían dos de los CUATRO material swap del ARMA
-        ' (MO2S/MO3S sí, MO4S/MO5S no) aunque los cuatro botones del editor abren el mismo selector con
-        ' los borradores de MSWP adentro. O sea que este censo decía «a este MSWP no lo apunta nadie» y
-        ' dejaba borrar un borrador que sí estaba referenciado. Con una sola enumeración
-        ' (`CensoDeReferencias.DeBorrador`) el campo que se agregue lo ven los dos lados o ninguno.
-        Dim censar =
-            Sub(clase As String, edid As String, record As Object)
-                ' Distinct: un mismo borrador puede apuntar al mismo destino por DOS campos del mismo
-                ' nombre (los dos material swap, dos addons iguales) y el usuario no necesita la
-                ' línea repetida — necesita saber QUÉ lo referencia.
-                For Each que In CensoDeReferencias.DeBorrador(record).
-                        Where(Function(r) r.Valor = formID).
-                        Select(Function(r) r.Que).Distinct()
-                    refs.Add($"{clase} draft '{edid}' ({que})")
-                Next
-            End Sub
+        ' ⛔ EL CENSO DE BORRADOR→BORRADOR VIVE EN `Borradores.CensarReferrers`, NO ACA. Dos razones, y las
+        ' dos ya costaron un defecto:
+        '   1) es LA MISMA ley que el remapeo de la promocion, y escrita como una segunda lista a mano ya
+        '      habia DERIVADO -cubria dos de los CUATRO material swap del ARMA (MO2S/MO3S si, MO4S/MO5S no)
+        '      aunque los cuatro botones del editor abren el mismo selector con los MSWP adentro-, o sea que
+        '      decia «a este MSWP no lo apunta nadie» y dejaba borrar un borrador referenciado;
+        '   2) adentro de un formulario NINGUN gate la puede correr (habria que construir un MainForm
+        '      entero), asi que quedaba sin medir — y por ese hueco vivio el defecto de los picks sellados:
+        '      el censo miraba SOLO el record y un ARMO apuntado solo por una realizacion sorteada salia
+        '      «no lo referencia nadie». Alla el gate LLAMA al sujeto.
+        refs.AddRange(Borradores.CensarReferrers(formID, _outfitDrafts, _leveledListDrafts,
+                                                 _armoDrafts, _armaDrafts, _mswpDrafts))
 
-        For Each d In _armoDrafts
-            If d Is Nothing Then Continue For
-            censar("ARMO", d.Record.EditorID, d.Record)
-        Next
-        For Each d In _armaDrafts
-            If d Is Nothing Then Continue For
-            censar("ARMA", d.Record.EditorID, d.Record)
-        Next
-        For Each d In _outfitDrafts
-            If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
-            censar("Outfit", d.Record.EditorID, d.Record)
-        Next
-        For Each d In _leveledListDrafts
-            If d Is Nothing Then Continue For
-            censar("Leveled-list", d.Record.EditorID, d.Record)
-        Next
-        For Each d In _mswpDrafts
-            If d Is Nothing Then Continue For
-            ' Hoy no rinde nada (un MSWP no declara campos de referencia), pero se recorre igual: si el
-            ' día de mañana declara uno, el censo ya lo ve. Ver `CensoDeReferencias.DeBorrador`.
-            censar("MSWP", d.Record.EditorID, d.Record)
-        Next
+        ' Las asignaciones POR NPC se agregan ACA y no alla: no son de un borrador a otro sino de un NPC a
+        ' un borrador, y necesitan el catalogo de presets y el resolvedor de nombres de esta ventana.
         For Each kv In _appliedPresets
             Dim p = kv.Value
             If p Is Nothing Then Continue For
@@ -3690,9 +3711,6 @@ Public Class MainForm
         Return refs
     End Function
 
-    ''' <summary>Draft-aware parsed ARMO view (real record OR draft) — exposes the render context's
-    ''' resolver so the Armor Editor's override-load converters and preview can read the same data the
-    ''' render reads. Nothing when the FormID is neither a real ARMO nor a draft.</summary>
     ''' <summary>La vista EFECTIVA por FormID, para quien pregunta que va a DIBUJAR el motor.
     ''' <para>⛔ Existe aparte de <see cref="GetParsedArmoForEditor"/> porque el criterio es la
     ''' PREGUNTA y no donde vive el codigo: `ArmaEditor_Form.CollectSkinPartMeshes` vive en un
@@ -3701,7 +3719,13 @@ Public Class MainForm
         Return _ctx.GetParsedArmoEfectivo(formID)
     End Function
 
-        Friend Function GetParsedArmoForEditor(formID As UInteger) As Canon.IArmo
+    ''' <summary>Draft-aware parsed ARMO view (real record OR draft) — expone el resolvedor del contexto de
+    ''' render para que los conversores de override del editor de armaduras y su vista previa lean lo MISMO
+    ''' que lee el render. Nothing cuando el FormID no es ni un ARMO real ni un borrador.
+    ''' <para>CRUDO y no EFECTIVO: el editor muestra y escribe lo que el record DECLARA, no lo que hereda
+    ''' de su plantilla. La vista efectiva es la otra puerta,
+    ''' <see cref="GetParsedArmoEfectivoParaRender"/>.</para></summary>
+    Friend Function GetParsedArmoForEditor(formID As UInteger) As Canon.IArmo
         Return _ctx.GetParsedArmoCrudo(formID)
     End Function
 
@@ -3914,7 +3938,14 @@ Public Class MainForm
             For Each t In EnumerateLeveledTerminalsAll(d.FormID)
                 unionMask = unionMask Or ArmoFootprintFor(t, npcRaceFID, isFemale).OcclusionMask
             Next
-            result.Add((d.FormID, d.Record.EditorID & "  [LVL]", unionMask, "(new)"))
+            ' ⛔ EL MISMO reemplazo por FormID que la rama de ARMO, tres bloques más abajo. Un borrador de
+            ' OVERRIDE de una lista por nivel comparte el FormID del record real, que YA está en
+            ' `baseList`: apilando en vez de reemplazar, el FormID aparecía DOS veces y el índice
+            ' FormID→candidato (gana el primero) resolvía al real, o sea que el picker mostraba y
+            ' resolvía la lista SIN editar mientras el usuario creía estar usando la suya.
+            Dim entradaLvl = (d.FormID, d.Record.EditorID & "  [LVL]", unionMask, "(new)")
+            Dim idxLvl = result.FindIndex(Function(x) x.FormID = d.FormID)
+            If idxLvl >= 0 Then result(idxLvl) = entradaLvl Else result.Add(entradaLvl)
         Next
 
         ' Dirty ARMO drafts — an unsaved armor/clothing piece selectable as an outfit item. Filtered by the
@@ -3972,8 +4003,11 @@ Public Class MainForm
     ''' derivada de los armatures. <c>Dibuja</c> incluye el carril de chunk-mount de OMOD; <c>Compite</c> es
     ''' el filtro exacto con el que el render arma su torneo de slots. Ver
     ''' <see cref="NpcMeshCollector.EmisionDeArmo"/>, que trae el porqué y el límite declarado.</summary>
-    Friend Function EmisionDeArmo(armoFid As UInteger, state As NPCVisualState) As (Dibuja As Boolean, Compite As Boolean)
-        Return _meshCollector.EmisionDeArmo(armoFid, state)
+    Friend Function EmisionDeArmo(armoFid As UInteger, state As NPCVisualState,
+                                  Optional ctxKeywords As List(Of UInteger) = Nothing) _
+            As (Dibuja As Boolean, Compite As Boolean, EquipMask As UInteger,
+                GeometryMask As UInteger, OcclusionMask As UInteger)
+        Return _meshCollector.EmisionDeArmo(armoFid, state, ctxKeywords)
     End Function
 
 
@@ -4038,8 +4072,8 @@ Public Class MainForm
     ''' throwaway preview draft (<see cref="OutfitDraft.PreviewDraftFormID"/>) it registers while the
     ''' user assembles a Create-tab outfit, so it never leaks into Browse / the save set.</summary>
     Friend Sub UnregisterOutfitDraft(formID As UInteger)
-        Dim existing = _outfitDrafts.FirstOrDefault(Function(x) x.FormID = formID)
-        If existing IsNot Nothing Then _outfitDrafts.Remove(existing)
+        ' La foto va CON el borrador, y en el orden que pone `BajarConFoto`: mismo gesto que las otras cuatro.
+        BajarConFoto(_outfitDrafts, _fotosOtft, formID, Function(x) x.FormID)
     End Sub
 
     ''' <summary>Resolve an outfit FormID to its INAM item list — the entries AS AUTHORED (ARMO **or LVLI**
@@ -4063,23 +4097,26 @@ Public Class MainForm
         Return rec IsNot Nothing AndAlso rec.Header.Signature = "LVLI"
     End Function
 
+    ''' <summary>El ARMO TERMINAL de una cadena TNAM, viendo también los borradores. Es el MISMO
+    ''' resolvedor que usa el carril por nivel (la librería lo llama con este mismo delegado), para que la
+    ''' pieza directa y la que sale de una lista contesten con una sola ley.</summary>
+    Friend Function TerminalDeArmoConBorradores(armoFid As UInteger) As UInteger
+        Return OutfitResolver.ResolveTerminalArmorFormID(armoFid, _pluginManager,
+                                                         AddressOf ArmoDraftParaRender)
+    End Function
+
     ''' <summary>Deja que el sorteador de la librería vea también las listas por nivel que
     ''' todavía son borradores y no están en ningún archivo.
     ''' <para>El borrador YA ES su record, así que no hay nada que adaptar: se devuelve tal cual — una
     ''' copia campo por campo arriesga que un campo olvidado haga que el sorteo de un borrador se
     ''' comporte distinto al de una lista real.</para></summary>
     Private Function ResolveLeveledDraftView(formID As UInteger) As Canon.ILvli
-        Dim d = TryGetLeveledListDraft(formID)
-        If d Is Nothing Then Return Nothing
-        Return d.Record
+        ' ⛔ La FOTO, no la lista viva: esto lo recorre el hilo de fondo (el muestreo y el enumerador
+        ' determinista salen de `BuildOutfitComboEntries`, que corre adentro de `Task.Run`) mientras el de
+        ' UI agrega, saca y edita listas por nivel.
+        Return _fotosLvli.ParaRender(formID)
     End Function
 
-    ''' <summary>Sample ONE realization of a leveled item (real LVLI or own draft) to terminal ARMO FormIDs,
-    ''' through the single lib sampler with the draft view injected. Handles UseAll / ChanceNone / Count /
-    ''' CalcEach / nesting uniformly for real and draft lists.</summary>
-    Friend Function SampleLeveledTerminals(fid As UInteger) As List(Of UInteger)
-        Return SampleLeveledPicks(fid).Select(Function(p) p.ArmoFormID).ToList()
-    End Function
 
     ''' <summary>Un sorteo de un item por nivel CON las keywords que cada terminal heredó del encadenado
     ''' de LLKC.
@@ -4091,100 +4128,137 @@ Public Class MainForm
     ''' después de guardarla. No es una regla nueva — es la que ya usa el camino del OTFT real
     ''' (<c>SampleOutfitWithKeywords</c>); acá se dejaba de usar.</para></summary>
     Friend Function SampleLeveledPicks(fid As UInteger) As List(Of OutfitArmorPick)
-        Return OutfitResolver.SampleItemWithKeywords(fid, _pluginManager, leveledResolver:=AddressOf ResolveLeveledDraftView)
+        ' ⛔ Los DOS resolvedores: el de listas por nivel y el de ARMO. Sin el segundo, un ARMO propio
+        ' adentro de una lista propia se perdía con warning «missing» — el borrador no está en ningún
+        ' archivo. `ArmoDraftParaRender` es el mismo que consulta el render (foto primero).
+        Return OutfitResolver.SampleItemWithKeywords(fid, _pluginManager,
+                                                     leveledResolver:=AddressOf ResolveLeveledDraftView,
+                                                     armoResolver:=AddressOf ArmoDraftParaRender)
     End Function
 
-    ''' <summary>Deterministic: ALL terminal ARMOs a leveled item can produce (real or own draft), for the
-    ''' candidate-list slot footprint — through the single lib enumerator with the draft view injected.</summary>
+    ''' <summary>Determinista: TODOS los ARMO terminales que una lista por nivel puede producir —reales
+    ''' Y borradores propios—, para el footprint de slots de la lista de candidatos. Por el único
+    ''' enumerador de la librería, con LOS DOS resolvedores inyectados: el de listas por nivel y el de
+    ''' ARMO. <para>⛔ El «or own draft» del texto anterior era falso hasta que se enhebró el segundo:
+    ''' sin él, un ARMO propio adentro de una lista propia se perdía en ESTE camino —el determinista, el
+    ''' que decide la marca «no aplica»— aunque el muestreo sí lo viera.</para></summary>
     Friend Function EnumerateLeveledTerminalsAll(fid As UInteger) As List(Of UInteger)
-        Return OutfitResolver.EnumerateItemTerminalArmos(fid, _pluginManager, leveledResolver:=AddressOf ResolveLeveledDraftView)
+        ' ⛔ Los DOS resolvedores también acá: este es el camino DETERMINISTA —el que decide la marca
+        ' «no aplica» y el footprint de la fila— y sin el de ARMO perdía el borrador propio, así que la
+        ' fila lo tachaba mientras el preview lo dibujaba.
+        Return OutfitResolver.EnumerateItemTerminalArmos(fid, _pluginManager,
+                                                        leveledResolver:=AddressOf ResolveLeveledDraftView,
+                                                        armoResolver:=AddressOf ArmoDraftParaRender)
     End Function
 
     ''' <summary>True if adding <paramref name="itemFid"/> into the own leveled list <paramref name="lvlFid"/>
-    ''' would create a cycle — the item IS the list, or the item is an own LVL that already contains the list
-    ''' (directly or transitively, e.g. lvl1→lvl2→lvl1). Blocks "Add to lvl" cycles. (Runtime resolution is
-    ''' already cycle-safe via visited sets; this stops the user authoring one in the first place.)</summary>
+    ''' would create a cycle — the item IS the list, or the item already contains the list (directly or
+    ''' transitively, e.g. lvl1→lvl2→lvl1). Blocks "Add to lvl" cycles. (Runtime resolution is
+    ''' already cycle-safe via visited sets; this stops the user authoring one in the first place.)
+    ''' <para>⛔ El «item es un LVL PROPIO» que decía esta línea era un agujero heredado, y se cerró al
+    ''' delegar: una lista VANILLA puede contener el FormID de un borrador de OVERRIDE —que conserva el real—
+    ''' así que meterla adentro de ese borrador SÍ cierra un ciclo, y antes pasaba. Ver
+    ''' <see cref="ElSorteoDependeDe"/>.</para></summary>
     Friend Function WouldCreateLeveledCycle(lvlFid As UInteger, itemFid As UInteger) As Boolean
-        If lvlFid = itemFid Then Return True
-        If Not IsOwnLeveledDraft(itemFid) Then Return False   ' real LVLIs can't reference our drafts → no cycle
-        Return LeveledDraftReaches(itemFid, lvlFid, New HashSet(Of UInteger))
+        ' Meter `itemFid` adentro de `lvlFid` cierra un ciclo exactamente cuando el sorteo de `itemFid` YA
+        ' pasa por `lvlFid`. Es la MISMA alcanzabilidad que decide a quién hay que re-sortear cuando esa
+        ' lista cambia, así que es UNA función y no dos recorridos que puedan divergir.
+        Return ElSorteoDependeDe(itemFid, lvlFid)
     End Function
 
-    Private Function LeveledDraftReaches(fromFid As UInteger, targetFid As UInteger, visited As HashSet(Of UInteger)) As Boolean
-        Dim d = TryGetLeveledListDraft(fromFid)
-        If d Is Nothing OrElse Not visited.Add(fromFid) Then Return False
-        For Each e In d.Record.LeveledListEntries
-            If e.LeveledListEntryItem = targetFid Then Return True
-            If IsOwnLeveledDraft(e.LeveledListEntryItem) AndAlso
-               LeveledDraftReaches(e.LeveledListEntryItem, targetFid, visited) Then Return True
-        Next
-        Return False
+    ''' <summary>¿El sorteo de <paramref name="piezaFid"/> puede pasar por <paramref name="listaFid"/>? — o sea
+    ''' ES esa lista, o es un borrador de lista propio que la contiene directa o transitivamente
+    ''' (lvlA→lvlB→lvlC).
+    '''
+    ''' <para>⛔ ES LA DEPENDENCIA DEL SORTEO, y quien edita el CONTENIDO de una lista por nivel tiene que
+    ''' volver a sortear TODO lo que dé True acá y NADA MÁS. Las dos mitades importan: re-sortear de menos deja
+    ''' filas con el sorteo VIEJO —sin la entrada recién agregada— y <c>CommitCreate</c> las vuelca así;
+    ''' re-sortear de más le pisa al usuario el Reroll que eligió en una lista que no tiene nada que ver.</para>
+    '''
+    ''' <para>⛔ <b>EL RECORRIDO ES EL MISMO QUE EL DEL SORTEO, ESLABÓN POR ESLABÓN.</b> Acá había escrito
+    ''' que «un LVLI REAL no puede referenciar un borrador propio, así que la recursión sólo baja por
+    ''' borradores», y <b>es FALSO</b>: eso vale para un borrador NUEVO (FormID 0xFF, que no existe en ningún
+    ''' archivo) pero NO para uno de OVERRIDE — <see cref="BuildLeveledOverrideDraftFromReal"/> lo registra
+    ''' con el FormID <b>REAL</b> del record, así que una LVLI vanilla que ya contenía esa lista sigue
+    ''' nombrándola y ahora esa referencia resuelve al borrador. Y el sorteo la sigue:
+    ''' <c>OutfitResolver.ResolveLeveled</c> consulta el resolvedor de borradores ANTES del record <b>en cada
+    ''' anidada</b>, no sólo en la raíz.</para>
+    ''' <para>Lo que costaba el error: A vanilla ⊃ B vanilla, las dos como piezas del atuendo; «Override LVL»
+    ''' sobre B y «Add to lvl» en B ⇒ A no se re-sorteaba y se quedaba con la realización vieja, sin la
+    ''' entrada recién agregada — exactamente la mitad «de menos» que esta función existe para cerrar. Por eso
+    ''' baja por <b>toda</b> lista por nivel, borrador o real, y por la MISMA puerta que el sampler
+    ''' (<see cref="VistaDeListaPorNivel"/>): dos recorridos distintos para la misma pregunta vuelven a
+    ''' divergir.</para>
+    ''' <para>El <c>HashSet</c> corta los ciclos —el árbol puede traer uno de antes, y ahora además se
+    ''' recorren records reales— y hace que cada nodo se visite una vez.</para>
+    ''' <para>⛔ Y por eso el recorrido NO vive acá: es <c>OutfitResolver.ItemReachesLeveledList</c>, pegado
+    ''' al sampler y compartiendo su <c>ResolveLeveled</c>. Adentro de la ventana principal ningún gate lo
+    ''' podía correr —el testigo es C44-P6— y era, además, un segundo recorrido de la misma pregunta.</para></summary>
+    Friend Function ElSorteoDependeDe(piezaFid As UInteger, listaFid As UInteger) As Boolean
+        If piezaFid = listaFid Then Return True
+        ' ⛔ EL RECORRIDO ES EL DEL SAMPLER, no una copia: `OutfitResolver.ItemReachesLeveledList` comparte
+        ' `ResolveLeveled` con el muestreo, y se le pasa EL MISMO resolvedor de borradores que
+        ' `SampleLeveledRealization`. Así la dependencia y el sorteo no pueden opinar distinto.
+        Return OutfitResolver.ItemReachesLeveledList(piezaFid, listaFid, _pluginManager,
+                                                     AddressOf ResolveLeveledDraftView)
     End Function
 
-    ''' <summary>Flatten a draft to its render-ready terminal ARMO list: ARMO items pass through; LVLI items
-    ''' use their cached realization (sampled once via <see cref="OutfitResolver.SampleItemWithKeywords"/>,
-    ''' stored on the draft so the preview is STABLE between renders — Reroll clears the cache to re-sample).
-    ''' The draft keeps the LVLI FormIDs (persists as leveled); this is only the editor's current sample.</summary>
-    Friend Function ResolveDraftArmoList(draft As OutfitDraft) As List(Of UInteger)
-        Dim outList As New List(Of UInteger)
-        If draft Is Nothing Then Return outList
-        For Each pick In ResolveDraftPicks(draft)
-            outList.Add(pick.ArmoFormID)
-        Next
-        ' ⛔ MISMA ley de aplanado que el camino real. `OutfitResolver.SampleOutfitWithKeywords`
-        ' deduplica por ARMO al final; acá no se hacía, así que un atuendo con la misma prenda dos veces
-        ' se dibujaba DUPLICADO mientras era borrador y una sola vez después de guardarlo — preview y
-        ' render divergiendo sobre los mismos bytes. Se conserva la PRIMERA aparición: el orden es la
-        ' secuencia de equip. `ResolveDraftContextKeywords` deduplica con la MISMA regla, así que la lista
-        ' de ARMO y su mapa de keywords no se pueden separar.
-        Dim vistos As New HashSet(Of UInteger)
-        Return outList.Where(Function(x) vistos.Add(x)).ToList()
-    End Function
 
     ''' <summary>Los picks de un borrador de atuendo: cada ARMO con las keywords que heredó del LLKC.
     ''' Es el ÚNICO recorrido del borrador; la lista de ARMO y el mapa de keywords son dos proyecciones
     ''' de esto y por construcción no pueden discrepar.</summary>
     Private Function ResolveDraftPicks(draft As OutfitDraft) As List(Of OutfitArmorPick)
-        Dim picks As New List(Of OutfitArmorPick)
-        If draft Is Nothing Then Return picks
-        For Each itemFid In draft.Prendas()
-            If IsLeveledItem(itemFid) Then
-                Dim realized As List(Of OutfitArmorPick) = Nothing
-                If Not draft.LvliRealization.TryGetValue(itemFid, realized) Then
-                    realized = SampleLeveledPicks(itemFid)
-                    draft.LvliRealization(itemFid) = realized
-                End If
-                picks.AddRange(realized)
-            Else
-                ' Una prenda concreta que el usuario agregó no pasó por ningún LLKC: su contexto es
-                ' VACÍO de verdad, no por omisión. Va con la lista vacía que ya trae `OutfitArmorPick`.
-                picks.Add(New OutfitArmorPick With {.ArmoFormID = itemFid})
-            End If
-        Next
-        Return picks
+        If draft Is Nothing Then Return New List(Of OutfitArmorPick)
+        ' La ley del sellado vive con el dato: ver `OutfitDraft.PicksSellados`. Acá sólo se le pasa el
+        ' predicado, que depende del orden de carga y el borrador no conoce.
+        Return draft.PicksSellados(AddressOf IsLeveledItem, AddressOf TerminalDeArmoConBorradores)
     End Function
 
-    ''' <summary>Las keywords de contexto por ARMO de un borrador, para que el render resuelva sus
-    ''' combinaciones OBTS igual que con un OTFT real. Misma regla de dedup que
-    ''' <see cref="ResolveDraftArmoList"/>: gana la PRIMERA aparición.</summary>
-    Friend Function ResolveDraftContextKeywords(draft As OutfitDraft) As Dictionary(Of UInteger, List(Of UInteger))
-        Dim mapa As New Dictionary(Of UInteger, List(Of UInteger))
+    ''' <summary>Las DOS proyecciones del borrador —la lista de ARMO y su mapa de keywords— de UNA sola
+    ''' pasada y con UN solo dedup.
+    ''' <para>⛔ Eran dos funciones que recorrían lo mismo por separado, cada una con su propia copia de
+    ''' la regla «gana la PRIMERA aparición». Mientras coincidieran, bien; el día que una cambiara, la
+    ''' lista de ARMO y su contexto se separaban y el render resolvía las combinaciones OBTS de una
+    ''' prenda con las keywords de otra. Acá no pueden discrepar: salen del mismo recorrido y del mismo
+    ''' diccionario.</para></summary>
+    Friend Function ProyeccionesDelBorrador(draft As OutfitDraft) _
+            As (Armos As List(Of UInteger), Keywords As Dictionary(Of UInteger, List(Of UInteger)))
+        Dim armos As New List(Of UInteger)
+        Dim keywords As New Dictionary(Of UInteger, List(Of UInteger))
         For Each pick In ResolveDraftPicks(draft)
-            If pick Is Nothing OrElse mapa.ContainsKey(pick.ArmoFormID) Then Continue For
-            mapa(pick.ArmoFormID) = New List(Of UInteger)(pick.ContextKeywords)
+            If pick Is Nothing OrElse keywords.ContainsKey(pick.ArmoFormID) Then Continue For
+            armos.Add(pick.ArmoFormID)
+            keywords(pick.ArmoFormID) = New List(Of UInteger)(pick.ContextKeywords)
         Next
-        Return mapa
+        Return (armos, keywords)
     End Function
+
 
     ''' <summary>Reroll an LVLI item's cached realization (clear it so the next resolve re-samples). Pass 0
-    ''' to reroll ALL leveled items in the draft.</summary>
+    ''' to reroll ALL leveled items in the draft.
+    ''' <para>⛔ Con <paramref name="lvliFid"/>: limpia TODAS las posiciones cuya prenda sea esa lista, no
+    ''' «la» posición. Si el INAM la trae dos veces son dos sorteos independientes, y «volvé a sortear esta
+    ''' lista» es la orden de re-sortear los dos — quedarse con uno dejaría medio atuendo con el sorteo
+    ''' viejo. (El overload con FormID no tiene llamadores hoy: el único llamador, el re-muestreo del
+    ''' preview del árbol, pide TODAS.)</para></summary>
     Friend Sub RerollDraftLeveled(draft As OutfitDraft, Optional lvliFid As UInteger = 0UI)
         If draft Is Nothing Then Return
-        If lvliFid = 0UI Then
-            draft.LvliRealization.Clear()
-        Else
-            draft.LvliRealization.Remove(lvliFid)
-        End If
+        ' ⛔ RE-SELLA, no sólo limpia. Corre en el hilo de UI, y el camino de lectura (`ResolveDraftPicks`)
+        ' ya no muestrea: dejar la posición en Nothing y disparar el render lo haría tirar. El sorteo
+        ' nuevo se hace ACA, que es donde el usuario lo pidió.
+        Dim prendas = draft.Prendas()
+        For i = 0 To prendas.Count - 1
+            If lvliFid <> 0UI AndAlso prendas(i) <> lvliFid Then Continue For
+            If IsLeveledItem(prendas(i)) Then
+                draft.PonerRealizacionEn(i, SampleLeveledPicks(prendas(i)))
+            Else
+                draft.PonerRealizacionEn(i, Nothing)
+            End If
+        Next
+        ' ⛔ SELLAR Y PUBLICAR SON UN GESTO. Esto re-sella y NO re-registra, asi que sin esta linea la foto
+        ' quedaba con el sorteo VIEJO y el hilo de fondo dibujaba el anterior. Que esten juntos es la
+        ' leccion: separados, el productor que re-sella se olvida de publicar — y este era el caso.
+        _fotosOtft.Publicar(draft.FormID, draft)
     End Sub
 
 
@@ -4209,18 +4283,76 @@ Public Class MainForm
     ''' with the same FormID (re-edit).</summary>
     Friend Sub RegisterOutfitDraft(d As OutfitDraft)
         If d Is Nothing Then Return
-        Dim existing = _outfitDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
-        If existing IsNot Nothing Then _outfitDrafts.Remove(existing)
-        _outfitDrafts.Add(d)
+        ' ⛔ QUIEN SELLA, PUBLICA — y por eso se publica al ENTRAR ACA, DESPUES de que el productor sello.
+        ' El que llama ya volco las piezas con sus realizaciones (`VolcarPiezasEn`), asi que la foto sale
+        ' del borrador COMPLETO. Publicar antes de sellar dejaria al hilo de fondo viendo un borrador a
+        ' medio sellar, que es justo lo que la ley del sellado vino a impedir. Que la foto salga ANTES que
+        ' la lista -adentro de `RegistrarConFoto`- es OTRA ley y no la contradice: el sellado ya paso.
+        RegistrarConFoto(_outfitDrafts, _fotosOtft, d, d.FormID, d, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Re-publica la foto de un borrador de ARMA que ACABA de mutarse, sin tocar el registro.
+    ''' <para>⛔ Encontrado barriendo las otras dos clases de foto con el mismo criterio:
+    ''' <c>ArmaEditor_Form.OnAddRace</c> y <c>OnRemoveRace</c> mutan el borrador VIVO y sólo refrescan su
+    ''' lista — sin re-registrar. MEDIDO: hoy el camino es LATENTE, no alcanzable, porque
+    ''' <c>RenderPreviewAsync</c> siempre pasa por <c>CommitProtegido</c> → <see cref="RegisterArmaDraft"/>
+    ''' y ése republica. Se cablea igual para que la ley valga pareja y no dependa de que ese repintado
+    ''' siga estando: si mañana alguien saca ese re-registro, el render leería la foto anterior.</para>
+    ''' <para>Publicación PURA: <see cref="RegisterArmaDraft"/> hace Remove+Add sobre
+    ''' <c>_armaDrafts</c> y eso REORDENA la lista que el guardado emite, o sea mueve el FormID que le
+    ''' toca a cada ARMA nueva en el ESP. Agregar una raza no puede mover bytes del archivo.</para></summary>
+    Friend Sub PublicarBorradorDeArma(d As ArmaDraft)
+        If d Is Nothing Then Return
+        _fotosArma.Publicar(d.FormID, d.Record)
+    End Sub
+
+    ''' <summary>Vuelve a poner el borrador de lista por nivel <paramref name="d"/> EN SU LUGAR y republica
+    ''' su foto: la reversión de un editor que se canceló, con el gesto de
+    ''' <c>ArmaEditor_Form.RevertOrDiscardCurrentDraft</c> —re-registrar el snapshot de apertura— pero SIN
+    ''' su Remove+Add.
+    ''' <para>⛔ EN SU LUGAR, y no <see cref="RegisterLeveledListDraft"/>: ése hace Remove+Add, o sea manda
+    ''' el borrador AL FINAL de <c>_leveledListDrafts</c>, y ese orden es el que decide qué FormID le toca a
+    ''' cada lista NUEVA en el .esp. Revertir un cancelado no puede mover bytes del archivo del usuario —
+    ''' es la misma razón por la que <see cref="PublicarBorradorDeLista"/> no re-registra—. Si no estaba en
+    ''' la lista se agrega: no puede quedar un borrador con foto y sin registro.</para></summary>
+    Friend Sub RestaurarBorradorDeLista(d As LeveledListDraft)
+        If d Is Nothing Then Return
+        ' La FOTO primero, igual que `RegistrarConFoto`: el fondo no puede ver la entrada nueva sin foto.
+        _fotosLvli.Publicar(d.FormID, d.Record)
+        Dim i = _leveledListDrafts.FindIndex(Function(x) x.FormID = d.FormID)
+        If i >= 0 Then _leveledListDrafts(i) = d Else _leveledListDrafts.Add(d)
+    End Sub
+
+    ''' <summary>Baja un borrador de lista por nivel: lo saca del registro Y retira su FOTO — el par
+    ''' publicar/retirar de siempre.
+    ''' <para>⛔ No existía, y su ausencia rompía un contrato ESCRITO:
+    ''' <see cref="BuildLeveledOverrideDraftFromReal"/> registra al toque y dice que el llamador lo quita
+    ''' al cancelar. Sin esta puerta no había con qué, así que una lista sucia sobrevivía al Cancel y se
+    ''' guardaba aunque nada la referenciara.</para></summary>
+    Friend Sub UnregisterLeveledListDraft(formID As UInteger)
+        BajarConFoto(_leveledListDrafts, _fotosLvli, formID, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Re-publica la foto de un borrador de lista por nivel que ACABA de mutarse, sin tocar el
+    ''' registro.
+    ''' <para>⛔ QUIEN MUTA, PUBLICA. Las lecturas del muestreo y del enumerador determinista van a la
+    ''' FOTO, así que una edición sobre el borrador VIVO que no la republique deja al sorteo leyendo el
+    ''' árbol anterior: crear una lista vacía, agregarle una armadura y re-sortear seguía dando vacío.</para>
+    ''' <para>⛔ Es publicación PURA y no un re-registro: <see cref="RegisterLeveledListDraft"/> hace
+    ''' Remove+Add sobre <c>_leveledListDrafts</c> y eso REORDENA la lista que el guardado emite —o sea,
+    ''' cambia qué FormID le toca a cada lista nueva en el ESP—. Editar una entrada no puede mover bytes
+    ''' del archivo del usuario.</para></summary>
+    Friend Sub PublicarBorradorDeLista(d As LeveledListDraft)
+        If d Is Nothing Then Return
+        _fotosLvli.Publicar(d.FormID, d.Record)
     End Sub
 
     ''' <summary>Register/replace an author-built leveled list (LVLI draft). Seen by the candidate list,
     ''' the draft-aware resolver and the Save flow.</summary>
     Friend Sub RegisterLeveledListDraft(d As LeveledListDraft)
         If d Is Nothing Then Return
-        Dim existing = _leveledListDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
-        If existing IsNot Nothing Then _leveledListDrafts.Remove(existing)
-        _leveledListDrafts.Add(d)
+        ' El productor publica, y en el MISMO orden que las otras cuatro clases.
+        RegistrarConFoto(_leveledListDrafts, _fotosLvli, d, d.FormID, d.Record, Function(x) x.FormID)
     End Sub
 
     ''' <summary>If <paramref name="fid"/> is a REAL (non-draft) LVLI record, build + register an OVERRIDE
@@ -4230,7 +4362,9 @@ Public Class MainForm
     ''' <see cref="BuildMswpOverrideDraftFromReal"/>. Returns Nothing when <paramref name="fid"/> is 0, a draft
     ''' sentinel, or does not resolve to an LVLI; the caller then falls back to a fresh NEW draft. If an override
     ''' draft for this FormID already exists it is returned as-is (don't clobber in-progress edits). On Cancel the
-    ''' caller unregisters this draft, reverting the field to referencing the real record.</summary>
+    ''' caller unregisters this draft with <see cref="UnregisterLeveledListDraft"/>, reverting the field to
+    ''' referencing the real record — el selector rastrea las que promovió ÉL y las baja al cerrar sin OK; las
+    ''' que ya estaban no son suyas y no las toca.</summary>
     Friend Function BuildLeveledOverrideDraftFromReal(fid As UInteger) As LeveledListDraft
         If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return Nothing
         Dim already = TryGetLeveledListDraft(fid)
@@ -4257,9 +4391,19 @@ Public Class MainForm
     End Function
 
     ''' <summary>True if <paramref name="formID"/> is an author-built LVLI draft (own, not a vanilla/loaded
-    ''' record). Drives the "Add to lvl" enable (only own leveled lists can be edited).</summary>
+    ''' record). Drives the "Add to lvl" enable (only own leveled lists can be edited).
+    ''' <para>⛔ LA FOTO Y NADA MÁS. Este predicado lo consulta <see cref="IsLeveledItem"/>, que el hilo de
+    ''' FONDO cruza —el muestreo y el enumerador determinista salen de <c>BuildOutfitComboEntries</c>,
+    ''' adentro de <c>Task.Run</c>— mientras el de UI agrega, saca y edita listas.
+    ''' <see cref="TryGetLeveledListDraft"/> recorre <c>_leveledListDrafts</c> VIVO: un <c>List</c> que
+    ''' muta bajo un <c>For Each</c> tira <c>InvalidOperationException</c> en el hilo del render.</para>
+    ''' <para>La PRESENCIA de la foto contesta la pregunta entera, y es exacta —no una aproximación—
+    ''' porque <see cref="RegistrarConFoto"/> publica ANTES de tocar la lista y <c>Publicar</c> tira si el
+    ''' clon falla: todo borrador registrado tiene foto, siempre. Hubo una versión intermedia que
+    ''' preguntaba por la foto y CAÍA a la lista viva si no había; esa caída era la carrera entera, porque
+    ''' el caso más común —un FormID que no es borrador— la tomaba SIEMPRE.</para></summary>
     Friend Function IsOwnLeveledDraft(formID As UInteger) As Boolean
-        Return TryGetLeveledListDraft(formID) IsNot Nothing
+        Return _fotosLvli.TieneFoto(formID)
     End Function
 
     ''' <summary>True if <paramref name="edid"/> is NOT already used by any loaded record or existing
@@ -5817,8 +5961,10 @@ Public Class MainForm
                 ' aplicaban las combinaciones OBTS `Default`, así que una prenda multi-variante se dibujaba
                 ' distinta antes y después de guardar el atuendo.
                 RerollDraftLeveled(draft)
-                entry.SampledArmorFormIDs = ResolveDraftArmoList(draft)
-                entry.SampledArmorContextKeywords = ResolveDraftContextKeywords(draft)
+                ' Las DOS proyecciones de UNA pasada: no pueden discrepar entre si.
+                Dim proy = ProyeccionesDelBorrador(draft)
+                entry.SampledArmorFormIDs = proy.Armos
+                entry.SampledArmorContextKeywords = proy.Keywords
             Else
                 ' Real OTFT: re-sample outfit ARMOs (LVLI random pick + LLKC propagation).
                 Dim warnings As New List(Of String)
@@ -7650,32 +7796,52 @@ Public Class MainForm
         Dim entries As New List(Of OutfitComboEntry)
         If state Is Nothing Then Return entries
 
-        AddOutfitEntryIfPresent(entries, state.DefaultOutfitFormID, OutfitSlotKind.DefaultOutfit, "Default")
-        AddOutfitEntryIfPresent(entries, state.SleepOutfitFormID, OutfitSlotKind.SleepOutfit, "Sleep")
+        ' ⛔ UNA ENTRADA QUE TIRA NO SE LLEVA EL RENDER ENTERO. Esto corre adentro de `Task.Run` y aguas
+        ' abajo hay throws deliberados —la lista por nivel SIN SELLAR, el Tag con otro contrato—: sin
+        ' esto, un borrador en mal estado dejaba al NPC sin dibujar, no sin ese atuendo. Se saltea ESA
+        ' entrada, con la causa en el log; nunca se traga mudo.
+        AgregarEntradaDeAtuendo(entries, state.DefaultOutfitFormID, OutfitSlotKind.DefaultOutfit, "Default")
+        AgregarEntradaDeAtuendo(entries, state.SleepOutfitFormID, OutfitSlotKind.SleepOutfit, "Sleep")
 
         Return entries
     End Function
+
+    ''' <summary>Envoltura de <see cref="AddOutfitEntryIfPresent"/> que aísla el fallo a UNA entrada.
+    ''' <para>⛔ El aviso va con CAUSA y tipo: un catch que se traga la excepción es lo que esta tanda
+    ''' vino a terminar. Lo que se decide acá es el ALCANCE del daño, no si se reporta.</para></summary>
+    Private Sub AgregarEntradaDeAtuendo(entries As List(Of OutfitComboEntry), otftFormID As UInteger,
+                                        kind As OutfitSlotKind, slotName As String)
+        Try
+            AddOutfitEntryIfPresent(entries, otftFormID, kind, slotName)
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[OUTFIT-COMBO] la entrada '{slotName}' (OTFT {otftFormID:X8}) se " &
+                                      $"saltea: {ex.GetType().Name}: {ex.Message}")
+        End Try
+    End Sub
 
     Private Sub AddOutfitEntryIfPresent(entries As List(Of OutfitComboEntry), otftFormID As UInteger, kind As OutfitSlotKind, slotName As String)
         If otftFormID = 0UI Then Return
 
         ' Outfit draft (Create tab): ARMO items render directly; LVLI items are sampled to their cached
-        ' realization (stable until Reroll). ResolveDraftArmoList does that flattening so the render shows
+        ' realization (stable until Reroll). ProyeccionesDelBorrador does that flattening so the render shows
         ' the current realization. Slot conflicts handled downstream by SelectWinningCandidates.
-        Dim draft = TryGetOutfitDraft(otftFormID)
+        ' ⛔ LA FOTO, no la lista viva: esto corre adentro de `Await Task.Run` (los tres sitios de
+        ' `BuildOutfitComboEntries`) mientras el hilo de UI puede estar agregando, sacando o editando.
+        Dim draft = OutfitDraftParaRender(otftFormID)
         If draft IsNot Nothing Then
             ' ⛔ SEGUNDA PUERTA de la misma ley, y la encontró el gate, no yo: acá también se publicaba el
             ' contexto de keywords VACÍO mientras la rama del OTFT real, treinta líneas más abajo, sí lo
             ' llena. Con el vacío sólo aplican las combinaciones OBTS `Default`. Medido: 331 de 1.067 ARMO
             ' del orden de carga de FO4 tienen combinaciones GATEADAS POR KEYWORD — 1.191 en total —, así
             ' que no es un caso de borde.
-            Dim realized = ResolveDraftArmoList(draft)
+            ' Las DOS proyecciones de UNA pasada: no pueden discrepar entre si.
+            Dim proy = ProyeccionesDelBorrador(draft)
             entries.Add(New OutfitComboEntry With {
-                .Label = $"{slotName} — {draft.Record.EditorID} ({realized.Count} pcs) [draft]",
+                .Label = $"{slotName} — {draft.Record.EditorID} ({proy.Armos.Count} pcs) [draft]",
                 .SlotKind = kind,
                 .OutfitFormID = otftFormID,
-                .SampledArmorFormIDs = realized,
-                .SampledArmorContextKeywords = ResolveDraftContextKeywords(draft)
+                .SampledArmorFormIDs = proy.Armos,
+                .SampledArmorContextKeywords = proy.Keywords
             })
             Return
         End If
@@ -11482,7 +11648,8 @@ Public Class MainForm
         ' vale para cualquier borrador y porque adentro de este formulario no habia testigo que la
         ' pudiera correr — ver el doc de `Borradores.RemapearSupervivientes`.
         Borradores.RemapearSupervivientes(_outfitDrafts, _leveledListDrafts, _armoDrafts, _armaDrafts,
-                                          _mswpDrafts, realGlobal, _fotosArmo, _fotosArma, _fotosMswp)
+                                          _mswpDrafts, realGlobal, _fotosArmo, _fotosArma, _fotosMswp,
+                                          _fotosOtft, _fotosLvli)
 
         ' (4) Refresh the affected universes so the newly-real records surface in the editor: the outfit
         ' universe (OTFT/LVLI/ARMO items) and the skin-ARMO universe (so a promoted skin ARMO appears in the
@@ -11926,6 +12093,12 @@ Public Class MainForm
                 ' así que volver a guardar reintenta sin tener que re-hornear.
                 summary &= vbCrLf & "      (Those NPCs' loose files were kept, so the save can be retried.)"
             End If
+            ' ⛔ EL AVISO DE REMONTE SE ANEXA, y NO convierte el resultado en fallo. `Success` significa
+            ' "el archive en disco quedó bien"; un remonte fallido deja los bytes escritos y cargables por
+            ' el juego, y sólo rompe la vista EN MEMORIA de esta sesión. Mezclarlo con el error del pack
+            ' ponía Success=False sobre un pack correcto y hacía que el early-return de arriba se saltara
+            ' TODO este bloque por NPC — el diagnóstico que el usuario necesita en el caso mixto.
+            If packResult.RemountWarning <> "" Then summary &= vbCrLf & "      " & packResult.RemountWarning
             Return (summary, True)
         Catch ex As Exception
             ' Preserve the "never throws" contract — pack failures surface in the summary, not as a

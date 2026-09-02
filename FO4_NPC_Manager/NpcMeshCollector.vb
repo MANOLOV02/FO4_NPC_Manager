@@ -720,20 +720,102 @@ Friend NotInheritable Class NpcMeshCollector
     ''' otra copia del colector, que es lo que <c>ResolverMalla</c> vino a terminar. Es de sólo lectura sobre
     ''' <paramref name="state"/> —las tres listas son del llamador— y corre en el hilo de UI igual que
     ''' <c>NpcSkinLivePreview.ResolveBodySkinCandidates</c>, que ya la llama así desde un diálogo.</para>
-    ''' <para>⚠️ LÍMITE declarado: las combinaciones OBTS se resuelven con
-    ''' <c>state.LoadoutArmorContextKeywords</c>, que se llena al MUESTREAR el atuendo. Una prenda que el
-    ''' usuario recién agrega todavía no pasó por ahí, así que sólo aplican las combinaciones
-    ''' <c>Default=True</c>; en ARMOs multi-addon dependientes de keyword la respuesta puede diferir de la
-    ''' que dará el render una vez guardado. Sembrar keywords especulativas sería inventar.</para></summary>
+    ''' <para><b>El contexto OBTS se puede PEDIR</b> con <paramref name="ctxKeywords"/>. Acá había un
+    ''' límite declarado —«las combinaciones se resuelven con <c>state.LoadoutArmorContextKeywords</c>,
+    ''' que se llena al MUESTREAR el atuendo, así que una prenda recién agregada sólo resuelve las
+    ''' <c>Default=True</c>»— con el argumento de que sembrar keywords sería inventar. <b>Ese argumento
+    ''' caducó.</b> Las keywords del pick NO son especulativas: las trajo el sorteo REAL del LLKC y son
+    ''' las MISMAS que <c>MainForm.ProyeccionesDelBorrador</c> le publica al preview y al guardado.
+    ''' El selector las tenía en la mano y las tiraba, así que la fila calculaba OTRA variante —y OTRA
+    ''' máscara— que el dibujo. Medido en Fallout 4: 331 ARMO con combinaciones gateadas por keyword, y
+    ''' en 211 el contexto CAMBIA los OMOD incluidos.</para>
+    '''
+    ''' <para>⛔ <b>El estado COMPARTIDO no se toca.</b> Cuando el contexto pedido difiere del que el
+    ''' estado ya trae, se trabaja sobre un CLON — el hilo de UI pregunta mientras los renders de fondo
+    ''' leen el mismo estado. Y no hay una segunda ley del contexto: todos siguen leyéndolo de
+    ''' <c>state.LoadoutArmorContextKeywords</c>; el llamador sólo aporta un estado que describe el
+    ''' loadout que está armando, que es literalmente su pregunta.</para>
+    '''
+    ''' <para>⚠️ LÍMITE RESIDUAL, y es la VERDAD y no una carencia: una pieza ARMO <b>directa</b> no pasó
+    ''' por ningún LLKC, así que su contexto es vacío de verdad —el borrador le da la misma lista vacía—
+    ''' y sólo le aplican las combinaciones <c>Default=True</c>. Igual la piel del WNAM. Lo que se cerró
+    ''' es la pieza LEVELED, que sí traía keywords y las perdía en el camino.</para>
+    ''' <para>⛔ Y devuelve TAMBIÉN LAS TRES MÁSCARAS del torneo, porque son la MISMA respuesta y ya
+    ''' estaban calculadas acá adentro. El selector de atuendos las derivaba por su cuenta con
+    ''' <c>EquipResolver.BuildFootprint(addonFormIDs:=Nothing)</c> —la unión de TODOS los Models— mientras
+    ''' el render las arma con los candidates que EMITIÓ: el grupo INDX que resolvió OBTS y ya pasado por
+    ''' el dedup intra-ARMO <c>coveredSlots</c>. Medido sobre FO4: 10 de 1.067 ARMO donde
+    ''' <c>coveredSlots</c> pierde bits de la unión, así que la fila podía decir «✗ eliminated» sobre una
+    ''' prenda que el render dibuja. Se agregan con las MISMAS tres expresiones del torneo
+    ''' (ver <c>armoGroups</c>/<c>equipItems</c> más abajo en este archivo) y sobre el MISMO filtro: el
+    ''' grupo de un ARMO son sus candidates no-Skin con <c>SlotMask &lt;&gt; 0</c>. Una segunda derivación
+    ''' es una segunda ley, y ésta ya divergía.</para>
+    ''' <para>Sin candidates que compitan las tres van en 0 — que es lo mismo que el render hace al no
+    ''' generar grupo: el ARMO no entra al torneo, no ocupa slot y no elimina a nadie.</para></summary>
     Friend Function EmisionDeArmo(armoFormID As UInteger,
-                                  state As MainForm.NPCVisualState) As (Dibuja As Boolean, Compite As Boolean)
-        If armoFormID = 0UI OrElse state Is Nothing Then Return (False, False)
+                                  state As MainForm.NPCVisualState,
+                                  Optional ctxKeywords As List(Of UInteger) = Nothing) _
+                                  As (Dibuja As Boolean, Compite As Boolean, EquipMask As UInteger,
+                                      GeometryMask As UInteger, OcclusionMask As UInteger)
+        If armoFormID = 0UI OrElse state Is Nothing Then Return (False, False, 0UI, 0UI, 0UI)
+        ' Sólo se clona cuando el contexto pedido DIFIERE del que el estado ya dice para este ARMO: con
+        ' `Nothing` -o con el mismo- corre byte a byte como antes y no paga nada. Es exacto, no una
+        ' heurística: se comparan los conjuntos.
+        If ctxKeywords IsNot Nothing AndAlso Not MismoContextoDe(state, armoFormID, ctxKeywords) Then
+            state = ConEsteContexto(state, armoFormID, ctxKeywords)
+        End If
         Dim candidates As New List(Of MainForm.MeshCandidate)
         Dim order As Integer = 0
         Dim warnings As New List(Of String)
         CollectArmoCandidates(armoFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings)
+        ' El grupo del ARMO, con el MISMO filtro que `slottedCandidates` del torneo.
+        ' ⛔ EN UNA SOLA LINEA a proposito: el caso C16 del gate compara ESTE predicado contra el del
+        ' render linea por linea, para que las dos leyes no se puedan separar. Partido en dos, el
+        ' comparador ve medio predicado y da ROJO por la FORMA en que esta escrito.
+        Dim grupo = candidates.Where(Function(c) c.Kind <> MainForm.MeshCandidateKind.Skin AndAlso c.SlotMask <> 0UI).ToList()
         Return (Dibuja:=candidates.Count > 0,
-                Compite:=candidates.Any(Function(c) c.Kind <> MainForm.MeshCandidateKind.Skin AndAlso c.SlotMask <> 0UI))
+                Compite:=grupo.Count > 0,
+                EquipMask:=If(grupo.Count > 0, grupo(0).ArmoOwnSlotMask, 0UI),
+                GeometryMask:=grupo.Aggregate(0UI, Function(acc, c) acc Or c.ArmaOwnSlotMask),
+                OcclusionMask:=grupo.Aggregate(0UI, Function(acc, c) acc Or c.SlotMask))
+    End Function
+
+    ''' <summary>¿El estado YA dice exactamente eso para este ARMO? Compara como CONJUNTO: el contexto es
+    ''' un conjunto de keywords, no una secuencia, y dos órdenes distintos son el mismo contexto — la
+    ''' misma razón por la que la llave del preview las ordena.</summary>
+    Private Shared Function MismoContextoDe(state As MainForm.NPCVisualState, armoFormID As UInteger,
+                                            ctxKeywords As List(Of UInteger)) As Boolean
+        Dim actual As List(Of UInteger) = Nothing
+        state.LoadoutArmorContextKeywords?.TryGetValue(armoFormID, actual)
+        If actual Is Nothing Then Return ctxKeywords.Count = 0
+        Return New HashSet(Of UInteger)(actual).SetEquals(ctxKeywords)
+    End Function
+
+    ''' <summary>Un estado IGUAL al de entrada salvo por el contexto OBTS de UN ARMO. El original no se
+    ''' toca.
+    ''' <para>⛔ Se REEMPLAZA LA INSTANCIA del diccionario en el clon en vez de escribir sobre la que
+    ''' vino. Hoy <c>CloneVisualState</c> lo copia en PROFUNDIDAD (arma un <c>New List</c> por entrada
+    ''' sobre el diccionario propio del clon), así que escribirle encima tampoco tocaría el original —
+    ''' pero esta función no puede depender de eso: el día que aquélla pase a copiar la referencia, esta
+    ''' escritura mutaría el estado COMPARTIDO que leen los renders de fondo, y lo haría en silencio.
+    ''' Con la instancia propia, la garantía es de acá y no de allá.</para>
+    ''' <para>El campo nunca es <c>Nothing</c> en la práctica —lo crea el inicializador de
+    ''' <c>NPCVisualState</c>— pero se contempla igual, que es lo que ya hace el <c>?.</c> del sitio donde
+    ''' se lee.</para></summary>
+    Private Function ConEsteContexto(state As MainForm.NPCVisualState, armoFormID As UInteger,
+                                     ctxKeywords As List(Of UInteger)) As MainForm.NPCVisualState
+        Dim clon = _stateResolver.CloneVisualState(state)
+        ' ⛔ UNA sola copia profunda, no dos. `CloneVisualState` ya armó un `New List` por entrada sobre su
+        ' propio diccionario, así que reconstruirlo desde el ORIGINAL copiaba todo por segunda vez. Se
+        ' parte del diccionario DEL CLON —cuyas listas ya son frescas— y sólo se copia el mapa.
+        ' ⛔ Pero SE SIGUE REEMPLAZANDO LA INSTANCIA: ésa es la garantía de que escribirle no toca el
+        ' estado compartido, y no puede depender de que `CloneVisualState` siga copiando en profundidad.
+        ' La guarda de `Nothing` que había acá era INALCANZABLE: `CloneVisualState` recorre ese campo sin
+        ' protección, así que un estado con el campo nulo habría tirado una línea antes.
+        Dim propio As New Dictionary(Of UInteger, List(Of UInteger))(clon.LoadoutArmorContextKeywords)
+        propio(armoFormID) = New List(Of UInteger)(ctxKeywords)
+        clon.LoadoutArmorContextKeywords = propio
+        Return clon
     End Function
 
     ''' <summary>Camino robot del NPC: recorre NPC_.OBTE por el resolver canonico, elige UNA combinacion,

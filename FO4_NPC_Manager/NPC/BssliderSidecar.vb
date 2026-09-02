@@ -891,10 +891,13 @@ Public Module BssliderSidecar
         Return result
     End Function
 
-    ''' <summary>Write the sidecar JSON to disk atomically (.tmp + rename). Filters out NPC
+    ''' <summary>Write the sidecar JSON to disk. Filters out NPC
     ''' entries that have neither sliders nor a skin template id. If nothing remains after
     ''' filtering, the existing sidecar (if any) is deleted instead of writing an empty file.
-    ''' Indented output, npcs keys sorted ascending so diffs across saves stay readable.</summary>
+    ''' Indented output, npcs keys sorted ascending so diffs across saves stay readable.
+    ''' <para>⛔ La escritura NO es atómica y NO es <c>.tmp</c> + rename: es EN EL LUGAR, con copia
+    ''' previa verificada. La garantía —y por qué no puede ser atómica bajo MO2/Vortex— vive en UN solo
+    ''' lugar, la cabecera de <c>BSA_BA2_Library_DLL.EscrituraEnElLugar</c>. No se repite acá.</para></summary>
     Public Sub Write(path As String, sidecar As SidecarFile)
         If String.IsNullOrEmpty(path) OrElse sidecar Is Nothing Then Return
 

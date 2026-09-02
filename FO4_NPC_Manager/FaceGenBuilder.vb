@@ -2934,10 +2934,15 @@ Public Module FaceGenBuilder
         If String.IsNullOrEmpty(originPlugin) OrElse Config_App.Current Is Nothing Then Return
         Dim dataPath = BakeOutputRoot.Current()
         If String.IsNullOrEmpty(dataPath) Then Return
-        Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
-        For Each subDir In {"FaceDiffuse", "FaceNormal"}   ' 'dir' es palabra reservada en VB (función Dir)
-            For Each suffix In {".dds", "_2.dds"}
-                Dim rel = FaceGenPaths.TexturaDir(subDir, originPlugin) & hex & suffix
+        Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        ' ⛔ Se RECORRE la tabla del módulo, no una lista escrita acá. Estaban los nombres de canal
+        ' ({"FaceDiffuse","FaceNormal"}) y el par sufijo+extensión ({".dds","_2.dds"}) literales, o sea el
+        ' MISMO defecto que `SalidasFo4` ya había cerrado del lado de FO4: un canal nuevo en FaceGenPaths
+        ' dejaba su resto sin barrer y nada avisaba. La extensión tampoco se escribe acá — la pone
+        ' `TexturaDds`, que es la misma función con la que el bake arma la ruta que ESCRIBE.
+        For Each canal In FaceGenPaths.CanalesPlegadosSse
+            For Each sufijo In {"", FaceGenPaths.SufijoSandbox}
+                Dim rel = FaceGenPaths.TexturaDds(canal, originPlugin, formIdLow, sufijo)
                 Dim full = IO.Path.Combine(dataPath, rel)
                 If escritas IsNot Nothing AndAlso escritas.Contains(full) Then Continue For
                 Try
@@ -3965,9 +3970,42 @@ Public Module FaceGenBuilder
             Dim bgra As Byte() = If(cbSlot, gpuBgra)
             If bgra Is Nothing Then
                 Logger.LogLazy(Function() $"[FACEBAKE] slot {entry.Slot}{entry.Suffix}: sin textura (ni CPU ni GPU) — SKIPPED (npcFormID=0x{npcFormID:X8})")
-                ' Slot 0 (diffuse) is always expected; its absence is a real failure. Slots 1/7 (normal/spec)
-                ' are legitimately absent when the source head has none — don't flag those as failures.
-                If entry.Slot = 0 Then RecordTextureFailure(result, $"slot 0{entry.Suffix}: no composed pixels (neither CPU nor GPU produced a diffuse)")
+                ' ⛔ SE REPORTA TODO CANAL QUE EL MATERIAL DECLARÓ Y NO SALIÓ, no sólo el slot 0.
+                ' Acá decía «los slots 1/7 faltan legítimamente cuando la cabeza no los trae, no los marques
+                ' como fallo». Eso era cierto ANTES de que la declaración de salidas subiera a :3634-3641:
+                ' hoy un slot 1/7 sólo llega DECLARADO si el material NOMBRÓ ese canal, así que "declarado y
+                ' sin píxeles" es un `_msn`/`_s` que el material nombra y no está ni en disco ni en los
+                ' archives. Y eso NO es inocuo: el packer lo exige, no lo encuentra, y descarta el bundle
+                ' ENTERO del NPC —el NIF de FaceGeom incluido—. `result.FailedBundles` dice CUÁL bundle se
+                ' cayó; nadie decía POR QUÉ, porque este guard era el único que lo sabía y se quedaba mudo.
+                ' El propio comentario de la declaración ya nombraba el hueco («los slots 1/7 no llaman a
+                ' RecordTextureFailure, así que no hay texWarn ni, en Release, log»). Esto lo cierra.
+                '
+                ' ⛔ NO CONTRADICE al guard de `If Not redirectSlotsToFaceCustomization` (:3917), que a
+                ' propósito NO reporta: allá el canal se compone bien y sólo no se ASIGNA al NIF —que es lo
+                ' que hace el CK—, así que marcar Warning sería un falso positivo. La diferencia es
+                ' DECLARADO vs NUNCA-DECLARADO, y es toda la diferencia: allá no hay nada que falte; acá el
+                ' material prometió un canal que no existe.
+                '
+                ' La identidad del slot sale de la TABLA (`FaceGenPaths.SalidasFo4`), no de una lista de
+                ' slots escrita acá — misma razón que el barrido de stale. El mapa identidad→path repite el
+                ' de la declaración (:3638-3639) porque `mat` tiene tres campos con nombre propio y no hay
+                ' otra forma de llegar al path desde la identidad.
+                Dim salidaDelSlot = FaceGenPaths.SalidasFo4.FirstOrDefault(Function(s) s.Slot = entry.Slot)
+                Dim fueDeclarada = result IsNot Nothing AndAlso
+                                   (result.SalidasDeTexturaDeclaradas And salidaDelSlot.Salida) <>
+                                   FaceGenPaths.SalidaDeTexturaDeCara.Ninguna
+                If fueDeclarada Then
+                    Dim rutaDeclarada =
+                        If(salidaDelSlot.Salida = FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal, normalPath,
+                        If(salidaDelSlot.Salida = FaceGenPaths.SalidaDeTexturaDeCara.Fo4Specular, specPath,
+                           diffusePath))
+                    RecordTextureFailure(result,
+                        $"slot {entry.Slot}{entry.Suffix} ({salidaDelSlot.SufijoCanon}): the head material " &
+                        $"declares '{rutaDeclarada}' but no pixels were composed (neither CPU nor GPU). " &
+                        "The packer requires this output, so this NPC's whole FaceGen bundle is discarded — " &
+                        "FaceGeom NIF included. Check that the texture exists on disk or in the archives.")
+                End If
                 Continue For
             End If
 

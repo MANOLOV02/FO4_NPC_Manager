@@ -99,7 +99,7 @@ Public Module BodyGenIniWriter
             sbTemplates.Append(" = ")
             sbTemplates.AppendLine(BuildMorphSpecList(e.BodyMorphs))
         Next
-        WriteAtomic(templatesPath, sbTemplates.ToString())
+        EscribirConCopia(templatesPath, sbTemplates.ToString())
 
         ' --- morphs.ini
         Dim sbMorphs As New StringBuilder()
@@ -117,7 +117,7 @@ Public Module BodyGenIniWriter
             sbMorphs.Append(" = ")
             sbMorphs.AppendLine(SanitizeTemplateName(e.TemplateName))
         Next
-        WriteAtomic(morphsPath, sbMorphs.ToString())
+        EscribirConCopia(morphsPath, sbMorphs.ToString())
     End Sub
 
     ''' <summary>Sanitize a string into a BodyGen-safe identifier. Whitespace and any character
@@ -158,8 +158,11 @@ Public Module BodyGenIniWriter
     ''' <summary>Se escribe ENCIMA del .ini que ya está, con copia previa. Estos .ini viven bajo
     ''' <c>Data\F4SE\Plugins\F4EE\BodyGen\</c>, o sea adentro de un mod: el `.tmp` + `File.Replace` que
     ''' había acá se salía del VFS de Mod Organizer y dejaba el archivo en el `Data` real del juego.
-    ''' Misma ley que SaveNpcEspWriter (Step 7).</summary>
-    Private Sub WriteAtomic(path As String, content As String)
+    ''' Misma ley que SaveNpcEspWriter (Step 7).
+    ''' <para>⛔ Se llamaba <c>WriteAtomic</c> y el nombre MENTÍA: no hay temporal, no hay rename y la
+    ''' escritura no es atómica. Un nombre es un docstring que no se puede apuntar a ningún lado, así
+    ''' que dice lo que hace: escribe con copia previa.</para></summary>
+    Private Sub EscribirConCopia(path As String, content As String)
         Dim bytes = New UTF8Encoding(encoderShouldEmitUTF8Identifier:=False).GetBytes(content)
         BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(path, Sub(fs) fs.Write(bytes, 0, bytes.Length))
     End Sub

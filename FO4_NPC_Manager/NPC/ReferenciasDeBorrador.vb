@@ -18,7 +18,30 @@
 ''' gate —el archivo que escribe referencias sigue barrido— es ponerle a cada ley su frontera.</para>
 '''
 ''' <para>⛔ <b>NO se resuelve cambiando <c>Action(Of UInteger)</c> por un delegado propio.</b> Eso es
-''' exactamente el esquive por renombre que la regla por-forma existe para impedir.</para></summary>
+''' exactamente el esquive por renombre que la regla por-forma existe para impedir.</para>
+'''
+''' <para>⛔⛔ <b>ESTE CENSO NO ES TODO: HAY UN SEGUNDO ALMACÉN DE REFERENCIAS A BORRADORES.</b> Éste
+''' recorre el <b>record</b>, y un borrador de atuendo guarda referencias <b>fuera</b> de su record: las
+''' realizaciones selladas —<c>OutfitDraft.Realizaciones</c>, o sea el sorteo ya resuelto, cuyos
+''' <c>OutfitArmorPick.ArmoFormID</c> pueden apuntar a un ARMO borrador—. Ése lo remapea
+''' <see cref="OutfitDraft.RemapearPicks"/>, y el <see cref="Borradores.RemapearSupervivientes"/> lo llama
+''' <b>al lado</b> de <c>RemapearUno</c> en la vuelta de los atuendos, no a través de esta lista. Queda
+''' escrito acá porque la cabecera de arriba dice «la única lista que consumen sus DOS lectores» y eso es
+''' cierto <b>del record</b>: quien venga a agregar un campo de referencia tiene que saber que existe una
+''' segunda casa, o va a creer que tocando ésta cubrió todo.</para>
+'''
+''' <para>✅ <b>CERRADO — los DOS lectores cubren las dos casas.</b> Hubo una asimetría real: el remapeo
+''' llamaba a las dos y el censo de referrers sólo a ésta, así que un ARMO borrador al que únicamente
+''' apuntaba un pick sellado salía «no lo referencia nadie», «Delete draft» lo borraba y la realización
+''' quedaba apuntando a un FormID muerto. Ya no: la ley del censo vive en
+''' <see cref="Borradores.CensarReferrers"/> —<c>MainForm.GetDraftReferrers</c> delega en ella— y ahí las
+''' dos casas se recorren una al lado de la otra, esta lista por <c>CensoDeReferencias.DeBorrador</c> y los
+''' picks por <see cref="OutfitDraft.ReferenciasDePicks"/>. El testigo es <b>C51</b> de
+''' <c>Tools\OutfitDraftSaveGate</c>, que llama al sujeto de producción y muere si se saca esa línea.</para>
+'''
+''' <para>Lo que SÍ sigue siendo cierto de esta lista, y es la razón de la nota de arriba: enumera campos
+''' <b>DEL RECORD</b>. Un pick no es uno, así que la segunda casa nunca va a entrar acá — quien agregue un
+''' campo de referencia tiene que tocar las dos, no ésta sola.</para></summary>
 Public Module CensoDeReferencias
 
     ''' <summary>UNA referencia de un borrador que puede apuntar a OTRO borrador: qué vale hoy, cómo se
@@ -37,8 +60,11 @@ Public Module CensoDeReferencias
     ''' <para>⛔ Existe para que el lambda capture un PARÁMETRO y no la variable de un <c>For Each</c>.
     ''' En VB la variable del bucle es UNA sola para todas las vueltas, así que un lambda armado adentro
     ''' del bucle captura la ÚLTIMA — y todas las referencias de un array terminarían escribiendo sobre
-    ''' el mismo elemento. Con el elemento pasado por parámetro, cada llamada tiene el suyo.</para></summary>
-    Private Function RefDe(Of TE)(elem As TE, leer As Func(Of TE, UInteger),
+    ''' el mismo elemento. Con el elemento pasado por parámetro, cada llamada tiene el suyo.</para>
+    ''' <para><c>Friend</c> y no <c>Private</c> porque el OTRO almacén de referencias
+    ''' —<see cref="OutfitDraft.ReferenciasDePicks"/>, las realizaciones selladas— tiene el mismo bucle y
+    ''' la misma trampa. La ley anti-captura vive acá, una sola vez.</para></summary>
+    Friend Function RefDe(Of TE)(elem As TE, leer As Func(Of TE, UInteger),
                                   escribir As Action(Of TE, UInteger), que As String) As ReferenciaDeBorrador
         Return New ReferenciaDeBorrador With {.Valor = leer(elem),
                                               .Poner = Sub(v) escribir(elem, v),
