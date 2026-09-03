@@ -205,15 +205,38 @@ Public Module PresetCompatibilityReport
     ' ---------------------------------------------------------------------------------------------
     Private Sub AuditHeadParts(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
+        ' SSE: las que el mapper resolvió pero el motor NO aplicaría a este actor (skee64 PresetInterface.cpp:164-175:
+        ' flag de sexo del HDPT, RNAM=0, o la FLST de RNAM no lista la raza). No están en HeadPartFormIDs porque no
+        ' forman parte del estado post-LoadPreset; acá se reportan porque el ARCHIVO las declara.
+        Dim filtradas = If(p.SseHeadPartsFiltradasPorMotor, New List(Of UInteger)())
         If p.HeadPartFormIDs Is Nothing OrElse p.HeadPartFormIDs.Count = 0 Then
             If p.HasHeadPartFormIDs Then
                 r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Head parts", "The preset declares an EMPTY head-part list",
                                        "That is an authoritative wipe, not an absence: applying it leaves the NPC with only its RACE defaults."))
             End If
-            Return
+            If filtradas.Count = 0 Then Return
         End If
 
         Dim pm = ctx.PluginManager
+        For Each fid In filtradas
+            If fid = 0UI OrElse pm Is Nothing Then Continue For
+            Dim recF = pm.GetRecord(fid)
+            Dim hdF As Canon.IHdpt = Nothing
+            If recF IsNot Nothing AndAlso recF.Header.Signature = "HDPT" Then hdF = Canon.CanonRecords.Hdpt(recF, pm)
+            Dim labelF = DescribeHdpt(fid, hdF, pm)
+            ' El motivo sale de la MISMA función que decidió el filtro en el mapper (una ley, un lugar).
+            Dim reasonF As String = ""
+            If RaceMenuPresetMapper.MotorAplicaHeadPart(fid, ctx.RaceFormID, ctx.IsFemale, pm, ctx.FlstCache, reasonF) Then
+                reasonF = "the mapper filtered it for a different race/sex than this dialog's."
+            End If
+            Dim consequenceF As String = ""
+            If hdF IsNot Nothing AndAlso hdF.TipoDeParte() = 1 Then
+                consequenceF = "  ⚠ This is the BASE HEAD (Face): the NPC keeps its own."
+            End If
+            r.Issues.Add(New PresetIssue(PresetIssueKind.RaceIncompatible, "Head parts", $"{labelF} would not be applied by RaceMenu to this NPC",
+                                   reasonF & consequenceF))
+        Next
+        If p.HeadPartFormIDs Is Nothing OrElse p.HeadPartFormIDs.Count = 0 Then Return
         Dim noRaceInfo As Boolean = (ctx.RaceFormID = 0UI OrElse ctx.Race Is Nothing)
         If noRaceInfo Then
             r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Head parts", "Race gate not checked",
@@ -335,8 +358,11 @@ Public Module PresetCompatibilityReport
                 okCount += 1
                 Continue For
             End If
+            ' Lo que hace el motor al cargar (f4ee CharGenInterface.cpp:512-513, `GetTemplateByIndex` nulo ⇒ la capa
+            ' no se crea) es lo que hace la app al cargar (NpcRecordOverlay.ValidarTintsDelArchivo): la capa se
+            ' DESCARTA, no queda inerte ni vuelve al Save. Este informe corre sobre la vista del ARCHIVO.
             r.Issues.Add(New PresetIssue(PresetIssueKind.RaceIncompatible, "Face tints", $"Tint layer index {tl.Index} isn't declared by this race",
-                                   $"value {tl.Value}, colour {ColorText(tl)}. The layer is preserved verbatim (it round-trips on Save) but is INERT: the compositor skips it and the Face editor hides its row. Typical cause: the preset was made on another race, or with a LooksMenu custom tint pack that isn't installed."))
+                                   $"value {tl.Value}, colour {ColorText(tl)}. LooksMenu skips this layer on load (no template for the index), and so does this app: it is DROPPED when the preset is applied — it won't render and won't be saved. Typical cause: the preset was made on another race, or with a LooksMenu custom tint pack that isn't installed."))
         Next
         If okCount > 0 Then r.Resolved.Add($"{okCount} tint layer(s) resolve against this race")
     End Sub

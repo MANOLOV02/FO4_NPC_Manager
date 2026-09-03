@@ -186,20 +186,43 @@ Public Module PresetCategories
             sliderCount = p.BodyMorphsKeyed.Count
             keyedDetail = $"{p.BodyMorphsKeyed.Count} morphs across {keys} BodySlide keys"
         End If
-        If sliderCount > 0 Then Set0(d, PresetCategory.BodySliders, sliderCount.ToString(), keyedDetail)
+        If sliderCount > 0 Then
+            Set0(d, PresetCategory.BodySliders, sliderCount.ToString(), keyedDetail)
+        ElseIf p.HasBodyMorphSliders Then
+            ' Channel present but empty — `"BodyMorphs": null` in a LooksMenu file (f4ee CharGenInterface.cpp
+            ' :568-585: the wipe runs when the key has members OR is present-and-null), a .jslot without
+            ' bodyMorphs (skee64 PresetInterface.cpp:281 `ClearMorphs` runs UNCONDITIONALLY, outside the
+            ' `applyType` if of :283-291 — the mapper declares the channel for every file), or a Copy Look of an
+            ' NPC without sliders. An empty channel the engine WRITES has to be tickable, or the filter would
+            ' preserve the target's sliders where the engine clears them.
+            Set0(d, PresetCategory.BodySliders, "0", "no BodySlide sliders: applying clears the target's")
+        End If
 
         ' --- Body scale (RaceMenu node transforms, SSE-only) ---
-        If isSse AndAlso p.SseNodeTransforms IsNot Nothing AndAlso p.SseNodeTransforms.Count > 0 Then
-            ' DECÍA "NiOverride node transforms": el tooltip re-metía la jerga que se le sacó al rótulo de la tilde.
-            Set0(d, PresetCategory.BodyScale, p.SseNodeTransforms.Count.ToString(),
-                 $"{p.SseNodeTransforms.Count} bone(s) moved, rotated or resized")
+        ' Declarado = lista no nula (el mapper siempre la pone para un .jslot; el snapshot de Paste Look sólo si el
+        ' NPC la tenía). Vacía y declarada = tickeable: skee64 PresetInterface.cpp:265
+        ' `Impl_RemoveAllReferenceTransforms` corre SIEMPRE, fuera del `applyType` if de :267-278.
+        If isSse AndAlso p.SseNodeTransforms IsNot Nothing Then
+            If p.SseNodeTransforms.Count > 0 Then
+                ' DECÍA "NiOverride node transforms": el tooltip re-metía la jerga que se le sacó al rótulo de la tilde.
+                Set0(d, PresetCategory.BodyScale, p.SseNodeTransforms.Count.ToString(),
+                     $"{p.SseNodeTransforms.Count} bone(s) moved, rotated or resized")
+            Else
+                Set0(d, PresetCategory.BodyScale, "0", "no bone transforms: applying clears the target's")
+            End If
         End If
 
         ' --- Overlays (+ SSE skin overrides, which ride along as the other body texture layer) ---
         If isSse Then
             Dim ov = If(p.SseBodyOverlays Is Nothing, 0, p.SseBodyOverlays.Count)
             Dim sk = If(p.SseSkinOverrides Is Nothing, 0, p.SseSkinOverrides.Count)
-            If ov + sk > 0 Then Set0(d, PresetCategory.Overlays, (ov + sk).ToString(), $"{ov} overlay nodes + {sk} skin overrides")
+            If ov + sk > 0 Then
+                Set0(d, PresetCategory.Overlays, (ov + sk).ToString(), $"{ov} overlay nodes + {sk} skin overrides")
+            ElseIf p.SseBodyOverlays IsNot Nothing OrElse p.SseSkinOverrides IsNot Nothing Then
+                ' skee64 PresetInterface.cpp:232 `Impl_RemoveAllReferenceNodeOverrides` y :234 `RevertOverlays`
+                ' corren SIEMPRE; los `applyType` ifs (:240-262) sólo condicionan los Add.
+                Set0(d, PresetCategory.Overlays, "0", "no overlays or skin overrides: applying clears the target's")
+            End If
         ElseIf p.HasOverlays OrElse p.Overlays.Count > 0 Then
             Set0(d, PresetCategory.Overlays, p.Overlays.Count.ToString(), "F4SE overlay templates")
         End If
@@ -228,9 +251,13 @@ Public Module PresetCategories
         ' —.jslot sin array `headParts`, o con todos irresolubles— no emitía fila, la categoría no aparecía en
         ' el diálogo, el usuario no podía tildarla y el Revert descartaba el headTexture sin decir nada.
         Dim hasFtstOv As Boolean = isSse AndAlso p.SseHeadTextureFormIDOverride.HasValue
-        If p.HasHeadPartFormIDs OrElse p.HeadPartFormIDs.Count > 0 OrElse hasFtstOv Then
+        ' SSE: las que el archivo trae pero RaceMenu no aplicaría a este NPC (sexo/raza, skee64 PresetInterface.cpp
+        ' :164-175) no cuentan como aplicadas, pero sí hacen que la categoría exista y se vean en el tooltip.
+        Dim filtradas As Integer = If(isSse AndAlso p.SseHeadPartsFiltradasPorMotor IsNot Nothing, p.SseHeadPartsFiltradasPorMotor.Count, 0)
+        If p.HasHeadPartFormIDs OrElse p.HeadPartFormIDs.Count > 0 OrElse hasFtstOv OrElse filtradas > 0 Then
             Dim det = ""
             If p.UnresolvedHeadParts.Count > 0 Then det = $"{p.UnresolvedHeadParts.Count} unresolved (owning plugin not loaded)"
+            If filtradas > 0 Then det = If(det.Length > 0, det & "  •  ", "") & $"{filtradas} not applied by RaceMenu to this NPC's race/sex"
             ' El marcador del FTST va al TEXTO CORTO, no sólo al tooltip: el clear es destructivo sobre el target
             ' y el conteo de head parts NO cambia al agregarlo ⇒ sin hover era invisible.
             ' Tiene que ser CORTO: la celda del contador es una columna ABSOLUTA de 74px con un Label de ~68px
@@ -299,7 +326,14 @@ Public Module PresetCategories
             ' source, they live in the .jslot / sidecar. Own category so a preset's vanilla sliders can be taken
             ' without dragging in morphs that depend on mods the user may not have.
             Dim custom = If(p.SseCustomMorphs Is Nothing, 0, p.SseCustomMorphs.Count)
-            If custom > 0 Then Set0(d, PresetCategory.CustomMorphs, custom.ToString(), "RaceMenu NiOverride morphs")
+            If custom > 0 Then
+                Set0(d, PresetCategory.CustomMorphs, custom.ToString(), "RaceMenu NiOverride morphs")
+            ElseIf p.SseCustomMorphs IsNot Nothing Then
+                ' Declarada y vacía (el mapper la pone para todo .jslot, RaceMenuPresetMapper :527-529): tickeable,
+                ' porque skee64 PresetInterface.cpp:228 `EraseMorphData(npc)` corre SIEMPRE y sin entradas no hay
+                ' SetMorphValue (:229-230) ⇒ aplicar deja al NPC sin custom morphs.
+                Set0(d, PresetCategory.CustomMorphs, "0", "no RaceMenu custom morphs: applying clears the target's")
+            End If
         ElseIf p.HasChargenFaceMorphs OrElse p.ChargenFaceMorphs.Count > 0 Then
             Set0(d, PresetCategory.FaceVertexMorphs, p.ChargenFaceMorphs.Count.ToString(), "chargen MSDV sliders")
         End If
@@ -324,6 +358,11 @@ Public Module PresetCategories
             If headVerts + partVerts > 0 Then
                 Set0(d, PresetCategory.Sculpt, (headVerts + partVerts).ToString(),
                      $"{headVerts} head verts + {partVerts} verts across {parts} shapes")
+            ElseIf p.SseSculptParts IsNot Nothing Then
+                ' Declarada y vacía (el mapper la pone para todo .jslot, RaceMenuPresetMapper :513-521): tickeable,
+                ' porque skee64 PresetInterface.cpp:221 `EraseSculptData(npc)` corre SIEMPRE y `SetSculptTarget`
+                ' (:222-226) sólo con `sculptData.size() > 0` ⇒ aplicar deja al NPC sin sculpt.
+                Set0(d, PresetCategory.Sculpt, "0", "no sculpt: applying clears the target's")
             End If
         End If
 

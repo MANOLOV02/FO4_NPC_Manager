@@ -44,6 +44,71 @@ Public Module RaceMenuPresetMapper
         Return pluginManager.GlobalFormIDFromIdentifierLocal(modName, rawFormId)
     End Function
 
+    ''' <summary>Si skee64 deja PUESTA en el actor una head part que el <c>.jslot</c> trae y que ya resolvió.
+    ''' Dos filtros del motor, en su orden:
+    ''' <list type="number">
+    ''' <item>Carga (LoadJsonPreset :982 / :1000): <c>DYNAMIC_CAST(form, TESForm, BGSHeadPart)</c> — un form que no
+    ''' es HDPT no entra en <c>presetData->headParts</c>.</item>
+    ''' <item>Aplicación (ApplyPresetData :164-175), por actor: (a) el flag de sexo del HDPT tiene que coincidir con
+    ''' el del NPC — <c>gender==0 &amp;&amp; partFlags &amp; kFlagMale</c> o <c>gender==1 &amp;&amp; partFlags &amp;
+    ''' kFlagFemale</c> (:165-166; kFlagMale = 1&lt;&lt;1 = DATA bit 1, kFlagFemale = 1&lt;&lt;2 = bit 2, skse64
+    ''' GameForms.h:790-791); (b) <c>part->validRaces</c> no nulo (:169) — RNAM = 0 ⇒ la parte se SALTEA, sin pase
+    ''' por «humanoide» ni por «default de raza»; (c) <c>validRaces->Visit(ValidRaceFinder(race))</c> (:170-171):
+    ''' la FLST contiene la raza del NPC por igualdad de puntero (:30-42), recorriendo sus entradas directas y las
+    ''' agregadas por script (<c>BGSListForm::Visit</c>, skse64 GameForms.cpp:85-110; de este lado
+    ''' <see cref="HeadPartResolver.RaceCompatCatalog"/> reconstruye las agregadas). NO recurre en FLSTs anidadas.</item>
+    ''' </list>
+    ''' Distinto a propósito de <see cref="HeadPartResolver.IsHdptValidForRace"/>: ése es el criterio del PICKER
+    ''' y del browser, con dos pases propios de la app (RNAM=0 en raza humanoide; default de género de la RACE) que
+    ''' el motor no tiene, y sin el flag de sexo. Sin raza conocida (<paramref name="raceFid"/> = 0) el filtro (2)
+    ''' no se puede evaluar y se devuelve True: no se inventa un actor.
+    ''' Hueco: RNAM apuntando a un form que NO es FLST — no sé qué carga el juego en <c>validRaces</c>; acá se
+    ''' trata como nulo (no aplica).</summary>
+    Public Function MotorAplicaHeadPart(fid As UInteger, raceFid As UInteger, isFemale As Boolean,
+                                        pm As PluginManager, flstCache As Dictionary(Of UInteger, Canon.IFlst),
+                                        ByRef motivo As String) As Boolean
+        motivo = ""
+        Dim rec = pm.GetRecord(fid)
+        If rec Is Nothing Then
+            motivo = "no record with this FormID in the load order"
+            Return False
+        End If
+        If rec.Header.Signature <> "HDPT" Then
+            motivo = $"the record is a {rec.Header.Signature}, not a HDPT"
+            Return False
+        End If
+        If raceFid = 0UI Then Return True
+        Dim hd = Canon.CanonRecords.Hdpt(rec, pm)
+        ' Sin parser del HDPT no hay flags ni RNAM que leer: no se puede evaluar ⇒ se aplica lo resuelto (el gate
+        ' del browser, que sí lo rechaza, lo sigue viendo en HeadPartFormIDs).
+        If hd Is Nothing Then Return True
+        If Not If(isFemale, hd.FlagsFemale, hd.FlagsMale) Then
+            motivo = $"its DATA flags don't include {If(isFemale, "Female", "Male")}"
+            Return False
+        End If
+        If hd.ValidRaces = 0UI Then
+            motivo = "it declares no Valid Races (RNAM=0): the engine never applies it from a preset"
+            Return False
+        End If
+        Dim flst As Canon.IFlst = Nothing
+        If Not flstCache.TryGetValue(hd.ValidRaces, flst) Then
+            Dim flstRec = pm.GetRecord(hd.ValidRaces)
+            If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
+                flst = Canon.CanonRecords.Flst(flstRec, pm)
+            End If
+            flstCache(hd.ValidRaces) = flst
+        End If
+        If flst Is Nothing Then
+            motivo = $"its Valid Races FLST 0x{hd.ValidRaces:X8} doesn't exist in this load order"
+            Return False
+        End If
+        If flst.Miembros().Contains(raceFid) Then Return True
+        If HeadPartResolver.RaceCompatCatalog IsNot Nothing AndAlso
+           HeadPartResolver.RaceCompatCatalog.ContainsRace(hd.ValidRaces, raceFid) Then Return True
+        motivo = $"its Valid Races FLST 0x{hd.ValidRaces:X8} doesn't list race 0x{raceFid:X8}"
+        Return False
+    End Function
+
     ''' <summary>Full preset → <c>.jslot</c>. Combines the FACE mapping (EditFace_Form.OnSaveJslot) and the BODY
     ''' mapping (EditBody_Form.OnSaveJslot + BuildJslotBodyMorphs). Never returns Nothing; a Nothing/empty preset
     ''' yields an all-default jslot.</summary>
@@ -67,7 +132,9 @@ Public Module RaceMenuPresetMapper
                     ident = LooksmenuLoader.FormatFormIdentifier(fid, pluginManager)
                     ptype = ResolveHdptType(fid, pluginManager)
                 End If
-                j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {.FormId = fid, .FormIdentifier = ident, .Type = ptype})
+                ' HadFormIdentifier = lo que Save va a emitir (la key si tiene contenido o si el archivo la traía, RaceMenuJslot.Save).
+                j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {
+                    .FormId = fid, .FormIdentifier = ident, .Type = ptype, .HadFormIdentifier = Not String.IsNullOrEmpty(ident)})
             Next
         End If
         ' Re-emit the head parts that ApplyJslotToPreset couldn't resolve (owning mod absent from THIS load
@@ -90,7 +157,8 @@ Public Module RaceMenuPresetMapper
         If preset.SseUnresolvedHeadParts IsNot Nothing Then
             For Each h In preset.SseUnresolvedHeadParts
                 If h Is Nothing Then Continue For
-                j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {.FormId = h.FormId, .FormIdentifier = h.FormIdentifier, .Type = h.Type})
+                j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {
+                    .FormId = h.FormId, .FormIdentifier = h.FormIdentifier, .Type = h.Type, .HadFormIdentifier = h.HadFormIdentifier})
             Next
         End If
         ' Sólo el override CON VALOR se emite. Los otros dos estados no tienen representación en el formato:
@@ -215,10 +283,8 @@ Public Module RaceMenuPresetMapper
         ' PresetInterface.cpp:1019 + :174), así que un carrier sin peso ya no significa "no escribas la key" —
         ' significa "escribí un 0", y eso deja al actor en peso 0 in-game. 100 es el mismo default que usa
         ' BuildPresetFromState cuando el record no trae NAM7.
-        ' `HadWeight` NO se borra: sigue vivo en el sentido jslot→preset (`If j.HadWeight Then preset.SseWeight
-        ' = …`, más abajo en ApplyJslotToPreset, y lo setea el parser en RaceMenuJslot.Load). Lo que dejó de
-        ' tener sentido es ESCRIBIRLO acá: la emisión de `actor.weight` es incondicional, así que el flag ya no
-        ' gatea nada en el camino de salida. Borrar la propiedad haría que todo preset cargado traiga SseWeight=0.
+        ' (El flag `HadWeight` que gateaba el sentido jslot→preset ya no existe: ApplyJslotToPreset asigna
+        ' `SseWeight = j.Weight` incondicional, como el motor — ver el bloque BODY de ApplyJslotToPreset.)
         j.Weight = CDbl(If(preset.SseWeight.HasValue, preset.SseWeight.Value, 100.0F))
 
         ' ---- BODY: bodyMorphs ← keyed (or flat fallback under a synthetic key), replicated from
@@ -268,23 +334,25 @@ Public Module RaceMenuPresetMapper
                                   Optional raceFid As UInteger = 0UI, Optional isFemale As Boolean = False)
         If j Is Nothing OrElse preset Is Nothing Then Return
 
-        ' ---- FACE IDENTITY: headParts (hair/eyes/brows/…) → preset.HeadPartFormIDs. skee64 ApplyPreset applies
-        ' the preset's head parts (ChangeHeadPart, PresetInterface.cpp:1580); without this a loaded .jslot changed
-        ' the morphs/tints but NOT the actual hair/eyes. The portable id is the "formIdentifier" ("Plugin|FormID");
-        ' resolve it against the current load order (LooksmenuLoader.ResolveFormIdentifier). Requires the
-        ' PluginManager; skipped (identity untouched) without it.
+        ' ---- FACE IDENTITY: headParts (hair/eyes/brows/…) → preset.HeadPartFormIDs = lo que skee64 deja PUESTO
+        ' en el NPC después de LoadPreset. Dos etapas del motor, replicadas las dos:
+        '   (1) LoadJsonPreset :976-1015 RESUELVE cada entrada: `isMember("formIdentifier")` ⇒ GetFormFromIdentifier
+        '       (:979-986; y SÓLO si la clave no está prueba `formId` + la tabla `mods` :988-1013). Lo que no resuelve
+        '       (form nulo, mod fuera de la tabla o inactivo, o un form que NO es BGSHeadPart :982/:1000) no entra
+        '       en `presetData->headParts` y el resto se aplica igual.
+        '   (2) ApplyPresetData :164-175 FILTRA por actor antes de ChangeHeadPart: flag de sexo del HDPT + `validRaces`
+        '       existente y que contenga la raza (ver MotorAplicaHeadPart). Lo filtrado NO queda en el NPC.
+        ' El portable id es "formIdentifier" ("Plugin|FormID"); se resuelve contra el load order actual
+        ' (LooksmenuLoader.ResolveFormIdentifier). Requiere el PluginManager; sin él, identidad intacta.
         '
-        ' When the identifier does NOT resolve (fid=0, the owning mod isn't in this load order) we do NOT fall
-        ' back to h.FormId: that FormId is the absolute id from the AUTHOR's load order, whose master-index high
-        ' byte is meaningless here — it would inject a garbage FormID that the race gate can't resolve and that
-        ' (measured) makes HeadPartResolver discard the WHOLE preset. Instead we SKIP the part and PRESERVE it
-        ' verbatim: parity with the FO4 path (LooksmenuLoader.ParseFile routes unresolved entries into
-        ' UnresolvedHeadParts, keeping the rest), and parity with skee itself (PresetInterface.cpp skips a head
-        ' part it can't resolve and applies the rest). The NPC then keeps its own parts for the skipped slot, and
-        ' the verbatim entry (SseUnresolvedHeadParts) lets ToJslot re-emit it on save without loss. Only when
-        ' there is NO identifier (an old .jslot with no portable id) do we use h.FormId — it's all we have.
+        ' Con identificador presente e irresoluble (fid=0: el mod dueño no está en este load order) NO se cae a
+        ' h.FormId: ese FormId es el absoluto del load order del AUTOR, cuyo byte alto acá no nombra nada — metería
+        ' un FormID basura que el gate de raza no resuelve y que (MEDIDO) hacía que HeadPartResolver descartara el
+        ' preset ENTERO. Se SALTEA y se PRESERVA verbatim (SseUnresolvedHeadParts ⇒ ToJslot lo re-emite al
+        ' guardar; divergencia decidida por el usuario el 24-ago, ver CopyUnresolvedHeadPartsToSnapshot). Sólo
+        ' cuando el archivo NO trae la clave (`HadFormIdentifier=False`, .jslot viejo) se usa formId + `mods`.
         If pluginManager IsNot Nothing AndAlso j.HeadParts IsNot Nothing AndAlso j.HeadParts.Count > 0 Then
-            ' ⛔ IDEMPOTENCIA: las DOS listas se vacian ACA, adentro del mismo `If` que gobierna la lista
+            ' ⛔ IDEMPOTENCIA: las TRES listas se vacian ACA, adentro del mismo `If` que gobierna la lista
             ' resuelta. `preset.HeadPartFormIDs` ya se REEMPLAZA mas abajo (Clear + AddRange), pero las de
             ' NO resueltas solo se AGREGABAN, asi que aplicar un segundo .jslot sobre el mismo objeto
             ' —cargar A y despues B— dejaba las de A pegadas y `ToJslot` las re-emitia al guardar B.
@@ -296,22 +364,27 @@ Public Module RaceMenuPresetMapper
             ' "sobrante de la carga anterior".
             preset.UnresolvedHeadParts.Clear()
             preset.SseUnresolvedHeadParts.Clear()
+            preset.SseHeadPartsFiltradasPorMotor.Clear()
             Dim hp As New List(Of UInteger)
+            ' Una FLST de RNAM se parsea una sola vez por carga (varias partes comparten la misma lista).
+            Dim flstCache As New Dictionary(Of UInteger, Canon.IFlst)
             For Each h In j.HeadParts
                 If h Is Nothing Then Continue For
                 Dim fid As UInteger
-                If Not String.IsNullOrEmpty(h.FormIdentifier) Then
-                    fid = LooksmenuLoader.ResolveFormIdentifier(h.FormIdentifier, pluginManager)
+                If h.HadFormIdentifier Then
+                    ' :979: la clave está ⇒ esta rama, aunque el valor sea "" o null (asString ⇒ "" ⇒
+                    ' GetFormFromIdentifier ⇒ nullptr ⇒ no resuelve). Nunca cae a formId.
+                    fid = LooksmenuLoader.ResolveFormIdentifier(If(h.FormIdentifier, ""), pluginManager)
                     If fid = 0UI Then
                         ' Unresolved: skip + preserve verbatim (both the diagnostic string and the full entry).
                         ' Sin dedup: las listas se vaciaron al entrar al bloque, asi que lo unico que puede
                         ' repetirse es una entrada repetida DENTRO de este mismo .jslot — y esa la queremos
                         ' re-emitir tal cual vino, que es lo que significa "preservar verbatim".
-                        preset.UnresolvedHeadParts.Add(h.FormIdentifier)
+                        preset.UnresolvedHeadParts.Add(If(h.FormIdentifier, ""))
                         preset.SseUnresolvedHeadParts.Add(h)
                         If Logger.Enabled Then
                             Dim srcName As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))
-                            Dim ident As String = h.FormIdentifier
+                            Dim ident As String = If(h.FormIdentifier, "")
                             Logger.LogLazy(Function() $"[LMLoad] '{srcName}': head part '{ident}' unresolved (plugin not in load order) -> skipped, preserved verbatim.")
                         End If
                         Continue For
@@ -345,7 +418,25 @@ Public Module RaceMenuPresetMapper
                         Continue For
                     End If
                 End If
-                If fid <> 0UI AndAlso Not hp.Contains(fid) Then hp.Add(fid)
+                If fid = 0UI Then Continue For
+                ' Etapa (2): el filtro por actor de ApplyPresetData :164-175 (y el DYNAMIC_CAST a BGSHeadPart de
+                ' :982/:1000, que ya en la carga descarta un form que no es HDPT). Lo que el motor no aplica NO va
+                ' a HeadPartFormIDs — va a SseHeadPartsFiltradasPorMotor para que el gate de raza del browser y el
+                ' reporte sigan viendo lo que el archivo declara. Sin raza conocida (raceFid=0: los probes de
+                ' Tools llaman sin ella) el filtro de :164-175 no se puede evaluar y se aplica lo resuelto.
+                Dim motivo As String = ""
+                If Not MotorAplicaHeadPart(fid, raceFid, isFemale, pluginManager, flstCache, motivo) Then
+                    If Not preset.SseHeadPartsFiltradasPorMotor.Contains(fid) Then preset.SseHeadPartsFiltradasPorMotor.Add(fid)
+                    If Logger.Enabled Then
+                        Dim srcName3 As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))
+                        Dim fidF As UInteger = fid
+                        Dim motivoF As String = motivo
+                        Logger.LogLazy(Function() $"[LMLoad] '{srcName3}': head part 0x{fidF:X8} resolved but the engine " &
+                                                  $"would not apply it to this actor ({motivoF}) -> not applied (skee64 PresetInterface.cpp:164-175).")
+                    End If
+                    Continue For
+                End If
+                If Not hp.Contains(fid) Then hp.Add(fid)
             Next
             If hp.Count > 0 Then
                 preset.HeadPartFormIDs.Clear()
@@ -370,34 +461,42 @@ Public Module RaceMenuPresetMapper
             If ftstFid <> 0UI Then preset.SseHeadTextureFormIDOverride = ftstFid
         End If
 
-        ' ---- FACE: sliders → NAM9, capped at Nam9SliderCount (the [18] VampireMorph sentinel is ignored), then
-        ' set HasSseMorphs (EditFace_Form.vb:566-569 + ApplySseMorphOverlay :683-685). Seed from the preset's
-        ' existing SseNam9 so untouched slots survive; NAMA is not carried in the jslot slider array (preserve /
-        ' default to the unset-zero array).
-        Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
+        ' ---- FACE: morphs.default.morphs → NAM9 y morphs.default.presets → NAMA. El motor los escribe POSICIONALMENTE
+        ' sobre el faceMorph del NPC (ApplyPresetData :182-192: `option[i] = value` / `presets[i] = value` por cada
+        ' entrada del archivo, en orden) — o sea que un archivo con 5 entradas pisa los índices 0..4 y deja 5..17
+        ' como estaban en el NPC. UNA ley para eso: `preset.SseNam9`/`SseNama` llevan EXACTAMENTE los índices que el
+        ' estado cubre, y NpcRecordOverlay escribe sólo `Length` entradas sobre el record del NPC destino (los no
+        ' cubiertos quedan como el RECORD, no ceros). Con overlay previo (clon = estado en memoria) el array nuevo
+        ' mide Max(previo, cubiertos) sembrado del previo; sin overlay previo mide `cubiertos` y nada más: no se
+        ' siembra ni ceros ni centinelas, porque eso sería inventar un valor donde el motor deja el del NPC.
+        ' Tope 18: el slot 18 (VampireMorph) viaja aparte en SseVampireMorph. Más de 19 entradas: el motor escribe
+        ' fuera del array (hueco: comportamiento indefinido); acá se descartan.
+        ' NAMA tope 4 (`presets[4]`): más de 4 ⇒ mismo hueco, se descartan.
+        Dim cubiertos9 As Integer = Math.Min(j.SliderMorphs.Count, SseNam9MorphMap.Nam9SliderCount)
+        Dim nam9(Math.Max(cubiertos9, If(preset.SseNam9 Is Nothing, 0, preset.SseNam9.Length)) - 1) As Single
         If preset.SseNam9 IsNot Nothing Then
             For i = 0 To Math.Min(preset.SseNam9.Length, nam9.Length) - 1 : nam9(i) = preset.SseNam9(i) : Next
         End If
-        For i = 0 To Math.Min(j.SliderMorphs.Count, SseNam9MorphMap.Nam9SliderCount) - 1
+        For i = 0 To cubiertos9 - 1
             nam9(i) = j.SliderMorphs(i)
         Next
         preset.SseNam9 = nam9
-        ' Slot 18 (VampireMorph) va aparte porque no entra en los 18 sliders editables. Se captura para que
-        ' ToJslot lo devuelva en vez de la constante centinela. Ver LooksmenuPreset.SseVampireMorph.
+        ' Slot 18 (VampireMorph): `option[18]` lo escribe el mismo bucle :188-192 cuando el archivo trae ≥ 19
+        ' entradas. Va aparte porque no entra en los 18 sliders editables; NpcRecordOverlay lo escribe al record y
+        ' ToJslot lo devuelve en vez de la constante centinela. Ver LooksmenuPreset.SseVampireMorph.
         If j.SliderMorphs.Count > SseNam9MorphMap.Nam9SliderCount Then
             preset.SseVampireMorph = j.SliderMorphs(SseNam9MorphMap.Nam9SliderCount)
         End If
-        ' NAMA face-part presets (nose/brow/eyes/lip TYPE) → the NPC's NAMA vector. skee applies
-        ' morphs.default.presets (PresetInterface.cpp:1540-1543); previously the jslot value was preserved in Raw but
-        ' never applied. 0xFFFFFFFF = "unset/default" per family, preserved (never forced to a real type 0).
-        Dim nama = SseNam9MorphMap.DefaultNamaVector()   ' una sola ley para "sin tipo asignado"
+        Dim cubiertosA As Integer = Math.Min(j.NamaPresets.Count, SseNam9MorphMap.NamaFamilyCount)
+        Dim nama(Math.Max(cubiertosA, If(preset.SseNama Is Nothing, 0, preset.SseNama.Length)) - 1) As UInteger
         If preset.SseNama IsNot Nothing Then
             For i = 0 To Math.Min(preset.SseNama.Length, nama.Length) - 1 : nama(i) = preset.SseNama(i) : Next
         End If
-        For i = 0 To Math.Min(j.NamaPresets.Count, SseNam9MorphMap.NamaFamilyCount) - 1
+        For i = 0 To cubiertosA - 1
             nama(i) = j.NamaPresets(i)
         Next
         preset.SseNama = nama
+        ' :179-192 corre siempre (aloca faceMorph si falta y escribe lo que haya): el canal siempre se declara.
         preset.HasSseMorphs = True
 
         ' ---- FACE: sculpt ÷ divisor → world deltas. A RaceMenu preset sculpts head + brows + eyes + mouth as
@@ -405,26 +504,31 @@ Public Module RaceMenuPresetMapper
         ' SseSculptParts so render/bake route each to its shape by Host (brows/eyes/mouth were previously dropped
         ' — only Sculpt(0)=head survived, so those parts ignored the preset). SseSculptHead stays = the head block
         ' (Host base-head chargen, no "Brows") for the editor/save back-compat that reads the head-only field.
-        If j.Sculpt.Count > 0 Then
-            Dim div = Math.Max(1, j.SculptDivisor)
-            Dim parts As New List(Of NPC_SculptPart)(j.Sculpt.Count)
-            For Each blk In j.Sculpt
-                Dim verts As New List(Of NPC_SculptVert)(blk.Indices.Count)
-                For k = 0 To blk.Indices.Count - 1
-                    verts.Add(New NPC_SculptVert With {.Index = blk.Indices(k), .Dx = blk.Dx(k) / div, .Dy = blk.Dy(k) / div, .Dz = blk.Dz(k) / div})
-                Next
-                parts.Add(New NPC_SculptPart With {.Host = If(blk.Host, ""), .Verts = verts})
+        ' INCONDICIONAL: skee64 ApplyPresetData (PresetInterface.cpp:221-226) hace `EraseSculptData(npc)` SIEMPRE y
+        ' recién después `SetSculptTarget` si `sculptData.size() > 0`. Un .jslot sin sculpt DEJA al NPC sin sculpt: acá
+        ' eso es una lista vacía (SseSculptHead = Nothing), que el overlay copia tal cual (NpcRecordOverlay :419-420).
+        ' Dx/Dy/Dz del modelo son ENTEROS escalados por SculptDivisor (RaceMenuJslot.Load normaliza la forma float a
+        ' ese entero); acá se divide para volver al delta de mundo que aplica el motor (:1095-1097 `dx / multiplier`).
+        ' SculptDivisor nunca es <= 0: RaceMenuJslot.Load sólo lo asigna cuando `multiplier > 0` (:1031-1032) y
+        ' arranca en 10000 (:183) — el mismo corte que el motor usa para elegir forma entera o float (:1094).
+        Dim div = j.SculptDivisor
+        Dim parts As New List(Of NPC_SculptPart)(j.Sculpt.Count)
+        For Each blk In j.Sculpt
+            Dim verts As New List(Of NPC_SculptVert)(blk.Indices.Count)
+            For k = 0 To blk.Indices.Count - 1
+                verts.Add(New NPC_SculptVert With {.Index = blk.Indices(k), .Dx = blk.Dx(k) / div, .Dy = blk.Dy(k) / div, .Dz = blk.Dz(k) / div})
             Next
-            preset.SseSculptParts = parts
-            preset.SseSculptHead = SelectHeadSculptBlock(parts)
-        End If
+            parts.Add(New NPC_SculptPart With {.Host = If(blk.Host, ""), .Verts = verts})
+        Next
+        preset.SseSculptParts = parts
+        preset.SseSculptHead = SelectHeadSculptBlock(parts)
 
         ' ---- FACE: custom morphs → preset (EditFace_Form.vb:580-584).
-        If j.CustomMorphs.Count > 0 Then
-            Dim cms As New List(Of NPC_CustomMorph)
-            For Each cm In j.CustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = CSng(cm.Value)}) : Next
-            preset.SseCustomMorphs = cms
-        End If
+        ' INCONDICIONAL: PresetInterface.cpp:228-230 hace `EraseMorphData(npc)` SIEMPRE y después `SetMorphValue` por
+        ' cada entrada. Sin entradas = NPC sin custom morphs (lista vacía, que el overlay copia; NpcRecordOverlay :421).
+        Dim cms As New List(Of NPC_CustomMorph)(j.CustomMorphs.Count)
+        For Each cm In j.CustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = CSng(cm.Value)}) : Next
+        preset.SseCustomMorphs = cms
 
         ' ---- FACE: tintInfo → SseTintLayers (+ HasSseTints) and the per-layer custom mask texture map.
         ' Inverse of the pack above and of RaceMenu's apply (PresetInterface.cpp:194-205): the jslot colour's ALPHA
@@ -434,6 +538,19 @@ Public Module RaceMenuPresetMapper
         ' CK would resolve to a race default, re-introducing the wrong-colour bug). Verified vanilla: custom colours
         ' carry TIAS = -1. tint.texture, when non-empty, is a RaceMenu custom mask path (tintMask->texture->str =
         ' tint.name) → SseTintTexOverride[index], composited by SseFaceTintComposer instead of the RACE layer's mask.
+        '
+        ' LEY DEL MOTOR (PresetInterface.cpp:194-218) — leída línea por línea:
+        '   :197 `if (player == actor && player->tintMasks.GetNthItem(tint.index, tintMask))` ⇒ el motor sólo toca las
+        '        máscaras del JUGADOR, POR POSICIÓN y EN EL LUGAR (color+alpha; textura sólo si alpha > 0, :202-204).
+        '        Las posiciones que el archivo NO trae quedan como estaban; sin entradas no se toca nada.
+        '   :206-217 para CUALQUIER actor: sólo `tint.index == 0 && setSkinColor` ⇒ SetSkinFromTint (tono de piel).
+        '   SavePreset (:380-392) escribe TODAS las máscaras del jugador que tengan textura ⇒ un .jslot producido por
+        '   RaceMenu cubre todas las posiciones de la raza y «en el lugar por posición» ≡ reemplazo de la lista.
+        ' DECISIÓN DE PRODUCTO (D-Tints SSE, no del motor): el NPC recibe el tratamiento del jugador (la lista TINI del
+        ' record se reemplaza por lo que el archivo trae, capa por posición→TINI). `HasSseTints` sólo con entradas: el
+        ' motor con 0 entradas no escribe el canal, así que un .jslot sin tintInfo NO borra los tints del record.
+        ' HUECO declarado: un archivo que cubre MENOS posiciones que la raza destino (editado a mano o de otra raza
+        ' con menos capas) en el motor deja las posiciones no cubiertas intactas; acá la lista se reemplaza entera.
         If j.TintInfo.Count > 0 Then
             Dim outList As New List(Of LooksmenuLoader.CapaDeTinteSsePreset)
             Dim texMap As Dictionary(Of Integer, String) = Nothing
@@ -462,13 +579,20 @@ Public Module RaceMenuPresetMapper
             preset.SseTintTexOverride = texMap
         End If
 
-        ' ---- BODY: actor.weight → SseWeight (clamp 0..100) (EditBody_Form.vb:1046-1047).
-        ' ERA INCONDICIONAL: un preset sin `weight` dejaba SseWeight = 0 y le borraba el peso al NPC.
-        If j.HadWeight Then preset.SseWeight = CSng(Math.Max(0.0, Math.Min(100.0, j.Weight)))
+        ' ---- BODY: actor.weight → SseWeight (NAM7).
+        ' INCONDICIONAL y SIN CLAMP: PresetInterface.cpp:177 `npc->weight = presetData->weight` corre siempre;
+        ' `PresetData()` arranca en `weight = 0` (:893) y el bloque `actor` (:1017-1024) sólo lo pisa si el objeto está
+        ' (`weight` ausente ⇒ asFloat(null) = 0). Un .jslot sin `actor.weight` deja al NPC en peso 0 — es lo que hace el
+        ' motor. El clamp 0..100 que había acá era del editor (EditBody_Form), no del motor: fuera (D-Weight SSE).
+        preset.SseWeight = CSng(j.Weight)
 
         ' ---- BODY: bodyMorphs → flat render dict + keyed sidecar (EditBody_Form.vb:1049-1050).
+        ' :281 `g_bodyMorphInterface.ClearMorphs(actor)` corre SIEMPRE — está FUERA del `if (applyType & kPresetApplyBodyMorphs)`
+        ' de :283-291, que sólo condiciona los SetMorph — ⇒ el canal se declara aunque el archivo no traiga bodyMorphs:
+        ' el NPC queda sin morfos de cuerpo, no con los que tenía.
         preset.BodyMorphSliders = j.BodyMorphsToFlatSliderDict()
         preset.BodyMorphsKeyed = JslotBodyMorphsToKeyed(j)
+        preset.HasBodyMorphSliders = True
 
         ' ---- BODY: overrides → SSE body overlays (EditBody_Form.vb:1053).
         preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(j.Overlays)

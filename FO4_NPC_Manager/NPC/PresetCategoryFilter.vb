@@ -22,7 +22,16 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' <para><b>Game gate.</b> A category that doesn't exist in the running game
 ''' (<see cref="PresetCategories.AppliesToGame"/>) is treated as unticked, so its carrier always ends up
 ''' holding the target's value and never the source's — that is what kept FO4 fields out of SSE pastes
-''' when the two builders were separate.</para></summary>
+''' when the two builders were separate.</para>
+'''
+''' <para><b>Engine gate (FO4).</b> LooksMenu's <c>LoadPreset</c> (f4ee CharGenInterface.cpp:269-645) reads
+''' every channel inside its own try/catch: when the channel's read throws, the actor keeps whatever it had
+''' and the rest of the file is still applied. The parser records that per channel as <c>Has* = False</c>
+''' (= "the engine would not write this channel"). A ticked category whose channel the engine would not
+''' write is therefore treated exactly like an unticked one (<see cref="MotorEscribe"/>): the target's
+''' current value = baseline overlay if it declares the field, else the record — because that is the state
+''' the engine leaves. Channels finer than a category (the three MWGT slots, FMRS regions vs FMIN
+''' intensity) are completed slot by slot in <see cref="CompletarCanalesQueElMotorNoEscribe"/>.</para></summary>
 Public Module PresetCategoryFilter
 
     ''' <summary>Build the preset to stamp as the NPC's overlay: source values for the ticked categories,
@@ -47,9 +56,13 @@ Public Module PresetCategoryFilter
         For Each cat In AllCategories
             ' A category the running game doesn't have behaves like an unticked one: its carrier gets the
             ' target's value, so a cross-game source can never leak MRSV/FMRS into SSE (or sculpt into FO4).
-            If options.Value(cat) AndAlso AppliesToGame(cat, isSse) Then Continue For
+            ' And so does a ticked one whose channel the ENGINE would not write (the channel's read threw
+            ' inside LoadPreset's per-channel try/catch ⇒ Has* = False): the engine leaves the actor as it
+            ' was, which is the baseline overlay's value when it declares the field, else the record's.
+            If options.Value(cat) AndAlso AppliesToGame(cat, isSse) AndAlso MotorEscribe(source, cat, isSse) Then Continue For
             Revert(p, cat, targetRaw, baseline, isSse)
         Next
+        CompletarCanalesQueElMotorNoEscribe(p, source, targetRaw, baseline, options, isSse)
 
         ' Replacing a main-type parent (e.g. a hair swap) orphans the target's raw Misc parts (hairlines):
         ' record them HERE, at the apply point, so Save drops them the same way Edit Face does. Empty when
@@ -78,6 +91,125 @@ Public Module PresetCategoryFilter
         Return p
     End Function
 
+    ''' <summary>"The engine would write this category from <paramref name="source"/>". FO4 only: LooksMenu's
+    ''' LoadPreset (f4ee CharGenInterface.cpp:269-645) wraps each channel in its own try/catch and the
+    ''' parser reports a throw as <c>Has* = False</c>. Under Skyrim the answer is always True: RaceMenu's
+    ''' LoadJsonPreset has no per-channel catch — a file that does not convert is rejected WHOLE
+    ''' (<c>RaceMenuJslot.Load</c> returns Nothing and nothing reaches this filter).
+    ''' <para>Categories with no engine channel behind them (the <c>_npcm_</c> carriers: skin override,
+    ''' outfit, chargen flag) are always "written": their carrier already distinguishes absent
+    ''' (Nothing = preserve) from present.</para></summary>
+    Public Function MotorEscribe(source As LooksmenuLoader.LooksmenuPreset, cat As PresetCategory, isSse As Boolean) As Boolean
+        If source Is Nothing Then Return False
+        If isSse Then Return True
+        Select Case cat
+            Case PresetCategory.BodyWeight
+                ' Per slot (:476-484 reads [0],[1],[2] in sequence; a throw leaves that slot and the following
+                ' ones untouched). A slot the engine did not write is `Nothing`; the whole category counts as
+                ' written when at least one slot is, and CompletarCanalesQueElMotorNoEscribe fills the rest.
+                Return source.WeightThin.HasValue OrElse source.WeightMuscular.HasValue OrElse source.WeightFat.HasValue
+            Case PresetCategory.BodyRegions
+                Return source.HasBodyMorphValues                    ' Values :373-397
+            Case PresetCategory.BodySliders
+                Return source.HasBodyMorphSliders                   ' BodyMorphs :568-585 (wipe iff members>0 or null)
+            Case PresetCategory.Overlays
+                Return source.HasOverlays                           ' Overlays :587-630 (RemoveAll unconditional)
+            Case PresetCategory.FaceParts
+                Return source.HasHeadPartFormIDs                    ' HeadParts :318-352
+            Case PresetCategory.HairColor
+                ' HairColor :354-363: written only when the identifier resolves to a loaded CLFM; an absent
+                ' or unresolved colour leaves the actor's. The raw identifier still travels (see Completar…).
+                Return source.HairColorFormID <> 0UI
+            Case PresetCategory.FaceTints
+                Return source.HasFaceTintLayers                     ' Tints :486-566
+            Case PresetCategory.FaceVertexMorphs
+                Return source.HasChargenFaceMorphs                  ' Presets :433-460
+            Case PresetCategory.FaceBoneRegions
+                ' Regions :399-429 and Intensity :462-474 are two channels of one category: the category is
+                ' written when either is; the missing half is completed slot by slot below.
+                Return source.HasFaceBoneRegions OrElse source.HasFacialMorphIntensity
+            Case Else
+                Return True
+        End Select
+    End Function
+
+    ''' <summary>Second pass for the channels finer than a category. For a TICKED FO4 category whose engine
+    ''' write is only partial, the parts the engine did not write take the target's value (baseline if it
+    ''' declares them, else the record), exactly as <see cref="Revert"/> does for a whole category:
+    ''' <list type="bullet">
+    ''' <item>MWGT: <c>Weight[i].asFloat()</c> :476-484 — a slot left <c>Nothing</c> by the parser (the read
+    ''' threw there) is filled from the target; the slots before it keep the file's value.</item>
+    ''' <item>FMRS regions vs FMIN intensity: Regions :399-429 and Intensity :462-474 are separate
+    ''' try/catch blocks, so either half can be the one the engine skipped.</item>
+    ''' </list>
+    ''' Two app-only carriers ride along with a category the engine did not write and are restored from
+    ''' the source because they are not engine channels: the unresolved hair-colour identifier
+    ''' (PRESERVACIÓN, no invención — user decision 2026-08-24) and the body skin-tone QNAM adjustment
+    ''' (<c>_npcm_</c>, filtered with the tints by user decision, not by LooksMenu).</summary>
+    Private Sub CompletarCanalesQueElMotorNoEscribe(p As LooksmenuLoader.LooksmenuPreset,
+                                                    source As LooksmenuLoader.LooksmenuPreset,
+                                                    raw As NPC_Data,
+                                                    baseline As LooksmenuLoader.LooksmenuPreset,
+                                                    options As PresetCategoryOptions,
+                                                    isSse As Boolean)
+        If isSse OrElse source Is Nothing Then Return
+
+        If options.Value(PresetCategory.BodyWeight) Then
+            If Not p.WeightThin.HasValue Then p.WeightThin = PickSingle(baseline?.WeightThin, raw?.Record.PesoDelCuerpo(0))
+            If Not p.WeightMuscular.HasValue Then p.WeightMuscular = PickSingle(baseline?.WeightMuscular, raw?.Record.PesoDelCuerpo(1))
+            If Not p.WeightFat.HasValue Then p.WeightFat = PickSingle(baseline?.WeightFat, raw?.Record.PesoDelCuerpo(2))
+        End If
+
+        If options.Value(PresetCategory.FaceBoneRegions) Then
+            If Not source.HasFaceBoneRegions Then RevertirRegionesDeCara(p, raw, baseline)
+            If Not source.HasFacialMorphIntensity Then RevertirIntensidadDeMorfoFacial(p, raw, baseline)
+        End If
+
+        If options.Value(PresetCategory.HairColor) AndAlso source.HairColorFormID = 0UI Then
+            p.UnresolvedHairColor = If(source.UnresolvedHairColor, "")
+        End If
+
+        If options.Value(PresetCategory.FaceTints) AndAlso Not source.HasFaceTintLayers Then
+            p.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(source.SkinToneOffset)
+        End If
+    End Sub
+
+    ''' <summary>FMRS regions from the target: baseline's when it declares them, else the record's. The
+    ''' result authoritatively defines the field (Has = True), as every Revert branch does.</summary>
+    Private Sub RevertirRegionesDeCara(p As LooksmenuLoader.LooksmenuPreset, raw As NPC_Data, baseline As LooksmenuLoader.LooksmenuPreset)
+        p.FaceBoneRegions.Clear()
+        If baseline IsNot Nothing AndAlso baseline.HasFaceBoneRegions Then
+            For Each kv In baseline.FaceBoneRegions
+                p.FaceBoneRegions(kv.Key) = CType(kv.Value?.Clone(), Single())
+            Next
+        ElseIf raw IsNot Nothing Then
+            Dim rawFo4 = TryCast(raw.Record, Canon.NpcFO4)
+            If rawFo4 IsNot Nothing Then
+                For Each fm In rawFo4.FaceMorphs
+                    p.FaceBoneRegions(fm.FaceMorphIndex) = New Single() {
+                        fm.ValuesPositionX, fm.ValuesPositionY, fm.ValuesPositionZ,
+                        fm.ValuesRotationX, fm.ValuesRotationY, fm.ValuesRotationZ, fm.ValuesScale}
+                Next
+            End If
+        End If
+        p.HasFaceBoneRegions = True
+    End Sub
+
+    ''' <summary>FMIN intensity from the target: baseline's when it declares it, else the record's
+    ''' (<c>IntensidadDeMorfoFacial</c> = 1.0 when the record has no FMIN — the app's product decision for
+    ''' "absent", same value the parser gives a file without <c>Morphs.Intensity</c>). Has = True: the
+    ''' overlay writes it only when the record already carries FMIN or the value is not 1.0.</summary>
+    Private Sub RevertirIntensidadDeMorfoFacial(p As LooksmenuLoader.LooksmenuPreset, raw As NPC_Data, baseline As LooksmenuLoader.LooksmenuPreset)
+        If baseline IsNot Nothing AndAlso baseline.HasFacialMorphIntensity Then
+            p.FacialMorphIntensity = baseline.FacialMorphIntensity
+        ElseIf raw IsNot Nothing Then
+            p.FacialMorphIntensity = raw.Record.IntensidadDeMorfoFacial()
+        Else
+            p.FacialMorphIntensity = 1.0F
+        End If
+        p.HasFacialMorphIntensity = True
+    End Sub
+
     ''' <summary>Overwrite ONE category of <paramref name="p"/> with the target's current value: the
     ''' baseline overlay's when it declares that field, else the raw record's. Record-less carriers
     ''' (F4SE/RaceMenu-only) end up empty when there is no baseline.</summary>
@@ -98,9 +230,14 @@ Public Module PresetCategoryFilter
                         p.SseWeight = 100.0F
                     End If
                 Else
-                    p.WeightThin = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightThin), If(raw Is Nothing, 0.0F, raw.Record.PesoDelCuerpo(0)))
-                    p.WeightMuscular = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightMuscular), If(raw Is Nothing, 0.0F, raw.Record.PesoDelCuerpo(1)))
-                    p.WeightFat = PickSingle(If(baseline Is Nothing, Nothing, baseline.WeightFat), If(raw Is Nothing, 0.0F, raw.Record.PesoDelCuerpo(2)))
+                    ' `PesoDelCuerpo` is `Single?` (Nothing = no MWGT or the "use the race's" sentinel). It used
+                    ' to be narrowed to `Single` on the way into PickSingle (Option Strict Off): on a record
+                    ' without MWGT that narrowing THROWS (InvalidOperationException) instead of preserving.
+                    ' Nothing now travels through: the overlay skips a `Nothing` slot (`.HasValue`), which is
+                    ' "preserve" — the target keeps having no MWGT.
+                    p.WeightThin = PickSingle(baseline?.WeightThin, raw?.Record.PesoDelCuerpo(0))
+                    p.WeightMuscular = PickSingle(baseline?.WeightMuscular, raw?.Record.PesoDelCuerpo(1))
+                    p.WeightFat = PickSingle(baseline?.WeightFat, raw?.Record.PesoDelCuerpo(2))
                 End If
 
             Case PresetCategory.BodyRegions
@@ -125,6 +262,8 @@ Public Module PresetCategoryFilter
                     Next
                     If isSse Then p.BodyMorphsKeyed = CloneBodyMorphsKeyed(baseline.BodyMorphsKeyed)
                 End If
+                ' The result authoritatively defines the field, like every other Revert branch.
+                p.HasBodyMorphSliders = True
 
             Case PresetCategory.BodyScale
                 ' RaceMenu NiOverride node transforms (SSE-only) — overlay-only carrier.
@@ -192,6 +331,7 @@ Public Module PresetCategoryFilter
                 p.HeadPartFormIDs.Clear()
                 p.UnresolvedHeadParts.Clear()
                 p.SseUnresolvedHeadParts.Clear()
+                p.SseHeadPartsFiltradasPorMotor.Clear()
                 p.HeadPartFormIDsIncludeRawExtras = False
                 ' `Nothing` (= "sin override, preservar el FTST del target"), NUNCA `0UI`: con el carrier
                 ' tri-estado, 0 significa CLEAR EXPLÍCITO. Poner 0 acá —el camino de "categoría NO tickeada",
@@ -203,6 +343,7 @@ Public Module PresetCategoryFilter
                     p.HeadPartFormIDs.AddRange(baseline.HeadPartFormIDs)
                     p.UnresolvedHeadParts.AddRange(baseline.UnresolvedHeadParts)
                     p.SseUnresolvedHeadParts.AddRange(baseline.SseUnresolvedHeadParts)
+                    p.SseHeadPartsFiltradasPorMotor.AddRange(baseline.SseHeadPartsFiltradasPorMotor)
                     p.HeadPartFormIDsIncludeRawExtras = baseline.HeadPartFormIDsIncludeRawExtras
                 ElseIf raw IsNot Nothing Then
                     p.HeadPartFormIDs.AddRange(raw.Record.PartesDeCabeza())
@@ -298,8 +439,9 @@ Public Module PresetCategoryFilter
                     ' `BuildFiltered` arranca clonando el preset ORIGEN y `ClonePreset` copia SseVampireMorph, así
                     ' que sin esta línea un Load/Paste con "Face vertex morphs" DESTILDADO dejaba el VampireMorph
                     ' del origen sobre un target al que se le preservó todo el resto de la cara — y de ahí viajaba
-                    ' al .jslot exportado del target. (Al ESP no llega: NpcRecordOverlay sólo pisa los índices
-                    ' 0..17 y preserva el 18 del raw.)
+                    ' al .jslot exportado del target Y al ESP: NpcRecordOverlay escribe NAM9[18] cuando
+                    ' `SseVampireMorph.HasValue` (skee64 ApplyPresetData :188-192 pisa `option[i]` posicional, y
+                    ' el 18 es el slot del VampireMorph que RaceMenu guarda en `morphs[18]`).
                     p.SseVampireMorph = If(baseline IsNot Nothing AndAlso baseline.SseVampireMorph.HasValue,
                                            baseline.SseVampireMorph,
                                            SseNam9MorphMap.VampireMorphDe(If(raw Is Nothing, Nothing, raw.Record.DeslizadoresDeCara())))
@@ -321,26 +463,12 @@ Public Module PresetCategoryFilter
                 p.SseCustomMorphs = If(baseline Is Nothing, Nothing, CloneSseCustomMorphs(baseline.SseCustomMorphs))
 
             Case PresetCategory.FaceBoneRegions
-                ' FMRS regions and FMIN intensity are paired: the engine always overwrites the intensity,
-                ' so preserving the regions has to preserve the intensity too.
-                p.FaceBoneRegions.Clear()
-                If baseline IsNot Nothing AndAlso baseline.HasFaceBoneRegions Then
-                    For Each kv In baseline.FaceBoneRegions
-                        p.FaceBoneRegions(kv.Key) = CType(kv.Value?.Clone(), Single())
-                    Next
-                    p.FacialMorphIntensity = baseline.FacialMorphIntensity
-                ElseIf raw IsNot Nothing Then
-                    Dim rawFo4 = TryCast(raw.Record, Canon.NpcFO4)
-                    If rawFo4 IsNot Nothing Then
-                        For Each fm In rawFo4.FaceMorphs
-                            p.FaceBoneRegions(fm.FaceMorphIndex) = New Single() {
-                                fm.ValuesPositionX, fm.ValuesPositionY, fm.ValuesPositionZ,
-                                fm.ValuesRotationX, fm.ValuesRotationY, fm.ValuesRotationZ, fm.ValuesScale}
-                        Next
-                    End If
-                    p.FacialMorphIntensity = raw.Record.IntensidadDeMorfoFacial()
-                End If
-                p.HasFaceBoneRegions = True
+                ' FMRS regions and FMIN intensity are one category (the engine writes the intensity with the
+                ' regions: Intensity :462-474 right after Regions :399-429), so preserving the regions
+                ' preserves the intensity too. Two helpers because the ENGINE can skip either half on its own
+                ' (separate try/catch blocks) and CompletarCanalesQueElMotorNoEscribe reverts just that half.
+                RevertirRegionesDeCara(p, raw, baseline)
+                RevertirIntensidadDeMorfoFacial(p, raw, baseline)
 
             Case PresetCategory.Sculpt
                 ' Per-vertex head/shape sculpt (SSE) — RaceMenu-only carrier, no record source.
@@ -359,9 +487,10 @@ Public Module PresetCategoryFilter
         End Select
     End Sub
 
-    ''' <summary>Baseline value when the overlay declares one, else the record's.</summary>
-    Private Function PickSingle(overlayValue As Single?, recordValue As Single) As Single
-        Return If(overlayValue.HasValue, overlayValue.Value, recordValue)
+    ''' <summary>Baseline value when the overlay declares one, else the record's (Nothing when the record
+    ''' has none either = preserve).</summary>
+    Private Function PickSingle(overlayValue As Single?, recordValue As Single?) As Single?
+        Return If(overlayValue.HasValue, overlayValue, recordValue)
     End Function
 
     ''' <summary>Deep-copy an SSE keyed body-morph dict (morph name → BodySlide key → value). Nothing in,

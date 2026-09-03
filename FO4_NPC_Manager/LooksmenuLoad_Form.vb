@@ -256,15 +256,21 @@ Public Class LooksmenuLoad_Form
                     Logger.LogLazy(Function() $"[LMLoad] DROP '{Path.GetFileName(fpLocal)}': failed to parse (invalid/unsupported JSON).")
                     Continue For
                 End If
-                ' Skip presets whose declared gender doesn't match the NPC. CharGenInterface.cpp:301
-                ' rejects mismatched gender at LoadPreset time — same rule here so the user only sees
-                ' presets that will actually apply cleanly.
-                If parsed.Gender <> _gender Then
+                ' Skip presets whose declared gender doesn't match the NPC. CharGenInterface.cpp:301-314:
+                ' `UInt8 loadedGender = root["Gender"].asUInt()` (truncado a UInt8; ausente/null ⇒ 0) y
+                ' `if (gender != loadedGender) return ERROR_INVALID_TOKEN`. Si `asUInt` LANZA (negativo, string,
+                ' array, objeto) el catch pone `loadedGender = gender` y el preset PASA: eso es `HasGender = False`
+                ' (ParseFile), y acá no se filtra — igual que el motor.
+                If parsed.HasGender AndAlso parsed.Gender <> _gender Then
                     Dim fpLocal = fp
                     Dim g = parsed.Gender
                     Logger.LogLazy(Function() $"[LMLoad] DROP '{Path.GetFileName(fpLocal)}': gender mismatch (preset gender={If(g = 1, "Female", "Male")} ({g}), target NPC gender={If(_gender = 1, "Female", "Male")} ({_gender})).")
                     Continue For
                 End If
+                ' CharGenInterface.cpp:308 `loadedGender = gender` en el catch: el motor sigue con el género del
+                ' ACTOR. Se replica acá para que todo consumidor de `Gender` río abajo (índice head/headRear del
+                ' skin template en PresetCategoryFilter, la serialización) vea lo mismo que el motor y no un 0.
+                If Not parsed.HasGender Then parsed.Gender = _gender
                 _allPresets.Add(parsed)
             Next
         End If

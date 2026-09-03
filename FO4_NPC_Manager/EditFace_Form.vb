@@ -2594,11 +2594,19 @@ Public Class EditFace_Form
 
             ' --- Tints --- (FO4 FaceTintLayers TETI/TEND. SSE usa el tab "Tints (SSE)" con SseTintRaw
             ' TINI/TINC/TINV, sembrado por LoadSseTintValues; el tab FO4 esta oculto y sus controles no aplican.)
+            ' UNA LEY PARA LOS CUATRO SEEDS DE ABAJO (tints, MSDK, regiones, FMIN): el editor muestra el estado
+            ' EFECTIVO del NPC, y el overlay es REEMPLAZO-cuando-Has (NpcRecordOverlay: `If preset.Has* Then
+            ' Poner…`). Por eso el gate es `Has*`, NO `Count = 0`:
+            '   · Has* = True  ⇒ la lista/valor del overlay ES el estado del motor tras LoadPreset, aunque esté
+            '     vacía. Un .json con `Presets: null` deja MSDK vacío (CharGenInterface.cpp:433-460, `Clear()` sin
+            '     `Add`); con el gate viejo `Count = 0` el seed RESUCITABA los del record al abrir Edit Face y
+            '     `ComposeSaveShadow` los escribía al ESP — la «boca anormal» del reporte de Nexus, otra vez.
+            '   · Has* = False ⇒ el overlay preserva el record ⇒ el efectivo ES el record ⇒ se siembra de ahí,
+            '     REEMPLAZANDO la lista entera (no fusionando).
+            ' Después el editor reclama el canal (Has* = True): sus ediciones, incluido borrar todo, son autoritativas.
             If Not _isSSE Then
-                ' Mark as "present in this preset" the moment the editor takes ownership: from now
-                ' on the user's edits (including deletions) authoritatively define the field. If the
-                ' overlay was empty, seed it from the raw NPC so the user sees the current state to edit.
-                If p.FaceTintLayers.Count = 0 AndAlso rawNpc IsNot Nothing Then
+                If Not p.HasFaceTintLayers AndAlso rawNpc IsNot Nothing Then
+                    p.FaceTintLayers.Clear()
                     p.FaceTintLayers.AddRange(LooksmenuLoader.CapasDeTinteDelRecord(rawNpc.Record))
                 End If
                 p.HasFaceTintLayers = True
@@ -2608,7 +2616,8 @@ Public Class EditFace_Form
             ' --- Vertex morphs (MSDK/MSDV) + Face bone regions (FMRI/FMRS): FO4-only. SSE usa el tab
             ' "Morphs (SSE)" (NAM9/NAMA), sembrado por LoadSseMorphValues; sus controles FO4 no existen. ---
             If Not _isSSE Then
-                If p.ChargenFaceMorphs.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.Record.MorfosDeCara().Count > 0 Then
+                If Not p.HasChargenFaceMorphs AndAlso rawNpc IsNot Nothing Then
+                    p.ChargenFaceMorphs.Clear()
                     For Each kv In rawNpc.Record.MorfosDeCara()
                         p.ChargenFaceMorphs(kv.Key) = kv.Value
                     Next
@@ -2618,7 +2627,8 @@ Public Class EditFace_Form
                 LoadMorphGroupValues()
 
                 Dim rawFo4 = TryCast(rawNpc?.Record, Canon.NpcFO4)
-                If p.FaceBoneRegions.Count = 0 AndAlso rawFo4 IsNot Nothing Then
+                If Not p.HasFaceBoneRegions AndAlso rawFo4 IsNot Nothing Then
+                    p.FaceBoneRegions.Clear()
                     For Each fm In rawFo4.FaceMorphs
                         p.FaceBoneRegions(fm.FaceMorphIndex) = New Single() {
                             fm.ValuesPositionX, fm.ValuesPositionY, fm.ValuesPositionZ,
@@ -2630,16 +2640,22 @@ Public Class EditFace_Form
             End If
 
             ' --- FMIN ---
-            ' Sin overlay previo, el slider se siembra del record crudo para que refleje el valor real (un
-            ' record autorado en 1.4 no debe saltar a 1.0 solo porque se abrio el editor). Con overlay se cree
-            ' verbatim: 1.0F es un valor explicito valido del contrato de LM, no un centinela que se pueda
-            ' pisar. La heuristica previa (tratar 1.0 como "sin valor") rompia los presets que lo traian.
+            ' Misma ley: con `HasFacialMorphIntensity` el valor del overlay se cree VERBATIM (1.0F es un valor
+            ' explícito válido del contrato de LM — `Morphs.Intensity` ausente vale 1.0 y se escribe siempre,
+            ' CharGenInterface.cpp:462-474 —, no un centinela que se pueda pisar); sin la bandera el overlay
+            ' preserva el record, así que el slider se siembra de ahí para reflejar el valor real (un record
+            ' autorado en 1.4 no debe saltar a 1.0 sólo porque se abrió el editor). Antes el gate era
+            ' `Not _hadPriorOverlay`: un overlay que no reclamaba FMIN (sidecar sintético, revert por categoría)
+            ' mostraba 1.0 en vez del valor del record.
             ' FMIN es un subrecord de FO4 sin analogo en Skyrim y su pestana se saca en SSE: no sembrar el
             ' control huerfano ni escribir el canal FO4-only en un preset de SSE.
             If Not _isSSE Then
-                If Not _hadPriorOverlay AndAlso rawNpc IsNot Nothing Then
+                If Not p.HasFacialMorphIntensity AndAlso rawNpc IsNot Nothing Then
                     p.FacialMorphIntensity = If(rawNpc.Record.IntensidadDeMorfoFacial() > 0.0F, rawNpc.Record.IntensidadDeMorfoFacial(), 1.0F)
                 End If
+                ' El editor reclama el canal: sin esto, NpcRecordOverlay (gateado por la bandera) no volcaba un
+                ' FMIN editado sobre un overlay fresco — ni al render ni al ESP.
+                p.HasFacialMorphIntensity = True
                 TrackBarFmin.Value = p.FacialMorphIntensity
             End If
         Finally

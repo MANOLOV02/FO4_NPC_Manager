@@ -19,17 +19,30 @@ Public Module LooksmenuLoader
     ''' escribir la capa; recien al aplicarlo el overlay la vuelca al TETI/TEND del record -esa es la
     ''' operacion- y de ahi en mas el dueno del dato es el record.</para></summary>
     Public Class CapaDeTintePreset
-        ''' <summary>1 = paleta, 2 = conjunto de texturas.</summary>
+        ''' <summary>0 = mascara, 1 = paleta, 2 = conjunto de texturas (f4se GameCustomization.h:172-174). Desde
+        ''' el .json de LooksMenu llega el "Type" tal cual lo convierte jsoncpp (`asInt`, CharGenInterface.cpp:506),
+        ''' truncado a 16 bits; un Type fuera de {0,1,2} es un HUECO: `CreateCharacterTintEntry` es una funcion del
+        ''' juego que no leimos.</summary>
         Public Discriminator As UShort
-        ''' <summary>Indice de la opcion de tinte de la RACE que esta capa realiza.</summary>
+        ''' <summary>Indice de la opcion de tinte de la RACE que esta capa realiza. Desde el .json es la clave del
+        ''' miembro de "Tints" convertida con `sscanf_s("%X")` y truncada a UInt16, que es lo que ve
+        ''' `GetTemplateByIndex(UInt16)` (CharGenInterface.cpp:503-512).</summary>
         Public Index As UShort
-        ''' <summary>Intensidad de la capa, 0..100.</summary>
+        ''' <summary>Intensidad de la capa. En el motor es un UInt8 (`Entry.percent`, GameCustomization.h:179)
+        ''' que LoadPreset llena con `Percent.asInt()` sin clamp (CharGenInterface.cpp:529): desde el .json queda
+        ''' 0..255 (byte bajo). LooksMenu guarda 0..100.</summary>
         Public Value As Integer
         ''' <summary>Color final aplicado. Solo las capas de paleta lo llevan.</summary>
         Public Color As System.Drawing.Color = System.Drawing.Color.Empty
         ''' <summary>Posicion en la paleta de colores de la opcion, o -1 cuando el color es propio y no
         ''' sale de la paleta.</summary>
         Public TemplateColorIndex As Integer = -1
+        ''' <summary>True cuando "Color", "ColorID" o "Percent" del .json NO son convertibles por jsoncpp (string,
+        ''' array, objeto; "Color" ademas negativo). El motor recien los lee DESPUES de encontrar la plantilla de la
+        ''' RACE (CharGenInterface.cpp:512-529), asi que la falla solo cuenta si la RACE tiene la opcion: en ese
+        ''' caso el `catch` de :563 corta el canal entero y el NPC queda SIN tints (el contenedor ya se limpio en
+        ''' :495-500). Lo evalua <see cref="NpcRecordOverlay"/>, que es quien conoce la raza; el parser no.</summary>
+        Public ConversionFallida As Boolean = False
     End Class
 
     ''' <summary>Una capa de tinte de cara de Skyrim traida por un preset de autoria (.jslot de RaceMenu
@@ -57,6 +70,11 @@ Public Module LooksmenuLoader
     Public Class LooksmenuPreset
         Public SourcePath As String = ""
         Public Gender As Byte = 0   ' 0=Male, 1=Female
+        ''' <summary>El motor pudo leer "Gender" (CharGenInterface.cpp:301-309: `root["Gender"].asUInt()` a un
+        ''' UInt8; ausente o null vale 0). False = jsoncpp lanzo (negativo, string, array, objeto): el motor toma
+        ''' el genero del NPC y el preset PASA el filtro de genero. Desde <see cref="ParseFile"/>; los demas
+        ''' productores lo dejan en su valor.</summary>
+        Public HasGender As Boolean = False
         Public HeadPartFormIDs As New List(Of UInteger)
         ''' <summary>HeadPart entries from the JSON that ResolveFormIdentifier couldn't resolve to a
         ''' loaded plugin (returned 0). Kept as raw "Plugin.esp|HEX" strings so the caller can log
@@ -74,6 +92,17 @@ Public Module LooksmenuLoader
         ''' <see cref="UnresolvedHeadParts"/> (List(Of String)) stays the UI/log list, shared with the
         ''' FO4 path. Nothing populates this on FO4 (FO4 loads from f4ee JSON, not .jslot).</summary>
         Public SseUnresolvedHeadParts As New List(Of RaceMenuJslot.JslotHeadPart)
+        ''' <summary>SSE-ONLY: head parts del <c>.jslot</c> que SÍ resolvieron contra el load order pero que el
+        ''' motor NO aplica a ESTE actor: skee64 <c>ApplyPresetData</c> (PresetInterface.cpp:164-175) sólo llama
+        ''' <c>ChangeHeadPart</c> si el flag de sexo del HDPT (DATA bit 1 Male / bit 2 Female) coincide con el
+        ''' del NPC Y el HDPT tiene <c>validRaces</c> (RNAM ≠ 0, la FLST existe) Y esa FLST lista la raza del
+        ''' NPC (<c>BGSListForm::Visit</c>: entradas directas + las agregadas por script). Una parte que falla
+        ''' NO forma parte del estado producido (<see cref="HeadPartFormIDs"/> = lo que el motor deja puesto)
+        ''' y <c>SavePreset</c> (:342-364 arma <c>partList</c> con <c>npc->headparts</c>, :409-417 lo emite) tampoco la re-exportaría. Se guardan acá
+        ''' para que el gate de raza del browser (<see cref="HeadPartResolver.IsPresetCompatibleWithRace"/>) y
+        ''' el reporte de compatibilidad sigan viendo lo que el ARCHIVO declara. Sólo la puebla
+        ''' <see cref="RaceMenuPresetMapper.ApplyJslotToPreset"/> con raza conocida; FO4 no la usa.</summary>
+        Public SseHeadPartsFiltradasPorMotor As New List(Of UInteger)
         Public HairColorFormID As UInteger
         ''' <summary>El identificador crudo ("Plugin.esp|FORMID") del "HairColor" del preset cuando NO resolvió
         ''' contra el load order — o sea, cuando el mod que trae el color no está instalado. Análogo a
@@ -133,49 +162,56 @@ Public Module LooksmenuLoader
         ''' MRSV in NPC_. Index = position in RACE.MorphValues definitions.</summary>
         Public BodyMorphValues As New List(Of Single)
         ''' <summary>Face bone morph regions — Morphs.Regions in JSON, FMRI/FMRS in NPC_.
-        ''' Key = FMRI region index, Value = 8 floats (the FMRS values for that region).</summary>
+        ''' Key = FMRI region index, Value = 8 floats (the FMRS values for that region). Desde el .json
+        ''' <see cref="ParseFile"/> deja SIEMPRE 8 floats por region: el motor lee `regions[key][i]` para i = 0..7
+        ''' (CharGenInterface.cpp:418-421) y jsoncpp devuelve null ⇒ 0.0 para los indices que faltan.</summary>
         Public FaceBoneRegions As New Dictionary(Of UInteger, Single())
-        ''' <summary>Always present after parse. CharGenInterface.cpp asymmetrically skips the field
-        ''' on Save when intensity == 1.0 (line 161 `if(intensity != 1.0f)`), but on Load (lines 456-458)
-        ''' it interprets "absent" as "use 1.0" and ALWAYS calls SetFacialBoneMorphIntensity. So
-        ''' missing-from-JSON is semantically equivalent to "1.0 explicit", not "preserve previous".
-        ''' We replicate that: default 1.0F at parse time, override only when the JSON has the field.</summary>
+        ''' <summary>FMIN. En el motor (CharGenInterface.cpp:462-474) `Morphs.Intensity` ausente vale 1.0 y se
+        ''' escribe SIEMPRE (non-player), asi que "no esta en el .json" equivale a "1.0 explicito", no a
+        ''' "preservar". <see cref="HasFacialMorphIntensity"/> dice si el motor lo escribiria.</summary>
         Public FacialMorphIntensity As Single = 1.0F
+        ''' <summary>El motor escribiria FMIN (CharGenInterface.cpp:462-474). Desde <see cref="ParseFile"/>: True
+        ''' salvo que `Morphs` no sea objeto (:373 lanza y :466 `isMember` tambien) o que `Morphs.Intensity`
+        ''' sea string/array/objeto (`asFloat` lanza ⇒ se preserva). Ausente ⇒ True con 1.0; null ⇒ True con
+        ''' 0.0; bool ⇒ 1/0. Los productores que representan el estado completo (snapshot, editor) lo ponen en
+        ''' True. False = el overlay deja el FMIN del record.</summary>
+        Public HasFacialMorphIntensity As Boolean = False
         ''' <summary>Tint layers reordered by TintOrder[] if the JSON provided one. Each entry is a
         ''' <see cref="CapaDeTintePreset"/> with Discriminator/Index/Value/Color/TemplateColorIndex filled
         ''' desde el JSON.</summary>
         Public FaceTintLayers As New List(Of CapaDeTintePreset)
 
-        ''' <summary>Presence flags for the four overlay-replaceable list fields. True = "this
-        ''' preset declares that field is being overridden, the list (even empty) is authoritative".
-        ''' False = "field absent from this preset, ApplyPresetOverlayToNpcData preserves raw NPC".
+        ''' <summary>Presence flags de los canales que el overlay REEMPLAZA. True = "el motor escribiria este
+        ''' canal con esta lista (aunque este vacia)". False = "el motor lo dejaria como esta":
+        ''' ApplyPresetOverlayToNpcData preserva el record y PresetCategoryFilter preserva el baseline.
         '''
-        ''' Without this distinction Count=0 would be ambiguous: it could mean either "user wiped
-        ''' all entries and wants override-as-empty" (apply wipe) or "preset never carried this
-        ''' field" (preserve raw). Both are valid; the editor + Save flow needs the wipe semantics
-        ''' while Load LooksMenu absent-key needs preserve semantics. Has flags resolve it.
+        ''' Sin la distincion Count=0 seria ambiguo: "el usuario borro todo y quiere override vacio" (wipe) o
+        ''' "el preset nunca trajo el canal" (preservar). El editor y el Save necesitan el wipe; el Load
+        ''' necesita lo que haria LoadPreset.
         '''
-        ''' Note on engine semantics: vanilla LooksMenu (CharGenInterface.cpp:387-413, 421-450,
-        ''' 477-524) does NOT distinguish "key absent" from "key present empty {}/[]" — both yield
-        ''' members.size()==0 and both trigger Clear() of the corresponding NPC field. So the LM
-        ''' engine's actual behaviour is "any LoadPreset call wipes existing tints/morphs/regions
-        ''' even if that section is missing from the JSON". We deliberately diverge from that:
-        ''' loading a partial preset (e.g. only HeadParts) shouldn't nuke tints. Has flags make
-        ''' our overlay treat absent JSON keys as "preserve raw" — better UX than LM's wipe-all,
-        ''' and harmless because the wipe semantics are still available via explicit edits.
+        ''' LA LEY (f4ee CharGenInterface.cpp LoadPreset :269-645, cada bloque con su propio try/catch): el
+        ''' loader produce, por canal, el estado del motor DESPUES de LoadPreset. Has* = True cuando el motor
+        ''' escribe el canal; False solo cuando jsoncpp LANZA dentro del bloque (clave con tipo no convertible)
+        ''' y el motor deja el valor anterior. En particular ausente ⇒ jsoncpp devuelve null ⇒ el motor SI
+        ''' escribe (vacio): Tints (:489-500), Morphs.Presets (:433-460), Morphs.Regions (:399-429),
+        ''' Morphs.Values (:373-397), Overlays (:587 RemoveAll incondicional). Excepciones con cita:
+        ''' BodyMorphs (:568-577) limpia solo con miembros o con null explicito, `{}`/ausente preserva; y
+        ''' HeadParts (:318-331 limpia SIEMPRE) es la decision D-HeadParts pendiente del usuario, por eso
+        ''' <see cref="HasHeadPartFormIDs"/> sigue siendo True solo cuando la clave esta.
         '''
-        ''' Setters: ParseFile sets True when JSON has the key (even if value is empty {}/[]).
-        ''' BuildPresetFromState sets all four True (snapshot is complete by definition).
-        ''' Edit forms set True at seed time (the editor opening "claims" these fields).
-        ''' Paste handler sets True for fields the options dialog ticked.
+        ''' Setters: ParseFile segun la ley. BuildPresetFromState pone todo True (el snapshot es completo).
+        ''' Edit forms ponen True al sembrar (el editor "reclama" el canal). Paste toma lo tickeado.
         '''
-        ''' Reader: ApplyPresetOverlayToNpcData reads Has* (not Count). Count=0+Has=True ⇒ wipe.
-        ''' Count=0+Has=False ⇒ preserve raw (current behaviour for absent fields).</summary>
+        ''' Reader: ApplyPresetOverlayToNpcData lee Has* (no Count). Count=0+Has=True ⇒ wipe.
+        ''' Count=0+Has=False ⇒ preserva el record.</summary>
         Public HasFaceTintLayers As Boolean = False
         Public HasChargenFaceMorphs As Boolean = False
-        ' SSE (Skyrim) head morphs: the edited NAM9 (18 floats) + NAMA (4 type uints). When HasSseMorphs,
-        ' the overlay writes these into shadow.Nam9Raw/NamaRaw so the live render + bake reflect the edit
-        ' (the SSE morph resolver reads Nam9Raw/NamaRaw). FO4 leaves these unset (no-op).
+        ' SSE (Skyrim) head morphs: NAM9 (hasta 18 floats editables) + NAMA (hasta 4 type uints). Con HasSseMorphs
+        ' el overlay los escribe POSICIONALMENTE sobre el record de la sombra —índice a índice, sólo `Length`
+        ' entradas— porque eso hace skee64 (ApplyPresetData :182-192 `presets[i] = value` / `option[i] = value`
+        ' por cada entrada del archivo): un .jslot con 5 morphs pisa [0..4] y deja [5..17] como estaban. Los
+        ' productores dimensionan los arrays con EXACTAMENTE lo cubierto (mapper) o los 18/4 completos (snapshot,
+        ' editor, revert). El render + bake leen el record resultante. FO4 los deja sin usar.
         Public SseNam9 As Single() = Nothing
         Public SseNama As UInteger() = Nothing
         Public HasSseMorphs As Boolean = False
@@ -252,6 +288,13 @@ Public Module LooksmenuLoader
         ''' with no BodySlide morphs. Schema: Script extenders, Racemenu y Looksmenu/F4SEPlugins/f4ee/CharGenInterface.cpp:204-215
         ''' (Save) and 560-570 (Load). NOT a vanilla record — lives only in the JSON.</summary>
         Public BodyMorphSliders As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+        ''' <summary>El motor escribiria los sliders (CharGenInterface.cpp:568-577): `RemoveMorphsByKeyword` (:573) solo con
+        ''' `members.size() > 0 || (isMember("BodyMorphs") && isNull())`. Asi que `{}` o ausente ⇒ False
+        ''' (preserva); null explicito o con miembros ⇒ True; "BodyMorphs" no-objeto ⇒ `getMemberNames`
+        ''' lanza ⇒ False. Los productores que representan el estado completo (snapshot, .jslot con
+        ''' `ClearMorphs` incondicional en skee64 PresetInterface.cpp:281) lo ponen en True. Lo lee
+        ''' <see cref="PresetCategoryFilter"/>: False ⇒ la categoria se preserva del baseline aunque este tickeada.</summary>
+        Public HasBodyMorphSliders As Boolean = False
 
         ''' <summary>SSE-ONLY keyed body morphs: morph name → (BodySlide key → value). RaceMenu body
         ''' sliders accumulate one keyed contribution per BodySlide source; the engine nets (sums) the
@@ -270,8 +313,9 @@ Public Module LooksmenuLoader
 
         ''' <summary>Overlays presence — SAME semantics as the other Has* flags above. True = "this
         ''' preset declares the Overlays field, the list (even empty) is authoritative ⇒ overlay
-        ''' treats it as a wipe". False = "field absent from this preset, preserve raw NPC".
-        ''' Set True by ParseFile when the "Overlays" key is present (regardless of array length).</summary>
+        ''' treats it as a wipe". False = "preserve".
+        ''' <see cref="ParseFile"/> lo pone SIEMPRE en True: el motor hace `RemoveAll` incondicional antes de
+        ''' leer la clave (CharGenInterface.cpp:587), asi que un .json sin "Overlays" deja al NPC sin overlays.</summary>
         Public HasOverlays As Boolean = False
 
         ''' <summary>SSE-ONLY RaceMenu body overlays (tattoos) — PATH-based (node + diffuse/normal path +
@@ -402,177 +446,280 @@ Public Module LooksmenuLoader
     ''' <summary>Parse a LooksMenu preset JSON file. Returns Nothing if the file is unreadable
     ''' or not valid JSON. Form-identifier strings ("Plugin.esp|XXXXXX") are resolved against
     ''' <paramref name="pluginManager"/> at parse time — entries from plugins not in the active
-    ''' load order resolve to 0 and the caller will see HeadParts entries missing.</summary>
+    ''' load order resolve to 0 and the caller will see HeadParts entries missing.
+    ''' <para>LA LEY: el resultado es, canal por canal, el estado del motor DESPUES de
+    ''' <c>CharGenInterface::LoadPreset</c> (f4ee CharGenInterface.cpp:269-645), leido con la tabla de
+    ''' conversiones de jsoncpp (f4ee/jsoncpp/json_value.cpp): <c>asFloat</c> :758-778, <c>asInt</c> :631-651,
+    ''' <c>asUInt</c> :653-673, <c>asString</c> :606-623, <c>asCString</c> :600-604, <c>operator[]</c> :918-994,
+    ''' <c>isMember</c> :1090-1093, <c>getMemberNames</c> :1105-1127, range-for :1284-1402 y orden de claves
+    ''' <c>strcmp</c> :200-204. Cada bloque de LoadPreset tiene su propio try/catch: cuando jsoncpp lanza el
+    ''' motor deja el canal como estaba, y eso es lo unico que pone un Has* en False. Los <c>Has*</c> se
+    ''' documentan en <see cref="LooksmenuPreset"/>. Aca no hay decisiones de producto: Intensity ausente ⇒ 1.0
+    ''' es motor (:466-467); la unica de producto (no crear FMIN cuando vale 1.0) vive en
+    ''' <see cref="NpcRecordOverlay"/>.</para></summary>
     Public Function ParseFile(filePath As String, pluginManager As PluginManager) As LooksmenuPreset
         If String.IsNullOrEmpty(filePath) OrElse Not File.Exists(filePath) Then Return Nothing
 
-        Dim raw As String
+        Dim bytes As Byte()
         Try
-            raw = File.ReadAllText(filePath)
+            bytes = File.ReadAllBytes(filePath)
         Catch
             Return Nothing
         End Try
 
+        ' El motor lee el archivo como bytes y se los da a `Json::Reader::parse` (CharGenInterface.cpp:274-282),
+        ' que NO saltea ningun BOM (json_reader.cpp:83-143): un archivo con BOM es ERROR_INVALID_TOKEN y no se
+        ' aplica nada. Se parsea desde los bytes por lo mismo: la misma entrada que ve el motor.
+        If bytes.Length >= 3 AndAlso bytes(0) = &HEF AndAlso bytes(1) = &HBB AndAlso bytes(2) = &HBF Then
+            Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': BOM al inicio; LooksMenu lo rechaza (json_reader.cpp:83-143). Se saltea.")
+            Return Nothing
+        End If
+
         Dim doc As JsonDocument
         Try
-            doc = JsonDocument.Parse(raw, New JsonDocumentOptions With {.CommentHandling = JsonCommentHandling.Skip, .AllowTrailingCommas = True})
-        Catch
+            ' Comentarios permitidos: `Json::Features` por defecto trae allowComments_ = true (json_reader.cpp:28-29).
+            ' Coma final PROHIBIDA: el reader la toma como error de sintaxis en objetos (:413-425) y arrays
+            ' (:468-474) ⇒ el motor no aplica nada. Con AllowTrailingCommas el app cargaba lo que el juego rechaza.
+            doc = JsonDocument.Parse(New ReadOnlyMemory(Of Byte)(bytes),
+                                     New JsonDocumentOptions With {.CommentHandling = JsonCommentHandling.Skip, .AllowTrailingCommas = False})
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': JSON invalido para LooksMenu ({ex.Message}). Se saltea.")
             Return Nothing
         End Try
 
         Using doc
             Dim root = doc.RootElement
+            ' Raiz no-objeto: HUECO del motor. `root["Gender"]` lanza dentro del try (:301-309), la limpieza de
+            ' head parts :318-331 pasa igual, y `root.isMember("Overlays")` :588 lanza SIN catch. No se replica:
+            ' el archivo se saltea.
             If root.ValueKind <> JsonValueKind.Object Then Return Nothing
 
             Dim preset As New LooksmenuPreset With {.SourcePath = filePath}
+            Dim ok As Boolean
 
-            ' Gender
+            ' Gender (:301-309): `UInt8 loadedGender = root["Gender"].asUInt()`. Ausente/null ⇒ 0; bool ⇒ 1/0;
+            ' real ⇒ truncado; el UInt32 se trunca a UInt8. Si asUInt lanza (negativo, fuera de rango, string,
+            ' array, objeto) el catch deja loadedGender = gender ⇒ el preset pasa el filtro: HasGender = False.
             Dim genderEl As JsonElement
-            If root.TryGetProperty("Gender", genderEl) AndAlso genderEl.ValueKind = JsonValueKind.Number Then
-                preset.Gender = CByte(Math.Min(255, Math.Max(0, genderEl.GetInt32())))
-            End If
+            root.TryGetProperty("Gender", genderEl)
+            Dim genderU = Jsoncpp.AsUInt(genderEl, ok)
+            preset.HasGender = ok
+            If ok Then preset.Gender = CByte(genderU And &HFFUI)
 
-            ' HeadParts: array of "Plugin.esp|FormIDhex" strings
+            ' HeadParts (:333-352): range-for sobre `root["HeadParts"]` (array ⇒ elementos; objeto ⇒ valores;
+            ' otro ⇒ nada), `part.asString()` (null ⇒ ""; numero/bool ⇒ texto; array/objeto ⇒ lanza y corta el
+            ' resto, lo ya aplicado queda), `GetFormFromIdentifier` (Utilities.cpp:133-155), `if(!form) continue`
+            ' (:339-340), `DYNAMIC_CAST(..., BGSHeadPart)` y `if(!headPart) continue` (:342-344).
+            ' D-HeadParts (PENDIENTE del usuario): el motor limpia las partes SIEMPRE (:318-331, antes de mirar la
+            ' clave); el app solo lo hace cuando la clave esta (array u objeto). Ausente/escalar ⇒ preserva.
+            ' Un identificador cuyo plugin no esta cargado va a UnresolvedHeadParts (decision del usuario
+            ' 2026-08-24: PRESERVAR, no inventar); el motor en ese caso hace `LookupFormByID` con el FormID
+            ' local sin indice de mod (Utilities.cpp:141-153), que puede pegarle a un form ajeno: NO se replica.
             Dim hpEl As JsonElement
-            If root.TryGetProperty("HeadParts", hpEl) AndAlso hpEl.ValueKind = JsonValueKind.Array Then
+            If root.TryGetProperty("HeadParts", hpEl) AndAlso (hpEl.ValueKind = JsonValueKind.Array OrElse hpEl.ValueKind = JsonValueKind.Object) Then
                 preset.HasHeadPartFormIDs = True
-                For Each entry In hpEl.EnumerateArray()
-                    If entry.ValueKind = JsonValueKind.String Then
-                        Dim hpStr = entry.GetString()
-                        Dim resolved = ResolveFormIdentifier(hpStr, pluginManager)
-                        If resolved <> 0UI Then
-                            preset.HeadPartFormIDs.Add(resolved)
-                        Else
-                            preset.UnresolvedHeadParts.Add(hpStr)
-                        End If
+                For Each entry In Jsoncpp.Valores(hpEl)
+                    Dim hpStr = Jsoncpp.AsString(entry, ok)
+                    If Not ok Then Exit For
+                    If String.IsNullOrEmpty(hpStr) Then Continue For
+                    Dim resolved = ResolveFormIdentifier(hpStr, pluginManager)
+                    If resolved = 0UI Then
+                        preset.UnresolvedHeadParts.Add(hpStr)
+                        Continue For
                     End If
+                    Dim rec = pluginManager.GetRecord(resolved)
+                    If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then
+                        Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': HeadParts '{hpStr}' → {resolved:X8} no es un HDPT cargado; LooksMenu lo saltea (CharGenInterface.cpp:339-344).")
+                        Continue For
+                    End If
+                    preset.HeadPartFormIDs.Add(resolved)
                 Next
             End If
 
-            ' HairColor
+            ' HairColor (:354-363): `root["HairColor"].asString()` (ausente/null ⇒ ""; array/objeto ⇒ lanza ⇒
+            ' preserva), `GetFormFromIdentifier`, `DYNAMIC_CAST(..., BGSColorForm)`; sin form o no-CLFM ⇒ no se
+            ' toca el color. 0 = preservar.
             Dim hcEl As JsonElement
-            If root.TryGetProperty("HairColor", hcEl) AndAlso hcEl.ValueKind = JsonValueKind.String Then
-                Dim hcRaw = hcEl.GetString()
-                preset.HairColorFormID = ResolveFormIdentifier(hcRaw, pluginManager)
-                ' Guardar el crudo si no resolvió: el 0 solo no distingue "no hay color" de "el mod no está".
-                If preset.HairColorFormID = 0UI AndAlso Not String.IsNullOrWhiteSpace(hcRaw) Then
-                    preset.UnresolvedHairColor = hcRaw
-                End If
-            End If
-
-            ' Weight: 3 floats [thin, muscular, large]
-            Dim wEl As JsonElement
-            If root.TryGetProperty("Weight", wEl) AndAlso wEl.ValueKind = JsonValueKind.Array Then
-                Dim arr = wEl.EnumerateArray().ToArray()
-                If arr.Length >= 1 AndAlso arr(0).ValueKind = JsonValueKind.Number Then preset.WeightThin = arr(0).GetSingle()
-                If arr.Length >= 2 AndAlso arr(1).ValueKind = JsonValueKind.Number Then preset.WeightMuscular = arr(1).GetSingle()
-                If arr.Length >= 3 AndAlso arr(2).ValueKind = JsonValueKind.Number Then preset.WeightFat = arr(2).GetSingle()
-            End If
-
-            ' Morphs.{Values, Presets, Regions, Intensity}
-            ' Has* flags: set True when the JSON contains the key (regardless of whether it's
-            ' empty or has entries). The presence of the key means "this preset declares this
-            ' field, even if empty" — the overlay will treat empty-with-Has=True as "wipe".
-            Dim morphsEl As JsonElement
-            If root.TryGetProperty("Morphs", morphsEl) AndAlso morphsEl.ValueKind = JsonValueKind.Object Then
-                Dim valuesEl As JsonElement
-                If morphsEl.TryGetProperty("Values", valuesEl) AndAlso valuesEl.ValueKind = JsonValueKind.Array Then
-                    preset.HasBodyMorphValues = True
-                    For Each v In valuesEl.EnumerateArray()
-                        If v.ValueKind = JsonValueKind.Number Then preset.BodyMorphValues.Add(v.GetSingle())
-                    Next
-                End If
-
-                Dim presetsEl As JsonElement
-                If morphsEl.TryGetProperty("Presets", presetsEl) AndAlso presetsEl.ValueKind = JsonValueKind.Object Then
-                    preset.HasChargenFaceMorphs = True
-                    For Each prop In presetsEl.EnumerateObject()
-                        Dim hash As UInteger
-                        If UInteger.TryParse(prop.Name, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, hash) AndAlso prop.Value.ValueKind = JsonValueKind.Number Then
-                            preset.ChargenFaceMorphs(hash) = prop.Value.GetSingle()
-                        End If
-                    Next
-                End If
-
-                Dim regionsEl As JsonElement
-                If morphsEl.TryGetProperty("Regions", regionsEl) AndAlso regionsEl.ValueKind = JsonValueKind.Object Then
-                    preset.HasFaceBoneRegions = True
-                    For Each prop In regionsEl.EnumerateObject()
-                        Dim idx As UInteger
-                        If UInteger.TryParse(prop.Name, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, idx) AndAlso prop.Value.ValueKind = JsonValueKind.Array Then
-                            Dim vals As New List(Of Single)
-                            For Each v In prop.Value.EnumerateArray()
-                                If v.ValueKind = JsonValueKind.Number Then vals.Add(v.GetSingle())
-                            Next
-                            preset.FaceBoneRegions(idx) = vals.ToArray()
-                        End If
-                    Next
-                End If
-
-                Dim intEl As JsonElement
-                If morphsEl.TryGetProperty("Intensity", intEl) AndAlso intEl.ValueKind = JsonValueKind.Number Then
-                    preset.FacialMorphIntensity = intEl.GetSingle()
-                End If
-            End If
-
-            ' Tints + TintOrder. CharGenInterface.cpp:165-201 saves Tints as a dict keyed by tint
-            ' index (hex), each entry having Type/Percent/Color/ColorID. TintOrder is a parallel
-            ' array dictating render order. We build the layers in TintOrder order if provided;
-            ' fallback = enumeration order of the Tints object.
-            Dim tintsEl As JsonElement
-            Dim tintOrderEl As JsonElement
-            Dim hasTints = root.TryGetProperty("Tints", tintsEl) AndAlso tintsEl.ValueKind = JsonValueKind.Object
-            Dim hasOrder = root.TryGetProperty("TintOrder", tintOrderEl) AndAlso tintOrderEl.ValueKind = JsonValueKind.Array
-
-            If hasTints Then
-                preset.HasFaceTintLayers = True
-                Dim orderedKeys As New List(Of String)
-                If hasOrder Then
-                    For Each k In tintOrderEl.EnumerateArray()
-                        If k.ValueKind = JsonValueKind.String Then orderedKeys.Add(k.GetString())
-                    Next
+            root.TryGetProperty("HairColor", hcEl)
+            Dim hcRaw = Jsoncpp.AsString(hcEl, ok)
+            If ok AndAlso Not String.IsNullOrEmpty(hcRaw) Then
+                Dim hcFid = ResolveFormIdentifier(hcRaw, pluginManager)
+                If hcFid = 0UI Then
+                    ' Guardar el crudo si no resolvió: el 0 solo no distingue "no hay color" de "el mod no está".
+                    If Not String.IsNullOrWhiteSpace(hcRaw) Then preset.UnresolvedHairColor = hcRaw
                 Else
-                    For Each prop In tintsEl.EnumerateObject()
-                        orderedKeys.Add(prop.Name)
+                    Dim rec = pluginManager.GetRecord(hcFid)
+                    If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
+                        preset.HairColorFormID = hcFid
+                    Else
+                        Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': HairColor '{hcRaw}' → {hcFid:X8} no es un CLFM cargado; LooksMenu lo ignora (CharGenInterface.cpp:358-359).")
+                    End If
+                End If
+            End If
+
+            ' Weight (:476-484): `root["Weight"][i].asFloat()` para i = 0..2, en secuencia. Ausente/null ⇒ el
+            ' `[i]` crea nulls ⇒ 0,0,0 (el motor ESCRIBE ceros: un .json sin "Weight" deja al NPC en 0/0/0).
+            ' Array corto ⇒ los que faltan son 0. Objeto/escalar/string ⇒ `[0]` lanza ⇒ los tres preservados
+            ' (Nothing). Un elemento string/array/objeto ⇒ lanza ahi ⇒ ese y los siguientes preservados.
+            Dim wEl As JsonElement
+            root.TryGetProperty("Weight", wEl)
+            Dim pesos(2) As Single?
+            If wEl.ValueKind = JsonValueKind.Undefined OrElse wEl.ValueKind = JsonValueKind.Null OrElse wEl.ValueKind = JsonValueKind.Array Then
+                Dim arr = If(wEl.ValueKind = JsonValueKind.Array, wEl.EnumerateArray().ToArray(), New JsonElement() {})
+                For i = 0 To 2
+                    Dim v = Jsoncpp.AsFloat(If(i < arr.Length, arr(i), New JsonElement()), ok)
+                    If Not ok Then Exit For
+                    pesos(i) = v
+                Next
+            End If
+            preset.WeightThin = pesos(0)
+            preset.WeightMuscular = pesos(1)
+            preset.WeightFat = pesos(2)
+
+            ' Morphs.{Values, Presets, Regions, Intensity}. `root["Morphs"]` (operator[] no-const, json_value.cpp
+            ' :970-994): ausente/null ⇒ se vuelve `{}` y los cuatro canales se leen como de un objeto vacio
+            ' (los tres contenedores se ESCRIBEN vacios y FMIN = 1.0). "Morphs" string/numero/array/bool ⇒
+            ' lanza en :373, :399, :433 y en el `isMember` de :466 ⇒ los cuatro se preservan.
+            Dim morphsEl As JsonElement
+            root.TryGetProperty("Morphs", morphsEl)
+            Dim morphsEsObjeto = (morphsEl.ValueKind = JsonValueKind.Object OrElse morphsEl.ValueKind = JsonValueKind.Null OrElse morphsEl.ValueKind = JsonValueKind.Undefined)
+            If morphsEsObjeto Then
+                ' Ausente/null ⇒ `{}` para el motor; para System.Text.Json un JsonElement Undefined/Null LANZA en
+                ' TryGetProperty, asi que las cuatro lecturas se gatean por ValueKind = Object y caen al default.
+                Dim morphsTieneClaves = (morphsEl.ValueKind = JsonValueKind.Object)
+                ' Values (:373-397): range-for sobre `Morphs["Values"]` (array ⇒ elementos; objeto ⇒ valores;
+                ' ausente/null/escalar ⇒ nada) y `asFloat` de cada uno ANTES de tocar al NPC: un elemento
+                ' string/array/objeto lanza ⇒ se preserva. Con todos convertibles: `Clear(); Allocate(5)` y se
+                ' escriben los primeros 5 (:385-389). El pad a 5 lo hace PonerValoresDeRegionCorporal en el overlay.
+                Dim valuesEl As JsonElement
+                If morphsTieneClaves Then morphsEl.TryGetProperty("Values", valuesEl)
+                Dim valores As New List(Of Single)
+                ok = True
+                For Each v In Jsoncpp.Valores(valuesEl)
+                    Dim f = Jsoncpp.AsFloat(v, ok)
+                    If Not ok Then Exit For
+                    valores.Add(f)
+                Next
+                If ok Then
+                    preset.HasBodyMorphValues = True
+                    preset.BodyMorphValues.AddRange(valores)
+                End If
+
+                ' Presets (:433-460): `getMemberNames` (null ⇒ vacio; array/escalar/string ⇒ lanza ⇒ preserva),
+                ' `Clear()` del contenedor, y por cada clave en orden strcmp: `sscanf_s("%X")` (sin chequear),
+                ' `asFloat` (lanza ⇒ corta: lo anterior queda escrito) y `tHashSet::Add` (f4se GameTypes.h:1159 ⇒ `Insert` :988-1016:
+                ' clave repetida ⇒ gana la PRIMERA).
+                Dim presetsEl As JsonElement
+                If morphsTieneClaves Then morphsEl.TryGetProperty("Presets", presetsEl)
+                Dim miembros = Jsoncpp.Miembros(presetsEl, ok)
+                If ok Then
+                    preset.HasChargenFaceMorphs = True
+                    For Each kv In miembros
+                        Dim f = Jsoncpp.AsFloat(kv.Value, ok)
+                        If Not ok Then Exit For
+                        Dim hash = Jsoncpp.ClaveSscanfX(kv.Key)
+                        If Not preset.ChargenFaceMorphs.ContainsKey(hash) Then preset.ChargenFaceMorphs(hash) = f
                     Next
                 End If
 
-                For Each keyName In orderedKeys
-                    Dim entryEl As JsonElement
-                    If Not tintsEl.TryGetProperty(keyName, entryEl) Then Continue For
-                    If entryEl.ValueKind <> JsonValueKind.Object Then Continue For
+                ' Regions (:399-429): mismo patron que Presets. El valor se lee como `regions[key][i]` para
+                ' i = 0..7 (:418-421): null ⇒ se vuelve array y da 8 ceros; array corto ⇒ 0 en lo que falta;
+                ' objeto/escalar/string ⇒ `[i]` lanza ⇒ corta; un elemento string/array/objeto ⇒ `asFloat` lanza
+                ' ⇒ corta. Siempre 8 floats por region. Clave repetida ⇒ gana la primera (tHashSet::Add).
+                Dim regionsEl As JsonElement
+                If morphsTieneClaves Then morphsEl.TryGetProperty("Regions", regionsEl)
+                miembros = Jsoncpp.Miembros(regionsEl, ok)
+                If ok Then
+                    preset.HasFaceBoneRegions = True
+                    For Each kv In miembros
+                        Dim vals(7) As Single
+                        Dim regionOk = (kv.Value.ValueKind = JsonValueKind.Null OrElse kv.Value.ValueKind = JsonValueKind.Array)
+                        If regionOk Then
+                            Dim arr = If(kv.Value.ValueKind = JsonValueKind.Array, kv.Value.EnumerateArray().ToArray(), New JsonElement() {})
+                            For i = 0 To 7
+                                vals(i) = Jsoncpp.AsFloat(If(i < arr.Length, arr(i), New JsonElement()), regionOk)
+                                If Not regionOk Then Exit For
+                            Next
+                        End If
+                        If Not regionOk Then Exit For
+                        Dim idx = Jsoncpp.ClaveSscanfX(kv.Key)
+                        If Not preset.FaceBoneRegions.ContainsKey(idx) Then preset.FaceBoneRegions(idx) = vals
+                    Next
+                End If
+
+                ' Intensity (:462-474): `isMember("Intensity")` ⇒ presente (aunque null) ⇒ `asFloat` (null ⇒ 0.0,
+                ' bool ⇒ 1/0; string/array/objeto lanza ⇒ preserva); ausente ⇒ 1.0f (:467, MOTOR). Se escribe siempre
+                ' que no lance (non-player :462). Que el overlay cree el subrecord o no es la decision de producto de FMIN.
+                Dim intEl As JsonElement
+                If morphsTieneClaves AndAlso morphsEl.TryGetProperty("Intensity", intEl) Then
+                    Dim f = Jsoncpp.AsFloat(intEl, ok)
+                    preset.HasFacialMorphIntensity = ok
+                    If ok Then preset.FacialMorphIntensity = f
+                Else
+                    preset.HasFacialMorphIntensity = True
+                    preset.FacialMorphIntensity = 1.0F
+                End If
+            End If
+
+            ' Tints + TintOrder (:486-566). `Json::Value tints = root["Tints"]` y `getMemberNames` (null ⇒ vacio;
+            ' array/escalar/string ⇒ lanza ⇒ se preserva TODO el canal). Con miembros o contenedor existente:
+            ' `ClearCharacterTints` (:495-500) y por cada clave en orden strcmp:
+            '   • `sscanf_s(key, "%X", &keyValue)` con keyValue = 0 si no hay digitos (:504);
+            '   • `tints[key]["Type"].asInt()` (:506): miembro null ⇒ se vuelve `{}` ⇒ Type 0; miembro
+            '     escalar/array/string ⇒ `["Type"]` lanza ⇒ ABORTA el canal (el contenedor ya esta limpio ⇒ el
+            '     NPC queda SIN tints); Type string/array/objeto/fuera de Int32 ⇒ idem;
+            '   • `GetTemplateByIndex((UInt16)keyValue)` (:512, f4se GameCustomization.cpp:121-137): sin
+            '     plantilla en la RACE ⇒ `continue` SIN leer Color/ColorID/Percent — por eso esas tres
+            '     conversiones se posponen a ConversionFallida y las evalua el overlay, que conoce la raza;
+            '   • `CreateCharacterTintEntry((keyValue << 16) | type)` (:514): el indice de la entrada es
+            '     keyValue & 0xFFFF (GameCustomization.h:454-455);
+            '   • paleta (:517-527): `Color.asUInt()` (negativo/string/array/objeto lanza ⇒ aborta),
+            '     `SInt16 colorID = ColorID.asInt()` (truncado a 16 bits), `GetColorDataByID((UInt16)colorID)`
+            '     y si no existe `colors[0].colorID` (lo resuelve el overlay con la RACE);
+            '   • `percent = Percent.asInt()` a UInt8 (GameCustomization.h:179, sin clamp: byte bajo);
+            '   • `tintMap.emplace(keyValue, ...)` (:531): clave UInt32 repetida ⇒ gana la primera.
+            ' TintOrder (:537-552): `isMember` ⇒ presente (aunque null) ⇒ range-for (array ⇒ elementos; objeto ⇒
+            ' valores; otro ⇒ nada), `asCString` (no-string ⇒ lanza ⇒ corta: lo YA empujado queda, lo que sigue
+            ' y el resto del mapa NO se empujan), `sscanf_s("%X")`, se saca del mapa y se empuja; clave que no
+            ' esta se ignora. Lo que queda en el mapa se empuja ascendente por clave UInt32 (:555-556).
+            Dim tintsEl As JsonElement
+            root.TryGetProperty("Tints", tintsEl)
+            Dim tintMiembros = Jsoncpp.Miembros(tintsEl, ok)
+            If ok Then
+                preset.HasFaceTintLayers = True
+                Dim mapa As New SortedDictionary(Of UInteger, CapaDeTintePreset)
+                Dim aborta = False
+                For Each kv In tintMiembros
+                    Dim keyValue = Jsoncpp.ClaveSscanfX(kv.Key)
+                    Dim entryEl = kv.Value
+                    If entryEl.ValueKind <> JsonValueKind.Object AndAlso entryEl.ValueKind <> JsonValueKind.Null Then
+                        aborta = True : Exit For
+                    End If
+                    ' `= Nothing` en cada vuelta: VB NO reinicializa un `Dim` de bloque por iteracion, y para una
+                    ' entrada null (que el motor trata como `{}`) no se llama TryGetProperty ⇒ sin esto la capa
+                    ' heredaba Type/Color/ColorID/Percent de la capa ANTERIOR.
+                    Dim typeEl As JsonElement = Nothing
+                    If entryEl.ValueKind = JsonValueKind.Object Then entryEl.TryGetProperty("Type", typeEl)
+                    Dim tipo = Jsoncpp.AsInt(typeEl, ok)
+                    If Not ok Then aborta = True : Exit For
 
                     Dim layer As New CapaDeTintePreset()
-                    Dim idxParsed As UInteger
-                    If UInteger.TryParse(keyName, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, idxParsed) Then
-                        layer.Index = CUShort(idxParsed And &HFFFFUI)
-                    End If
+                    layer.Index = CUShort(keyValue And &HFFFFUI)
+                    layer.Discriminator = CUShort(tipo And &HFFFF)
 
-                    Dim typeEl As JsonElement
-                    If entryEl.TryGetProperty("Type", typeEl) AndAlso typeEl.ValueKind = JsonValueKind.Number Then
-                        layer.Discriminator = CUShort(typeEl.GetInt32())
+                    Dim colorEl As JsonElement = Nothing, cidEl As JsonElement = Nothing, pctEl As JsonElement = Nothing
+                    If entryEl.ValueKind = JsonValueKind.Object Then
+                        entryEl.TryGetProperty("Color", colorEl)
+                        entryEl.TryGetProperty("ColorID", cidEl)
+                        entryEl.TryGetProperty("Percent", pctEl)
                     End If
-
-                    Dim pctEl As JsonElement
-                    If entryEl.TryGetProperty("Percent", pctEl) AndAlso pctEl.ValueKind = JsonValueKind.Number Then
-                        ' "Percent" is 0..100 per LooksMenu schema (the field name says it explicitly,
-                        ' and CharGenInterface.cpp:180-181 only emits entries with Value>0 — it never
-                        ' generates >100). La intensidad de la capa del preset es un Integer.
-                        ' The previous clamp to 255 + cast to Byte was wrong on both axes: it allowed
-                        ' an out-of-spec range (101..255) to slip through, and the Byte round-trip
-                        ' silently corrupted any future expansion of the field. Clamp to the documented
-                        ' range and store as Integer.
-                        layer.Value = Math.Min(100, Math.Max(0, pctEl.GetInt32()))
-                    End If
-
-                    ' Palette-only: Type=1 (BGSCharacterTint::Entry::kTypePalette in f4se).
+                    ' Palette-only: Type=1 (BGSCharacterTint::Entry::kTypePalette, GameCustomization.h:173).
                     ' Color is stored as bgra UInt32. CharGenInterface.cpp:193 writes
                     '   tintData[k]["Color"] = (Json::Int)palette->color.bgra
-                    ' which is signed-int-with-bit-pattern. We read via GetInt32 + bit cast.
+                    ' which is signed-int-with-bit-pattern, and :519 reads it back with asUInt (negative ⇒ throw).
                     If layer.Discriminator = 1US Then
-                        Dim colorEl As JsonElement
-                        If entryEl.TryGetProperty("Color", colorEl) AndAlso colorEl.ValueKind = JsonValueKind.Number Then
-                            Dim bgra = CUInt(colorEl.GetInt64() And &HFFFFFFFFL)
+                        Dim bgra = Jsoncpp.AsUInt(colorEl, ok)
+                        If ok Then
                             ' Despite the field name "bgra", LooksMenu stores the UInt32 with bytes
                             ' in memory order [R, G, B, A] (verified empirically: a TEND with
                             ' R=0xE9 G=0xDA B=0xD8 round-trips through LooksMenu in-game as
@@ -583,94 +730,128 @@ Public Module LooksmenuLoader
                             Dim b = CInt((bgra >> 16) And &HFFUI)
                             Dim a = CInt((bgra >> 24) And &HFFUI)
                             layer.Color = Drawing.Color.FromArgb(a, r, g, b)
+                        Else
+                            layer.ConversionFallida = True
                         End If
-                        Dim cidEl As JsonElement
-                        If entryEl.TryGetProperty("ColorID", cidEl) AndAlso cidEl.ValueKind = JsonValueKind.Number Then
-                            layer.TemplateColorIndex = cidEl.GetInt32()
+                        Dim cid = Jsoncpp.AsInt(cidEl, ok)
+                        If ok Then
+                            ' `SInt16 colorID = ...asInt()` (:520): se queda con los 16 bits bajos, con signo.
+                            Dim lo16 = cid And &HFFFF
+                            If lo16 >= &H8000 Then lo16 -= &H10000
+                            layer.TemplateColorIndex = lo16
+                        Else
+                            layer.ConversionFallida = True
                         End If
                     End If
+                    Dim pct = Jsoncpp.AsInt(pctEl, ok)
+                    If ok Then
+                        layer.Value = pct And &HFF
+                    Else
+                        layer.ConversionFallida = True
+                    End If
 
-                    preset.FaceTintLayers.Add(layer)
+                    If Not mapa.ContainsKey(keyValue) Then mapa(keyValue) = layer
+                Next
+
+                If aborta Then
+                    mapa.Clear()
+                End If
+                Dim tintOrderEl As JsonElement
+                If Not aborta AndAlso root.TryGetProperty("TintOrder", tintOrderEl) Then
+                    For Each k In Jsoncpp.Valores(tintOrderEl)
+                        Dim texto = Jsoncpp.AsCString(k, ok)
+                        If Not ok Then
+                            ' Lanza a mitad del bucle: lo empujado queda, el resto del mapa no se empuja nunca.
+                            mapa.Clear()
+                            Exit For
+                        End If
+                        Dim keyValue = Jsoncpp.ClaveSscanfX(texto)
+                        Dim capa As CapaDeTintePreset = Nothing
+                        If mapa.TryGetValue(keyValue, capa) Then
+                            preset.FaceTintLayers.Add(capa)
+                            mapa.Remove(keyValue)
+                        End If
+                    Next
+                End If
+                For Each kv In mapa
+                    preset.FaceTintLayers.Add(kv.Value)
                 Next
             End If
 
-            ' Overlays (body tattoos). Fully parsed into preset.Overlays. Engine semantics mirror
-            ' CharGenInterface.cpp:578-619 LoadPreset: presence of the key wipes existing overlays
-            ' (RemoveAll at :577) then applies each member. We set HasOverlays True on presence so the
-            ' overlay-apply path treats it as authoritative (Has* semantics, like the other fields).
-            ' UnsupportedCounts.Overlays is still populated (the Load warning UI reads it).
-            ' Per-entry: template(string, required — skip if missing/empty, :586), priority(int default 0,
-            ' :585), optional tint[4]/offsetUV[2]/scaleUV[2] (:592-611). Absent UV/tint left Nothing;
-            ' the engine load substitutes its defaults (tint 0,0,0,0 / offset 0,0 / scale 1,1).
+            ' Overlays (body tattoos) — CharGenInterface.cpp:587-630. `RemoveAll` es INCONDICIONAL (:587, antes
+            ' de mirar la clave) ⇒ HasOverlays = True siempre: un .json sin "Overlays" deja al NPC sin overlays.
+            ' `isMember("Overlays")` ⇒ range-for (array ⇒ elementos; objeto ⇒ valores; otro ⇒ nada). Cada entrada
+            ' tiene su propio try/catch (:594-628): `priority.asInt()` (entrada null ⇒ se vuelve `{}` ⇒ 0;
+            ' escalar/array/string ⇒ lanza ⇒ se saltea), `template.asCString()` (ausente/null/no-string ⇒ lanza
+            ' ⇒ se saltea; "" se acepta pero `AddOverlay` con plantilla no registrada devuelve 0,
+            ' OverlayInterface.cpp:237-241 ⇒ mismo resultado que saltearla), y tint/offsetUV/scaleUV con
+            ' `isMember` ⇒ presente (aunque null) ⇒ `[i].asFloat()` (null/corto ⇒ 0; objeto/escalar/string ⇒
+            ' `[0]` lanza ⇒ se saltea la entrada; elemento no convertible ⇒ idem). Ausente ⇒ Nothing y el motor
+            ' pone sus defaults (tint 0,0,0,0 / offset 0,0 / scale 1,1). UnsupportedCounts.Overlays sigue
+            ' poblado (la UI del Load lo lee).
+            preset.HasOverlays = True
             Dim ovEl As JsonElement
-            If root.TryGetProperty("Overlays", ovEl) AndAlso ovEl.ValueKind = JsonValueKind.Array Then
-                preset.HasOverlays = True
-                preset.UnsupportedCounts.Overlays = ovEl.GetArrayLength()
-                For Each ov In ovEl.EnumerateArray()
-                    If ov.ValueKind <> JsonValueKind.Object Then Continue For
+            root.TryGetProperty("Overlays", ovEl)
+            Dim ovEntradas = Jsoncpp.Valores(ovEl)
+            preset.UnsupportedCounts.Overlays = ovEntradas.Count
+            For Each ov In ovEntradas
+                If ov.ValueKind <> JsonValueKind.Object Then Continue For
 
-                    ' template — required. CharGenInterface.cpp:586 reads it unconditionally; an entry
-                    ' without a template id can't reference a template, so we skip it.
-                    Dim tplEl As JsonElement
-                    If Not ov.TryGetProperty("template", tplEl) OrElse tplEl.ValueKind <> JsonValueKind.String Then Continue For
-                    Dim tplId = tplEl.GetString()
-                    If String.IsNullOrEmpty(tplId) Then Continue For
+                Dim prEl, tplEl As JsonElement
+                ov.TryGetProperty("priority", prEl)
+                Dim prioridad = Jsoncpp.AsInt(prEl, ok)
+                If Not ok Then Continue For
+                ov.TryGetProperty("template", tplEl)
+                Dim tplId = Jsoncpp.AsCString(tplEl, ok)
+                If Not ok OrElse String.IsNullOrEmpty(tplId) Then Continue For
 
-                    Dim entry As New OverlayEntry With {.TemplateId = tplId}
+                Dim entry As New OverlayEntry With {.TemplateId = tplId, .Priority = prioridad}
 
-                    ' priority — default 0 (CharGenInterface.cpp:585 asInt with no default; absent key
-                    ' in jsoncpp yields 0, so default 0 matches).
-                    Dim prEl As JsonElement
-                    If ov.TryGetProperty("priority", prEl) AndAlso prEl.ValueKind = JsonValueKind.Number Then
-                        entry.Priority = prEl.GetInt32()
-                    End If
+                Dim tintEl As JsonElement
+                If ov.TryGetProperty("tint", tintEl) Then
+                    entry.Tint = Jsoncpp.Floats(tintEl, 4, ok)
+                    If Not ok Then Continue For
+                End If
+                Dim offEl As JsonElement
+                If ov.TryGetProperty("offsetUV", offEl) Then
+                    entry.OffsetUV = Jsoncpp.Floats(offEl, 2, ok)
+                    If Not ok Then Continue For
+                End If
+                ' scaleUV: the engine SAVE has a bug (:248-249 appends offsetUV.x/y into the scaleUV array),
+                ' but the engine LOAD reads scaleUV faithfully, so reading it straight is correct.
+                Dim sclEl As JsonElement
+                If ov.TryGetProperty("scaleUV", sclEl) Then
+                    entry.ScaleUV = Jsoncpp.Floats(sclEl, 2, ok)
+                    If Not ok Then Continue For
+                End If
 
-                    ' tint [r,g,b,a] — optional (CharGenInterface.cpp:592-597). Only set when present.
-                    Dim tintEl As JsonElement
-                    If ov.TryGetProperty("tint", tintEl) AndAlso tintEl.ValueKind = JsonValueKind.Array Then
-                        entry.Tint = ReadFloatArray(tintEl, 4)
-                    End If
+                preset.Overlays.Add(entry)
+            Next
 
-                    ' offsetUV [x,y] — optional (CharGenInterface.cpp:601-604).
-                    Dim offEl As JsonElement
-                    If ov.TryGetProperty("offsetUV", offEl) AndAlso offEl.ValueKind = JsonValueKind.Array Then
-                        entry.OffsetUV = ReadFloatArray(offEl, 2)
-                    End If
-
-                    ' scaleUV [x,y] — optional (CharGenInterface.cpp:608-611). The engine SAVE has a bug
-                    ' (:238-239 appends offsetUV.x/y into the scaleUV array), but the engine LOAD reads
-                    ' scaleUV faithfully, so reading it straight is correct.
-                    Dim sclEl As JsonElement
-                    If ov.TryGetProperty("scaleUV", sclEl) AndAlso sclEl.ValueKind = JsonValueKind.Array Then
-                        entry.ScaleUV = ReadFloatArray(sclEl, 2)
-                    End If
-
-                    preset.Overlays.Add(entry)
-                Next
-            End If
+            ' Skin (:632-638): `RevertOverride` + `RemoveSkinOverride` INCONDICIONALES ⇒ ausente = "" (sin
+            ' plantilla). `isMember("Skin")` ⇒ `asString` (null ⇒ ""; numero/bool ⇒ texto; array/objeto ⇒
+            ' lanza FUERA de todo try — HUECO del motor — con el override ya quitado ⇒ ""). Un id que no esta
+            ' registrado no hace nada (SkinInterface.cpp:84-85).
             Dim skEl As JsonElement
-            If root.TryGetProperty("Skin", skEl) AndAlso skEl.ValueKind = JsonValueKind.String Then
-                Dim skId = skEl.GetString()
-                preset.SkinTemplateId = If(skId, "")
-                preset.UnsupportedCounts.HasSkinOverride = Not String.IsNullOrEmpty(skId)
-            End If
+            root.TryGetProperty("Skin", skEl)
+            Dim skId = Jsoncpp.AsString(skEl, ok)
+            preset.SkinTemplateId = If(ok, If(skId, ""), "")
+            preset.UnsupportedCounts.HasSkinOverride = Not String.IsNullOrEmpty(preset.SkinTemplateId)
 
-            ' BodyMorphs: BodySlide vertex sliders. Canonical LooksMenu field — see
-            ' CharGenInterface.cpp:560-570 for the engine semantics:
-            '   • Key present (even empty {}) → wipe existing morphs, then apply each member.
-            '   • Key absent                  → preserve current actor state.
-            ' We replicate that:
-            '   • Key present → fill BodyMorphSliders (caller's overlay-apply will replace any
-            '                  prior sliders on the NPC).
-            '   • Key absent  → leave BodyMorphSliders empty; ApplyPresetOverlayToNpcData treats
-            '                  that as "no BodyMorphs override" and the NPC keeps whatever sliders
-            '                  it had before this preset was applied.
+            ' BodyMorphs (:568-585): `morphData = root["BodyMorphs"]`, `getMemberNames` (null ⇒ vacio;
+            ' array/escalar/string ⇒ lanza ⇒ se preserva). `RemoveMorphsByKeyword` (:573) SOLO si `members.size() > 0 ||
+            ' (isMember("BodyMorphs") && isNull())` (:572-577): `{}` y ausente PRESERVAN los sliders del actor;
+            ' null explicito los borra. Despues, por clave en orden strcmp, `asFloat` (lanza ⇒ corta: lo
+            ' anterior queda, con el wipe ya hecho).
             Dim bmEl As JsonElement
-            If root.TryGetProperty("BodyMorphs", bmEl) AndAlso bmEl.ValueKind = JsonValueKind.Object Then
-                For Each prop In bmEl.EnumerateObject()
-                    If prop.Value.ValueKind = JsonValueKind.Number Then
-                        preset.BodyMorphSliders(prop.Name) = prop.Value.GetSingle()
-                    End If
+            Dim bmPresente = root.TryGetProperty("BodyMorphs", bmEl)
+            Dim bmMiembros = Jsoncpp.Miembros(bmEl, ok)
+            If ok Then
+                preset.HasBodyMorphSliders = (bmMiembros.Count > 0 OrElse (bmPresente AndAlso bmEl.ValueKind = JsonValueKind.Null))
+                For Each kv In bmMiembros
+                    Dim f = Jsoncpp.AsFloat(kv.Value, ok)
+                    If Not ok Then Exit For
+                    preset.BodyMorphSliders(kv.Key) = f
                 Next
                 preset.UnsupportedCounts.BodyMorphSliders = preset.BodyMorphSliders.Count
             End If
@@ -772,21 +953,6 @@ Public Module LooksmenuLoader
         End Using
     End Function
 
-    ''' <summary>Read a fixed-width float array from a JSON array element. Reads exactly
-    ''' <paramref name="count"/> slots; a short JSON array pads the tail with 0.0F (jsoncpp's
-    ''' <c>arr[i].asFloat()</c> on an out-of-range index returns 0, so the engine load — which
-    ''' indexes [0..3]/[0..1] unconditionally — sees the same value). Non-number slots also yield 0.</summary>
-    Private Function ReadFloatArray(arrEl As JsonElement, count As Integer) As Single()
-        Dim result(count - 1) As Single
-        Dim i As Integer = 0
-        For Each v In arrEl.EnumerateArray()
-            If i >= count Then Exit For
-            If v.ValueKind = JsonValueKind.Number Then result(i) = v.GetSingle()
-            i += 1
-        Next
-        Return result
-    End Function
-
     ''' <summary>Resolve a "Plugin.esp|FormIDhex" identifier (LooksMenu's serialization format —
     ''' Utilities.cpp:108-130 GetFormIdentifier emits "%s|%06X" with the LOCAL FormID, no master
     ''' index in the high bits) to a global FormID. Returns 0 when the named plugin isn't in the
@@ -804,10 +970,9 @@ Public Module LooksmenuLoader
 
         Dim pluginName = identifier.Substring(0, pipeIdx).Trim()
         Dim hex = identifier.Substring(pipeIdx + 1).Trim()
-        Dim localFormID As UInteger
-        If Not UInteger.TryParse(hex, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, localFormID) Then
-            Return 0UI
-        End If
+        ' El motor lee el hex con `sscanf_s(modForm, "%X")` (f4ee Utilities.cpp:140; skee64 FileUtils.cpp:212):
+        ' acepta prefijo 0x, signo y corta en el primer caracter no-hex. Sin digitos ⇒ 0.
+        Dim localFormID As UInteger = Jsoncpp.ClaveSscanfX(hex)
 
         ' Find the named plugin in the active load order. If not loaded, signal "unresolved" with
         ' 0 — caller will route the raw identifier into UnresolvedHeadParts for diagnostics.
@@ -894,6 +1059,7 @@ Public Module LooksmenuLoader
         ' SSE-only verbatim unresolved head parts must travel with the clone too — otherwise a
         ' load→(copy/snapshot)→save would drop the preserved parts that ToJslot re-emits.
         c.SseUnresolvedHeadParts.AddRange(p.SseUnresolvedHeadParts)
+        c.SseHeadPartsFiltradasPorMotor.AddRange(p.SseHeadPartsFiltradasPorMotor)
         c.HairColorFormID = p.HairColorFormID
         c.UnresolvedHairColor = p.UnresolvedHairColor
         ' Los tres crudos viajan con el clon por lo mismo que los de arriba: el informe de compatibilidad se
@@ -920,11 +1086,14 @@ Public Module LooksmenuLoader
 
         ' Has flags must be carried with the lists they describe — without these the wipe vs
         ' preserve semantics differ between original and clone.
+        c.HasGender = p.HasGender
         c.HasFaceTintLayers = p.HasFaceTintLayers
         c.HasChargenFaceMorphs = p.HasChargenFaceMorphs
         c.HasBodyMorphValues = p.HasBodyMorphValues
         c.HasFaceBoneRegions = p.HasFaceBoneRegions
+        c.HasFacialMorphIntensity = p.HasFacialMorphIntensity
         c.HasHeadPartFormIDs = p.HasHeadPartFormIDs
+        c.HasBodyMorphSliders = p.HasBodyMorphSliders
         c.HeadPartFormIDsIncludeRawExtras = p.HeadPartFormIDsIncludeRawExtras
         c.SuppressedRawHeadPartFormIDs = New HashSet(Of UInteger)(p.SuppressedRawHeadPartFormIDs)
 
@@ -1082,7 +1251,8 @@ Public Module LooksmenuLoader
             .Index = tl.Index,
             .Value = tl.Value,
             .Color = tl.Color,
-            .TemplateColorIndex = tl.TemplateColorIndex
+            .TemplateColorIndex = tl.TemplateColorIndex,
+            .ConversionFallida = tl.ConversionFallida
         }
     End Function
 
@@ -1206,14 +1376,17 @@ Public Module LooksmenuLoader
                 ' → Skin → Tints → TintOrder → Weight. (Overlays sorts between Morphs and Skin: M<O<S.)
 
                 ' BodyMorphs — canonical LooksMenu BodySlide slider dict. Engine convention
-                ' (CharGenInterface.cpp:204-215): the key is emitted iff `morphMap` exists for the
-                ' actor; if the actor has no BodyMorphs registered the key is OMITTED entirely.
-                ' On Load (CharGenInterface.cpp:560-570) presence of the key — even empty — wipes
-                ' the actor's morphs (RemoveMorphsByKeyword) before applying members. Absence
-                ' preserves the in-game actor state.
-                ' We match the same convention: emit only when non-empty. Saving a NPC with an
-                ' empty slider dict therefore behaves like "no BodyMorphs declared" rather than
-                ' "wipe", which is the safer round-trip semantics for an editor.
+                ' (CharGenInterface.cpp:214-225): `root["BodyMorphs"] = morphData` iff `morphMap` exists for
+                ' the actor; with un morphMap SIN entradas `morphData` queda como Json::Value nulo ⇒ el archivo
+                ' trae `"BodyMorphs": null`. Sin morphMap la clave se OMITE.
+                ' On Load (CharGenInterface.cpp:568-577) the actor's morphs are wiped iff the key has members
+                ' OR it is present and null; an ABSENT key or an EMPTY object `{}` PRESERVES the actor state.
+                ' Es el UNICO canal donde ausente y null cargan distinto, asi que aca se emite lo que el
+                ' estado del preset dice: `HasBodyMorphSliders` = «el motor escribiria este canal» (el snapshot
+                ' de BuildPresetFromState lo pone en True) ⇒ con sliders el objeto, sin sliders `null` (= wipe
+                ' al recargar, que es el estado que se guardo: un NPC sin sliders). Sin la bandera y sin
+                ' sliders se omite (= preservar). Antes se omitia siempre que estuviera vacio, y un preset
+                ' guardado desde un NPC sin sliders dejaba al destino con los suyos.
                 If preset.BodyMorphSliders IsNot Nothing AndAlso preset.BodyMorphSliders.Count > 0 Then
                     w.WriteStartObject("BodyMorphs")
                     Dim bmKeys = preset.BodyMorphSliders.Keys.OrderBy(Function(k) k, StringComparer.Ordinal).ToList()
@@ -1221,6 +1394,8 @@ Public Module LooksmenuLoader
                         w.WriteNumber(k, preset.BodyMorphSliders(k))
                     Next
                     w.WriteEndObject()
+                ElseIf preset.HasBodyMorphSliders Then
+                    w.WriteNull("BodyMorphs")
                 End If
 
                 ' Gender (always)
@@ -1365,7 +1540,7 @@ Public Module LooksmenuLoader
                         End If
                         w.WriteNumber("priority", ov.Priority)
                         ' scaleUV — written CORRECTLY here. The engine SAVE has a bug
-                        ' (CharGenInterface.cpp:238-239 appends offsetUV.x/y into the scaleUV array
+                        ' (CharGenInterface.cpp:248-249 appends offsetUV.x/y into the scaleUV array
                         ' instead of scaleUV.x/y), which corrupts scale on re-save. We deliberately
                         ' DO NOT replicate that bug: the engine LOAD (:608-610) reads scaleUV
                         ' faithfully, so emitting the real scale preserves round-trip AND avoids

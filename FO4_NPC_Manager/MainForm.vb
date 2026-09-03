@@ -9417,9 +9417,13 @@ Public Class MainForm
         _appliedPresets.TryGetValue(npcFormID, priorOverlay)
 
         ' UN read + UN parse del .jslot, DOS mapeos (el formato de RaceMenu no responde ambas con un objeto):
-        '   • APPLY, sobre un CLONE del overlay previo -> con qué queda el NPC. El clone es obligatorio: varios
-        '     campos no pueden expresar "ausente" (NAM9 es un vector fijo de 18 donde 0 es valor legítimo), así
-        '     que se siembra del valor anterior y solo se pisa lo que el archivo declara. Alimenta el preview y OK.
+        '   • APPLY, sobre un CLONE del overlay previo -> con qué queda el NPC. El clone es el ESTADO ACTUAL del
+        '     actor, que skee64 ApplyPresetData (PresetInterface.cpp:125-292) sobreescribe IN PLACE: casi todo lo
+        '     REEMPLAZA sin condición (head parts :131-175, weight :177, sculpt :221, custom :228, transforms :270,
+        '     bodyMorphs :286) y el mapper lo pisa igual; lo único que HEREDA del estado previo es lo que el motor
+        '     escribe posicional o condicionado — NAM9/NAMA índice a índice (:182-192, sólo los que el archivo
+        '     trae), headTexture sólo `if (presetData->headTexture)` (:147) y las tints cuando el archivo no trae
+        '     ninguna (:194-218 itera las del archivo; con 0 entradas no escribe nada). Alimenta el preview y OK.
         '   • DISPLAY, sobre un preset VACÍO -> qué trae el ARCHIVO. Alimenta conteos por categoría, filtro de
         '     compatibilidad de raza y el reporte, para no atribuirle al preset contenido propio del NPC.
         ' Nothing si el archivo no se puede leer (el browser lo saltea). SourcePath/Gender se estampan para el label.
@@ -9427,7 +9431,13 @@ Public Class MainForm
             Function(fp As String) As LooksmenuLoad_Form.SsePresetMapping
                 Try
                     Dim j = RaceMenuJslot.Load(IO.File.ReadAllBytes(fp))
-                    If j Is Nothing Then Return Nothing
+                    If j Is Nothing Then
+                        ' Nothing = el MOTOR lo rechaza entero (skee64 PresetInterface.cpp:898-954: firma/versión/mods, o
+                        ' una conversión de jsoncpp que lanza fuera de todo try/catch). No es un defecto de la app: el
+                        ' juego tampoco lo carga. Se anota para que "no aparece en la lista" tenga explicación.
+                        Logger.LogLazy(Function() $"[RM-PRESET] '{fp}': RaceMenu lo rechaza (PresetInterface.cpp:898-954: firma, versión, mods o una conversión de jsoncpp que lanza); no se lista.")
+                        Return Nothing
+                    End If
                     ' raceFormID + gender → translate the .jslot POSITIONAL tint index to the record TINI value
                     ' (RaceMenuPresetMapper.JslotIndexToTini). Without it the skin tone / per-layer texture bind to the
                     ' wrong RACE layer on races whose TINI != position (incl. the body-QNAM skin tone at position 0).
@@ -9505,23 +9515,29 @@ Public Class MainForm
             ' could be loaded, the preview would render the template HDPTs, but exporting to ESP
             ' would emit raw NPC PNAM (no headRear swap).
             NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, npc.Record.ConfigurationFlagsFemale, AddressOf ResolveLmSkinTemplate)
-            ' Normalizar el TemplateColorIndex de TODOS los layers re-derivándolo desde el Color — misma
-            ' resolución que Copy/Paste hace en BuildPresetFromState. El load de LooksMenu toma el "ColorID"
-            ' crudo del JSON, que no siempre coincide con el TemplateIndex del RACE; sin esto el resolver del
-            ' render (match por TemplateIndex) no encuentra la entrada y el layer cae a su color crudo
-            ' (skin-tone slot-12 -> pálido/blanco). Idempotente; no-op en no-Palette.
-            ' Raza EFECTIVA para normalizar los TemplateColorIndex: `npc` es el raw cacheado del ctx (raza
-            ' vieja tras un cambio de raza en el editor); el catálogo de tints correcto es el de la raza
-            ' pisada por el NpcRecordOverride, igual que el render/bake.
-            Dim ovForTintNorm = TryGetNpcRecordOverride(npcFormID)
-            Dim raceFidForTintNorm As UInteger = If(ovForTintNorm IsNot Nothing AndAlso ovForTintNorm.RaceFormID.HasValue AndAlso ovForTintNorm.RaceFormID.Value <> 0UI,
-                                                    ovForTintNorm.RaceFormID.Value, npc.Record.Race)
-            Dim raceForTintNorm As Canon.IRace = Nothing
-            Dim raceRecForTintNorm = _pluginManager.GetRecord(raceFidForTintNorm)
-            If raceRecForTintNorm IsNot Nothing AndAlso raceRecForTintNorm.Header.Signature = "RACE" Then
-                raceForTintNorm = _ctx.ParseRaceCanonCached(raceRecForTintNorm)
+            ' El ColorID de cada capa de paleta NO se re-deriva del Color: el motor lo VALIDA contra la raza
+            ' (f4ee CharGenInterface.cpp:512-527 — índice sin plantilla ⇒ capa salteada; ColorID sin match ⇒ el
+            ' primer color de la plantilla). La ley vive en NpcRecordOverlay.ValidarCapasDeTinteContraLaRaza y se
+            ' aplica ACÁ, una sola vez, al preset que queda en _appliedPresets: el overlay, Edit Face, el informe
+            ' de compatibilidad y Copy ven el estado del motor y no el JSON crudo. SÓLO cuando las capas vienen
+            ' del ARCHIVO (misma condición con la que BuildFiltered las toma del source): con la categoría sin
+            ' tickear o con el bloque Tints que lanzó, BuildFiltered las sembró del baseline (ya validado al
+            ' cargarse) o del record, y las del record no pasan por LoadPreset en el motor — validarlas las
+            ' salteaba o les pisaba el ColorID.
+            ' Raza EFECTIVA: `npc` es el raw cacheado del ctx (raza vieja tras un cambio de raza en el editor);
+            ' el catálogo de tints correcto es el de la raza pisada por el NpcRecordOverride, igual que el render.
+            If Not isSseGame AndAlso options.FaceTints AndAlso
+               PresetCategoryFilter.MotorEscribe(preset, PresetCategory.FaceTints, isSseGame) Then
+                Dim ovForTints = TryGetNpcRecordOverride(npcFormID)
+                Dim raceFidForTints As UInteger = If(ovForTints IsNot Nothing AndAlso ovForTints.RaceFormID.HasValue AndAlso ovForTints.RaceFormID.Value <> 0UI,
+                                                     ovForTints.RaceFormID.Value, npc.Record.Race)
+                Dim raceForTints As Canon.IRace = Nothing
+                Dim raceRecForTints = _pluginManager.GetRecord(raceFidForTints)
+                If raceRecForTints IsNot Nothing AndAlso raceRecForTints.Header.Signature = "RACE" Then
+                    raceForTints = _ctx.ParseRaceCanonCached(raceRecForTints)
+                End If
+                NpcRecordOverlay.ValidarTintsDelArchivo(toApply, raceForTints, npc.Record.ConfigurationFlagsFemale, _pluginManager, npcFormID)
             End If
-            NormalizePresetTintTemplateColorIds(toApply, raceForTintNorm, npc.Record.ConfigurationFlagsFemale)
 
             ' Record which raw Misc (hairlines) this preset orphans by REPLACING a main-type parent
             ' (e.g. a hair swap): compute it HERE, at the apply point, so Save drops them the same way
@@ -10077,54 +10093,49 @@ Public Class MainForm
                 preset.SseWeight = 100.0F
             End If
 
-            ' --- Head morphs (NAM9 18 floats + NAMA 4 type uints): overlay if set, else parse the record. ---
-            If overlay IsNot Nothing AndAlso overlay.HasSseMorphs AndAlso overlay.SseNam9 IsNot Nothing Then
-                preset.SseNam9 = DirectCast(overlay.SseNam9.Clone(), Single())
-                ' Sin SseNama el vector va a CENTINELAS, no a ceros: 0 es un tipo REAL y esta rama estaba
-                ' diciendo lo contrario que la de abajo sobre el mismo campo. Ver DefaultNamaVector.
-                preset.SseNama = If(overlay.SseNama Is Nothing, SseNam9MorphMap.DefaultNamaVector(), DirectCast(overlay.SseNama.Clone(), UInteger()))
-                preset.HasSseMorphs = True
-                ' EL SLOT 18 TAMBIÉN VIAJA POR ACÁ. Estaba sólo en la rama del `Else`, así que el arreglo era
-                ' INERTE justo en el camino normal: basta con haber cargado un .jslot o tocado UN slider en Edit
-                ' Face para que exista overlay, y entonces "Save RaceMenu Preset" volvía a emitir la constante
-                ' centinela y pisaba el VampireMorph real del NPC. El overlay lo trae si vino de un .jslot; si no,
-                ' se cae al record, que es la fuente de verdad cuando el editor no lo tocó.
-                preset.SseVampireMorph = If(overlay.SseVampireMorph.HasValue,
-                                            overlay.SseVampireMorph,
-                                            VampireMorphFromNam9(raw))
-            Else
-                Dim rawNam9 = raw.Record.DeslizadoresDeCara()
-                Dim rawNama = raw.Record.PartesDeCara()
-                Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
-                For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
-                    If rawNam9 IsNot Nothing AndAlso i < rawNam9.Length Then
-                        Dim v = rawNam9(i)
-                        If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0.0F
-                        nam9(i) = v
-                    End If
-                Next
-                Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
-                For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
-                    ' El centinela 0xFFFFFFFF ("esta familia NO tiene tipo asignado") viaja INTACTO — NO
-                    ' colapsarlo a 0, que es un tipo REAL: el lector del .jslot (RaceMenuPresetMapper,
-                    ' "0xFFFFFFFF = unset/default, preserved (never forced to a real type 0)") y el motor
-                    ' lo distinguen igual (skee asigna el tipo tal cual, `presets[i] = value`,
-                    ' PresetInterface.cpp:1052-1058; NpcMorphResolver no hace nada con el centinela y
-                    ' aplica el morph "Default" con peso 1.0 con el 0). Colapsarlo le CAMBIA LA CARA a un
-                    ' NPC sin NAMA al guardar y recargar su preset.
-                    ' Medido: en los 48 presets reales conviven 43 centinelas y 27 ceros, o sea que RaceMenu
-                    ' escribe los dos y el centinela es un valor legítimo del formato.
-                    ' El sitio gemelo es PresetCategoryFilter (misma ley, mismo motivo).
-                    nama(f) = If(rawNama IsNot Nothing AndAlso f < rawNama.Length,
-                                 rawNama(f), SseNam9MorphMap.NamaUnset)
-                Next
-                ' Slot 18 del NAM9 (VampireMorph): fuera de los 18 sliders editables, pero parte del record. Se
-                ' captura para que ToJslot no lo reemplace por su constante. Ver LooksmenuPreset.SseVampireMorph.
-                preset.SseVampireMorph = VampireMorphFromNam9(raw)
-                preset.SseNam9 = nam9
-                preset.SseNama = nama
-                preset.HasSseMorphs = (rawNam9 IsNot Nothing OrElse rawNama IsNot Nothing)
-            End If
+            ' --- Head morphs (NAM9 18 floats + slot 18 VampireMorph + NAMA 4 type uints): del record EFECTIVO
+            ' (post-overlay), el mismo NPC_Data que leen el render y el bake — la misma fuente que los morfos
+            ' chargen de FO4 de más arriba (`effective.Record.MorfosDeCara()`).
+            ' Antes había una rama que clonaba `overlay.SseNam9`. Ya no sirve: el overlay lleva EXACTAMENTE los
+            ' índices que el .jslot cubrió (skee64 ApplyPresetData :188-192 escribe `option[i]` posicional, así
+            ' que un archivo de 5 entradas deja [5..17] como estaban en el record) y ese clon podía medir menos
+            ' de 18 ⇒ el snapshot perdía la cola propia del NPC. El efectivo ya tiene overlay-sobre-record
+            ' resuelto por NpcRecordOverlay, incluido el slot 18.
+            Dim effNam9 = effective.Record.DeslizadoresDeCara()
+            Dim effNama = effective.Record.PartesDeCara()
+            Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
+            For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
+                If effNam9 IsNot Nothing AndAlso i < effNam9.Length Then
+                    Dim v = effNam9(i)
+                    If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0.0F
+                    nam9(i) = v
+                End If
+            Next
+            Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
+            For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
+                ' El centinela 0xFFFFFFFF ("esta familia NO tiene tipo asignado") viaja INTACTO — NO
+                ' colapsarlo a 0, que es un tipo REAL: el lector del .jslot (RaceMenuPresetMapper,
+                ' "0xFFFFFFFF = unset/default, preserved (never forced to a real type 0)") y el motor
+                ' lo distinguen igual (skee asigna el tipo tal cual, `presets[i] = value`,
+                ' PresetInterface.cpp:1052-1058; NpcMorphResolver no hace nada con el centinela y
+                ' aplica el morph "Default" con peso 1.0 con el 0). Colapsarlo le CAMBIA LA CARA a un
+                ' NPC sin NAMA al guardar y recargar su preset.
+                ' Medido: en los 48 presets reales conviven 43 centinelas y 27 ceros, o sea que RaceMenu
+                ' escribe los dos y el centinela es un valor legítimo del formato.
+                ' El sitio gemelo es PresetCategoryFilter (misma ley, mismo motivo).
+                nama(f) = If(effNama IsNot Nothing AndAlso f < effNama.Length,
+                             effNama(f), SseNam9MorphMap.NamaUnset)
+            Next
+            ' Slot 18 del NAM9 (VampireMorph): fuera de los 18 sliders editables, pero parte del record. Se
+            ' captura para que ToJslot no lo reemplace por su constante. Ver LooksmenuPreset.SseVampireMorph.
+            ' Sale del efectivo, así que ya trae el del .jslot cargado si lo hubo (NpcRecordOverlay escribe
+            ' `n9(18)` cuando `SseVampireMorph.HasValue`).
+            preset.SseVampireMorph = VampireMorphFromNam9(effective)
+            preset.SseNam9 = nam9
+            preset.SseNama = nama
+            ' `Has` = hay canal que escribir: el overlay lo declaró, o el record lo trae.
+            preset.HasSseMorphs = (overlay IsNot Nothing AndAlso overlay.HasSseMorphs) OrElse
+                                  effNam9 IsNot Nothing OrElse effNama IsNot Nothing
 
             ' --- Face tints (TINI/TINC/TINV/TIAS): overlay if set, else the record's authored list. ---
             If overlay IsNot Nothing AndAlso overlay.HasSseTints AndAlso overlay.SseTintLayers IsNot Nothing Then
@@ -10233,12 +10244,20 @@ Public Class MainForm
         ' every overlay-replaceable field is "present" in this snapshot, so all Has* flags are
         ' True — the resulting preset, when applied as overlay, fully replaces those fields on
         ' any NPC (including wiping when one of the lists ended up empty after edits).
+        ' `Has*` = "el motor escribiría este canal" (LoadPreset, CharGenInterface.cpp:269-645, un try/catch por
+        ' canal). El snapshot es el estado completo del NPC renderizado, así que TODOS los canales están
+        ' presentes: los tres nuevos (Gender / BodyMorphSliders / FacialMorphIntensity) siguen la misma ley que
+        ' los seis de siempre. Sin ellos, el filtro por categoría (PresetCategoryFilter.MotorEscribe) trataría el
+        ' Paste Look como "el motor no escribe" y el canal quedaría preservado en vez de reemplazado.
+        preset.HasGender = True
         preset.HasFaceTintLayers = True
         preset.HasChargenFaceMorphs = True
         preset.HasBodyMorphValues = True
         preset.HasFaceBoneRegions = True
+        preset.HasFacialMorphIntensity = True
         preset.HasHeadPartFormIDs = True
         preset.HasOverlays = True
+        preset.HasBodyMorphSliders = True
         ' Origin reset: the line above asserts authority based on "snapshot is complete",
         ' independent of the LM template. So the writer-trackable origin flag stays False —
         ' otherwise a Paste followed by an LM template change in EditBody would erroneously
@@ -10263,20 +10282,6 @@ Public Class MainForm
         If opt Is Nothing OrElse opt.TemplateColors Is Nothing OrElse opt.TemplateColors.Count = 0 Then Return
 
         layer.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(layer.Color, layer.Value / 100.0F, opt, _pluginManager)
-    End Sub
-
-    ''' <summary>Normaliza el TemplateColorIndex de CADA Palette layer del preset re-derivándolo desde su
-    ''' Color (vía <see cref="ResolveTemplateColorIdToAbsolute"/>), idéntico a lo que Copy/Paste hace en
-    ''' BuildPresetFromState. Necesario en el load de LooksMenu: LooksmenuLoader toma el "ColorID" crudo del
-    ''' JSON, que NO siempre coincide con el TemplateIndex del RACE — y el resolver del render
-    ''' (FaceTintInputBuilder, match por TemplateIndex) entonces no matchea y el layer cae a su color crudo
-    ''' (el skin-tone slot-12 -> pálido/blanco). Idempotente (re-deriva del Color, que no toca); no-op en
-    ''' layers no-Palette (Discriminator&lt;&gt;1) y si falta race.</summary>
-    Private Sub NormalizePresetTintTemplateColorIds(preset As LooksmenuLoader.LooksmenuPreset, race As Canon.IRace, isFemale As Boolean)
-        If preset Is Nothing OrElse race Is Nothing OrElse preset.FaceTintLayers Is Nothing Then Return
-        For Each tl In preset.FaceTintLayers
-            ResolveTemplateColorIdToAbsolute(tl, race, isFemale)
-        Next
     End Sub
 
     ''' <summary>Compute body-edit availability against the currently rendered NPC and update

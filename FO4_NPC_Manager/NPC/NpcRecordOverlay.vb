@@ -100,11 +100,19 @@ Public Module NpcRecordOverlay
     ''' estaba, incluidos los campos que ningún editor toca. Antes se armaba campo por campo, y el que
     ''' alguien se olvidaba de copiar se perdía al guardar — media docena de bugs medidos salieron de
     ''' ahí, y cada uno se tapó agregando una línea más a la lista.</para>
-    ''' <para>Semántica por campo, replicando el <c>LoadPreset</c> del motor: los head parts arrancan de los
-    ''' defaults de la RACE y el preset se mergea encima; un campo que el JSON no trae se PRESERVA del record
-    ''' (identificador que no resuelve ⇒ el motor saltea la asignación); los diccionarios de morphs vacíos
-    ''' también preservan. Divergencia consciente: el peso ausente lo dejamos como está en vez de reproducir
-    ''' el "missing = 0" del motor, que rompe el body weight visualmente y no sirve para Paste entre NPCs.</para></summary>
+    ''' <para>LA LEY (f4ee <c>CharGenInterface.cpp</c> LoadPreset :269-645, un try/catch por canal): la sombra
+    ''' es el estado del motor DESPUÉS de LoadPreset. Cada <c>Has*</c> del preset dice «el motor escribiría este
+    ''' canal»; con <c>Has*</c> el canal se REEMPLAZA con lo que el preset trae (aunque sea vacío: el motor hace
+    ''' <c>Clear()</c> y recién después <c>Add</c>), y sin <c>Has*</c> (el motor lanzó y el catch lo dejó como
+    ''' estaba) se PRESERVA el record. Nada se siembra del record dentro de un canal que el preset reemplaza.
+    ''' Los <c>Has*</c> los decide <c>LooksmenuLoader.ParseFile</c> con la tabla de jsoncpp, no esta función.</para>
+    ''' <para>Tints: además del <c>Has</c>, el motor valida cada capa contra la RAZA (:512-527) — índice sin
+    ''' plantilla ⇒ capa salteada; ColorID sin color en la plantilla ⇒ el primero de la lista; y una conversión
+    ''' que lanza en una capa validada vacía el canal entero (:563). Eso lo hace <c>ValidarCapasDeTinteContraLaRaza</c>
+    ''' UNA vez al cargar el .json (MainForm.PreviewLooksmenuOverlay), no acá: esta función también recibe capas
+    ''' sembradas del record, que en el motor no pasan por LoadPreset.</para>
+    ''' <para>FMIN: <c>Morphs.Intensity</c> ausente ⇒ 1.0 es MOTOR (:466-467, para todo actor que no sea el jugador
+    ''' :462); la decisión de PRODUCTO es no crear el subrecord cuando vale 1.0 y el record no lo tenía.</para></summary>
     ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCanonCached). When Nothing,
     ''' falls back to a direct <c>Canon.CanonRecords.Race</c> — keeps the offline bake path pure.</param>
     Public Function ApplyPresetOverlayToNpcData(raw As NPC_Data,
@@ -286,6 +294,10 @@ finDelSkin:
         End If
 
         ' HeadParts: replicate engine wipe + race defaults + preset overrides — PERO SÓLO SI EL PRESET LOS TRAE.
+        ' ⚠ DIVERGENCIA CONOCIDA, PENDIENTE DE DECISIÓN DEL USUARIO (D-HeadParts): los dos motores limpian SIEMPRE
+        ' (f4ee CharGenInterface.cpp:318-331 `headParts.Clear()` + defaults de raza; skee64 PresetInterface.cpp:131-175
+        ' incondicional) y el preset REEMPLAZA por tipo; acá «Has con lista vacía ⇒ record» y «clave ausente ⇒ record».
+        ' Hasta esa decisión NO se toca: es la única rama de este Sub que no sigue la ley «Has* = el motor escribe».
         ' Parse RACE ONCE here (cached via parseRace when supplied by the render path; direct parse
         ' on the offline bake path) and reuse for both the HeadParts seed and the QNAM derivation below.
         ' RAZA EFECTIVA (effRaceFid, no la del record): el seed de head-parts y el QNAM salen del catálogo
@@ -358,29 +370,37 @@ finDelSkin:
         ' lo materializa en un CLFM real (NpcOverrideSaver.MaterializeSseHairColors). Nothing en FO4.
         shadow.SseHairColorRgb = preset.SseHairColorRgb
 
-        ' Weight: preserve raw when preset doesn't carry a value.
+        ' Weight (CharGenInterface.cpp:476-484): `root["Weight"][i].asFloat()` slot por slot, en orden. Un slot
+        ' `Nothing` es un slot en el que el motor LANZÓ (y con él los siguientes: el catch corta el bloque) ⇒ se
+        ' preserva el record. El «ausente ⇒ 0,0,0» ya viene resuelto de ParseFile (null ⇒ asFloat 0).
         If preset.WeightThin.HasValue Then sr.PonerPesoDelCuerpo(0, preset.WeightThin)
         If preset.WeightMuscular.HasValue Then sr.PonerPesoDelCuerpo(1, preset.WeightMuscular)
         If preset.WeightFat.HasValue Then sr.PonerPesoDelCuerpo(2, preset.WeightFat)
 
-        ' Morphs.Presets (MSDK/MSDV chargen vertex morphs). Sin morfos en el preset se preservan los
-        ' del record.
-        If preset.HasChargenFaceMorphs Then
-            Dim morfos = raw.Record.MorfosDeCara()
-            For Each kv In preset.ChargenFaceMorphs
-                morfos(kv.Key) = kv.Value
-            Next
-            sr.PonerMorfosDeCara(morfos)
-        End If
+        ' Morphs.Presets (MSDK/MSDV chargen vertex morphs) — CharGenInterface.cpp:433-460: `morphSetData->Clear()`
+        ' (:443) y después `Add` por clave ⇒ REEMPLAZO, nunca fusión con el record. Ésta era la causa de la
+        ' «boca anormal» reportada en Nexus: la app sembraba los morfos del record y pisaba encima, y un preset
+        ' que no traía la clave del record la dejaba viva. Con `Presets` vacío o null el motor deja el set vacío
+        ' (o no lo crea si nunca existió, :437 — mismo resultado: sin MSDK).
+        If preset.HasChargenFaceMorphs Then sr.PonerMorfosDeCara(preset.ChargenFaceMorphs)
 
-        ' SSE (Skyrim) head morphs (NAM9 19 floats / NAMA 4 type uints). Se pisan sólo los que el preset
-        ' trae; el resto queda como estaba en el record.
+        ' SSE (Skyrim) head morphs (NAM9 19 floats / NAMA 4 type uints). skee64 ApplyPresetData :179-192 escribe
+        ' POSICIONALMENTE `option[i]` / `presets[i]` por cada entrada del archivo: los índices que el preset no cubre
+        ' quedan como estaban en el record. `preset.SseNam9`/`SseNama` miden EXACTAMENTE lo cubierto (el mapper y
+        ' BuildPresetFromState los dimensionan así) y acá se escriben sólo `Length` entradas.
+        ' Record sin NAM9: el motor aloca `faceMorph` con Heap_Allocate (:179-180) sin inicializar — HUECO: la app
+        ' escribe los 19 en 0, la misma ley que ya tenía este bloque.
         If preset.HasSseMorphs AndAlso preset.SseNam9 IsNot Nothing Then
             Dim n9 = raw.Record.DeslizadoresDeCara()
-            If n9 Is Nothing Then n9 = New Single(SseNam9MorphMap.Nam9SliderCount - 1) {}
+            If n9 Is Nothing Then n9 = New Single(SseNam9MorphMap.Nam9SliderCount) {}
             For i = 0 To Math.Min(preset.SseNam9.Length, Math.Min(n9.Length, SseNam9MorphMap.Nam9SliderCount)) - 1
                 n9(i) = preset.SseNam9(i)
             Next
+            ' Slot 18 (VampireMorph): `option[18]` lo escribe el mismo bucle :188-192 cuando el archivo trae 19
+            ' entradas; el mapper lo deja en SseVampireMorph (HasValue = el archivo lo trajo, o es el del propio NPC).
+            If preset.SseVampireMorph.HasValue AndAlso n9.Length > SseNam9MorphMap.Nam9SliderCount Then
+                n9(SseNam9MorphMap.Nam9SliderCount) = preset.SseVampireMorph.Value
+            End If
             sr.PonerDeslizadoresDeCara(n9)
         End If
         If preset.HasSseMorphs AndAlso preset.SseNama IsNot Nothing Then
@@ -416,20 +436,32 @@ finDelSkin:
         shadow.SseSculptParts = preset.SseSculptParts
         shadow.SseCustomMorphs = preset.SseCustomMorphs
 
-        ' Morphs.Values (MRSV body region morphs).
-        If preset.HasBodyMorphValues Then sr.PonerValoresDeRegionCorporal(preset.BodyMorphValues)
+        ' Morphs.Values (MRSV) — CharGenInterface.cpp:373-397: el array se CREA sólo si el JSON trae algún valor
+        ' (:380-381) y, si existe, se limpia y se reasigna con `Allocate(5)` (:383-384) poniendo los que vinieron
+        ' (:387-388). Con lista vacía sobre un record sin MRSV no se crea nada; sobre uno con MRSV queda el
+        ' subrecord con los 5 slots «asignados por Allocate» — HUECO: `Heap_Allocate` no inicializa
+        ' (GameTypes.h:275-287); la app escribe 0, que es la ley que ya tenía `PonerValoresDeRegionCorporal`.
+        If preset.HasBodyMorphValues AndAlso (raw.Record.ValoresDeRegionCorporal().Count > 0 OrElse preset.BodyMorphValues.Count > 0) Then
+            sr.PonerValoresDeRegionCorporal(preset.BodyMorphValues)
+        End If
 
-        ' Morphs.Regions (FMRI/FMRS face bone regions).
+        ' Morphs.Regions (FMRI/FMRS) — :399-429: mismo patrón que MSDK, `Clear()` (:409) y `Add` ⇒ REEMPLAZO.
         If preset.HasFaceBoneRegions Then EscribirMorfosDeRegion(sr, preset.FaceBoneRegions)
 
-        ' FMIN: se escribe cuando el record ya lo traia, o cuando el preset trae algo distinto del neutro.
-        ' Escribirlo siempre CREARIA el subrecord en todo NPC que no lo tiene, y el 1.0 del preset es su valor
-        ' por defecto, no una edicion: el plugin guardado saldria con un FMIN que la fuente no tenia.
-        If sr.TieneIntensidadDeMorfoFacial() OrElse preset.FacialMorphIntensity <> 1.0F Then
+        ' FMIN — :462-474: `SetFacialBoneMorphIntensity(root["Morphs"]["Intensity"].asFloat())` SIEMPRE que el
+        ' bloque no lance (`HasFacialMorphIntensity`). El valor lo decidió ParseFile como el motor (ausente ⇒ 1.0f
+        ' :466-467; null ⇒ 0.0; número ⇒ tal cual). DECISIÓN DE PRODUCTO (la única de este canal): el record de un
+        ' NPC sin FMIN no lo gana por escribirle 1.0 — el motor no persiste nada y 1.0 es el neutro del campo — se
+        ' crea el subrecord sólo cuando el record ya lo tenía o cuando el valor no es el neutro.
+        If preset.HasFacialMorphIntensity AndAlso (sr.TieneIntensidadDeMorfoFacial() OrElse preset.FacialMorphIntensity <> 1.0F) Then
             sr.PonerIntensidadDeMorfoFacial(preset.FacialMorphIntensity)
         End If
 
-        ' Tints: Has*-driven.
+        ' Tints — :486-566. `HasFaceTintLayers` = el bloque no lanzó antes de tocar `npc->tints`. La lista ya es
+        ' el estado del motor: la validación por RAZA (:512-527, ValidarCapasDeTinteContraLaRaza) se aplicó UNA
+        ' vez, al cargar el .json (MainForm.PreviewLooksmenuOverlay), sobre las capas que vienen del archivo.
+        ' Acá NO se valida: las capas que llegan sembradas del record (Edit Face, Paste Look, categoría no
+        ' tickeada) no pasan por LoadPreset en el motor y validarlas las salteaba o les cambiaba el ColorID.
         If preset.HasFaceTintLayers Then EscribirCapasDeTinte(sr, preset.FaceTintLayers)
 
         ' QNAM derivation (post-Tints): si la sombra ahora lleva una capa de slot-12 (SkinTone), se re-deriva
@@ -494,6 +526,89 @@ finDelSkin:
     Private Function ValorEn(valores As Single(), i As Integer) As Single
         If valores Is Nothing OrElse i >= valores.Length Then Return 0.0F
         Return valores(i)
+    End Function
+
+    ''' <summary>La puerta ÚNICA por la que las capas de tinte de un .json recién parseado pasan a ser estado del
+    ''' motor: reemplaza <c>preset.FaceTintLayers</c> por la lista validada contra la raza
+    ''' (<see cref="ValidarCapasDeTinteContraLaRaza"/>). No hace nada si el bloque Tints lanzó
+    ''' (<c>HasFaceTintLayers = False</c>: el motor no tocó las capas). La llaman MainForm.PreviewLooksmenuOverlay
+    ''' al cargar y el gate PresetCargaEstadoMotorGate por la misma puerta.</summary>
+    Public Sub ValidarTintsDelArchivo(preset As LooksmenuLoader.LooksmenuPreset,
+                                      race As Canon.IRace, isFemale As Boolean,
+                                      pluginManager As PluginManager, npcFormID As UInteger)
+        If preset Is Nothing OrElse Not preset.HasFaceTintLayers OrElse preset.FaceTintLayers Is Nothing Then Return
+        preset.FaceTintLayers = ValidarCapasDeTinteContraLaRaza(preset.FaceTintLayers, race, isFemale, pluginManager, npcFormID)
+    End Sub
+
+    ''' <summary>La validación por RAZA que LoadPreset hace capa por capa (f4ee CharGenInterface.cpp:512-527),
+    ''' sobre las capas que ParseFile ya ordenó (TintOrder :537-556):
+    ''' <list type="bullet">
+    ''' <item>:512-513 <c>chargenData->GetTemplateByIndex(keyValue)</c> nulo ⇒ la capa NO se crea (salteada).
+    ''' El catálogo es el del compositor (<c>LmCustomTintLoader.Fusionar</c>: RACE + tints custom de LooksMenu,
+    ''' que LM registra en el mismo <c>chargenData</c>) y se busca por <c>Option.Index</c>
+    ''' (<c>TintesEfectivos.BuscarOpcion</c>).</item>
+    ''' <item>:519-529 recién con plantilla válida el motor lee Color/ColorID/Percent; si alguno lanza, el catch
+    ''' de :563 corta el bloque con <c>npc->tints</c> YA limpiado (:498) y el <c>tintMap</c> local perdido ⇒ el
+    ''' actor queda SIN NINGUNA capa (<see cref="LooksmenuLoader.CapaDeTintePreset.ConversionFallida"/>).</item>
+    ''' <item>:520-527 sólo paleta: <c>GetColorDataByID(SInt16 → UInt16)</c> compara contra
+    ''' <c>ColorData.colorID</c> (GameCustomization.h:124 = TTEC TemplateIndex); sin match ⇒ <c>colors[0].colorID</c>;
+    ''' sin colores ⇒ 0. El Color del JSON se conserva tal cual (:519 no depende del ColorID).</item>
+    ''' </list>
+    ''' Sin raza resuelta (plugin ausente) o fuera de FO4 el motor no llega acá; la app no puede validar y
+    ''' deja las capas como vinieron — es el mismo criterio de «lo que no se puede resolver, se preserva» y
+    ''' el comportamiento que ya tenía. Se loguea.
+    ''' <para>Se llama UNA vez por carga de .json, sólo sobre las capas que vienen del ARCHIVO
+    ''' (MainForm.PreviewLooksmenuOverlay, con la categoría Tints tickeada). No se llama desde el overlay por
+    ''' sombra: ahí llegan también capas sembradas del record (Edit Face, Paste Look, categoría no tickeada), que
+    ''' en el motor no pasan por LoadPreset. Es idempotente: una lista ya validada sale igual.</para></summary>
+    Public Function ValidarCapasDeTinteContraLaRaza(capas As IEnumerable(Of LooksmenuLoader.CapaDeTintePreset),
+                                                      race As Canon.IRace, isFemale As Boolean,
+                                                      pluginManager As PluginManager,
+                                                      npcFormID As UInteger) As List(Of LooksmenuLoader.CapaDeTintePreset)
+        Dim salida As New List(Of LooksmenuLoader.CapaDeTintePreset)
+        If capas Is Nothing Then Return salida
+        If TryCast(race, Canon.RaceFO4) Is Nothing Then
+            For Each c In capas
+                If c IsNot Nothing Then salida.Add(c)
+            Next
+            Dim cuantas = salida.Count
+            Logger.LogLazy(Function() $"[TINTS-OVERLAY] npc=0x{npcFormID:X8} raza no resuelta o no-FO4: {cuantas} capas sin validar")
+            Return salida
+        End If
+
+        Dim grupos = LmCustomTintLoader.Fusionar(race, isFemale, pluginManager)
+        Dim salteadas = 0
+        For Each c In capas
+            If c Is Nothing Then Continue For
+            Dim opcion = grupos.BuscarOpcion(c.Index)
+            If opcion Is Nothing Then
+                salteadas += 1
+                Continue For
+            End If
+            If c.ConversionFallida Then
+                Dim idx = c.Index
+                Logger.LogLazy(Function() $"[TINTS-OVERLAY] npc=0x{npcFormID:X8} capa 0x{idx:X} con Color/ColorID/Percent no convertible => el motor lanza: canal de tints VACIO")
+                salida.Clear()
+                Return salida
+            End If
+            Dim capa = LooksmenuLoader.CloneFaceTintLayer(c)
+            If capa.Discriminator = 1US Then
+                Dim colorId16 As UShort = CUShort(capa.TemplateColorIndex And &HFFFF)
+                Dim colores = If(opcion.TemplateColors, New List(Of ColorDeTinteEfectivo))
+                If Not colores.Any(Function(t) t.TemplateIndex = colorId16) Then
+                    Dim primero As Integer = If(colores.Count > 0, CInt(colores(0).TemplateIndex), 0)
+                    ' `palette->colorID` es SInt16 (GameCustomization.h:221): el UInt16 del catálogo se guarda con
+                    ' truncación con signo.
+                    capa.TemplateColorIndex = If(primero >= &H8000, primero - &H10000, primero)
+                End If
+            End If
+            salida.Add(capa)
+        Next
+        If salteadas > 0 Then
+            Dim n = salteadas
+            Logger.LogLazy(Function() $"[TINTS-OVERLAY] npc=0x{npcFormID:X8} {n} capas con indice sin plantilla en la raza: salteadas")
+        End If
+        Return salida
     End Function
 
     ''' <summary>Vuelca al record las capas de tinte de cara que trae el preset, en ese orden y

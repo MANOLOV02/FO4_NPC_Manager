@@ -141,8 +141,16 @@ Public Module HeadPartResolver
 
         ' HeadPart compatibility — every declared HDPT must be valid for the target race.
         ' (Tints are deliberately NOT checked here — see the summary above.)
-        If preset.HeadPartFormIDs IsNot Nothing Then
-            For Each fid In preset.HeadPartFormIDs
+        ' "Declared" = lo que el ARCHIVO trae: las aplicadas (HeadPartFormIDs) MÁS las que el mapper SSE resolvió
+        ' pero el motor no aplicaría a este actor (SseHeadPartsFiltradasPorMotor, skee64 PresetInterface.cpp:164-175).
+        ' Sin la segunda lista, un .jslot de otra raza pasaría este gate justo porque el motor le descarta el pelo:
+        ' el browser lo listaría como compatible y el usuario lo cargaría para verlo aplicar nada.
+        Dim declaradas As IEnumerable(Of UInteger) = If(preset.HeadPartFormIDs, Enumerable.Empty(Of UInteger)())
+        If preset.SseHeadPartsFiltradasPorMotor IsNot Nothing AndAlso preset.SseHeadPartsFiltradasPorMotor.Count > 0 Then
+            declaradas = declaradas.Concat(preset.SseHeadPartsFiltradasPorMotor)
+        End If
+        If declaradas IsNot Nothing Then
+            For Each fid In declaradas
                 If fid = 0UI Then Continue For
                 ' SSE: don't let the race-specific base HEAD (Face, PartType=1) gate the preset.
                 If ignoreFaceBaseHeadPart Then

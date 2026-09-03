@@ -255,8 +255,11 @@ Friend NotInheritable Class NpcMorphPoseResolver
         End If
 
         ' Effective overlays for this NPC. Absent preset / HasOverlays=False / empty list ⇒ no tattoos.
-        ' (HasOverlays=False means the preset never declared the Overlays field — preserve-raw semantics,
-        ' same Has* convention the rest of the preset uses; raw NPCs have no record-level overlays.)
+        ' (`Has*` = el motor escribiría el canal. Para Overlays el motor hace `RemoveAll` incondicional y
+        ' después agrega lo que trae el JSON (CharGenInterface.cpp:587-630, `RemoveAll` :587 antes de mirar la
+        ' clave), así que ParseFile deja HasOverlays = True SIEMPRE; False sólo lo ponen el filtro por categoría
+        ' (revert) y el editor cuando no reclama el canal — con False se preserva lo previo —
+        ' y como los NPCs crudos no tienen overlays de record, «preservar» acá también es «sin tatuajes».)
         Dim overlays As List(Of LooksmenuLoader.OverlayEntry) = Nothing
         If state IsNot Nothing Then
             Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
