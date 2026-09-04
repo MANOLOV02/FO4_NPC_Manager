@@ -908,7 +908,7 @@ Public Class ArmaEditor_Form
             ' es entrada inválida — y sin este rechazo el volcado la conserva callado, que es peor que
             ' avisar.
             If GetFid(TextBoxRace) = 0UI Then
-                MessageBox.Show(Me, "Elegiá una raza (RNAM): todos los ARMA del juego la traen.",
+                MessageBox.Show(Me, "Pick a race (RNAM): every ARMA in the game carries one.",
                                 "Apply", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return False
             End If
@@ -1728,11 +1728,11 @@ Public Class ArmaEditor_Form
             If Not _previewCommitFallado Then
                 _previewCommitFallado = True
                 MessageBox.Show(Me,
-                    "No se pudo armar este ARMA:" & vbCrLf & vbCrLf &
+                    "Could not build this ARMA:" & vbCrLf & vbCrLf &
                     ex.Message & vbCrLf & vbCrLf &
-                    "La vista previa queda detenida y el último cambio se deshizo. El detalle quedó en " &
-                    "el log. Podés seguir editando, pero este cambio no se va a poder guardar.",
-                    "Vista previa", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    "The preview is stopped and the last change was rolled back. The details went to " &
+                    "the log. You can keep editing, but this change cannot be saved.",
+                    "Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             End If
             Return False
         End Try

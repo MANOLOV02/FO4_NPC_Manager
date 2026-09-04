@@ -350,11 +350,11 @@ Public Module FaceGenBuilder
             Dim n = idxs.Length
             Dim state As String
             If failIdx >= 0 AndAlso idxs.Contains(failIdx) Then
-                state = $"*** FAILED *** en [{_parityTests(failIdx).Slug}]"
+                state = $"*** FAILED *** at [{_parityTests(failIdx).Slug}]"
             ElseIf failIdx >= 0 AndAlso idxs.All(Function(k) k > failIdx) Then
-                state = $"NOT RUN ({n} test(s)) — el gate cortó en [{_parityTests(failIdx).Slug}]"
+                state = $"NOT RUN ({n} test(s)) — the gate stopped at [{_parityTests(failIdx).Slug}]"
             ElseIf ax = ParityAxis.VectorVsScalar AndAlso Not vectorRan Then
-                state = $"NOT RUN ({n} test(s)) — sin SIMD acelerado el espejo vectorial no se usa y los tests salen vacíos"
+                state = $"NOT RUN ({n} test(s)) — without accelerated SIMD the vector mirror is unused and the tests come out empty"
             Else
                 state = $"BIT-IDENTICAL ({n} test(s))"
             End If
@@ -364,8 +364,8 @@ Public Module FaceGenBuilder
         ' CpuVsGpu se mide horneando con FGBAKE_GPU_PARITY=1 y sale por ParityReport/SseParityReport.
         ' Los otros tres se fueron a Tools/ParityGate (no dependen de la máquina del usuario);
         ' se listan acá para que nadie lea este reporte y crea que las leyes quedaron sin gate.
-        sb.AppendLine($"     {"CpuVsGpu",-16} : NOT COVERED BY THIS GATE — ver ParityReport / SseParityReport")
-        sb.Append($"     {"Law/Glsl/Golden",-16} : NOT COVERED BY THIS GATE — son gate de BUILD: Tools/ParityGate")
+        sb.AppendLine($"     {"CpuVsGpu",-16} : NOT COVERED BY THIS GATE — see ParityReport / SseParityReport")
+        sb.Append($"     {"Law/Glsl/Golden",-16} : NOT COVERED BY THIS GATE — they are BUILD gates: Tools/ParityGate")
         Return sb.ToString()
     End Function
 

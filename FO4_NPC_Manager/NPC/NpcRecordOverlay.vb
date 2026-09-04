@@ -198,11 +198,11 @@ Public Module NpcRecordOverlay
                 If race Is Nothing Then
                     If estricto Then
                         Throw New InvalidOperationException(
-                            $"NPC {raw.FormID:X8} ({raw.EditorID}): se pidió usar la piel de la raza, pero " &
-                            $"la raza {effRaceFid:X8} no se pudo resolver — falta su plugin en el orden de " &
-                            "carga, o el record al que apunta ya no existe. No se graba: elegir por el " &
-                            "usuario cuál de las dos representaciones posibles queda en el archivo sería " &
-                            "decidir sus bytes.")
+                            $"NPC {raw.FormID:X8} ({raw.EditorID}): the race's skin was requested, but " &
+                            $"race {effRaceFid:X8} could not be resolved — its plugin is missing from the load " &
+                            "order, or the record it points to no longer exists. Nothing is written: picking for " &
+                            "the user which of the two possible representations ends up in the file would be " &
+                            "deciding their bytes.")
                     End If
                     GoTo finDelSkin
                 End If

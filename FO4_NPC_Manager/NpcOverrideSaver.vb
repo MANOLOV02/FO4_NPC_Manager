@@ -332,8 +332,8 @@ Public Module NpcOverrideSaver
         Dim firma = If(rec Is Nothing OrElse rec.Header.Signature Is Nothing, "????", rec.Header.Signature)
         Dim fid = If(rec Is Nothing, 0UI, rec.Header.FormID)
         Return New InvalidOperationException(
-            $"No se pudo abrir el record {firma} 0x{fid:X8} que hay que preservar en el plugin. " &
-            "No se graba: saltearlo lo sacaria del archivo y dejaria colgadas las referencias que lo apuntan.")
+            $"Could not open record {firma} 0x{fid:X8}, which has to be preserved in the plugin. " &
+            "Nothing is written: skipping it would drop it from the file and leave dangling references to it.")
     End Function
 
     Private Function FindEncodingConflict(npc As NPC_Data, labelSuffix As String) As String
@@ -757,7 +757,7 @@ Public Module NpcOverrideSaver
                     recOtft = recOtft.Copia()
                     If recOtft Is Nothing Then
                         Throw New InvalidOperationException(
-                            $"Outfit draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                            $"Outfit draft {d.FormID:X8}: could not copy the record to write it.")
                     End If
                     recOtft.EditorID = oeEdid
                 End If
@@ -878,7 +878,7 @@ Public Module NpcOverrideSaver
                 Dim recLvli = d.Record.Copia()
                 If recLvli Is Nothing Then
                     Throw New InvalidOperationException(
-                        $"LVLI draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                        $"LVLI draft {d.FormID:X8}: could not copy the record to write it.")
                 End If
                 recLvli.EditorID = finalLvliEdid
                 Dim le As New SaveNpcEspWriter.LvliRecordEntry(CType(recLvli, Canon.CanonView)) With {
@@ -1235,17 +1235,17 @@ Public Module NpcOverrideSaver
                     If par IsNot Nothing AndAlso Not par.Consistente Then
                         ctx.PayloadWarnings.Add(
                             $"BodyGen .ini de '{IO.Path.GetFileName(target.TargetPath)}': {par.Message} " &
-                            "El .esp SÍ se guardó. ⛔ Volvé a guardar con BodyGen activado para dejar el par " &
-                            "consistente antes de entrar al juego.")
+                            "The .esp WAS saved. ⛔ Save again with BodyGen enabled to leave the pair " &
+                            "consistent before entering the game.")
                     ElseIf par IsNot Nothing Then
                         ctx.PayloadWarnings.Add(
                             $"BodyGen .ini de '{IO.Path.GetFileName(target.TargetPath)}': {par.Message} " &
-                            "El .esp SÍ se guardó; lo que no se actualizó es el BodyGen.")
+                            "The .esp WAS saved; what did not get updated is BodyGen.")
                     Else
                         ctx.PayloadWarnings.Add(
-                            $"BodyGen .ini: no se pudo escribir el .ini de '{IO.Path.GetFileName(target.TargetPath)}' " &
-                            $"({exIni.Message}). El .esp SÍ se guardó; lo que falta es el archivo de BodyGen, " &
-                            "así que los morphs pueden no aplicarse en el juego hasta volver a guardar.")
+                            $"BodyGen .ini: could not write the .ini for '{IO.Path.GetFileName(target.TargetPath)}' " &
+                            $"({exIni.Message}). The .esp WAS saved; what is missing is the BodyGen file, " &
+                            "so the morphs may not apply in game until you save again.")
                     End If
                 End Try
             End If
@@ -1629,7 +1629,7 @@ Public Module NpcOverrideSaver
             rec = rec.Copia()
             If rec Is Nothing Then
                 Throw New InvalidOperationException(
-                    $"ARMO draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                    $"ARMO draft {d.FormID:X8}: could not copy the record to write it.")
             End If
             rec.EditorID = finalEdid
         End If
@@ -1665,7 +1665,7 @@ Public Module NpcOverrideSaver
             rec = rec.Copia()
             If rec Is Nothing Then
                 Throw New InvalidOperationException(
-                    $"ARMA draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                    $"ARMA draft {d.FormID:X8}: could not copy the record to write it.")
             End If
             rec.EditorID = finalEdid
         End If
@@ -1695,7 +1695,7 @@ Public Module NpcOverrideSaver
             recMswp = recMswp.Copia()
             If recMswp Is Nothing Then
                 Throw New InvalidOperationException(
-                    $"MSWP draft {d.FormID:X8}: no se pudo copiar el record para grabarlo.")
+                    $"MSWP draft {d.FormID:X8}: could not copy the record to write it.")
             End If
             recMswp.EditorID = finalEdid
         End If
@@ -1929,9 +1929,9 @@ Public Module NpcOverrideSaver
             If Not Borradores.EsFormIdDeBorrador(r.Valor) Then Continue For
             If borradoresRegistrados.Contains(r.Valor) Then Continue For
             Throw New InvalidOperationException(
-                $"{clase} {edid} ({fid:X8}), {r.Que} #{n}: referencia provisional {r.Valor:X8} sin " &
-                "borrador — el ESP saldría corrupto. El record referido se canceló o se borró mientras " &
-                "éste lo seguía apuntando; sacá la referencia o volvé a crear el record.")
+                $"{clase} {edid} ({fid:X8}), {r.Que} #{n}: provisional reference {r.Valor:X8} with no " &
+                "draft — the ESP would come out corrupt. The referenced record was canceled or deleted while " &
+                "this one still pointed at it; remove the reference or create the record again.")
         Next
     End Sub
 
@@ -1975,8 +1975,8 @@ Public Module NpcOverrideSaver
                 ' duplicado era invisible. El usuario pidió agregar N y se agregaron menos.
                 If skipped > 0 Then
                     ctx.PayloadWarnings.Add(
-                        $"Agregar a lista por nivel: {skipped} NPC no se agregaron porque ya estaban en alguna " &
-                        $"lista de '{IO.Path.GetFileName(target.TargetPath)}' («evitar duplicados» activado).")
+                        $"Add to leveled list: {skipped} NPC(s) were not added because they were already in a " &
+                        $"list of '{IO.Path.GetFileName(target.TargetPath)}' (avoid-duplicates is on).")
                 End If
             End If
             If npcFids.Count = 0 Then
@@ -1985,9 +1985,9 @@ Public Module NpcOverrideSaver
                 ' NINGUNA lista. El «Saved N» cuenta records de NPC y no se entera, así que sin este renglón el
                 ' guardado se reporta perfecto y la lista que el usuario nombró no existe.
                 ctx.PayloadWarnings.Add(
-                    "Agregar a lista por nivel: NINGÚN NPC se agregó — todos los seleccionados ya estaban en " &
-                    $"una lista de '{IO.Path.GetFileName(target.TargetPath)}' («evitar duplicados» activado)." &
-                    If(target.LvlListIsNew, " La lista nueva que pediste NO se creó, porque habría quedado vacía.", ""))
+                    "Add to leveled list: NO NPC was added — every selected one was already in " &
+                    $"a list of '{IO.Path.GetFileName(target.TargetPath)}' (avoid-duplicates is on)." &
+                    If(target.LvlListIsNew, " The new list you asked for was NOT created, because it would have been empty.", ""))
                 Return
             End If
         End If
@@ -2063,9 +2063,9 @@ Public Module NpcOverrideSaver
                 ' —a diferencia de aquél— porque acá el .esp queda íntegro y coherente: lo único que falta es
                 ' el agregado. Se avisa y se sigue.
                 ctx.PayloadWarnings.Add(
-                    $"Agregar a lista por nivel: no se encontró la lista '{targetEdid}' en " &
-                    $"'{IO.Path.GetFileName(target.TargetPath)}', así que NINGÚN NPC se agregó. " &
-                    "El resto del guardado se hizo normalmente.")
+                    $"Add to leveled list: list '{targetEdid}' was not found in " &
+                    $"'{IO.Path.GetFileName(target.TargetPath)}', so NO NPC was added. " &
+                    "The rest of the save completed normally.")
                 Return
             End If
             ' host.Record es el LVLN abierto en la fase de preservación (Canon.CanonRecords.Lvln): cada
@@ -2080,7 +2080,7 @@ Public Module NpcOverrideSaver
             If hostRecLvln Is Nothing Then
                 Dim tipoHost As String = If(host.Record Is Nothing, "Nothing", host.Record.GetType().Name)
                 Throw New InvalidOperationException(
-                    $"LVLN {host.FormID:X8}: el record preservado no es un arbol de lista de NPC ({tipoHost}).")
+                    $"LVLN {host.FormID:X8}: the preserved record is not an NPC leveled-list tree ({tipoHost}).")
             End If
 
             Dim present As New HashSet(Of UInteger)(host.Entries.Select(Function(e) e.RefFormID))
@@ -2531,9 +2531,9 @@ Public Module NpcOverrideSaver
     Private Sub AvisarClavesSalteadas(ctx As SaveContext, salteadas As Integer, primera As String)
         If ctx Is Nothing OrElse salteadas <= 0 Then Return
         ctx.PayloadWarnings.Add(
-            $"BodyGen .ini: {salteadas} fila(s) del sidecar con identificador mal formado se saltearon — " &
-            "esos NPC tienen body morphs guardados pero NO les llega ningún renglón a morphs.ini, así que en " &
-            $"el juego salen sin morphs. Primera: '{primera}'.")
+            $"BodyGen .ini: {salteadas} sidecar row(s) with a malformed identifier were skipped — " &
+            "those NPCs have body morphs saved but NO line reaches morphs.ini, so in " &
+            $"game they come out without morphs. First one: '{primera}'.")
     End Sub
 
     ''' <summary>Translate the merged sidecar into BodyGenIniWriter entries and emit the .ini

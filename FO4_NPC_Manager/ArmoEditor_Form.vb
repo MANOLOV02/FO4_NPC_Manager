@@ -580,9 +580,9 @@ Public Class ArmoEditor_Form
         If _draft Is Nothing OrElse _draft.Record Is Nothing Then Return ""
         Dim term = _draft.Record.TemplateArmor
         If term = 0UI Then Return ""
-        Return $"   ⚠ HEREDA de {DescribeArmoBreve(term)} — la vista previa muestra lo que el motor " &
-               "dibuja (el terminal). Lo que edites en los campos heredados se guarda en tu plugin y el " &
-               "motor lo descarta mientras TNAM este puesto."
+        Return $"   ⚠ INHERITS from {DescribeArmoBreve(term)} — the preview shows what the engine " &
+               "draws (the terminal). What you edit in the inherited fields is saved to your plugin and the " &
+               "engine discards it while TNAM is set."
     End Function
 
     ''' <summary>EditorID + FormID del ARMO, para nombrar el terminal en el aviso. Solo el FormID si no
@@ -1058,7 +1058,7 @@ Public Class ArmoEditor_Form
             ' «borrarla», es entrada inválida — y sin este rechazo el volcado la conserva callado, que es
             ' peor que avisar.
             If GetFid(TextBoxRace) = 0UI Then
-                MessageBox.Show(Me, "Elegiá una raza (RNAM): todos los ARMO del juego la traen.",
+                MessageBox.Show(Me, "Pick a race (RNAM): every ARMO in the game carries one.",
                                 "Apply", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return False
             End If
@@ -1982,11 +1982,11 @@ Public Class ArmoEditor_Form
             If Not _previewCommitFallado Then
                 _previewCommitFallado = True
                 MessageBox.Show(Me,
-                    "No se pudo armar esta armadura:" & vbCrLf & vbCrLf &
+                    "Could not build this armor:" & vbCrLf & vbCrLf &
                     ex.Message & vbCrLf & vbCrLf &
-                    "La vista previa queda detenida y el último cambio se deshizo. El detalle quedó en " &
-                    "el log. Podés seguir editando, pero este cambio no se va a poder guardar.",
-                    "Vista previa", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    "The preview is stopped and the last change was rolled back. The details went to " &
+                    "the log. You can keep editing, but this change cannot be saved.",
+                    "Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             End If
             Return False
         End Try

@@ -2856,8 +2856,8 @@ Public Class MainForm
         ' quedan en el texto de estado, que es lo único que el usuario final ve — el log está
         ' clavado en apagado en Release, así que dejarlos ahí sería no medirlos.
         _tiemposDeCarga = $"{getNpcsMs + parseMs + resolveMs + sortMs + cacheMs} ms " &
-                          $"(records {getNpcsMs} · árbol {parseMs} · nombres {resolveMs} · " &
-                          $"orden {sortMs} · caches {cacheMs})"
+                          $"(records {getNpcsMs} · tree {parseMs} · names {resolveMs} · " &
+                          $"sort {sortMs} · caches {cacheMs})"
     End Sub
 
     ''' <summary>Desglose del último <see cref="ParseAllNPCs"/>, para el texto de estado.</summary>
@@ -9057,13 +9057,13 @@ Public Class MainForm
                 ' los armatures que se listan aca no son los que el motor va a usar.
                 Dim armo = _ctx.GetParsedArmoCrudo(itemFormID)
                 Dim slotStr = NpcManagerFormat.FormatSlotMask(armo.SlotMaskDe())
-                Dim heredaDe = If(armo.TemplateArmor <> 0UI, "  [HEREDA]", "")
+                Dim heredaDe = If(armo.TemplateArmor <> 0UI, "  [INHERITS]", "")
                 Dim armoNode = AddNode(parentNode, $"ARMO {armo.EditorID}  ""{armo.Name}""  [{armo.FormID:X8}]  Slots:{slotStr}{heredaDe}")
 
                 ' Follow template armor
                 If armo.TemplateArmor <> 0UI Then
                     AddNode(armoNode, $"Template Armor: {DescribeFormID(armo.TemplateArmor)}" &
-                                      "   <- el motor toma de ACA los armatures, los slots, las keywords y la malla")
+                                      "   <- the engine takes the armatures, slots, keywords and mesh FROM HERE")
                     ' ⛔ Este arbol es un inspector del ARCHIVO, asi que lista lo que el archivo declara.
                     ' Pero si el motor va a usar OTRA cosa, se dice y se muestra: deducirlo de un renglon
                     ' de mas arriba no es verlo.
@@ -9073,8 +9073,8 @@ Public Class MainForm
                         Dim usados = Canon.CanonInterpretacion.ComplementosDe(efectivaArbol)
                         If Not New HashSet(Of UInteger)(propios).SetEquals(usados) Then
                             Dim nEfe = AddNode(armoNode,
-                                $"⚠ Lo que el motor va a DIBUJAR: {usados.Count} armature(s) del terminal " &
-                                $"(este record declara {propios.Count})")
+                                $"⚠ What the engine will DRAW: {usados.Count} armature(s) from the terminal " &
+                                $"(this record declares {propios.Count})")
                             For Each af In usados
                                 AddNode(nEfe, $"ARMA {DescribeFormID(af)}")
                             Next
@@ -11394,11 +11394,11 @@ Public Class MainForm
         If avisosDelEmisor.Count > 0 Then
             Const TOPE = 10
             resumenAvisos = Environment.NewLine & Environment.NewLine &
-                            $"{avisosDelEmisor.Count} campo(s) de texto no se pudieron resolver contra las tablas de " &
-                            "idioma y se grabaron VACÍOS:" & Environment.NewLine &
+                            $"{avisosDelEmisor.Count} text field(s) could not be resolved against the language " &
+                            "tables and were written EMPTY:" & Environment.NewLine &
                             String.Join(Environment.NewLine, avisosDelEmisor.Take(TOPE).Select(Function(a) "  · " & a))
             If avisosDelEmisor.Count > TOPE Then
-                resumenAvisos &= Environment.NewLine & $"  … y {avisosDelEmisor.Count - TOPE} más."
+                resumenAvisos &= Environment.NewLine & $"  … and {avisosDelEmisor.Count - TOPE} more."
             End If
             boxTitle = "Save ESP/ESM — completed with warnings"
         End If

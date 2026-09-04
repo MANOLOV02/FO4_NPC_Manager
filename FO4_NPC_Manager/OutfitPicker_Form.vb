@@ -489,10 +489,10 @@ Public Class OutfitPicker_Form
                         If Not _previewRegistroFallado Then
                             _previewRegistroFallado = True
                             MessageBox.Show(Me,
-                                "No se pudo armar la vista previa de este atuendo:" & vbCrLf & vbCrLf &
+                                "Could not build the preview for this outfit:" & vbCrLf & vbCrLf &
                                 ex.Message & vbCrLf & vbCrLf &
-                                "El detalle quedó en el log. Podés seguir editando la lista de prendas.",
-                                "Vista previa", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                                "The details went to the log. You can keep editing the piece list.",
+                                "Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                         End If
                         ' ⛔ `Continue While`, NO `Return`, por lo MISMO que el descarte de abajo: lo que
                         ' fracasó es ESTE pedido, no la cola. Con el `Return`, un registro que falla mata el
@@ -2204,7 +2204,7 @@ Public Class OutfitPicker_Form
                 ' footprint) junta TRES motivos — sin ARMA de la raza o sin malla del género, el gate de
                 ' power armor, y un FormID que no resuelve a nada. Afirmar el primero en los tres casos le
                 ' muestra al usuario un problema de raza donde hay una referencia colgada.
-                If noAplica Then etiqueta = "⚠ " & etiqueta & "  (no aplica a este NPC)"
+                If noAplica Then etiqueta = "⚠ " & etiqueta & "  (does not apply to this NPC)"
                 Dim row As New ListViewItem(etiqueta)
                 Dim status As String
                 Dim slotsText As String
@@ -2215,8 +2215,8 @@ Public Class OutfitPicker_Form
                     ' ya no puede ganarle el slot a la que sí se ve — que era el «0 of 2 rendering» con una
                     ' prenda dibujada en pantalla.
                     noAplicanCount += 1
-                    status = "— no aplica"
-                    slotsText = "(no aplica a este NPC)"
+                    status = "— n/a"
+                    slotsText = "(does not apply to this NPC)"
                     row.ForeColor = Color.Gray
                 ElseIf Not hasUnits AndAlso terms.Any(dibujaTerminal) Then
                     ' ⛔ SE VE PERO NO PELEA EL SLOT: emite geometría por chunk-mount de OMOD, que sale con
@@ -2225,7 +2225,7 @@ Public Class OutfitPicker_Form
                     ' ningún terminal—. Esta rama decide sólo el ESTADO DE LA FILA; el conteo ya lo hizo el
                     ' recorrido por terminal de arriba, que también cubre la pieza MIXTA que ésta no ve.
                     status = "✓"
-                    slotsText = "(sin slot · montada)"
+                    slotsText = "(no slot · mounted)"
                 ElseIf Not hasUnits Then
                     ' La lista no sorteó nada (ChanceNone). La fila NO puede mostrar "(none)": lo que la
                     ' pieza ES sigue siendo la lista, así que se muestra su footprint, etiquetado.
@@ -2277,10 +2277,10 @@ Public Class OutfitPicker_Form
         ' desinstalado. La barra y la fila no pueden decir causas distintas del mismo hecho.
         Dim statusText As String
         If armosDelAtuendo.Count = 0 AndAlso noAplicanCount > 0 Then
-            statusText = $"ninguna pieza aplica a este NPC ({noAplicanCount} de {_pieces.Count} no aplican)"
+            statusText = $"no piece applies to this NPC ({noAplicanCount} of {_pieces.Count} do not apply)"
         Else
             statusText = $"{armosQueRenderizan.Count} of {armosDelAtuendo.Count} armor piece(s) rendering"
-            If noAplicanCount > 0 Then statusText &= $"  ·  {noAplicanCount} no aplica(n) a este NPC"
+            If noAplicanCount > 0 Then statusText &= $"  ·  {noAplicanCount} not applicable to this NPC"
         End If
         If eliminatedCount > 0 Then statusText &= $"  ·  {eliminatedCount} eliminated by slot conflict"
         If rolledNothingCount > 0 Then statusText &= $"  ·  {rolledNothingCount} rolled nothing"

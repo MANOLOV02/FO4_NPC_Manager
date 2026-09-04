@@ -285,9 +285,9 @@ Public Class MswpSubEditor_Form
             End If
             Logger.Log("MswpSubEditor.OnOk: " & ex.ToString())
             MessageBox.Show(Me,
-                "No se pudo armar esta sustitución de materiales:" & vbCrLf & vbCrLf &
+                "Could not build this material substitution:" & vbCrLf & vbCrLf &
                 ex.Message & vbCrLf & vbCrLf &
-                "El último cambio se deshizo. El detalle quedó en el log.",
+                "The last change was rolled back. The details went to the log.",
                 "MSWP", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             DialogResult = DialogResult.None
             Return
