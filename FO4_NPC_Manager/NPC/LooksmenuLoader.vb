@@ -467,6 +467,27 @@ Public Module LooksmenuLoader
             Return Nothing
         End Try
 
+        ' ⛔ EL MOTOR CORTA EL ARCHIVO EN EL PRIMER 0xFF, Y ESO PASA EN LA LECTURA — antes de cualquier otra cosa.
+        ' `LoadPreset` abre con `std::ifstream in(filePath)` SIN `ios::binary` (CharGenInterface.cpp:274) y jsoncpp
+        ' lo lee con `std::getline(sin, doc, (char)EOF)` (json_reader.cpp:100), donde `(char)EOF` es `(char)-1` =
+        ' 0xFF. O sea: el delimitador de getline. Lo que viene despues NO EXISTE para el motor.
+        ' ⛔⛔ ESTO NO ES DEFENSIVO, ES OBLIGATORIO, y el motivo es una leccion cara: mientras la app rechazaba
+        ' todo UTF-8 invalido, un 0xFF dentro de una cadena daba "rechazado" de los dos lados y truncar no cambiaba
+        ' ningun resultado — se descarto por eso. Cuando se agrego el fallback a la encoding General para el UTF-8
+        ' invalido, ese mismo 0xFF paso a decodificarse como 'y' con dieresis y el archivo A CARGAR: medido,
+        ' `{"Skin":"a<FF>b"}` devolvia Skin='aÿb' donde el motor RECHAZA (corta en el 0xFF y le queda `{"Skin":"a`,
+        ' que es JSON incompleto). Un cambio volvio necesario a otro que ya se habia descartado. Fijado en
+        ' PresetCargaEstadoMotorGate.
+        ' SOLO FO4: en SSE `BSFileUtil::ReadAll` es binario y `parse(const std::string&)` no usa getline, asi que
+        ' alla el 0xFF llega crudo al `std::string` y el motor lo ACEPTA — por eso RaceMenuJslot.Load no trunca.
+        Dim corte = Array.IndexOf(bytes, CByte(&HFF))
+        If corte >= 0 Then
+            Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': byte 0xFF en la posicion {corte}; LooksMenu corta ahi (getline con delimitador (char)EOF, json_reader.cpp:100). Se lee solo lo anterior.")
+            Dim recortado(corte - 1) As Byte
+            Array.Copy(bytes, recortado, corte)
+            bytes = recortado
+        End If
+
         ' El motor lee el archivo como bytes y se los da a `Json::Reader::parse` (CharGenInterface.cpp:274-282),
         ' que NO saltea ningun BOM (json_reader.cpp:83-143): un archivo con BOM es ERROR_INVALID_TOKEN y no se
         ' aplica nada. Se parsea desde los bytes por lo mismo: la misma entrada que ve el motor.
@@ -486,25 +507,19 @@ Public Module LooksmenuLoader
             ' `JsonDocument.Parse` exigía fin de archivo y el preset se saltaba entero mientras el juego lo
             ' aplicaba. La perilla (`AllowMultipleValues`) sólo existe en `Utf8JsonReader`, que VB no compila
             ' (BC30668) — por eso vive en FO4_Base_Library_CSharpHelpers.
-            ' MODO TEXTO Y DELIMITADOR 0xFF — mirado, y NO se replica porque no cambia ningún resultado.
-            ' SÓLO FO4: `std::ifstream in(filePath)` va SIN `ios::binary` (CharGenInterface.cpp:274) y jsoncpp lo
-            ' lee con `std::getline(sin, doc, (char)EOF)` (json_reader.cpp:100), donde `(char)EOF` es `(char)-1` =
-            ' 0xFF ⇒ el motor CORTA el documento en el primer 0xFF. (SSE no: `BSFileUtil::ReadAll` es binario y
-            ' `parse(const std::string&)` no usa getline.) Los tres casos posibles, y en los tres coincidimos:
-            '   • 0xFF DESPUÉS de la raíz: el motor no lo mira; acá tampoco, desde que se lee UN valor y se para.
-            '   • 0xFF EN MEDIO: el motor corta y le queda JSON incompleto ⇒ rechaza; acá el byte es UTF-8
-            '     inválido ⇒ rechaza. Mismo resultado por distinto camino.
-            '   • CRLF: el modo texto lo colapsa a LF, y para JSON los dos son whitespace.
+            ' El corte en 0xFF ya se hizo ARRIBA, en la lectura, que es donde lo hace el motor (getline). Acá
+            ' abajo los bytes ya no pueden traer ninguno. Lo otro del modo texto: CRLF se colapsa a LF, y para JSON
+            ' los dos son whitespace, así que no cambia nada.
             ' HUECO declarado: si el modo texto además corta en 0x1A (comportamiento histórico de MSVC) no se
             ' pudo citar, así que no se afirma ni se implementa.
             ' UTF-8 INVÁLIDO: el motor pasa el byte crudo (readString :390-400 no valida nada) y acá
-            ' System.Text.Json lo cambiaba por U+FFFD SIN error — un identificador con byte cp1252
+            ' System.Text.Json lo cambiaba por U+FFFD SIN error — un identificador con un byte no-UTF8
             ' (`Señor.esp`) resuelve in-game y acá quedaba unresolved sin un mensaje. Sólo actúa cuando el
             ' archivo NO es UTF-8 válido; con uno válido devuelve el mismo array.
             Dim transcodificado As Boolean
             Dim bytesJsoncpp = Jsoncpp.BytesComoLosVeJsoncpp(bytes, transcodificado)
             If transcodificado Then
-                Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': no es UTF-8 válido; se lee como cp1252, que es el espacio de bytes del motor (json_reader.cpp:390-400 no valida nada).")
+                Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': no es UTF-8 válido; se lee con la encoding General ({PluginEncodingSettings.General.WebName}), que es contra la que se comparan los nombres de plugin (json_reader.cpp:390-400 no valida nada).")
             End If
             doc = JsonPrimerValor.Documento(bytesJsoncpp)
         Catch ex As Exception

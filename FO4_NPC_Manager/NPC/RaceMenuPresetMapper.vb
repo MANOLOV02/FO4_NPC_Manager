@@ -554,11 +554,14 @@ Public Module RaceMenuPresetMapper
         '   :206-217 para CUALQUIER actor: sólo `tint.index == 0 && setSkinColor` ⇒ SetSkinFromTint (tono de piel).
         '   SavePreset (:380-392) escribe TODAS las máscaras del jugador que tengan textura ⇒ un .jslot producido por
         '   RaceMenu cubre todas las posiciones de la raza y «en el lugar por posición» ≡ reemplazo de la lista.
-        ' DECISIÓN DE PRODUCTO (D-Tints SSE, no del motor): el NPC recibe el tratamiento del jugador (la lista TINI del
-        ' record se reemplaza por lo que el archivo trae, capa por posición→TINI). `HasSseTints` sólo con entradas: el
-        ' motor con 0 entradas no escribe el canal, así que un .jslot sin tintInfo NO borra los tints del record.
-        ' HUECO declarado: un archivo que cubre MENOS posiciones que la raza destino (editado a mano o de otra raza
-        ' con menos capas) en el motor deja las posiciones no cubiertas intactas; acá la lista se reemplaza entera.
+        ' DECISIÓN DE PRODUCTO (D-Tints SSE, no del motor), y es SOLO UNA: el motor toca las máscaras del JUGADOR
+        ' (`player == actor`, :197) y acá el NPC recibe ese mismo tratamiento — aplicar tintes a un NPC es el punto
+        ' de la app, RaceMenu no lo hace porque es para el jugador. `HasSseTints` sólo con entradas: el motor con 0
+        ' entradas no escribe el canal, así que un .jslot sin tintInfo NO borra los tints del record.
+        ' ⛔ LO QUE YA NO ES CIERTO Y ESTABA ESCRITO ACÁ: que «la lista se reemplaza entera». Se corrigió el
+        ' 2026-09-04 — ahora se FUSIONA por TINI (ver el bloque de abajo), que es la ley de :197. El HUECO que este
+        ' comentario declaraba (un archivo que cubre MENOS posiciones que la raza destino borraba las no cubiertas)
+        ' está CERRADO, con dos casos de gate: uno sintético y otro sobre una raza divergente real del load order.
         If j.TintInfo.Count > 0 Then
             ' FUSIÓN POR TINI, no reemplazo — es la ley del motor. `player->tintMasks.GetNthItem(tint.index, ...)`
             ' (:197) escribe EN EL LUGAR sobre la máscara de esa posición: las posiciones que el archivo NO trae
