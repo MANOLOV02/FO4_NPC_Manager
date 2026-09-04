@@ -329,9 +329,17 @@ Public Module RaceMenuPresetMapper
         Return headBlk.Verts
     End Function
 
+    ''' <param name="capasBase">Las capas de tinte que el NPC YA TENÍA — normalmente las del record
+    ''' (<c>LooksmenuLoader.CapasDeTinteSseDelRecord</c>). Con esto la aplicación de tintes FUSIONA por TINI
+    ''' como el motor (PresetInterface.cpp:197, en el lugar y por posición) en vez de reemplazar la lista.
+    ''' <b>Se omite a propósito en el mapeo "qué trae el ARCHIVO"</b> (MainForm, el segundo mapeo sobre un
+    ''' preset vacío): ahí fusionar le atribuiría al archivo tintes del NPC y falsearía el conteo por
+    ''' categoría y el reporte de compatibilidad. Si el preset que entra YA trae tintes autorados, esos
+    ''' mandan como base y este parámetro no se usa.</param>
     Public Sub ApplyJslotToPreset(j As RaceMenuJslot, preset As LooksmenuLoader.LooksmenuPreset,
                                   Optional pluginManager As PluginManager = Nothing,
-                                  Optional raceFid As UInteger = 0UI, Optional isFemale As Boolean = False)
+                                  Optional raceFid As UInteger = 0UI, Optional isFemale As Boolean = False,
+                                  Optional capasBase As List(Of LooksmenuLoader.CapaDeTinteSsePreset) = Nothing)
         If j Is Nothing OrElse preset Is Nothing Then Return
 
         ' ---- FACE IDENTITY: headParts (hair/eyes/brows/…) → preset.HeadPartFormIDs = lo que skee64 deja PUESTO
@@ -552,8 +560,36 @@ Public Module RaceMenuPresetMapper
         ' HUECO declarado: un archivo que cubre MENOS posiciones que la raza destino (editado a mano o de otra raza
         ' con menos capas) en el motor deja las posiciones no cubiertas intactas; acá la lista se reemplaza entera.
         If j.TintInfo.Count > 0 Then
-            Dim outList As New List(Of LooksmenuLoader.CapaDeTinteSsePreset)
+            ' FUSIÓN POR TINI, no reemplazo — es la ley del motor. `player->tintMasks.GetNthItem(tint.index, ...)`
+            ' (:197) escribe EN EL LUGAR sobre la máscara de esa posición: las posiciones que el archivo NO trae
+            ' quedan como estaban. Antes acá se reemplazaba la lista entera, así que un archivo que cubre menos
+            ' capas que la raza destino (editado a mano, o de una raza con menos capas) borraba las no cubiertas
+            ' — y en el editor esas caían al DEFAULT de la RACE, no a lo que el NPC tenía.
+            ' LA BASE, en orden: lo que el preset ya trae autorado (un .jslot previo, un Paste, un Edit Face
+            ' confirmado) y si no, `capasBase`, que el llamador saca del record. SIN base ⇒ reemplazo, que es
+            ' justo lo que necesita el mapeo "qué trae el ARCHIVO".
+            Dim porTini As New Dictionary(Of Integer, LooksmenuLoader.CapaDeTinteSsePreset)
+            Dim ordenTini As New List(Of Integer)
+            Dim capasPrevias As List(Of LooksmenuLoader.CapaDeTinteSsePreset) = Nothing
+            If preset.HasSseTints AndAlso preset.SseTintLayers IsNot Nothing Then
+                capasPrevias = preset.SseTintLayers
+            ElseIf capasBase IsNot Nothing Then
+                capasPrevias = capasBase
+            End If
+            If capasPrevias IsNot Nothing Then
+                For Each c In capasPrevias
+                    If c Is Nothing OrElse Not c.Indice.HasValue Then Continue For
+                    Dim k = CInt(c.Indice.Value)
+                    If Not porTini.ContainsKey(k) Then ordenTini.Add(k)
+                    porTini(k) = c
+                Next
+            End If
+            ' El mapa de texturas se hereda igual: una máscara custom de una capa que este archivo no toca no
+            ' tiene por qué perderse.
             Dim texMap As Dictionary(Of Integer, String) = Nothing
+            If preset.SseTintTexOverride IsNot Nothing AndAlso preset.SseTintTexOverride.Count > 0 Then
+                texMap = New Dictionary(Of Integer, String)(preset.SseTintTexOverride)
+            End If
             For Each ti In j.TintInfo
                 Dim a As Byte = CByte((ti.Color >> 24) And &HFFUI)   ' coverage (0..255)
                 Dim r As Byte = CByte((ti.Color >> 16) And &HFFUI)
@@ -566,15 +602,16 @@ Public Module RaceMenuPresetMapper
                 ' and dropping the tint onto a TINI the race doesn't have.
                 Dim tini As Integer = JslotIndexToTini(pluginManager, raceFid, isFemale, ti.Index)
                 ' Preseleccion -1 = color propio, elegido a mano (el selector de RaceMenu).
-                outList.Add(New LooksmenuLoader.CapaDeTinteSsePreset With {
+                If Not porTini.ContainsKey(tini) Then ordenTini.Add(tini)
+                porTini(tini) = New LooksmenuLoader.CapaDeTinteSsePreset With {
                     .Indice = CUShort(tini), .Rojo = r, .Verde = g, .Azul = b, .Alfa = CByte(255),
-                    .Cobertura = tinv, .Preseleccion = CShort(-1)})
+                    .Cobertura = tinv, .Preseleccion = CShort(-1)}
                 If Not String.IsNullOrEmpty(ti.Texture) Then
                     If texMap Is Nothing Then texMap = New Dictionary(Of Integer, String)
                     texMap(tini) = ti.Texture
                 End If
             Next
-            preset.SseTintLayers = outList
+            preset.SseTintLayers = ordenTini.Select(Function(k) porTini(k)).ToList()
             preset.HasSseTints = True
             preset.SseTintTexOverride = texMap
         End If

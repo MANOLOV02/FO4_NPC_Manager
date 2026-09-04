@@ -480,8 +480,33 @@ Public Module LooksmenuLoader
             ' Comentarios permitidos: `Json::Features` por defecto trae allowComments_ = true (json_reader.cpp:28-29).
             ' Coma final PROHIBIDA: el reader la toma como error de sintaxis en objetos (:413-425) y arrays
             ' (:468-474) ⇒ el motor no aplica nada. Con AllowTrailingCommas el app cargaba lo que el juego rechaza.
-            doc = JsonDocument.Parse(New ReadOnlyMemory(Of Byte)(bytes),
-                                     New JsonDocumentOptions With {.CommentHandling = JsonCommentHandling.Skip, .AllowTrailingCommas = False})
+            ' UN VALOR Y PARA — lo que sobra al final NO rechaza el archivo. `Reader::parse` (:104-141) llama
+            ' `readValue()`, saltea comentarios y devuelve: NUNCA comprueba `current_ == end_`, y `strictRoot_`
+            ' es false en `Features()` y en `Features::all()` (:27-32) ⇒ el motor CARGA `{…}basura`.
+            ' `JsonDocument.Parse` exigía fin de archivo y el preset se saltaba entero mientras el juego lo
+            ' aplicaba. La perilla (`AllowMultipleValues`) sólo existe en `Utf8JsonReader`, que VB no compila
+            ' (BC30668) — por eso vive en FO4_Base_Library_CSharpHelpers.
+            ' MODO TEXTO Y DELIMITADOR 0xFF — mirado, y NO se replica porque no cambia ningún resultado.
+            ' SÓLO FO4: `std::ifstream in(filePath)` va SIN `ios::binary` (CharGenInterface.cpp:274) y jsoncpp lo
+            ' lee con `std::getline(sin, doc, (char)EOF)` (json_reader.cpp:100), donde `(char)EOF` es `(char)-1` =
+            ' 0xFF ⇒ el motor CORTA el documento en el primer 0xFF. (SSE no: `BSFileUtil::ReadAll` es binario y
+            ' `parse(const std::string&)` no usa getline.) Los tres casos posibles, y en los tres coincidimos:
+            '   • 0xFF DESPUÉS de la raíz: el motor no lo mira; acá tampoco, desde que se lee UN valor y se para.
+            '   • 0xFF EN MEDIO: el motor corta y le queda JSON incompleto ⇒ rechaza; acá el byte es UTF-8
+            '     inválido ⇒ rechaza. Mismo resultado por distinto camino.
+            '   • CRLF: el modo texto lo colapsa a LF, y para JSON los dos son whitespace.
+            ' HUECO declarado: si el modo texto además corta en 0x1A (comportamiento histórico de MSVC) no se
+            ' pudo citar, así que no se afirma ni se implementa.
+            ' UTF-8 INVÁLIDO: el motor pasa el byte crudo (readString :390-400 no valida nada) y acá
+            ' System.Text.Json lo cambiaba por U+FFFD SIN error — un identificador con byte cp1252
+            ' (`Señor.esp`) resuelve in-game y acá quedaba unresolved sin un mensaje. Sólo actúa cuando el
+            ' archivo NO es UTF-8 válido; con uno válido devuelve el mismo array.
+            Dim transcodificado As Boolean
+            Dim bytesJsoncpp = Jsoncpp.BytesComoLosVeJsoncpp(bytes, transcodificado)
+            If transcodificado Then
+                Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': no es UTF-8 válido; se lee como cp1252, que es el espacio de bytes del motor (json_reader.cpp:390-400 no valida nada).")
+            End If
+            doc = JsonPrimerValor.Documento(bytesJsoncpp)
         Catch ex As Exception
             Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': JSON invalido para LooksMenu ({ex.Message}). Se saltea.")
             Return Nothing
@@ -510,8 +535,14 @@ Public Module LooksmenuLoader
             ' otro ⇒ nada), `part.asString()` (null ⇒ ""; numero/bool ⇒ texto; array/objeto ⇒ lanza y corta el
             ' resto, lo ya aplicado queda), `GetFormFromIdentifier` (Utilities.cpp:133-155), `if(!form) continue`
             ' (:339-340), `DYNAMIC_CAST(..., BGSHeadPart)` y `if(!headPart) continue` (:342-344).
-            ' D-HeadParts (PENDIENTE del usuario): el motor limpia las partes SIEMPRE (:318-331, antes de mirar la
-            ' clave); el app solo lo hace cuando la clave esta (array u objeto). Ausente/escalar ⇒ preserva.
+            ' D-HeadParts — DECISION DE PRODUCTO TOMADA (2026-09-04), ya no es un pendiente.
+            ' El motor limpia las partes SIEMPRE: :317-331 libera `npc->headParts` y lo reemplaza por la lista
+            ' por defecto de la RACE ANTES de mirar la clave y FUERA del try de :333. O sea que un preset sin
+            ' `HeadParts`, o con un escalar ahi, deja al NPC con el pelo/ojos/cejas de su RAZA.
+            ' ACA NO: ausente o escalar ⇒ se PRESERVA lo que el NPC tenia. La razon no es comodidad, es la
+            ' asimetria del dano: en el juego ese reset pasa dentro de una sesion de ChargenMenu y se ve al
+            ' instante; aca se escribe a un ESP y el usuario puede no notarlo hasta mucho despues. Divergencia
+            ' DELIBERADA, con su caso de gate (PresetCargaEstadoMotorGate) para que no se erosione.
             ' Un identificador cuyo plugin no esta cargado va a UnresolvedHeadParts (decision del usuario
             ' 2026-08-24: PRESERVAR, no inventar); el motor en ese caso hace `LookupFormByID` con el FormID
             ' local sin indice de mod (Utilities.cpp:141-153), que puede pegarle a un form ajeno: NO se replica.

@@ -9443,7 +9443,12 @@ Public Class MainForm
                     ' wrong RACE layer on races whose TINI != position (incl. the body-QNAM skin tone at position 0).
                     Dim applied = If(priorOverlay IsNot Nothing, LooksmenuLoader.ClonePreset(priorOverlay),
                                                                 New LooksmenuLoader.LooksmenuPreset() With {.Gender = gender})
-                    RaceMenuPresetMapper.ApplyJslotToPreset(j, applied, _pluginManager, raceFormID, gender = CByte(1))
+                    ' capasBase = lo que el NPC YA TENÍA. El motor escribe la máscara de tinte EN EL LUGAR y por
+                    ' posición (PresetInterface.cpp:197): lo que el archivo no cubre queda como estaba. Se lo pasamos
+                    ' SOLO a este mapeo — el de abajo responde "qué trae el ARCHIVO" y fusionar ahí le atribuiría al
+                    ' archivo tintes del NPC. Si `applied` ya trae tintes autorados, el mapper usa esos y no esto.
+                    RaceMenuPresetMapper.ApplyJslotToPreset(j, applied, _pluginManager, raceFormID, gender = CByte(1),
+                                                           capasBase:=LooksmenuLoader.CapasDeTinteSseDelRecord(npc.Record))
                     applied.SourcePath = fp
                     applied.Gender = gender
 
