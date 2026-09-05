@@ -275,13 +275,14 @@ Public Class OutfitPicker_Form
         AddHandler RadioButtonRenderPiece.CheckedChanged, AddressOf OnCreatePreviewModeChanged
         AddHandler ListViewItems.SelectedIndexChanged, AddressOf OnCreateItemSelectionChanged
         AddHandler ListViewPieces.SelectedIndexChanged, AddressOf OnCreatePieceSelectionChanged
-        ' Double-click an ARMO (candidate OR selected piece) → open the ARMO editor with it as template (LVLs excluded).
+        ' Double-click a row (candidate OR selected piece): ARMO → el editor de ARMO con ella de plantilla; fila por
+        ' nivel → BAJAR un nivel. Es la misma ley que corre el botón "Edit armor…"/"Open list…" (OnEditArmor).
         AddHandler ListViewPieces.DoubleClick, AddressOf OnEditPieceInArmorEditor
         ' The "selected piece" preview follows whichever Create list has focus — track the last one entered.
         AddHandler ListViewItems.Enter, AddressOf OnItemsListEnter
         AddHandler ListViewPieces.Enter, AddressOf OnPiecesListEnter
-        ' "Edit armor…" edits the focused concrete ARMO (disabled when nothing concrete is focused); "New armor…"
-        ' always authors a brand-new ARMO from scratch.
+        ' "Edit armor…" edits the focused concrete ARMO and DRILLS INTO a focused leveled one — the button form of
+        ' the double-click (disabled only with no selection); "New armor…" always authors a brand-new ARMO.
         AddHandler ButtonEditArmor.Click, AddressOf OnEditArmor
         AddHandler ButtonNewArmor.Click, AddressOf OnNewArmor
         ' Recursive leveled-list drill-down: "Override LVL…" picks a real LVLI to edit as an override; "▲ Back"
@@ -294,7 +295,7 @@ Public Class OutfitPicker_Form
         ' ARMA/ARMO record authoring now works on BOTH games — the Skyrim serializers are implemented and proven
         ' byte-exact (Tools\ArmoArmaSseRoundtripProbe: ARMA 766/766, ARMO 2762/2762). "New armor…" / "Edit armor…"
         ' are enabled for Skyrim too; "Edit armor…" state is driven purely by focus (UpdateEditArmorEnabled).
-        UpdateEditArmorEnabled()   ' initial state: disabled until a concrete ARMO is focused
+        UpdateEditArmorEnabled()   ' initial state: disabled until a row is focused
         ' "My outfit drafts" panel: double-click loads a draft back into Create for editing; the button deletes/reverts.
         AddHandler ListViewMyOutfits.DoubleClick, AddressOf OnMyOutfitDoubleClick
         AddHandler ListViewMyOutfits.SelectedIndexChanged, Sub() UpdateDeleteOutfitEnabled()
@@ -635,12 +636,17 @@ Public Class OutfitPicker_Form
     End Sub
 
     ''' <summary>Double-click a CANDIDATE ARMO → open the ARMO editor to OVERRIDE it (edit that record; your plugin
-    ''' replaces it). LVLI candidates are excluded. Adding to the outfit stays on the Add button; to make a NEW
-    ''' record from a copy, use the editor's "New from template…" once open.</summary>
+    ''' replaces it). A LEVELED candidate — y las únicas que la lista de candidatos trae son los borradores PROPIOS
+    ''' del usuario (<c>GetArmoItemCandidatesWithDrafts</c>; la base es sólo ARMO) — DRILLS IN, la misma ley que en
+    ''' la lista de piezas. Adding to the outfit stays on the Add button; to make a NEW record from a copy, use the
+    ''' editor's "New from template…" once open.</summary>
     Private Sub OnEditItemInArmorEditor(sender As Object, e As EventArgs)
         If ListViewItems.SelectedItems.Count = 0 Then Return
         Dim fid = CUInt(ListViewItems.SelectedItems(0).Tag)
-        If _mainForm.IsLeveledItem(fid) Then Return   ' exclude LVLs
+        If _mainForm.IsLeveledItem(fid) Then
+            DrillIntoLeveled(fid)
+            Return
+        End If
         OpenArmorEditorForTemplate(fid, asOverride:=True)
     End Sub
 
@@ -715,8 +721,8 @@ Public Class OutfitPicker_Form
         ButtonMovePieceDown.Visible = Not nested
         ButtonRemovePiece.Text = If(nested, "Remove entry", "Remove piece")
         ButtonAddToLvl.Text = If(nested, "Add item ▼", "Add to lvl ▼")
-        ' ButtonEditArmor stays visible + labelled "Edit armor…" at BOTH levels: it edits the focused concrete
-        ' ARMO (a top piece OR a nested armor entry). Enable state is set by UpdateEditArmorEnabled.
+        ' ButtonEditArmor stays visible at BOTH levels: it edits the focused concrete ARMO (a top piece OR a nested
+        ' armor entry) and DRILLS INTO the focused leveled one. Enable state AND label: UpdateEditArmorEnabled.
     End Sub
 
     ''' <summary>Resolve a reference (ARMO or LVLI) FormID to a display name from the draft-aware candidate universe,
@@ -1455,23 +1461,29 @@ Public Class OutfitPicker_Form
         RefreshPieces()
     End Sub
 
-    ''' <summary>The FOCUSED concrete (non-leveled) ARMO FormID: the selected piece when the pieces list has
-    ''' preview focus, else the selected candidate item. 0 when nothing concrete is focused (empty selection or a
-    ''' leveled list). Drives both <see cref="OnEditArmor"/> and <see cref="UpdateEditArmorEnabled"/>.</summary>
-    Private Function FocusedConcreteArmoFid() As UInteger
-        Dim fid As UInteger = If(_pieceListHasPreviewFocus, If(SelectedPieceEntry()?.FormID, 0UI), SelectedItemFormID())
-        If fid = 0UI OrElse _mainForm.IsLeveledItem(fid) Then Return 0UI
-        Return fid
+    ''' <summary>The FOCUSED reference FormID, leveled OR concrete: the selected piece when the pieces list has
+    ''' preview focus, else the selected candidate item. 0 only when nothing is selected in the focused list.
+    ''' Drives <see cref="OnEditArmor"/> and <see cref="UpdateEditArmorEnabled"/>.</summary>
+    Private Function FocusedRefFid() As UInteger
+        Return If(_pieceListHasPreviewFocus, If(SelectedPieceEntry()?.FormID, 0UI), SelectedItemFormID())
     End Function
 
-    ''' <summary>"Edit armor…" — open the ARMO editor (as an override) on the FOCUSED concrete ARMO. Disabled by
-    ''' <see cref="UpdateEditArmorEnabled"/> when nothing concrete is focused, so this is a no-op then. Authoring a
-    ''' brand-new ARMO is the separate "New armor…" button.</summary>
+    ''' <summary>The button next to the pieces list: opens the ARMO editor (as an override) on the FOCUSED concrete
+    ''' ARMO, and on a LEVELED row does exactly what DOUBLE-CLICKING it does — DRILL IN one level. It is the button
+    ''' form of the double-click, so a leveled row never disables it; only an empty selection does.
+    ''' <see cref="UpdateEditArmorEnabled"/> keeps the label in step ("Edit armor…" vs "Open list…").
+    ''' Authoring a brand-new ARMO is the separate "New armor…" button.</summary>
     Private Sub OnEditArmor(sender As Object, e As EventArgs)
-        ' Works at BOTH levels: FocusedConcreteArmoFid resolves the selected concrete ARMO — a top-level piece OR
-        ' a nested LVLO entry whose reference is an armor — so "Edit armor…" opens the ARMO editor either way.
-        Dim fid = FocusedConcreteArmoFid()
+        ' Works at BOTH levels: FocusedRefFid resolves the focused row — a top-level piece, a nested LVLO entry, or
+        ' the selected candidate — and the row's KIND picks the action, the same way OnEditPieceInArmorEditor does.
+        Dim fid = FocusedRefFid()
         If fid = 0UI Then Return
+        ' A LEVELED row → DRILL IN (recursive), never the ARMO editor: mismo destino que el doble clic, y la
+        ' guarda de "ya abierta en esta cadena" que vive adentro de DrillIntoLeveled es la que decide el no-op.
+        If _mainForm.IsLeveledItem(fid) Then
+            DrillIntoLeveled(fid)
+            Return
+        End If
         OpenArmorEditorForTemplate(fid, asOverride:=True)
     End Sub
 
@@ -1490,12 +1502,16 @@ Public Class OutfitPicker_Form
         RefreshCreateAfterArmorEdit()
     End Sub
 
-    ''' <summary>"Edit armor…" is enabled only when a concrete (non-leveled) ARMO is focused in the Create lists.
+    ''' <summary>The pieces-list action button is enabled whenever ANY row is focused in the Create lists, and its
+    ''' LABEL says which of the two actions that row gets: "Edit armor…" for a concrete ARMO, "Open list…" for a
+    ''' leveled one (which drills in, like the double-click). ⛔ Una fila por nivel NO lo deshabilita — eso hacía la
+    ''' versión vieja, y dejaba el único camino para bajar un nivel colgado del doble clic solo.
     ''' Mirror of <see cref="UpdateAddToLvlEnabled"/>; called from the selection/focus handlers + after refresh.</summary>
     Private Sub UpdateEditArmorEnabled()
-        ' "Edit armor…" is enabled whenever a concrete ARMO is focused — a top-level piece OR a nested armor entry.
         ' Enabled on BOTH games now that the Skyrim ARMA/ARMO serializers are implemented (proven byte-exact).
-        ButtonEditArmor.Enabled = (FocusedConcreteArmoFid() <> 0UI)
+        Dim fid = FocusedRefFid()
+        ButtonEditArmor.Enabled = (fid <> 0UI)
+        ButtonEditArmor.Text = If(fid <> 0UI AndAlso _mainForm.IsLeveledItem(fid), "Open list…", "Edit armor…")
         ' "Edit entry…" (nested only) is enabled whenever any LVLO entry row is selected.
         ButtonEditEntry.Enabled = (Not IsAtTopLevel() AndAlso SelectedPieceEntry() IsNot Nothing)
     End Sub

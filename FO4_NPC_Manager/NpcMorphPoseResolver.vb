@@ -662,7 +662,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Next
         End If
         If zapParts.Count = 0 Then Return Nothing
-        Return New HairTopZapResolver(zapParts)
+        ' El canal de la raza viaja hasta el recorte por slot: ver HairTopZapResolver._bitTop/_bitLong.
+        Return New HairTopZapResolver(zapParts, renderData.HeadHairFirstBit, renderData.HeadHairSecondBit)
     End Function
 
     ''' <summary>Cache of parsed FacialBoneRegions files per race/gender key (e.g. "HumanRace:female").

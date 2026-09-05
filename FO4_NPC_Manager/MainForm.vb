@@ -396,10 +396,11 @@ Public Class MainForm
     Friend Const HeadPartTypeFacialHair As Integer = 4
     Private Const HeadPartTypeHeadRear As Integer = 9
 
-    ' Head-part occlusion is per-NPC and RACE-driven, NOT a fixed slot set: ResolvePreviewVariant computes
-    ' the slot mask from the NPC's RACE.DATA biped objects via RaceUtil.RaceHeadOcclusionMask (engine-faithful
-    ' — verified vs Fallout4.exe + .esm) and carries it on PreviewResolutionResult.HeadOcclusionMask;
-    ' NpcRenderHost.ApplyRenderToggleVisibility reads that.
+    ' Head-part occlusion is per-NPC and RACE-driven, NOT a fixed slot set, y además NO es una unión: cada
+    ' canal de la RACE.DATA (A face-cull, B pelo, C vello facial) se aplica a un TIPO distinto de head-part.
+    ' ResolvePreviewVariant deja los tres crudos en HeadFaceCullMask / HeadHairSlotMask / HeadFacialHairMask,
+    ' y NpcRenderHost.ApplyRenderToggleVisibility le pide a NpcMeshCollector.HeadPartChannelMask el canal que
+    ' corresponde al tipo de cada shape.
 
     Private Enum PreviewMode
         FullCharacter = 0
@@ -469,6 +470,18 @@ Public Class MainForm
         ''' <see cref="ArmaOwnSlotMask"/> (los bits del armature, que gobiernan particiones) ni con
         ''' <see cref="SlotMask"/> (la mezcla de ambos). 0 para candidates sin ARMO.</summary>
         Public ArmoOwnSlotMask As UInteger
+        ''' <summary>El ARMA declara una lista de intercambio de texturas de piel MASCULINA (NAM2) y esa
+        ''' FLST tiene al menos una entrada. ⭐ Es el DESEMPATE del attach a igualdad de prioridad DNAM:
+        ''' FO4 <c>0x140359A7E call 0x14045FDA0(ocupante, 0)</c> y SSE <c>0x140218D83 call 0x14027D200(ocupante, 0)</c>
+        ''' leen <c>ARMA.skinTextureSwapLists[0]</c> (FO4 +0x1E0, SSE +0x140 — nombre del campo confirmado
+        ''' con los símbolos de CommonLibSSE) y, si no es nulo, devuelven <c>forms.size()</c> por el getter
+        ''' de dos instrucciones <c>mov eax,[rcx+0x30]; ret</c> (FO4 0x140589400, SSE 0x140320390; el 0x30
+        ''' es el tamaño del BSTArray que arranca en BGSListForm+0x20). Con 0, el OCUPANTE conserva el slot.
+        ''' <para>⛔ El índice es 0 = MASCULINO SIEMPRE, en los dos juegos (<c>xor edx,edx</c>), sin importar
+        ''' el sexo del actor. No es una simplificación de la app: es lo que hace el motor.</para>
+        ''' <para>Medido: 3 de 1065 ARMA de FO4 (las <c>AA_Synth_LArm_*</c>) y 5 de 1113 de SSE —y esas 5 son
+        ''' las de PIEL: NakedTorso, NakedHands, NakedFeet, NakedTorsoArgonian, NakedFeetAfflicted—.</para></summary>
+        Public ArmaTieneSwapDePielMasculina As Boolean
         Public Priority As Integer
         Public Kind As MeshCandidateKind
         Public SourceFormID As UInteger
@@ -760,48 +773,73 @@ Public Class MainForm
         ''' from these every apply, scoped to the items CURRENTLY rendered — so a render toggle that hides an
         ''' item (e.g. Pipboy under "Render armor" OFF) drops its slots from the occluding set and the segments
         ''' it covered re-appear. NOT a static covered mask: covered-by-OTHERS is recomputed at toggle time
-        ''' (ORDER / other-items rule), excluding the shape's own group via <see cref="ShapeSlotGroup"/>.</summary>
+        ''' (ORDER / other-items rule). ⛔ El self-exclude ya NO sale de excluir el propio grupo: sale de
+        ''' la tabla de dueños por model path (NpcMeshCollector.TablaDeDuenosPorSlot).</summary>
         Public ReadOnly ShapeOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
         ''' <summary>Per-shape BOD2 del ARMATURE (ARMA) dueño, sin los bits que sólo declara el ARMO. SSE:
         ''' es la máscara que gobierna qué particiones de cabeza oculta el ítem del slot de pelo — el writer
         ''' de la tabla del biped (0x1402134E0) guarda el ARMA en `entry+0x18` recorriendo los bits del ARMA,
         ''' y la fase 2 de 0x140218200 agrupa por ese puntero. Ver NpcMeshCollector.HeadPartHideMask.</summary>
         Public ReadOnly ShapeArmaOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape BOD2 del ARMO dueño, CRUDO. Hace falta junto con <see cref="ShapeArmaOwnSlots"/>
+        ''' para reproducir el one-shot del writer del attach: <c>0x1403597E0</c> barre los slots ascendente
+        ''' y escribe el descriptor del ARMO en <c>table[slot]+0x10</c> UNA sola vez
+        ''' (<c>0x1403599CA xor bl,bl</c> / <c>0x140359AAB call [ARMO+0x1E0 vt+0x38]</c> /
+        ''' <c>0x140359B15 mov bl,1</c>), en el PRIMER slot que el ARMA ganó y el ARMO también declara; en
+        ''' los demás queda el ARMA. De ahí sale el estado del slot occluder que lee <c>0x14035E473</c>.
+        ''' Ver NpcMeshCollector.OccluderConDispositivo.</summary>
+        Public ReadOnly ShapeArmoOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape: ver <c>MeshCandidate.ArmaTieneSwapDePielMasculina</c>. Lo consume el
+        ''' desempate de NpcMeshCollector.TablaDeDuenosPorSlot.</summary>
+        Public ReadOnly ShapeArmaSwapDePiel As New Dictionary(Of IRenderableShape, Boolean)
+        ''' <summary>Per-shape: FormID del ARMA dueña. ⛔ NO confundir con <see cref="ShapeArmaFormID"/>,
+        ''' que es la fuente de SCULPT. Éste es la IDENTIDAD del armature, y la necesita el desalojo del
+        ''' primer loop del writer, que compara punteros de <c>TESModel</c> — o sea objetos, no paths.</summary>
+        Public ReadOnly ShapeArmaAddonFormID As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape: FormID del ARMO dueño (<c>candidate.SourceFormID</c>). Lo necesita el
+        ''' primer loop del writer para saltear a las ARMA HERMANAS del mismo ARMO
+        ''' (<c>0x1403598D8</c> + <c>0x1403598E1</c>). ⛔ NO es <see cref="ShapeArmaFormID"/>, que es la
+        ''' fuente de SCULPT.</summary>
+        Public ReadOnly ShapeArmoFormID As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape: el <see cref="MeshCandidateKind"/> del candidato del que salió.
+        ''' <para>⛔ NO es <see cref="ShapeCategory"/>. Ésa es la clasificación DE LA APP para los toggles
+        ''' de render y se decide por los bits del slot, así que manda a <c>Other</c> tanto a una PIEL que
+        ''' no declare cuerpo ni manos como a un ATTACHMENT que no declara nada. Las dos decisiones que
+        ''' consumen esto son del motor y no de la UI: quién se adjunta al biped (la piel, siempre) y
+        ''' quién NO está en la tabla y por lo tanto no tiene oclusión per-slot (los attachments, que
+        ''' montan por socket).</para></summary>
+        Public ReadOnly ShapeKind As New Dictionary(Of IRenderableShape, MeshCandidateKind)
         ''' <summary>Per-shape DNAM priority (Male/Female, gender-resuelto) del ARMA dueño. SSE: en empate de
         ''' biped-slot decide qué ítem lo POSEE para la oclusión per-partición (fase 1 de 0x140218200 — el
-        ''' owner de cada slot en `entry+0x18`). Seteado sólo para worn items (Kind=Outfit), igual que
-        ''' ShapeArmaOwnSlots. Ver NpcRenderHost.ApplyRenderToggleVisibility (mapa de dueños por-slot SSE).</summary>
+        ''' owner de cada slot en `entry+0x18`). Seteado para worn items (Kind=Outfit) Y para la PIEL
+        ''' (Kind=Skin), igual que ShapeArmaOwnSlots: en el motor el ARMA de la piel se adjunta como
+        ''' cualquier otra y también gana slots. Ver NpcRenderHost.ApplyRenderToggleVisibility (mapa de
+        ''' dueños por-slot SSE, pase 0).</summary>
         Public ReadOnly ShapePriority As New Dictionary(Of IRenderableShape, Integer)
-        ''' <summary>Per-shape occlusion group id (one per candidate; all shapes of a candidate share it).
-        ''' Used by ApplyRenderToggleVisibility so an item never occludes its OWN segments: covered-by-others
-        ''' ORs the own-slot masks of rendered groups whose id differs (engine owner-slot branch 0x14035E22B).
-        ''' This is what keeps a slot SHARED by two items (Pipboy + a Pipboy-aware outfit both declaring 60)
-        ''' working — occupied&amp;~own would strip the shared bit; OR-of-other-groups keeps it.</summary>
+        ''' <summary>Per-shape occlusion group id (uno por candidate; todas sus shapes comparten el mismo).
+        ''' ⛔ YA NO ES el mecanismo de "un ítem nunca se ocluye a sí mismo": esa rama —el OR de los OTROS
+        ''' grupos— se fue cuando la oclusión pasó a resolverse por DUEÑO DE SLOT (identidad de model path,
+        ''' NpcMeshCollector.TablaDeDuenosPorSlot), donde el self-exclude sale por construcción. Hoy este id
+        ''' sólo sirve como clave para deduplicar el aporte de un candidate a `groupSlots`, o sea a
+        ''' `occupiedVisible`, que es el análogo de la máscara worn del motor.</summary>
         Public ReadOnly ShapeSlotGroup As New Dictionary(Of IRenderableShape, Integer)
-        ''' <summary>Per-shape: True when the shape's candidate IS the Pipboy DEVICE, by ENGINE IDENTITY —
-        ''' its ARMO FormID matches one of the Pipboy default objects (see
-        ''' <see cref="NpcRenderContext.PipboyDeviceArmoFormIDs"/>, resolved from the PipboyCleanObject_DO /
-        ''' PipboyDustyObject_DO DFOBs at VA 0x1400F18B0 / 0x1400F18F0). Replaces the old slot heuristic
-        ''' ("its only worn slot is 60"), which wrongly flagged AssaultronShield (0022BC24), MirelurkShield
-        ''' (000986CA) and babybundled (000F468E) — 3 of the 7 vanilla slot-60-only ARMOs are NOT Pipboys.
-        ''' Absent entry = not a Pipboy device.</summary>
-        Public ReadOnly ShapeIsPipboyDevice As New Dictionary(Of IRenderableShape, Boolean)
         ''' <summary>The biped slot THIS NPC's race reserves for the Pipboy, as a slot-30-relative bit mask,
         ''' from RACE.DATA 'Pipboy Biped Object' via
-        ''' <see cref="RaceUtil.RacePipboyMask"/>. The Pipboy slot is PER-RACE data, so the coexist-by-design
-        ''' strip in NpcRenderHost.ApplyRenderToggleVisibility must strip THIS bit, not the constant slot 60.
+        ''' <see cref="RaceUtil.RacePipboyMask"/>. Es dato POR RAZA, no la constante 60. Lo consume el
+        ''' `occluderSlotBit` de la oclusión per-segmento; ⛔ ya NO hay ningún strip que lo use (el motor no
+        ''' saca ese bit de la máscara worn — ver NpcRenderHost).
         ''' 0 when the race declares None, and always 0 on Skyrim (no such field; slot 60 is generic there).</summary>
         Public PipboySlotMask As UInteger = 0UI
         ''' <summary>Monotonic seed for <see cref="ShapeSlotGroup"/> ids. LoadNifShapes runs once per
         ''' candidate; it claims one id per call via the post-increment below.</summary>
         Public OcclusionGroupSeq As Integer = 0
-        ''' <summary>Per-NPC, RACE-driven head-part occlusion slot mask (slot-30-relative): the union of the
-        ''' face-cull (A), hair (B), and facial-hair (C) biped objects declared in this NPC's RACE.DATA, via
-        ''' <see cref="RaceUtil.RaceHeadOcclusionMask"/>. Computed once in ResolvePreviewVariant where the race
-        ''' is in scope, and consumed by NpcRenderHost.ApplyRenderToggleVisibility to slice the rendered
-        ''' worn-slot set down to the head region (replaces the old fixed HeadwearOcclusionSlots const, which
-        ''' was wrong for non-human races). For HumanRace this resolves to {30,31,32,48}.</summary>
-        Public HeadOcclusionMask As UInteger = 0UI
+        ' ⛔ ACA VIVIA `HeadOcclusionMask`, la UNION plana de los tres canales (A|B|B+1|C) que el render le
+        ' aplicaba igual a todo head-part. Se borro, no se dejo al lado del modelo nuevo: el motor NO aplica
+        ' una union —el driver 0x140506460 recorre los canales por separado y cada uno va a un TIPO distinto
+        ' de head-part— asi que la union era una segunda ley compitiendo con la de verdad. Hoy la mascara
+        ' per-segmento sale de NpcMeshCollector.HeadPartChannelMask (FO4) y de HeadPartHideMask (SSE), y el
+        ' whole-hide del face-cull A lo resuelve SelectWinningCandidates. Un campo que ya nadie lee pero
+        ' sigue actualizandose es exactamente el carril paralelo que se desincroniza.
         ''' <summary>A: face-cull biped object [race+0x12C] (RACE DATA+0x44, engine master 0x1403BB880). Si el
         ''' worn set cubre este slot ⇒ whole-node cull de la cabeza (`or [headNode+0xF4],1`) — cascadea a TODO
         ''' head-part. NO es per-partición, así que NO forma parte de la máscara CoveredSlotsMask del render.</summary>
@@ -811,6 +849,25 @@ Public Class MainForm
         ''' de la cabeza, las particiones de TODO su BOD2 (ver NpcMeshCollector.HeadPartHideMask). Se combina
         ''' render-time con los BOD2 de los ítems renderizados para producir la máscara per-partición.</summary>
         Public HeadHairSlotMask As UInteger = 0UI
+        ''' <summary>B y B+1 POR SEPARADO. <see cref="HeadHairSlotMask"/> es la UNIÓN de los dos y no
+        ''' alcanza donde la ley distingue cuál es cuál: el motor hace dos llamadas con tags distintos
+        ''' (0x140506733 con B, 0x1405067A3 con B+1) y el recorte de las particiones del pelo es por slot.
+        ''' ⛔ Con B = −1 el primero vale 0 y el SEGUNDO es el bit del slot 30 —el motor calcula B+1 sin
+        ''' guard, 0x14050677B/0x140506782/0x140506789—; la sede de eso es RaceUtil.RaceHairSecondBit.</summary>
+        Public HeadHairFirstBit As UInteger = 0UI
+        Public HeadHairSecondBit As UInteger = 0UI
+        ''' <summary>C: facial-hair biped object (FO4 <c>RACE.DATA+0x40</c> "Beard Biped Object" →
+        ''' <c>race+0x1B8</c>, motor 0x140506460). Canal PROPIO: el motor lo aplica per-segmento SÓLO sobre el
+        ''' head-part de tipo 4 y sus extra parts, nunca sobre el pelo. Skyrim no declara el campo ⇒ 0.
+        ''' Ver <see cref="NpcMeshCollector.HeadPartChannelMask"/>, que es donde vive el mapeo tipo→canal.</summary>
+        Public HeadFacialHairMask As UInteger = 0UI
+        ''' <summary>Per-shape: el PartType EFECTIVO del head-part que produjo la shape (el mismo
+        ''' <c>MeshCandidate.HeadPartType</c>, con herencia HNAM del padre). El motor elige a qué canal de
+        ''' oclusión pertenece un head-part POR TIPO —tipo 3 al canal de pelo, tipo 4 al de vello facial— y
+        ''' arrastra a sus extra parts con el tipo del padre, que es exactamente lo que modela el tipo
+        ''' efectivo. Ausente = no es head-part. Consumido por NpcRenderHost para pedirle a
+        ''' <see cref="NpcMeshCollector.HeadPartChannelMask"/> la máscara de ESTE canal.</summary>
+        Public ReadOnly ShapeHeadPartType As New Dictionary(Of IRenderableShape, Integer)
         ''' <summary>Per-shape: qué particiones de un Hair {30,31} se ZAPEAN este render (Top=v30−v31,
         ''' Long=v31−v30), según el modelo complementario main/hairline (ver <see cref="HairZapParts"/>).
         ''' A diferencia de ShapeOccludedByHeadwear (oculta la mesh entera), esto zapea SÓLO los vértices
@@ -5240,6 +5297,18 @@ Public Class MainForm
     ''' editor UI from MainForm's last completed render — avoids the order-of-operations issue
     ''' where the editor's own _editorHost isn't populated until its Shown handler runs.</summary>
     Friend _renderHost As NpcRenderHost = Nothing
+
+    ''' <summary>⛔ SEAM DE ARNÉS, no API de producto. Lo consume Tools\OclusionRenderGate, que necesita el
+    ''' pipeline REAL —el mismo contexto, el mismo resolvedor de estado y el mismo colector que usa el
+    ''' formulario— para renderizar un NPC completo y medir qué se ocultó. Reimplementar el cableado en el
+    ''' gate sería tener DOS pipelines y que el gate midiera el suyo, que es exactamente lo que un gate no
+    ''' puede hacer. Sólo lectura: devuelve las referencias ya construidas por el constructor.</summary>
+    Friend ReadOnly Property PipelineParaArnes As (Ctx As NpcRenderContext, Estado As NpcStateResolver, Colector As NpcMeshCollector)
+        Get
+            Return (_ctx, _stateResolver, _meshCollector)
+        End Get
+    End Property
+
     ' Friend (not Private) because OutfitComboEntry.SlotKind is exposed via NpcRenderHost.OutfitEntries.
     Friend Enum OutfitSlotKind
         DefaultOutfit

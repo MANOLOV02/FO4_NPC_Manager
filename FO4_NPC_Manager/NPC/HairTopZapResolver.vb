@@ -72,8 +72,17 @@ Public Class HairTopZapResolver
     ''' insurance and keeps the cache correct if a shape ever appears with two different parts).</summary>
     Private ReadOnly _deltaCache As New Dictionary(Of (IRenderableShape, HairZapParts), List(Of MorphData))
 
-    Public Sub New(zapShapes As Dictionary(Of IRenderableShape, HairZapParts))
+    ''' <summary>Los dos bits del canal de pelo de la raza (B y B+1). ⛔ Van hasta acá porque el recorte
+    ''' de los conjuntos de vértices es POR SLOT: con los slots 30/31 escritos a mano, en una raza con B=1
+    ''' el flag Top zapeaba un conjunto vacío y el Long zapeaba el del slot equivocado.</summary>
+    Private ReadOnly _bitTop As UInteger
+    Private ReadOnly _bitLong As UInteger
+
+    Public Sub New(zapShapes As Dictionary(Of IRenderableShape, HairZapParts),
+                   bitTop As UInteger, bitLong As UInteger)
         _zapShapes = If(zapShapes, New Dictionary(Of IRenderableShape, HairZapParts)())
+        _bitTop = bitTop
+        _bitLong = bitLong
     End Sub
 
     ''' <summary>True when no shape is flagged for zap — lets the composite skip wiring this resolver.</summary>
@@ -123,8 +132,8 @@ Public Class HairTopZapResolver
             ' Union of the requested partition vertex sets. HashSet dedups the (degenerate) overlap
             ' that cannot happen for Top/Long disjoint sets but keeps the union correct for Both.
             Dim verts As New HashSet(Of Integer)()
-            If (parts And HairZapParts.Top) <> 0 Then verts.UnionWith(BSTriShapeGeometry.GetTopOnlyVertexIndices(subIdx))
-            If (parts And HairZapParts.Long) <> 0 Then verts.UnionWith(BSTriShapeGeometry.GetLongOnlyVertexIndices(subIdx))
+            If (parts And HairZapParts.Top) <> 0 Then verts.UnionWith(BSTriShapeGeometry.GetTopOnlyVertexIndices(subIdx, _bitTop, _bitLong))
+            If (parts And HairZapParts.Long) <> 0 Then verts.UnionWith(BSTriShapeGeometry.GetLongOnlyVertexIndices(subIdx, _bitTop, _bitLong))
             For Each vi In verts
                 If vi >= 0 Then built.Add(New MorphData With {.index = CUInt(vi), .PosDiff = Vector3.Zero})
             Next

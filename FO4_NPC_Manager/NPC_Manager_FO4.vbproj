@@ -35,6 +35,7 @@
        (Friend) para bakear NIF+texturas sin GUI/GL. Sin cambiar la visibilidad del API interno. -->
   <ItemGroup>
     <InternalsVisibleTo Include="FO4_FaceTint_CLI" />
+    <InternalsVisibleTo Include="OclusionRenderGate" />
     <!-- Sonda de medición (Tools/, sólo lectura): ejercita NpcTemplateMaterializer.MakeCategoryOwn REAL
          sobre el load order en vez de reimplementar su lógica. Ver Tools/TemplateMaterializeProbe. -->
     <InternalsVisibleTo Include="TemplateMaterializeProbe" />
@@ -73,6 +74,10 @@
     <!-- Mide el costo de LA FOTO (`FotosDeBorrador.Publicar`, que es `Friend`). Mismo motivo: el gesto
          que se mide es el de produccion; un probe con su propio diccionario mediria su diccionario. -->
     <InternalsVisibleTo Include="FotoCostProbe" />
+    <!-- Ejerce las leyes de oclusion (NpcMeshCollector.HeadPartChannelMask / TablaDeDuenosPorSlot /
+         SlotsCubiertosPorOtroModelo), que son Friend. Un gate con su propia copia de la ley mediria su
+         copia, no la de produccion. -->
+    <InternalsVisibleTo Include="OclusionCanonicaGate" />
   </ItemGroup>
 
   <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save

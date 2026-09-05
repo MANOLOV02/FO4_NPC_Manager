@@ -20,7 +20,19 @@ Friend NotInheritable Class NpcStateResolver
     Private ReadOnly _lvlnDataCache As Dictionary(Of UInteger, Canon.ILvln)
     Private ReadOnly _genderFilter As Func(Of MainForm.GenderFilterMode)
     Private ReadOnly _resolveLmSkinTemplate As Func(Of String, LmSkinTemplate)
-    Private Shared ReadOnly _rng As New Random()
+    Private Shared ReadOnly _rngLock As New Object()
+    Private Shared _rng As New Random()
+
+    ''' <summary>Fija la semilla del sorteo de LVLN para que una corrida sea REPRODUCIBLE. Existe por la
+    ''' misma razón que <see cref="OutfitResolver.SetSeed"/>: un A/B del render compara dos árboles del
+    ''' código sobre el MISMO sujeto, y si el sorteo de la plantilla devuelve un NPC distinto en cada
+    ''' mitad, toda la comparación es ruido. ⛔ No cambia el comportamiento de la app: sin llamarla, el
+    ''' <c>Random</c> sigue naciendo sin semilla, exactamente como antes.</summary>
+    Public Shared Sub SetSeed(seed As Integer)
+        SyncLock _rngLock
+            _rng = New Random(seed)
+        End SyncLock
+    End Sub
     ''' <summary>Per-resolve cache of LVLN picks. When the same LVLN is encountered multiple times
     ''' during a single NPC resolution (e.g. Traits and Model both use same LVLN), the same NPC
     ''' is returned. This is how FO4 works: one random pick per LVLN per spawn.</summary>
@@ -696,7 +708,10 @@ Friend NotInheritable Class NpcStateResolver
             If filtered.Count > 0 Then weightedLeaves = filtered
         End If
 
-        Dim picked = weightedLeaves(_rng.Next(weightedLeaves.Count))
+        Dim picked As UInteger
+        SyncLock _rngLock
+            picked = weightedLeaves(_rng.Next(weightedLeaves.Count))
+        End SyncLock
         Return picked
     End Function
 

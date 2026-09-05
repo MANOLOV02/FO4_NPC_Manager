@@ -231,7 +231,10 @@ Friend Class NpcRenderHost
     ''' independientes (CheckBoxRenderArmor, CheckBoxRenderUnderarmor). NO re-resuelve candidates
     ''' ni recarga NIFs — sólo flip del flag y refresh GL.</summary>
     Public Sub ApplyRenderToggleVisibility()
-        If PreviewCtl Is Nothing OrElse PreviewCtl.Model Is Nothing OrElse LastRenderData Is Nothing Then Return
+        ' El guard dice lo que el método NECESITA. Ya no toca el control ni el modelo: sólo lee
+        ' LastRenderData y escribe las máscaras de sus shapes. Exigir un Model cargado hacía que la ley
+        ' no corriera —en silencio— hasta que hubiera upload.
+        If LastRenderData Is Nothing OrElse LastRenderData.Shapes Is Nothing Then Return
         Dim renderArmor = Toggles.RenderArmor
         Dim renderUnderarmor = Toggles.RenderUnderarmor
         Dim renderBody = Toggles.RenderBody
@@ -247,7 +250,7 @@ Friend Class NpcRenderHost
         ' contributes NO slots, so the segments it was covering re-appear (a rolled-up sleeve drops back
         ' down). The occluder set is NOT the static load-time union — it is rebuilt here every apply.
         ' groupSlots[gid] = the OWN-slot mask of each rendered worn-item group (one group per candidate; its
-        ' shapes share the mask, so an item never occludes its own segments). A worn item contributes only
+        ' shapes comparten la máscara; el self-exclude, en cambio, sale de la tabla de dueños). Un worn item aporta sólo
         ' while its render category is shown (same condition that drives RenderHide for that category).
         ' SLOT_PIPBOY (bit 30 = biped slot 60, Pipboy) now lives in the shared BipedSlots module.
         Dim groupSlots As New Dictionary(Of Integer, UInteger)
@@ -259,11 +262,84 @@ Friend Class NpcRenderHost
         ' `model` es el path del NIF del ítem (DictKey); en el attach el engine lo lee de vf+0x20 del bipedModel.
         ' En empate de slot gana el de mayor DNAM priority; a igualdad, el de después en el orden de iteración
         ' (engine tie=newer). Vacío/ignorado en FO4. Índice b (0..31) = biped slot 30+b (plegado 130..161→30..).
-        Dim slotOwnerKey(31) As String       ' Nothing = slot libre; si no, DictKey (model path) del dueño
-        Dim slotOwnerPrio(31) As Integer
-        For Each m In PreviewCtl.Model.meshes
-            If m Is Nothing OrElse m.MeshData Is Nothing OrElse m.MeshData.Shape Is Nothing Then Continue For
-            Dim sh = m.MeshData.Shape
+        ' Adjuntos al biped EN ORDEN DE ATTACH (piel primero, worn items después). La tabla de dueños y su
+        ' regla de desempate NO se escriben acá: viven en NpcMeshCollector.TablaDeDuenosPorSlot, que es la
+        ' sede única y la que ejerce el gate. Acá sólo se junta la entrada.
+        Dim adjuntos As New List(Of NpcMeshCollector.AdjuntoDeBiped)
+        ' ⛔ UN adjunto por ARMA, no por SHAPE. El writer corre una vez por ARMA (el driver le pasa el
+        ' ARMO y él recorre sus armatures), así que una ARMA con N shapes tiene que producir UNA pasada.
+        ' Con N pasadas el one-shot del ARMO y el desalojo se ejecutan N veces.
+        Dim armasAdjuntadas As New HashSet(Of UInteger)
+        Dim Adjuntar As Action(Of IRenderableShape, UInteger) =
+            Sub(shp As IRenderableShape, armaOwn As UInteger)
+                Dim ownerKey As String = Nothing
+                LastRenderData.MeshDictKeys.TryGetValue(shp, ownerKey)
+                Dim ownerPrio As Integer = 0
+                LastRenderData.ShapePriority.TryGetValue(shp, ownerPrio)
+                Dim ownerArmo As UInteger = 0UI
+                LastRenderData.ShapeArmoOwnSlots.TryGetValue(shp, ownerArmo)
+                Dim ownerSwap As Boolean = False
+                LastRenderData.ShapeArmaSwapDePiel.TryGetValue(shp, ownerSwap)
+                Dim ownerArmaId As UInteger = 0UI
+                LastRenderData.ShapeArmaAddonFormID.TryGetValue(shp, ownerArmaId)
+                ' Sin ARMA resuelta el ítem NO pasa por el writer (que es por ARMA): no puede ser dueño
+                ' de ningún slot. Es el fallback de EquipResolver al world model del ARMO.
+                If ownerArmaId = 0UI Then Exit Sub
+                If Not armasAdjuntadas.Add(ownerArmaId) Then Exit Sub
+                Dim ownerArmoId As UInteger = 0UI
+                LastRenderData.ShapeArmoFormID.TryGetValue(shp, ownerArmoId)
+                adjuntos.Add(New NpcMeshCollector.AdjuntoDeBiped With {
+                    .Key = ownerKey, .ArmaId = ownerArmaId, .ArmoId = ownerArmoId, .ArmaOwnSlots = armaOwn,
+                    .ArmoOwnSlots = ownerArmo, .TieneSwapDePiel = ownerSwap, .Priority = ownerPrio})
+            End Sub
+
+        ' ⭐ PASE 0 — LA PIEL TAMBIÉN ES DUEÑA DE SLOTS.
+        ' En el motor el ARMA de la piel se adjunta como cualquier otro y el writer del attach
+        ' (0x140218AE0) le llena `entry+0x20` a cada slot que gana, así que la fase 1 (0x14021DAE0) ve un
+        ' dueño ahí. Sin este pase, un slot que SÓLO posee la piel queda sin dueño y `CoveredForShape` no
+        ' lo marca: la app dibuja particiones que el motor oculta. Medido: NakedTorso (00000D67) declara
+        ' BOD2 0x174 = {32,34,35,36,38}; FineBoots01AA_UBE declara sólo el 37 y su NIF trae particiones
+        ' {37,38} ⇒ el motor oculta la 38 (dueño MaleBody_1.NIF, otro model path) y sin esto se dibujaba
+        ' encima de la pantorrilla del cuerpo.
+        ' VA PRIMERO A PROPÓSITO: el desempate del attach (0x140218D5F, `ja` ⇒ gana el ocupante existente
+        ' sólo si tiene MÁS prioridad) hace que a igual prioridad gane el que se adjunta DESPUÉS, y la
+        ' prenda se adjunta después de la piel. Registrar la piel primero reproduce ese orden.
+        ' ⛔ La piel NO entra en `groupSlots`/`occupiedVisible`: ése es el análogo de GetWornMask
+        ' (0x14022B5A0), que recorre el INVENTARIO equipado, donde la piel no está. Tampoco en
+        ' `sseWornOwnMasks` (mecanismo (b) de head-parts), que es la fase 2 sobre worn items.
+        ' ⭐ Corre en LOS DOS JUEGOS. En Fallout 4 el writer 0x1403597E0 hace exactamente lo mismo: recorre
+        ' los slots que el ARMA declara (0x1403599EA call [ARMA+0x30 vt+0x38]) y escribe el TESModel en
+        ' table[slot]+0x30 (0x140359B23 mov [r12+8],rax, con r12 = &table[i]+0x28 por 0x140359898 +
+        ' 0x140359B34), que es el puntero que el resolver compara con _stricmp en 0x14035E572/0x14035E58C.
+        ' La piel no es un caso aparte para el writer, así que tampoco puede serlo acá.
+        ' ⛔ SE ITERA LA LISTA RESUELTA, no `PreviewCtl.Model.meshes`. Los tres bucles de este método usaban
+        ' la lista de la GPU y sólo para sacar `MeshData.Shape` —son los MISMOS objetos que
+        ' `LastRenderData.Shapes`—, o sea que una ley que no depende del cuadro estaba acoplada al upload.
+        ' Costaba tres cosas: (1) no se podía ejercer sin contexto GL, así que el gate canónico no la cubre;
+        ' (2) fallaba EN SILENCIO — si el upload no ocurrió, o la lista todavía tenía las mallas del NPC
+        ' anterior, cada shape se quedaba con su máscara vieja: medido, 35.047 líneas de un barrido salieron
+        ' en vacío por exactamente esto—; (3) obligaba a subir geometría y texturas de cada NPC para leer
+        ' números que no dependen de la GPU. Tampoco implementaba la lectura caritativa ("recorrer lo que se
+        ' dibujó"): una shape ausente de `meshes` tampoco recibía máscara, se quedaba con la anterior.
+        For Each shSkin In LastRenderData.Shapes
+            If shSkin Is Nothing Then Continue For
+            ' ⛔ POR KIND, no por la categoría de display. Con el filtro por categoría, una piel que no
+            ' declare slot de cuerpo ni de manos cae en `Other` y no se registra nunca; y con la ley de
+            ' "slot huérfano = CUBIERTO" eso deja a la criatura ENTERA cubierta. Medido con el barrido:
+            ' `WinterholdJailFrostAtronach` salía con covered=0xFFFFFFFF y 1944/1944 triángulos ocultos.
+            ' `SkinAtronachFrost` (0005B2E7) declara BOD2 = 0x1 = sólo el slot 30. Alcance del corpus:
+            ' 22 de 224 razas de Skyrim y 5 de 109 de Fallout tienen la piel así.
+            Dim kindSkin As MainForm.MeshCandidateKind = MainForm.MeshCandidateKind.Outfit
+            LastRenderData.ShapeKind.TryGetValue(shSkin, kindSkin)
+            If kindSkin <> MainForm.MeshCandidateKind.Skin Then Continue For
+            If Not renderBody Then Continue For
+            Dim armaSkin As UInteger = 0UI
+            If Not LastRenderData.ShapeArmaOwnSlots.TryGetValue(shSkin, armaSkin) OrElse armaSkin = 0UI Then Continue For
+            Adjuntar(shSkin, armaSkin)
+        Next
+
+        For Each sh In LastRenderData.Shapes
+            If sh Is Nothing Then Continue For
             Dim own As UInteger = 0UI
             If Not LastRenderData.ShapeOwnSlots.TryGetValue(sh, own) OrElse own = 0UI Then Continue For
             Dim oc As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
@@ -273,57 +349,49 @@ Friend Class NpcRenderHost
                 Case MainForm.ShapeRenderCategory.ArmorOver : rendered = renderArmor
                 Case MainForm.ShapeRenderCategory.Underarmor, MainForm.ShapeRenderCategory.GloveOutfit : rendered = renderUnderarmor
                 Case MainForm.ShapeRenderCategory.Headwear : rendered = renderHeadwear
+                ' Categorias de CUERPO: solo aportan mientras se dibujan, igual que los worn items (un
+                ' toggle que esconde algo lo saca del set que ocluye). Son Kind=Skin / Kind=HeadPart, que
+                ' NUNCA tienen ShapeOwnSlots -eso es exclusivo de Kind=Outfit-, asi que agregarlas aca no
+                ' puede cambiar `groupSlots` ni `occupiedVisible`: solo gobierna el mapa de duenos de SSE.
+                Case MainForm.ShapeRenderCategory.BodySkin, MainForm.ShapeRenderCategory.NakedHands,
+                     MainForm.ShapeRenderCategory.HeadPart : rendered = renderBody
                 Case Else : rendered = True
             End Select
             If Not rendered Then Continue For
             Dim gid As Integer = 0
             LastRenderData.ShapeSlotGroup.TryGetValue(sh, gid)
-            ' Slot 60 (Pipboy) is COEXIST-BY-DESIGN: ~every body outfit declares it in BOD2 for the forearm
-            ' 60/160 accommodation swap (RE + ESM data 06-22), but only an ACTUAL Pipboy DEVICE (an item
-            ' whose ONLY worn slot is 60) really occupies it. The 60/160 swap must trigger on "a Pipboy
-            ' device is present", NOT on "some worn piece declared slot 60". So strip bit 60 from non-device
-            ' groups: a uniform's incidental slot-60 must NOT occlude another piece's forearm-60 segment
-            ' (Captain Cade: the gloves' forearm-60 was wrongly hidden by the uniform's BOD2 slot-60, with no
-            ' pipboy). A real Pipboy device keeps its 60 → it alone drives the swap (60 hidden, 160 shown).
-            ' Slot-60 strip is FO4-ONLY (Pipboy coexist-by-design). In Skyrim slot 60 is a generic MOD slot
-            ' and the engine's worn-mask builder (0x140225CB0) strips NO bit — so pass the raw own-mask.
-            If isSse Then
-                groupSlots(gid) = own
-                ' Mecanismo (b) de HeadPartHideMask: BOD2 del ARMATURE, no la SlotMask (que trae además los
-                ' bits headwear del ARMO). La fase 2 de 0x140218200 agrupa por el puntero de ARMA guardado en
-                ' `entry+0x18`, y ese writer sólo recorre los bits del ARMA.
-                Dim armaOwn As UInteger = 0UI
-                If LastRenderData.ShapeArmaOwnSlots.TryGetValue(sh, armaOwn) AndAlso armaOwn <> 0UI Then
-                    sseWornOwnMasks.Add(armaOwn)
-                    ' Fase 1 de 0x140218200: registrar el dueño de cada slot que este worn item declara en su
-                    ' ARMA (skin NO posee: su ShapeArmaOwnSlots es 0 y no llega acá). Empate → mayor priority;
-                    ' a igualdad (>=) gana el de después en la iteración = engine tie=newer.
-                    Dim ownerKey As String = Nothing
-                    LastRenderData.MeshDictKeys.TryGetValue(sh, ownerKey)
-                    Dim ownerPrio As Integer = 0
-                    LastRenderData.ShapePriority.TryGetValue(sh, ownerPrio)
-                    For b As Integer = 0 To 31
-                        If (armaOwn And (1UI << b)) = 0UI Then Continue For
-                        If slotOwnerKey(b) Is Nothing OrElse ownerPrio >= slotOwnerPrio(b) Then
-                            slotOwnerKey(b) = ownerKey
-                            slotOwnerPrio(b) = ownerPrio
-                        End If
-                    Next
-                End If
-            Else
-                ' IDENTIDAD DE FORM, no heurística de slot. El motor reconoce el Pipboy comparando el form
-                ' contra sus default objects (PipboyCleanObject_DO @VA 0x1400F18B0, PipboyDustyObject_DO
-                ' @VA 0x1400F18F0) — resueltos en NpcRenderContext.PipboyDeviceArmoFormIDs desde los DFOB.
-                ' La regla vieja ("es Pipboy si su único slot es el 60") daba 3 falsos positivos vanilla
-                ' medidos: AssaultronShield (0022BC24), MirelurkShield (000986CA), babybundled (000F468E)
-                ' — sólo 4 de los 7 ARMO con slot-60-solo son Pipboys de verdad.
-                Dim isPipboyDevice As Boolean = False
-                LastRenderData.ShapeIsPipboyDevice.TryGetValue(sh, isPipboyDevice)
-                ' Y el slot que se strippea sale de RACE.DATA 'Pipboy Biped Object' — es dato POR
-                ' RAZA, no la constante 60. Si la raza no declara
-                ' ninguno (mask 0) no hay slot de Pipboy que strippear y la máscara pasa cruda.
-                Dim pipMask As UInteger = LastRenderData.PipboySlotMask
-                groupSlots(gid) = If(isPipboyDevice OrElse pipMask = 0UI, own, own And (Not pipMask))
+            ' ⛔ ACÁ ESTABA EL STRIP DEL BIT DEL PIPBOY, y se fue con su heurística. El armador de la
+            ' máscara worn del motor NO saca ningún bit: Fallout 4 0x14051F530 (0x14051F5A0 call [vt+0x238]
+            ' / 0x14051F5A6 or [rbp],eax, salteando los formType 0x22/0x2B/0x2C) y Skyrim 0x14022B5A0.
+            ' Strippear era inventar. El caso que el strip tapaba —el uniforme que declara el 60 de
+            ' incidente ocultándole el antebrazo-60 a otra pieza— lo resuelve ahora la ley estructural del
+            ' occluder (ver `occluderConDispositivo` más abajo), que es la del motor.
+            ' ⭐ Y la máscara es el BOD2 del ARMO, CRUDO. El motor lee exactamente eso: FO4
+            ' 0x14051F5A0 call [vt+0x238] = 0x140313B80, que hace 0x140313B89 call 0x1402FCB60
+            ' (AsBipedObjectForm) + 0x140313B93 mov eax,[rax+8]; SSE el functor 0x1402422F0 hace
+            ' 0x14024231D call 0x1401D21C0 + 0x140242327 mov ebx,[rax+8]. Los dos iteran el INVENTARIO
+            ' equipado, no el 3D.
+            ' ⛔ ACÁ ESTABA `own` = ShapeOwnSlots = ARMA ∪ (ARMO ∩ HEADWEAR_MASK), que es OTRA cantidad:
+            ' sumaba bits que sólo declara la ARMA y tiraba bits del ARMO fuera de la región headwear.
+            ' Medido: FO4 35 pares (ARMO, ARMA) con un bit de canal de cabeza SÓLO en la ARMA —los
+            ' Clothes_RaiderMod_Hood, Armor_Power_Raider_Helm, los Hazmat— y 13 ARMO con un bit de
+            ' cabeza que ninguna ARMA declara; SSE 132 y 210 (ArmorDragonPriestMask*: ARMA {30,31},
+            ' ARMO {30,42}). Con esto el collect y el render usan LA MISMA cantidad, y la única
+            ' diferencia que queda entre los dos sitios es el SET —ganadores del torneo contra ítems
+            ' efectivamente dibujados—, que es la decisión de producto de los toggles.
+            Dim armoOwn As UInteger = 0UI
+            LastRenderData.ShapeArmoOwnSlots.TryGetValue(sh, armoOwn)
+            groupSlots(gid) = armoOwn
+            ' El BOD2 del ARMATURE, no la SlotMask (que trae además los bits headwear del ARMO).
+            Dim armaOwn As UInteger = 0UI
+            If LastRenderData.ShapeArmaOwnSlots.TryGetValue(sh, armaOwn) AndAlso armaOwn <> 0UI Then
+                ' Mecanismo (b) de HeadPartHideMask, SSE-only: la fase 2 de 0x140218200 agrupa por el
+                ' puntero de ARMA guardado en `entry+0x18`, y ese writer sólo recorre los bits del ARMA.
+                If isSse Then sseWornOwnMasks.Add(armaOwn)
+                ' Registrar el dueño de cada slot que este worn item declara en su ARMA. Corre en los DOS
+                ' juegos: SSE 0x140218AE0 y FO4 0x1403597E0 escriben los dos el modelo por slot ganado.
+                ' La piel ya se adjuntó en el pase 0; los worn items van después y por eso ganan el empate.
+                Adjuntar(sh, armaOwn)
             End If
         Next
         Dim occupiedVisible As UInteger = 0UI
@@ -333,29 +401,72 @@ Friend Class NpcRenderHost
         ' NO es occupiedVisible ∩ HeadOcclusionMask sino el BOD2 COMPLETO del ítem que ocupa el slot de pelo
         ' (30+B). Se recomputa desde los grupos ACTUALMENTE renderizados (respeta los toggles) con la MISMA
         ' regla que SelectWinningCandidates → NpcMeshCollector.HeadPartHideMask (un único sitio con la regla).
-        ' Vacío en FO4 (esa rama sigue usando occupiedVisible ∩ HeadOcclusionMask, byte-idéntica).
-        Dim sseHeadMask As UInteger = If(isSse, NpcMeshCollector.HeadPartHideMask(LastRenderData.HeadHairSlotMask, occupiedVisible, sseWornOwnMasks), 0UI)
+        ' Vacío en FO4, pero ⛔ NO porque Fallout 4 carezca de fase 2 —la tiene, y es la misma ley— sino
+        ' porque su driver de head parts es OTRA cosa y va por canal (HeadPartChannelMask: aplica A, B y C
+        ' a tipos de head-part distintos), mientras que la fase 2 aplica UNA máscara a todo el subárbol.
+        ' La fase 2 de FO4 vive en el post-loop del resolver de CUERPO 0x14035E3B0: entra sólo si el slot de
+        ' attach es el canal B o C de la raza (0x14035E6EF / 0x14035E6F8), recorre los 32 slots
+        ' (0x14035E710 … 0x14035E7DE inc r12d / 0x14035E7E5 cmp r12d,0x20 / jl), agrupa por el ARMA guardado
+        ' en element+0x28 (0x14035E725, escrito por 0x140359B17) y por cada OTRO slot que ese mismo ARMA
+        ' ganó llama al walker 0x140360540 sobre el nodo de cara (Actor::vf+0x408 = 0x140C8D520), que oculta
+        ' —sólo HIDE, nunca SHOW— el sub-segmento tagueado 30+i.
+        ' ⛔ ESTA NOTA DECÍA QUE ERA INERTE Y ERA FALSO. Decía "el pelo trae {30,31}, así que lo único que
+        ' puede ocultar es el 31", suponiendo que el walker corre sobre la pieza de pelo. Corre sobre el
+        ' NODO DE CARA ENTERO (0x14035E762 call [vt+0x408] = 0x140C8D520, y 0x140360540 recorre el subárbol),
+        ' así que alcanza a ojos, boca, nuca, cara y barba. Medido sobre el corpus: 2135 mallas de head part
+        ' traen tag 32 —2043 son ojos de tipo 2—, 21 traen el 48 y 178/169 traen 30/31; y 33 ARMO vanilla
+        ' cuyo ARMA gana el canal de pelo declaran el slot 32 que su ARMO NO declara (22 el slot 50), que es
+        ' exactamente lo único que la fase 2 puede aportar por encima del worn mask.
+        ' ⇒ NO es inerte, y está cableada abajo (fase2FO4). La ley es: para el slot que ES el canal de
+        ' pelo (0x14035E6EF cmp [raza+0x1b4],r13d) o el de barba (0x14035E6F8 cmp [raza+0x1b8],r13d), se
+        ' toma el ARMA que ganó ese slot (0x14035E720 mov rax,[rcx+rdi+0x28]), se juntan los OTROS slots
+        ' que ESA MISMA ARMA ganó (0x14035E725 cmp [rbp],rax, loop de 32 en 0x14035E7DE/0x14035E7E5) y se
+        ' zapea el sub-segmento tagueado 30+i (0x1403605A0 lea r8d,[rbp+0x1e] → 0x1416C3860 → 0x1416C34B0).
+        ' ⛔ El destino es el NODO DE CARA ENTERO —0x14035E762 call [vt+0x408] = 0x140C8D520, que resuelve
+        ' "BSFaceGenNiNodeSkinned", y 0x140360540 recorre el subárbol por [vt+0x20]/[+0x128]— así que NO va
+        ' por tipo de head part: alcanza a ojos, boca, cara, nuca y barba igual que al pelo. Y son DOS
+        ' disparadores, no uno: B y C.
+        ' ⛔ Sólo HIDE: 0x1416C34B0 hace add byte [rec+0x10],1 y con 0xFF sigue al próximo segmento; no hay
+        ' fallback a SetAppCulled, así que la fase 2 nunca oculta un nodo entero.
 
         ' SSE oclusión per-partición por-dueño (fase 1 de 0x140218200): la máscara de slots CUBIERTOS de una
         ' malla = todos los slots cuyo dueño es un ítem con OTRO NIF. Una partición se oculta ⟺ su slot lo
         ' posee un ítem cuyo model path (DictKey) difiere del de esta malla. El engine compara con `_stricmp`
         ' (case-insensitive, import de api-ms-win-crt-string) el model del owner(slot) contra el model M de la
         ' malla. Self-exclude natural: los slots que la propia malla posee tienen su MISMO DictKey ⇒ no entran.
-        ' NOTA (deliberadamente NO implementado — traceado hasta el origen): el engine tiene un gate extra
-        ' que oculta la partición si su slot NO está en el BOD2 propio de la RACE (`race+0x60`, IsSlotOccupied
-        ' @0x140218305). Pero el bool que lo activa (attach 0x2166C0 @0x14021674A-0x140216770) NACE EN 0: sólo
-        ' se enciende si el objeto adjuntado es idéntico a uno de dos SINGLETONS GLOBALES (`cmp rbx,[rip+..]` +
-        ' predicado de identidad 0x140736130). Para la piel/ropa/cabeza de un NPC normal rbx nunca es esos
-        ' singletons ⇒ bool=0 ⇒ el gate NUNCA corre. Replicarlo sería una rama muerta en nuestros casos.
+        ' NOTA (deliberadamente NO implementado): la fase 1 tiene un gate extra que oculta la partición si su
+        ' slot NO está en el BOD2 propio de la RACE (`race+0x60`, IsSlotOccupied 0x1401D2170, llamado desde
+        ' 0x14021DBE5 detrás de un bool que llega como 6º argumento del attach).
+        ' ⛔ LA RAZÓN DE NO IMPLEMENTARLO NO ES EL ORIGEN DEL BOOL — la versión anterior de esta nota lo
+        ' justificaba con un predicado de identidad contra dos singletons, y eso se trazó sobre SkyrimSE
+        ' 1.6.1170, un build que ya no está instalado: hoy no se puede re-verificar. La razón que SÍ se puede
+        ' volver a medir en cualquier build es el CORPUS: las 99 RACE de Skyrim.esm traen BOD2 (ninguna trae
+        ' BODT) y `NordRace` declara 0x8000025C = slots {32,33,34,36,39,61}, mientras que `femalehead.nif`
+        ' tiene particiones {30,43}. Si el gate corriera, la cabeza entera desaparecería en todo NPC humano.
+        ' En FO4 es igual: `HumanRace` declara 0xE0203038 = {33,34,35,42,43,51,59,60,61}, sin 30/47/48, así
+        ' que el casco synth, la gas mask y la bandana nunca se dibujarían. ⇒ no corre, y no implementarlo
+        ' es lo fiel.
+        Dim tablaDeSlots = NpcMeshCollector.TablaDeDuenosPorSlot(adjuntos, Config_App.Current.Game)
         Dim CoveredForShape As Func(Of String, UInteger) =
-            Function(shapeKey As String)
-                Dim m As UInteger = 0UI
-                For b As Integer = 0 To 31
-                    Dim ok As String = slotOwnerKey(b)
-                    If ok IsNot Nothing AndAlso Not String.Equals(ok, shapeKey, StringComparison.OrdinalIgnoreCase) Then m = m Or (1UI << b)
-                Next
-                Return m
-            End Function
+            Function(shapeKey As String) NpcMeshCollector.SlotsCubiertosPorOtroModelo(tablaDeSlots, shapeKey)
+        ' Estado del slot occluder para ESTE actor: uno solo, derivado de la tabla de dueños y del BOD2 del
+        ' ARMO de cada adjunto. Ver NpcMeshCollector.OccluderConDispositivo — reemplaza la identidad por
+        ' default object (ShapeIsPipboyDevice) Y el strip del bit, que no son la ley del motor.
+        Dim occluderConDispositivo As Boolean =
+            NpcMeshCollector.OccluderConDispositivo(tablaDeSlots, LastRenderData.PipboySlotMask)
+
+        ' Fase 2 del attach. VA ACÁ y no antes porque necesita la TABLA DE DUEÑOS: el motor pregunta por
+        ' el ARMA que GANÓ el slot de pelo y por los otros slots que ESA ganó (0x14021DD4D/0x14021DD52),
+        ' no por los BOD2 declarados de las ARMA que lo intersectan. El canal de pelo de SSE es un solo
+        ' bit, así que HeadHairSlotMask sirve tal cual (allá RaceHairSecondBit devuelve 0).
+        Dim sseHeadMask As UInteger = If(isSse,
+            NpcMeshCollector.HeadPartHideMask(LastRenderData.HeadHairSlotMask, occupiedVisible, tablaDeSlots), 0UI)
+
+        Dim fase2FO4 As UInteger = 0UI
+        If Not isSse Then
+            fase2FO4 = NpcMeshCollector.SlotsDeFase2(tablaDeSlots, LastRenderData.HeadHairFirstBit) Or
+                       NpcMeshCollector.SlotsDeFase2(tablaDeSlots, LastRenderData.HeadFacialHairMask)
+        End If
 
         ' [OCCL-DEBUG] gated by Logger.Enabled (zero cost when off; app-only diagnostic, B.1-compliant).
         ' Dumps the per-actor occlusion inputs so a visual occlusion bug can be read from the log:
@@ -372,7 +483,7 @@ Friend Class NpcRenderHost
             Dim ownSb As New System.Text.StringBuilder()
             If isSse Then
                 For b As Integer = 0 To 31
-                    If slotOwnerKey(b) IsNot Nothing Then ownSb.Append($"{30 + b}→{System.IO.Path.GetFileName(slotOwnerKey(b))} ")
+                    If tablaDeSlots.Dueno(b) IsNot Nothing Then ownSb.Append($"{30 + b}→{System.IO.Path.GetFileName(tablaDeSlots.Dueno(b))} ")
                 Next
             End If
             Dim ownDbg = ownSb.ToString().TrimEnd()
@@ -381,9 +492,8 @@ Friend Class NpcRenderHost
 
         Dim hidden As Integer = 0
         Dim shown As Integer = 0
-        For Each mesh In PreviewCtl.Model.meshes
-            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
-            Dim shape = mesh.MeshData.Shape
+        For Each shape In LastRenderData.Shapes
+            If shape Is Nothing Then Continue For
             Dim cat As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
             LastRenderData.ShapeCategory.TryGetValue(shape, cat)
             ' Push the per-segment occlusion mask the render index filter (EnsureZapIndexBuffer) consumes.
@@ -392,45 +502,65 @@ Friend Class NpcRenderHost
             '     (30+B), recomputado por render desde los grupos renderizados (sseHeadMask =
             '     NpcMeshCollector.HeadPartHideMask). NO occupiedVisible ∩ HeadOcclusionMask (eso daba sólo el
             '     bit del slot de pelo, dejando visibles las demás particiones del casco).
-            '   • FO4 (byte-idéntico): la rebanada head-region del worn set renderizado, occupiedVisible ∩
-            '     LastRenderData.HeadOcclusionMask (RaceUtil.RaceHeadOcclusionMask, per-NPC RACE-driven).
-            ' Worn items: OR of the OTHER rendered groups' slots (own group excluded ⇒ shared-slot safe — the
-            ' Pipboy's slot 60 still hides a Pipboy-aware outfit's biped-60 forearm). Everything else: none.
-            shape.OwnSlotsMask = 0UI   ' default; set to the item's BOD2 only on the FO4 worn branch below
+            '   • FO4: la rebanada del worn set renderizado que corresponde AL CANAL DE ESTE HEAD-PART
+            '     (NpcMeshCollector.HeadPartChannelMask), no la unión plana de A|B|B+1|C. El driver
+            '     0x140506460 recorre los canales por separado y se los aplica a TIPOS distintos: B/B+1 al
+            '     head-part tipo 3 y C al tipo 4. Un tipo sin canal (ojos, cejas, nuca) recibe 0 — a esos
+            '     sólo los alcanza la cascada del face-cull A, que es whole-node y la resuelve
+            '     SelectWinningCandidates, no esta máscara per-segmento.
+            ' Worn items y piel: la máscara de slots que NO ocupa el propio modelo, de la tabla de dueños
+            ' (CoveredForShape). ⛔ Ya NO es "el OR de los otros grupos": esa rama era identidad de GRUPO y
+            ' no sabía de slots vacíos. El slot 60 compartido lo resuelve ahora `occluderConDispositivo`.
+            ' Estado del slot occluder: uno solo por actor, así que va igual en toda shape. Los head parts
+            ' no tienen rama occluder (OccluderSlotMask = 0 abajo), así que ahí el valor no se lee.
+            shape.OccluderConDispositivo = occluderConDispositivo
+            ' Camino del motor de ESTA shape (fija el default de una partición fuera de banda) y slot
+            ' occluder de la raza. Head parts: camino de head-part y SIN occluder — el driver de head-parts
+            ' (0x140506460 / 0x1403C2940) no tiene rama de swap N+100 ni de occluder-order.
+            shape.OcclusionAsWornItem = (cat <> MainForm.ShapeRenderCategory.HeadPart)
+            shape.OccluderSlotMask = If(cat = MainForm.ShapeRenderCategory.HeadPart, 0UI, LastRenderData.PipboySlotMask)
             If cat = MainForm.ShapeRenderCategory.HeadPart Then
                 If isSse Then
+                    ' SSE fase 2: NO es por tipo. El walker 0x14021DF20 recorre TODO el subárbol de la
+                    ' cabeza aplicando la misma máscara, así que acá va la del ítem del slot de pelo.
                     shape.CoveredSlotsMask = If(renderHeadwear, sseHeadMask, 0UI)
                 Else
-                    shape.CoveredSlotsMask = If(renderHeadwear, occupiedVisible And LastRenderData.HeadOcclusionMask, 0UI)
+                    Dim hpType As Integer = -1
+                    LastRenderData.ShapeHeadPartType.TryGetValue(shape, hpType)
+                    Dim canal As UInteger = NpcMeshCollector.HeadPartChannelMask(
+                        hpType, LastRenderData.HeadHairSlotMask, LastRenderData.HeadFacialHairMask)
+                    ' (worn ∩ canal DEL TIPO) ∪ fase 2. El primer término es por tipo porque el driver
+                    ' recorre los canales por separado y se los aplica a tipos distintos (B/B+1 al tipo 3
+                    ' en 0x1405066B5, C al tipo 4); el segundo NO, porque el walker de la fase 2 corre
+                    ' sobre el nodo de cara entero y no mira el tipo de nada.
+                    shape.CoveredSlotsMask = If(renderHeadwear, (occupiedVisible And canal) Or fase2FO4, 0UI)
                 End If
-            ElseIf isSse Then
-                ' SSE oclusión per-partición por-dueño (fase 1 de 0x140218200). TODA malla no-headpart (skin
-                ' desnudo Y outfits) recibe la máscara de slots cuyo dueño es un ítem con OTRO NIF. Cada
-                ' partición BSDismember se oculta ⟺ su slot plegado (130..161→30.., 230..261→130..) lo posee
-                ' un model distinto. Regla neta del engine: una partición se oculta ⟺ owner(slot).model ≠ M
-                ' (comparado con `_stricmp`; owner(slot) = el ARMA guardado en `entry+0x18`). Self-exclude
-                ' natural — los slots que la propia malla posee mapean a su MISMO DictKey ⇒ CoveredForShape los
-                ' excluye. Reemplaza el par de ramas viejo (skin=occupiedVisible, outfit=0): el skin ya no se
-                ' sobre-ocultaba por un slot BOD2 incidental (p.ej. calves 38 compartido con botas) y los
-                ' outfits ahora SÍ ocultan las particiones que otro ítem les cubre.
-                Dim shapeKey As String = Nothing
-                LastRenderData.MeshDictKeys.TryGetValue(shape, shapeKey)
-                shape.CoveredSlotsMask = CoveredForShape(shapeKey)
             Else
-                Dim ownSlots As UInteger = 0UI
-                If LastRenderData.ShapeOwnSlots.TryGetValue(shape, ownSlots) AndAlso ownSlots <> 0UI Then
-                    Dim gid As Integer = 0
-                    LastRenderData.ShapeSlotGroup.TryGetValue(shape, gid)
-                    Dim others As UInteger = 0UI
-                    For Each kv In groupSlots
-                        If kv.Key <> gid Then others = others Or kv.Value
-                    Next
-                    shape.CoveredSlotsMask = others
-                    ' Own BOD2 footprint of this worn item, so ComputeHiddenTriangles can tell a SELF-tagged
-                    ' segment (slot the item occupies) from a FOREIGN one (engine coverage-key companion).
-                    shape.OwnSlotsMask = ownSlots
-                Else
+                ' Oclusión per-slot por DUEÑO, en LOS DOS JUEGOS. Toda malla no-headpart (piel desnuda Y
+                ' outfits) recibe la máscara de slots que NO ocupa su propio modelo. La ley es la misma en
+                ' los dos motores: visible ⟺ el slot lo ocupa un ítem con MI mismo model path
+                ' (FO4 0x14035E595 _stricmp + 0x14035E5A6 cmove edi,eax; SSE 0x1417C91E8 + 0x14021DC50), y
+                ' se oculta tanto si lo ocupa otro como si NO LO OCUPA NADIE (FO4 0x14035E563 cmp
+                ' [rcx+r8+0x30],r12 + je; SSE 0x14021DC09). El self-exclude sale gratis: los slots que la
+                ' propia malla ganó tienen su MISMO DictKey.
+                ' ⛔ ACÁ ESTABA la rama de FO4 con `others` (unión de los OTROS grupos de groupSlots). Era
+                ' identidad de GRUPO en vez de identidad de MODEL PATH, y además no sabía de slots vacíos —
+                ' o sea la segunda causa de HIDE del motor no existía. Con esto hay UNA sola sede
+                ' (TablaDeDuenosPorSlot + SlotsCubiertosPorOtroModelo) para los dos juegos.
+                ' ⛔ Los ATTACHMENTS no entran acá. Montan por SOCKET, no por biped slot: no están en la
+                ' tabla de bipeds, y el resolver per-slot del motor recorre LA TABLA (FO4 0x14035E3B0 /
+                ' SSE 0x14021DAE0), no el árbol 3D. Sin este corte, `CoveredForShape` les devuelve
+                ' 0xFFFFFFFF —no son dueños de nada— y con "huérfano = CUBIERTO" se les zapea cada
+                ' segmento tagueado. Medido con el barrido: `Percy` (HandyRace) perdía
+                ' `LegsHandyThruster1AR1A` entero (396/396), `HandyRearArmor` 300/452 y `TorsoHandy` 334/4698.
+                Dim kindSh As MainForm.MeshCandidateKind = MainForm.MeshCandidateKind.Outfit
+                LastRenderData.ShapeKind.TryGetValue(shape, kindSh)
+                If Not NpcMeshCollector.EsAdjuntoDeBiped(kindSh) Then
                     shape.CoveredSlotsMask = 0UI
+                Else
+                    Dim shapeKey As String = Nothing
+                    LastRenderData.MeshDictKeys.TryGetValue(shape, shapeKey)
+                    shape.CoveredSlotsMask = CoveredForShape(shapeKey)
                 End If
             End If
             Dim covered As Boolean = False
@@ -487,7 +617,7 @@ Friend Class NpcRenderHost
                 If siDbg IsNot Nothing Then
                     ' FO4: segmented BSSubIndexTriShape.
                     bipedDbg = String.Join(",", BSTriShapeGeometry.GetBipedObjects(siDbg))
-                    Dim occlDbg = BSTriShapeGeometry.ComputeHiddenTriangles(siDbg, cmDbg)
+                    Dim occlDbg = BSTriShapeGeometry.ComputeHiddenTriangles(siDbg, cmDbg, shape.OccluderSlotMask, shape.OccluderConDispositivo)
                     totDbg = occlDbg.Length
                     For Each h In occlDbg
                         If h Then hidDbg += 1
@@ -499,7 +629,7 @@ Friend Class NpcRenderHost
                     Dim bps = shape.NifContent.GetTriangleBodyParts(shape.NifShape)
                     If bps IsNot Nothing AndAlso bps.Count > 0 Then
                         bipedDbg = String.Join(",", bps.Where(Function(v) v >= 0).Distinct().OrderBy(Function(v) v))
-                        Dim occlDbg = shape.NifContent.ComputeHiddenTrianglesDismember(shape.NifShape, cmDbg)
+                        Dim occlDbg = shape.NifContent.ComputeHiddenTrianglesDismember(shape.NifShape, cmDbg, shape.OcclusionAsWornItem)
                         If occlDbg IsNot Nothing Then
                             totDbg = occlDbg.Length
                             For Each h In occlDbg
@@ -517,7 +647,11 @@ Friend Class NpcRenderHost
         ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
         ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de
         ' RenderHide en shapes existentes que el shader respeta en cada frame.
-        PreviewCtl.RefreshRender()
+        ' ⛔ El ÚNICO uso del control que queda, y es un EFECTO, no la ley: pedir el redibujado. Va
+        ' condicionado porque el guard de arriba ya no exige control —el método calcula máscaras sobre
+        ' `LastRenderData` y eso no necesita nada del render—. Sin este `IsNot Nothing` quedaba un
+        ' NullReferenceException latente para todo llamador sin PreviewCtl.
+        If PreviewCtl IsNot Nothing Then PreviewCtl.RefreshRender()
     End Sub
 
     ''' <summary>Pristine *decoded* pixel layout used by <see cref="NpcRenderHost.PristineDiffusePixels"/>.
