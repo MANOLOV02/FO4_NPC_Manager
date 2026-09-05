@@ -87,16 +87,14 @@ Public Class ArmoAddonEditor_Form
         Dim isFemale As Boolean
         _mainForm.GetEditorPreviewContext(previewNpc, isFemale)
 
-        Dim armaDraft = _mainForm.TryGetArmaDraft(_armaFormID)
-        Dim dlg As ArmaEditor_Form
-        If armaDraft IsNot Nothing Then
-            dlg = New ArmaEditor_Form(_mainForm, previewNpc, _raceFormID, isFemale, editDraft:=armaDraft,
-                                      parentArmoFormID:=_parentArmoFormID, outfitContextFormID:=_outfitContextFormID)
-        Else
-            dlg = New ArmaEditor_Form(_mainForm, previewNpc, _raceFormID, isFemale,
-                                      initialTemplateArmaFormID:=_armaFormID,
-                                      parentArmoFormID:=_parentArmoFormID, outfitContextFormID:=_outfitContextFormID)
-        End If
+        ' ⛔ UNA sola construcción, y la decisión «borrador o disco» ya NO se toma acá: la toma
+        ' `Borradores.QueHacerAlAbrir` adentro de `ArmaEditor_Form.LoadRealArmaTemplate`, que es donde
+        ' vive la ley. Mientras estuvo escrita en los dos lados, sólo ESTE lado la tenía: abrir el editor
+        ' de ARMA por cualquier otra puerta leía del disco y perdía el borrador. Con la ley en un solo
+        ' lugar, el que la cambie la cambia para todos.
+        Dim dlg As New ArmaEditor_Form(_mainForm, previewNpc, _raceFormID, isFemale,
+                                       initialTemplateArmaFormID:=_armaFormID,
+                                       parentArmoFormID:=_parentArmoFormID, outfitContextFormID:=_outfitContextFormID)
 
         Dim armaCommitted As Boolean = False
         Using dlg

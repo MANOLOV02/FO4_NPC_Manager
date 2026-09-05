@@ -143,6 +143,115 @@ Public Module Borradores
         v.Context.EsVistaEfectiva = False
     End Sub
 
+    '==============================================================================================
+    ' ABRIR, ENSUCIAR y ABANDONAR: las tres leyes que un editor de borrador aplica sobre el REGISTRO.
+    '
+    ' ⛔ Viven acá, sin UI y sin `MainForm`, por lo mismo que `ExigirPluginsNormalizados`: estaban
+    ' escritas adentro de tres formularios de WinForms —ARMO, ARMA y MSWP—, o sea que ningún testigo
+    ' podía recorrerlas. Un `Form` no se instancia desde una consola, así que una ley que vive ahí
+    ' adentro NO SE PUEDE MEDIR: es exactamente la forma en que un gate pasa en vacío.
+    '==============================================================================================
+
+    ''' <summary>Qué edita el editor cuando le piden abrir un FormID.</summary>
+    Public Enum AccionAlAbrir
+        ''' <summary>No hay borrador: se construye desde el record REAL.</summary>
+        IrAlDisco = 0
+        ''' <summary>Hay borrador y piden OVERRIDE: ese borrador ES el objetivo.</summary>
+        Adoptar = 1
+        ''' <summary>Hay borrador y piden COPIA: el clon sale del borrador, no del disco.</summary>
+        ClonarDeBorrador = 2
+    End Enum
+
+    ''' <summary>PARA UN FORMID, EL BORRADOR MANDA SOBRE EL DISCO.
+    ''' <para>⛔ Ésta es la ley que faltaba, y su ausencia era el defecto: los editores de ARMO y ARMA
+    ''' abrían por <c>PluginManager.GetRecord</c>, que devuelve SÓLO lo que se cargó de archivo. Un
+    ''' borrador registrado bajo ese mismo FormID no está ahí y no va a estar nunca antes del guardado,
+    ''' así que reabrir una armadura ya editada la rearmaba desde el record vanilla y el trabajo del
+    ''' usuario desaparecía sin un aviso. Y un ARMO NUEVO ni siquiera tiene record que leer: el editor
+    ''' abría EN BLANCO, mudo.</para>
+    ''' <para>El hecho es UNO —«hay borrador bajo este FormID»— y la entrada es UNA —«¿me lo piden como
+    ''' override o como copia?»—, así que la decisión es UNA. Partirla en «¿hay borrador?» más dos
+    ''' interpretaciones en los llamadores devolvía la ley a los formularios, que es de donde vino.</para>
+    ''' <para>Un CLON pide identidad nueva, así que nunca adopta; pero sí COPIA del borrador, porque lo
+    ''' que el usuario quiere duplicar es lo que está viendo. Decisión del usuario, no derivada.</para></summary>
+    ''' <param name="borrador">Sale con el borrador encontrado, o Nothing cuando hay que ir al disco.</param>
+    Public Function QueHacerAlAbrir(Of TD As Class)(fid As UInteger, asOverride As Boolean,
+                                                    buscar As Func(Of UInteger, TD),
+                                                    ByRef borrador As TD) As AccionAlAbrir
+        ' ⛔ TIRA, no vuelve callado — la misma regla que `ReidentificarComoClon`. Sin buscador esta
+        ' función devolvería `IrAlDisco` siempre, o sea que apagaría la ley EN SILENCIO y el editor
+        ' volvería a leer del disco un FormID que tiene borrador: el defecto entero, otra vez, por la
+        ' puerta de al lado. Un buscador en Nothing es error de LLAMADOR, no un dato posible.
+        If buscar Is Nothing Then
+            Throw New ArgumentNullException(NameOf(buscar),
+                "Sin buscador de borradores no hay adopción ni clon: el editor leería del disco un " &
+                "FormID que tiene borrador, que es exactamente el defecto que esta ley cierra.")
+        End If
+        borrador = buscar(fid)
+        If borrador Is Nothing Then Return AccionAlAbrir.IrAlDisco
+        Return If(asOverride, AccionAlAbrir.Adoptar, AccionAlAbrir.ClonarDeBorrador)
+    End Function
+
+    ''' <summary>¿El borrador quedó SUCIO después de volcarle los paneles? La pregunta se le hace a la
+    ''' LÍNEA DE BASE PRISTINA —el record tal como está en el archivo—, no al estado con el que se abrió
+    ''' el editor.
+    ''' <para>⛔ Preguntarle al estado de apertura contesta «¿cambió algo desde que abrí?», que NO es lo
+    ''' que decide si hay que emitir un override. Sobre un borrador ADOPTADO —uno que ya venía editado de
+    ''' una sesión anterior— la respuesta era «no cambió nada», así que aceptarlo sin retocar lo dejaba
+    ''' LIMPIO: <c>IsDirty</c> en False, el saver lo salteaba
+    ''' (<c>NpcOverrideSaver</c>: <c>If d.IsOverride AndAlso Not d.IsDirty Then Continue For</c>) y la
+    ''' edición del usuario no llegaba al .esp. El render, que lee la foto y no mira <c>IsDirty</c>, la
+    ''' seguía dibujando: el editor mostraba una cosa y el archivo guardaba otra.</para>
+    ''' <para>Contra la base, la propiedad que declara <c>ArmoDraft</c> —«lo detecta en las DOS
+    ''' direcciones, así que deshacer una edición vuelve a dejar el borrador limpio»— pasa a valer también
+    ''' ENTRE sesiones, que es donde antes no valía.</para>
+    ''' <para>Sin base (un record que no resuelve, o una copia que falló) ⇒ SUCIO. Es la dirección segura
+    ''' y es la que ya elegía el código: un override de más es ruido; un cambio perdido es daño.</para></summary>
+    Public Function SucioContraLaBase(hayBase As Boolean, igualALaBase As Boolean) As Boolean
+        Return Not hayBase OrElse Not igualALaBase
+    End Function
+
+    ''' <summary>Qué hacer con el REGISTRO cuando un editor se abandona sin aceptar.</summary>
+    Public Enum AccionAlAbandonar
+        ''' <summary>El registro bajo ese FormID lo puso ESTE editor ⇒ se da de baja.</summary>
+        DarDeBaja = 0
+        ''' <summary>Había otra cosa registrada (o hay snapshot de apertura) ⇒ se repone.</summary>
+        Restaurar = 1
+        ''' <summary>Adoptamos el objeto registrado y no hay snapshot ⇒ se deja como está.</summary>
+        NoTocar = 2
+    End Enum
+
+    ''' <summary>LA LEY DE LA REVERSIÓN, y la pregunta correcta es «¿el registro que hay bajo este FormID
+    ''' lo puse YO?», no «¿me pasaron el borrador por constructor?».
+    ''' <para>⛔ La versión anterior preguntaba lo segundo, y por eso un OVERRIDE abierto por plantilla
+    ''' —que llega con esa bandera en False y cuyo FormID ES el del record real— daba de BAJA por FormID
+    ''' el borrador que el usuario había construido en una sesión anterior del mismo editor. Dar de baja
+    ''' un registro ajeno es pérdida de trabajo, y encima silenciosa: la ventana se cierra normal.</para>
+    ''' <para>Los tres casos, y son los únicos que hay:</para>
+    ''' <list type="number">
+    ''' <item><b>No había nada</b> cuando tomamos el FormID ⇒ el registro es nuestro ⇒ BAJA.</item>
+    ''' <item><b>Había OTRO objeto</b> ⇒ nunca lo mutamos (mutamos el nuestro) ⇒ se REPONE tal cual. No se
+    '''       clona: clonar sería una segunda ley, y una copia que además puede fallar.</item>
+    ''' <item><b>Había EL MISMO objeto</b> (lo adoptamos) ⇒ sí lo mutamos ⇒ se repone el SNAPSHOT de
+    '''       apertura; y si el snapshot no existe (su <c>Clone()</c> tiró) NO SE TOCA, porque el otro
+    '''       error —darlo de baja— destruye trabajo y éste sólo deja una edición sin revertir.</item>
+    ''' </list></summary>
+    ''' <param name="registroPrevio">Lo que había registrado bajo el FormID EN EL MOMENTO en que el editor
+    ''' lo tomó. Capturado ahí y NO releído al cerrar: al cerrar, el registro ya es el nuestro.</param>
+    Public Function QueHacerAlAbandonar(Of TD As Class)(registroPrevio As TD, actual As TD,
+                                                        snapshotDeApertura As TD,
+                                                        ByRef aRestaurar As TD) As AccionAlAbandonar
+        aRestaurar = Nothing
+        If registroPrevio Is Nothing Then Return AccionAlAbandonar.DarDeBaja
+        If Not ReferenceEquals(registroPrevio, actual) Then
+            aRestaurar = registroPrevio
+            Return AccionAlAbandonar.Restaurar
+        End If
+        If snapshotDeApertura Is Nothing Then Return AccionAlAbandonar.NoTocar
+        aRestaurar = snapshotDeApertura
+        Return AccionAlAbandonar.Restaurar
+    End Function
+
     ''' <summary>Reescribe en UN record toda referencia que apunte a un borrador promovido. Devuelve si
     ''' escribió algo — que es lo que decide si hay que re-publicar su foto.</summary>
     Private Function RemapearUno(record As Object,

@@ -108,10 +108,10 @@ Public Class ArmaEditor_Form
     ''' <summary>Snapshot of the draft taken at open (after load/create + panel populate). On Cancel, editing an
     ''' EXISTING/override draft re-registers this snapshot to revert the live-commit mutations. See <see cref="OnCancel"/>.</summary>
     Private _openSnapshot As ArmaDraft
-    ''' <summary>True when the draft was created fresh in THIS editor (not passed in as editDraft, not an override
-    ''' of an existing registered record) — i.e. <see cref="ArmaDraft.IsNew"/> at open. On Cancel a brand-new draft
-    ''' is UNregistered (discarded); an existing/override draft is reverted from <see cref="_openSnapshot"/>.</summary>
-    Private _draftWasNew As Boolean
+    ''' <summary>La TOMA de este editor sobre el registro. Gemela de la de <c>ArmoEditor_Form</c>; el porqué
+    ''' —y por qué reemplaza al par (<c>_editingExistingDraft</c>, <c>_draftWasNew</c>)— está allá y en
+    ''' <see cref="TomaDeBorrador(Of TD)"/>.</summary>
+    Private _toma As TomaDeBorrador(Of ArmaDraft)
 
     ''' <summary>Throwaway ARMO wrapper FormID for previewing a STANDALONE ARMA draft — a draft sentinel just
     ''' below the OTFT preview sentinel (<see cref="OutfitDraft.PreviewDraftFormID"/>) so the resolver picks
@@ -147,6 +147,13 @@ Public Class ArmaEditor_Form
         _parentArmoFormID = parentArmoFormID
         _outfitContextFormID = outfitContextFormID
 
+        ' ⛔ Acá y no como inicializador de campo: un inicializador corre ANTES del cuerpo del
+        ' constructor, con `_mainForm` todavía en Nothing, y los cinco delegados tiran.
+        _toma = New TomaDeBorrador(Of ArmaDraft)(
+            AddressOf _mainForm.TryGetArmaDraft, AddressOf _mainForm.RegisterArmaDraft,
+            AddressOf _mainForm.UnregisterArmaDraft, Function(d) d.FormID,
+            Function(f) OverridePristino(f, _mainForm.PluginManagerForEditor))
+
         BuildSlotCheckBoxes()
         SeedSculptBoneCombo()
         ConfigureForGame()
@@ -167,6 +174,8 @@ Public Class ArmaEditor_Form
         AddHandler ButtonBrowseMod5.Click, Sub() BrowseMeshInto(TextBoxMod5)
 
         ' Skin & Material tab FormID pickers.
+        ' Slots tab: proponer los biped slots que DECLARAN los dos modelos (MOD2 male + MOD3 female).
+        AddHandler ButtonSlotsFromModel.Click, AddressOf OnSlotsFromModel
         AddHandler ButtonPickRace.Click, AddressOf OnPickRace
         ' RNAM edited (picker or typed) ⇒ the race match can flip ⇒ re-gate the preview scopes. The Additional
         ' Races list re-gates from RefreshAddRacesList.
@@ -205,6 +214,7 @@ Public Class ArmaEditor_Form
         AddHandler TextBoxMo3s.TextChanged, AddressOf OnFieldEdited
 
         ' Seed the draft: edit the passed one, else a fresh empty draft (NEW) seeded with the preview race.
+        Dim tomado As Boolean = False
         If editDraft IsNot Nothing Then
             _draft = editDraft
             _editingExistingDraft = True   ' continuing to edit one of the user's registered drafts
@@ -218,16 +228,28 @@ Public Class ArmaEditor_Form
             ' Optional pre-load of a real ARMA template — defaults to OVERRIDE (edit the existing ARMA; your
             ' plugin replaces it), the usual intent when editing an existing addon. Use the in-editor
             ' "New from template…" action for a copy-as-new instead.
-            If initialTemplateArmaFormID <> 0UI Then LoadRealArmaTemplate(initialTemplateArmaFormID, asOverride:=templateAsOverride)
+            If initialTemplateArmaFormID <> 0UI Then
+                tomado = LoadRealArmaTemplate(initialTemplateArmaFormID, asOverride:=templateAsOverride)
+                If Not tomado Then
+                    ' ⛔ AVISA SIEMPRE (gemelo del de ARMO). Por acá pasa AHORA todo «Edit ARMA…» del modal
+                    ' de addons, así que una ARMA que no resuelve —un borrador ya borrado, un record que no
+                    ' parsea— abría un editor EN BLANCO y mudo, y un OK recableaba la fila del addon a una
+                    ' ARMA vacía recién creada.
+                    MessageBox.Show(Me,
+                        $"Could not open that armor addon [0x{initialTemplateArmaFormID:X8}]: it is not a record " &
+                        "in the load order and has no draft in memory. The editor opened on a new, empty ARMA instead.",
+                        "Cannot open this armor addon", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                End If
+            End If
         End If
         UpdateStatusBanner()
 
         ' Preview hint + which scopes are offered both follow the race match — set together, from one place.
         UpdatePreviewScopeGating()
 
-        ' Snapshot the draft AS OPENED (pre-edit state) so a not-OK'd close can revert the live-commit mutations
-        ' that the debounced preview writes back into the registered draft. Remember whether it's brand-new.
-        SnapshotCurrentDraft()
+        ' Snapshot del borrador TAL COMO SE ABRIO. ⛔ UNA SOLA TOMA: si la plantilla cargo,
+        ' `LoadRealArmaTemplate` ya la hizo. Ver el gemelo de ARMO.
+        If Not tomado Then SnapshotCurrentDraft()
     End Sub
 
     ' =====================================================================
@@ -308,6 +330,13 @@ Public Class ArmaEditor_Form
     ''' IsOverride=False), seeded with the preview race. A brand-new record built from scratch.</summary>
     Private Sub OnActionNewBlank(sender As Object, e As EventArgs)
         RevertOrDiscardCurrentDraft()
+        EmpezarBorradorEnBlanco()
+    End Sub
+
+    ''' <summary>Arrancar un borrador NUEVO en blanco como objetivo, SIN abandonar nada: el abandono lo
+    ''' decide el llamador. Gemelo del de ARMO; el porqué —el guardado TIRA si el editor queda sobre un
+    ''' override de un FormID que ya no resuelve— está allá.</summary>
+    Private Sub EmpezarBorradorEnBlanco()
         _draft = ArmaDraft.Nuevo(_mainForm.AllocateDraftFormID(), Canon.CanonBridge.SessionGame())
         _draft.Record.EditorID = ArmaDraft.EditorIdPrefix & "new"
         _draft.Record.Race = _raceFormID
@@ -325,7 +354,6 @@ Public Class ArmaEditor_Form
     Private Sub OnActionNewFromTemplate(sender As Object, e As EventArgs)
         Dim fid = PickRealArma("Copy ARMA into a NEW record")
         If fid = 0UI Then Return
-        RevertOrDiscardCurrentDraft()
         If Not LoadRealArmaTemplate(fid, asOverride:=False) Then
             MessageBox.Show(Me, "Could not parse that ARMA record.", "New from template",
                             MessageBoxButtons.OK, MessageBoxIcon.Error)
@@ -337,7 +365,6 @@ Public Class ArmaEditor_Form
     Private Sub OnActionOverrideExisting(sender As Object, e As EventArgs)
         Dim fid = PickRealArma("Override an existing ARMA")
         If fid = 0UI Then Return
-        RevertOrDiscardCurrentDraft()
         If Not LoadRealArmaTemplate(fid, asOverride:=True) Then
             MessageBox.Show(Me, "Could not parse that ARMA record.", "Override existing",
                             MessageBoxButtons.OK, MessageBoxIcon.Error)
@@ -369,19 +396,9 @@ Public Class ArmaEditor_Form
                                            onDeleteEntry:=AddressOf OnDeleteDraftEntry)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             Dim fid = dlg.SelectedFormID
-            ' Clean up the draft we're leaving BEFORE switching to the picked one.
-            RevertOrDiscardCurrentDraft()
-            Dim existingDraft = _mainForm.TryGetArmaDraft(fid)
-            If existingDraft IsNot Nothing Then
-                _draft = existingDraft
-                _templateRealFormID = 0UI
-                _templateRealEditorID = ""
-                _editingExistingDraft = True
-                LoadDraftIntoPanels()
-                SnapshotCurrentDraft()
-                UpdateStatusBanner()
-                RequestPreview()
-            ElseIf Not LoadRealArmaTemplate(fid, asOverride:=True) Then   ' a saved authored ARMA → re-open as OVERRIDE
+            ' ⛔ La decisión «hay borrador ⇒ adoptarlo» NO se toma acá: la toma
+            ' `Borradores.QueHacerAlAbrir` adentro de `LoadRealArmaTemplate`. Ver el gemelo de ARMO.
+            If Not LoadRealArmaTemplate(fid, asOverride:=True) Then
                 MessageBox.Show(Me, "Could not parse that ARMA record.", "Edit mine",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
             End If
@@ -392,6 +409,30 @@ Public Class ArmaEditor_Form
     ''' (<c>Not IsNew</c>) revert to the original record; new drafts are deleted only when nothing references
     ''' them. Guards the draft that's currently open. Returns True when the draft was removed (picker drops the row).</summary>
     Private Function OnDeleteDraftEntry(entry As FormIdPickerEntry) As Boolean
+        Dim eraElObjetivo = (_draft IsNot Nothing AndAlso entry IsNot Nothing AndAlso entry.FormID = _draft.FormID)
+        Dim quitado = QuitarSegunSuClase(entry)
+        ' ⛔ LA RECUPERACIÓN ES LA POSTCONDICIÓN DEL GESTO, una sola vez y después de TODAS las ramas.
+        ' Ver el gemelo de ARMO: escrita adentro de cada rama eran dos copias y a una le faltaba.
+        If quitado AndAlso eraElObjetivo Then ReTomarObjetivoTrasLaBaja(entry.FormID)
+        Return quitado
+    End Function
+
+    ''' <summary>Volver a tomar el objetivo tras la baja: se SUELTA la toma (no se abandona, o repondría lo
+    ''' que el usuario acaba de borrar) y, si el record ya no resuelve, se arranca uno NUEVO en blanco con
+    ''' aviso. Gemela de la de ARMO; el porqué está allá.</summary>
+    Private Sub ReTomarObjetivoTrasLaBaja(fid As UInteger)
+        _toma.Soltar()
+        If LoadRealArmaTemplate(fid, asOverride:=True) Then Return
+        EmpezarBorradorEnBlanco()
+        MessageBox.Show(Me,
+            "That record no longer exists after the revert, so it can't be edited as an override. " &
+            "The editor started a new, empty ARMA instead.",
+            "Reverted", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    End Sub
+
+    ''' <summary>El cuerpo del gesto: dar de baja lo que la fila representa y decir si se quitó. NO recupera
+    ''' el editor: eso es la postcondición del llamador.</summary>
+    Private Function QuitarSegunSuClase(entry As FormIdPickerEntry) As Boolean
         Dim fid = entry.FormID
         If fid = 0UI Then Return False
         Dim isCurrent = (_draft IsNot Nothing AndAlso fid = _draft.FormID)
@@ -411,7 +452,6 @@ Public Class ArmaEditor_Form
                 ' records); when isCurrent reloads a pristine override draft it stays Not-IsDirty and is never re-emitted.
                 _mainForm.MarkRecordForRemoval(fid)
                 _mainForm.RevertAppOverrideInMemory(fid)   ' restore the mod's winning record in memory (not the ESP override)
-                If isCurrent Then LoadRealArmaTemplate(fid, asOverride:=True)   ' reloads the now-restored original for continued editing
                 Return True
             End If
             ' NEW draft → DELETE, but not the one you're currently building.
@@ -446,13 +486,20 @@ Public Class ArmaEditor_Form
         Return True
     End Function
 
-    ''' <summary>FormIdPicker over REAL ARMA records (race-filtered to the preview NPC's race), no draft entries.
-    ''' Returns the chosen global FormID, or 0 when cancelled. Shared by New-from-template + Override.</summary>
+    ''' <summary>FormIdPicker sobre las ARMA del orden de carga MÁS los borradores PROPIOS del usuario,
+    ''' filtrado por la raza del NPC de preview. Lo comparten «New from template…» y «Override existing…».
+    ''' Gemelo del de <c>ArmoEditor_Form.PickRealArmo</c>: el porqué de que entren los borradores, y de que
+    ''' ESCAPEN al filtro de raza, está allá.</summary>
     Private Function PickRealArma(title As String) As UInteger
+        Dim drafts = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
+            .FormID = d.FormID, .EditorID = d.Record.EditorID,
+            .DisplayName = d.Record.EditorID, .Signature = "ARMA"}).ToList()
         ' Pre-select the CURRENT source record (if any) so switching Override ⇄ New-from-template keeps it selected.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMA"},
                                            title, CurrentTemplateSelection(), allowNull:=False,
-                                           formIdFilter:=Function(fid) _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
+                                           extraDraftEntries:=drafts,
+                                           formIdFilter:=Function(fid) _mainForm.TryGetArmaDraft(fid) IsNot Nothing _
+                                                                       OrElse _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
             Return dlg.SelectedFormID
         End Using
@@ -469,15 +516,45 @@ Public Class ArmaEditor_Form
         Return 0UI
     End Function
 
-    ''' <summary>Load a REAL ARMA record as the editing target: build a draft copy (asOverride=False → NEW copy
-    ''' with a fresh draft FormID; =True → an override keeping the real global FormID + EditorID), remember the
-    ''' source for the banner, refresh panels + preview. Returns False if the record couldn't be parsed (draft
-    ''' unchanged). Shared by the actions + the initialTemplateArmaFormID constructor path.</summary>
+    ''' <summary>TOMAR <paramref name="fid"/> como objetivo de edición, venga de donde venga: es la ÚNICA
+    ''' puerta, y por eso también es la que abandona el borrador que se está dejando. Adopta el borrador que
+    ''' ya exista bajo ese FormID, clona DESDE él cuando piden copia, o construye del disco cuando no hay
+    ''' ninguno — la decisión es de <see cref="Borradores.QueHacerAlAbrir"/>.
+    ''' <para>Devuelve False cuando no se pudo construir nada; el borrador actual queda intacto y SIGUE
+    ''' registrado. ⛔ El llamador tiene que MIRAR ese False. Gemela de la de ARMO; el detalle está allá.</para></summary>
     Private Function LoadRealArmaTemplate(fid As UInteger, asOverride As Boolean) As Boolean
-        Dim copy = BuildDraftFromExisting(fid, asOverride)
-        If copy Is Nothing Then Return False
+        ' ⛔ SE PREGUNTA POR EL BORRADOR ANTES DE IR AL DISCO — `Borradores.QueHacerAlAbrir`. Gemelo del
+        ' de ARMO; el porqué está allá.
+        Dim borrador As ArmaDraft = Nothing
+        Dim accion = Borradores.QueHacerAlAbrir(fid, asOverride, AddressOf _mainForm.TryGetArmaDraft, borrador)
+        ' ⛔ SE RESUELVE ANTES DE ABANDONAR, y se abandona DESPUÉS DE CONSTRUIR. Gemelo del de ARMO; el
+        ' porqué de las dos cosas —y de que no se abandone la fuente de una copia— está allá.
+        Select Case accion
+            Case Borradores.AccionAlAbrir.Adoptar
+                If ReferenceEquals(borrador, _draft) Then Return True
+                RevertOrDiscardCurrentDraft()
+                AdoptarBorradorRegistrado(borrador)
+                Return True
+            Case Borradores.AccionAlAbrir.ClonarDeBorrador
+                Dim copiaDeBorrador = BuildDraftFromExisting(fid, asOverride:=False, origenBorrador:=borrador)
+                If copiaDeBorrador Is Nothing Then Return False
+                ' ⛔ Abandono INCONDICIONAL después de construir, también si la fuente es el borrador
+                ' actual: la copia ya es independiente y no abandonarla dejaba un borrador sin aceptar
+                ' que el guardado emite igual. Ver el gemelo de ARMO.
+                RevertOrDiscardCurrentDraft()
+                Return CargarComoObjetivo(copiaDeBorrador, fid)
+            Case Else
+                Dim copy = BuildDraftFromExisting(fid, asOverride)
+                If copy Is Nothing Then Return False
+                RevertOrDiscardCurrentDraft()
+                Return CargarComoObjetivo(copy, fid)
+        End Select
+    End Function
+
+    ''' <summary>La cola común de las dos ramas que construyen un borrador NUEVO como objetivo.</summary>
+    Private Function CargarComoObjetivo(copy As ArmaDraft, fidOrigen As UInteger) As Boolean
         _draft = copy
-        _templateRealFormID = fid
+        _templateRealFormID = fidOrigen
         _templateRealEditorID = copy.Record.EditorID
         _editingExistingDraft = False
         LoadDraftIntoPanels()
@@ -486,6 +563,19 @@ Public Class ArmaEditor_Form
         RequestPreview()
         Return True
     End Function
+
+    ''' <summary>Tomar un borrador YA REGISTRADO como objetivo de edición. Gemela de la de
+    ''' <c>ArmoEditor_Form</c>; el porqué está allá.</summary>
+    Private Sub AdoptarBorradorRegistrado(d As ArmaDraft)
+        _draft = d
+        _templateRealFormID = 0UI
+        _templateRealEditorID = ""
+        _editingExistingDraft = True
+        LoadDraftIntoPanels()
+        SnapshotCurrentDraft()
+        UpdateStatusBanner()
+        RequestPreview()
+    End Sub
 
     ''' <summary>Update the persistent status banner to state EXACTLY the current target + what Save will do:
     ''' OVERRIDE (real record replaced), Editing draft (an already-registered draft), or NEW record. Called after
@@ -497,7 +587,14 @@ Public Class ArmaEditor_Form
         Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
         If edid.Length = 0 Then edid = If(_draft.Record.EditorID, "")
         If _editingExistingDraft Then
-            LabelStatusBanner.Text = $"Editing draft — {edid} ({If(_draft.IsOverride, "override", "new")})"
+            ' La línea del plugin depende de que el borrador SEA un override, no de cómo se abrió: ahora
+            ' la apertura por plantilla ADOPTA el que ya existe. Gemelo del de ARMO.
+            Dim plugAdoptado = SourcePluginName(_draft.FormID)
+            Dim tailAdoptado = If(String.IsNullOrEmpty(plugAdoptado), "",
+                                  $" · {plugAdoptado} → your plugin replaces it")
+            LabelStatusBanner.Text = If(_draft.IsOverride,
+                $"Editing draft — {edid} (override{tailAdoptado}) [0x{_draft.FormID:X8}]",
+                $"Editing draft — {edid} (new)")
         ElseIf _draft.IsOverride Then
             Dim plug = SourcePluginName(_draft.FormID)
             Dim tail = If(String.IsNullOrEmpty(plug), "", $" · {plug} → your plugin replaces it")
@@ -557,20 +654,57 @@ Public Class ArmaEditor_Form
     ''' <para>Con el árbol copiado no hay nada que enumerar: viene TODO, incluidos el sculpt, las razas
     ''' adicionales, las combinaciones de object template, las resistencias y las banderas de
     ''' cabecera.</para></summary>
-    Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean) As ArmaDraft
+    ''' <param name="origenBorrador">Cuando viene, el CLON se copia de ESTE borrador propio en vez del
+    ''' record del disco. Gemelo del de <c>ArmoEditor_Form</c>; el porqué está allá.</param>
+    Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean,
+                                            Optional origenBorrador As ArmaDraft = Nothing) As ArmaDraft
         Dim pm = _mainForm.PluginManagerForEditor
         If pm Is Nothing Then Return Nothing
-        Dim rec = pm.GetRecord(fid)
-        If rec Is Nothing OrElse rec.Header.Signature <> "ARMA" Then Return Nothing
-        Dim d = If(asOverride,
-                   ArmaDraft.Edicion(rec, pm),
-                   ArmaDraft.Clon(rec, pm, _mainForm.AllocateDraftFormID()))
-        If d Is Nothing Then Return Nothing
-        ' El EditorID sólo se SINTETIZA si el record no traía uno: `EDID` no es requerido en el esquema,
-        ' pero el commit exige uno no vacío para poder guardar.
-        If String.IsNullOrEmpty(d.Record.EditorID) Then
-            d.Record.EditorID = ArmaDraft.EditorIdPrefix & fid.ToString("X8")
+        ' La guarda del record vale SÓLO para lo que va al DISCO: un borrador NUEVO no tiene `PluginRecord`.
+        If origenBorrador Is Nothing Then
+            Dim recGuarda = pm.GetRecord(fid)
+            If recGuarda Is Nothing OrElse recGuarda.Header.Signature <> "ARMA" Then Return Nothing
         End If
+        Dim d As ArmaDraft
+        If asOverride Then
+            d = OverridePristino(fid, pm)
+        ElseIf origenBorrador IsNot Nothing Then
+            d = ArmaDraft.ClonDeBorrador(origenBorrador, _mainForm.AllocateDraftFormID())
+        Else
+            d = ArmaDraft.Clon(pm.GetRecord(fid), pm, _mainForm.AllocateDraftFormID())
+        End If
+        If d Is Nothing Then Return Nothing
+        SintetizarEdidSiFalta(d, fid)
+        d.IsModified = False
+        Return d
+    End Function
+
+    ''' <summary>El EditorID se SINTETIZA sólo si el record no traía uno. Gemela de la de
+    ''' <c>ArmoEditor_Form</c>; el porqué —que la recorran los DOS caminos, el borrador y su línea de
+    ''' base— está allá.</summary>
+    Friend Shared Sub SintetizarEdidSiFalta(d As ArmaDraft, fidOrigen As UInteger)
+        If d Is Nothing OrElse d.Record Is Nothing Then Return
+        If String.IsNullOrEmpty(d.Record.EditorID) Then
+            d.Record.EditorID = ArmaDraft.EditorIdPrefix & fidOrigen.ToString("X8")
+        End If
+    End Sub
+
+    ''' <summary>El borrador OVERRIDE PRISTINO de una ARMA real: LA FÁBRICA que usan los dos lados —el
+    ''' borrador que el usuario edita y la línea de base contra la que se decide la suciedad—. Gemela de la
+    ''' de <c>ArmoEditor_Form</c>; el porqué está allá. <c>Friend Shared</c> para que un testigo la recorra
+    ''' sin instanciar el formulario.</summary>
+    Friend Shared Function OverridePristino(fid As UInteger, pm As PluginManager) As ArmaDraft
+        If pm Is Nothing Then Return Nothing
+        Return OverridePristino(pm.GetRecord(fid), pm)
+    End Function
+
+    ''' <summary>LA MISMA FÁBRICA, por RECORD: la puerta por la que un testigo le mete un sujeto que no
+    ''' está en <c>AllRecords</c>. Gemela de la de <c>ArmoEditor_Form</c>; el porqué está allá.</summary>
+    Friend Shared Function OverridePristino(rec As PluginRecord, pm As PluginManager) As ArmaDraft
+        If pm Is Nothing OrElse rec Is Nothing OrElse rec.Header.Signature <> "ARMA" Then Return Nothing
+        Dim d = ArmaDraft.Edicion(rec, pm)
+        If d Is Nothing Then Return Nothing
+        SintetizarEdidSiFalta(d, rec.Header.FormID)
         d.IsModified = False
         Return d
     End Function
@@ -755,19 +889,14 @@ Public Class ArmaEditor_Form
         Close()
     End Sub
 
-    ''' <summary>Clean up the CURRENT draft when the editor is abandoned WITHOUT an OK — either switching to
-    ''' another intent action, or closing via Cancel / the window X. A draft that PRE-EXISTED this editor
-    ''' (<see cref="_editingExistingDraft"/>: the editDraft ctor arg or the "Edit draft…" action) is REVERTED by
-    ''' re-registering its open-time snapshot (RegisterArmaDraft replaces by FormID) — never unregistered, it
-    ''' existed before us. A SESSION-created draft (New / New-from-template / Override, not yet finalized) is
-    ''' UNregistered outright (discarded). Guards against a missing draft/snapshot.</summary>
+    ''' <summary>Limpiar el borrador ACTUAL cuando el editor se abandona SIN aceptar — al cambiar de acción
+    ''' de intención, o al cerrar por Cancel / la X de la ventana.
+    ''' <para>La ley entera vive en <see cref="Borradores.QueHacerAlAbandonar"/> y la aplica
+    ''' <see cref="TomaDeBorrador(Of TD)"/>: la pregunta es «¿el registro que hay bajo este FormID lo puse
+    ''' YO?». Antes preguntaba «¿me pasaron el borrador por constructor?» y por eso un OVERRIDE abierto por
+    ''' plantilla daba de baja, por FormID, el borrador que el usuario había construido antes.</para></summary>
     Private Sub RevertOrDiscardCurrentDraft()
-        If _draft Is Nothing Then Return
-        If _editingExistingDraft Then
-            If _openSnapshot IsNot Nothing Then _mainForm.RegisterArmaDraft(_openSnapshot)
-        Else
-            _mainForm.UnregisterArmaDraft(_draft.FormID)
-        End If
+        _toma.Abandonar()
     End Sub
 
     ''' <summary>Re-take the pre-edit baseline of the CURRENT draft (in the ctor and after each intent action
@@ -790,7 +919,9 @@ Public Class ArmaEditor_Form
             _openSnapshot = Nothing
             Logger.Log(ex.ToString())
         End Try
-        _draftWasNew = _draft.IsNew
+        ' ⛔ EN EL MISMO GESTO que el snapshot y ANTES del primer volcado. El porqué del orden está en
+        ' `TomaDeBorrador.Tomar` y en el gemelo de `ArmoEditor_Form`.
+        _toma.Tomar(_draft, _openSnapshot)
     End Sub
 
     ''' <summary>Commit the panel state into <see cref="_draft"/> and register it on MainForm. When
@@ -897,8 +1028,9 @@ Public Class ArmaEditor_Form
                         Return False
                     End If
                 End If
-            ElseIf Not String.Equals(edid, currentEdid, StringComparison.OrdinalIgnoreCase) _
-                   AndAlso Not _mainForm.IsRecordEditorIdAvailable(edid) Then
+                ' ⛔ Por IDENTIDAD y no por texto: un clon hereda el EditorID de su fuente. Ver el gemelo
+                ' de ARMO y `MainForm.IsRecordEditorIdAvailable`.
+            ElseIf Not _mainForm.IsRecordEditorIdAvailable(edid, _draft) Then
                 MessageBox.Show(Me, $"EditorID '{edid}' is already in use. Choose another.", "Apply",
                                 MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return False
@@ -986,12 +1118,13 @@ Public Class ArmaEditor_Form
             fo4.HasSculptData = CheckHasSculptData.Checked OrElse fo4.SculptData.Count > 0
         End If
 
-        ' Dirty only on a REAL change. The preview commits the panels on every render, so setting IsModified
-        ' unconditionally marked an untouched OVERRIDE dirty → the saver re-emitted an identical override. Compare
-        ' the flushed content against the open-time snapshot instead (two-way: reverting a change clears it). NEW
-        ' drafts are always dirty by definition. If the snapshot is missing (shouldn't happen), fall back to dirty.
+        ' Sucio sólo ante un cambio REAL, y contra la LÍNEA DE BASE PRISTINA, no contra el estado de
+        ' apertura: la ley y su porqué viven en `Borradores.SucioContraLaBase`. Acá mordía por el camino
+        ' anidado —`ArmoAddonEditor` reabre esta ARMA pasándola como `editDraft`—, así que aceptar sin
+        ' retocar una ARMA ya editada la dejaba LIMPIA y el saver no la emitía: la malla que el usuario
+        ' había cambiado no llegaba al .esp. Dos direcciones, ahora también entre sesiones.
         If Not _draft.IsNew Then
-            _draft.IsModified = (_openSnapshot Is Nothing) OrElse Not _draft.ContentEquals(_openSnapshot)
+            _draft.IsModified = _toma.Sucio(_draft.ContentEquals(_toma.Base))
         End If
         _mainForm.RegisterArmaDraft(_draft)
         Return True
@@ -1543,6 +1676,196 @@ Public Class ArmaEditor_Form
     Private Function ReadSlotChecks() As UInteger
         Return BipedSlotCheckboxes.ReadMask(_slotChecks)
     End Function
+
+    ''' <summary>Unión de los biped objects que reservan para el Pip-Boy TODAS las razas que este ARMA
+    ''' viste: la RNAM del panel (que es la fuente viva; el volcado al borrador va por un debounce) más
+    ''' las razas adicionales. Se necesita la UNIÓN porque el tag está gobernado por la raza del ACTOR y
+    ''' un mismo ARMA viste a varias: medido, 25 ARMA del load order sirven razas cuyo Pip-Boy NO es el
+    ''' mismo slot (0x40000001 = slots 60 y 30, el caso de los feral ghouls).
+    ''' <para><paramref name="algunaResuelta"/> sale False cuando no se pudo resolver NINGUNA raza. El
+    ''' llamador entonces NO propone: devolver 0 en silencio sería tratar el tag del Pip-Boy como si fuera
+    ''' una declaración de slot, que es exactamente el daño que este descuento existe para evitar.</para></summary>
+    ''' <param name="algunaResuelta">Sale True si al menos una raza resolvió a un record RACE.</param>
+    Private Function BitPipboyDeLasRazas(ByRef algunaResuelta As Boolean) As UInteger
+        algunaResuelta = False
+        Dim pm = _mainForm.PluginManagerForEditor
+        If pm Is Nothing Then Return 0UI
+
+        Dim fids As New List(Of UInteger)()
+        Dim rnam = GetFid(TextBoxRace)
+        If rnam = 0UI AndAlso _draft IsNot Nothing AndAlso _draft.Record IsNot Nothing Then rnam = _draft.Record.Race
+        If rnam = 0UI Then rnam = _raceFormID
+        If rnam <> 0UI Then fids.Add(rnam)
+        Try
+            For Each r In AdditionalRaceFids()
+                If r <> 0UI AndAlso Not fids.Contains(r) Then fids.Add(r)
+            Next
+        Catch ex As Exception
+            ' Sin razas adicionales legibles se sigue con la RNAM sola: el fail-closed del llamador
+            ' se apoya en algunaResuelta, no en que esta lista sea completa.
+            Logger.Log($"[ARMA-SLOTS] no se pudieron leer las razas adicionales: {ex.Message}")
+        End Try
+
+        Dim bits As UInteger = 0UI
+        For Each rf In fids
+            Dim rec = pm.GetRecord(rf)
+            If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Continue For
+            Try
+                bits = bits Or RaceUtil.RacePipboyMask(Canon.CanonRecords.Race(rec, pm))
+                algunaResuelta = True
+            Catch ex As Exception
+                Logger.Log($"[ARMA-SLOTS] no se pudo leer el Pipboy Biped Object de la raza 0x{rf:X8}: {ex.Message}")
+            End Try
+        Next
+        Return bits
+    End Function
+
+    ''' <summary>Qué decirle al usuario sobre la HERENCIA cuando este addon todavía no declara ningún slot.
+    ''' Tres ramas, porque el caso más frecuente del editor —crear una ARMA dentro de un ARMO que también
+    ''' es nuevo— deja a los DOS en cero, y ahí no hay ninguna herencia que anunciar.
+    ''' <para>La máscara del padre se resuelve draft-aware: el ARMO padre típico acá ES un borrador y
+    ''' PluginManager.GetRecord no ve borradores.</para></summary>
+    Private Function AvisoDeHerencia() As String
+        If ReadSlotChecks() <> 0UI Then Return ""
+
+        Dim nombrePadre As String = ""
+        Dim mascaraPadre As UInteger = 0UI
+        If _parentArmoFormID <> 0UI Then
+            Dim armo = _mainForm.GetParsedArmoForEditor(_parentArmoFormID)
+            If armo IsNot Nothing Then
+                mascaraPadre = armo.SlotMaskDe()
+                nombrePadre = $"{If(armo.EditorID, "")} [0x{_parentArmoFormID:X8}]".Trim()
+            End If
+        End If
+
+        If mascaraPadre <> 0UI Then
+            Return "This addon declares no slot of its own, so today it INHERITS the armor's" &
+                   If(nombrePadre = "", "", $" ({nombrePadre})") & ": " & TextoDeSlots(mascaraPadre) & "." &
+                   Environment.NewLine &
+                   "Ticking anything here makes it declare its own slots and STOP inheriting, so it will no " &
+                   "longer occupy the rest."
+        End If
+
+        Dim quien As String
+        If _parentArmoFormID = 0UI Then
+            quien = "This addon declares no biped slot, and it was opened on its own, so there is no armor " &
+                    "to inherit one from."
+        ElseIf nombrePadre = "" Then
+            quien = "This addon declares no biped slot, and the armor it belongs to could not be resolved, " &
+                    "so it is not known whether there is anything to inherit."
+        Else
+            quien = "Neither this addon nor " & nombrePadre & " declares any biped slot."
+        End If
+        Return quien &
+               " With no owner, the engine treats every slot as covered and the preview hides this mesh " &
+               "entirely — ticking a slot here is what makes it show."
+    End Function
+
+    ''' <summary>"37, 38" a partir de una máscara de biped slots (bit i = slot 30+i).</summary>
+    ''' <param name="mask">La máscara.</param>
+    Private Shared Function TextoDeSlots(mask As UInteger) As String
+        Dim l As New List(Of String)()
+        For i = 0 To 31
+            If (mask And (1UI << i)) <> 0UI Then l.Add((30 + i).ToString(CultureInfo.InvariantCulture))
+        Next
+        Return String.Join(", ", l)
+    End Function
+
+    ''' <summary>«Slots declared by the models…»: lee los DOS modelos con el lector del juego y ofrece,
+    ''' uno por uno, los biped slots que declaran y el BOD2 todavía no tiene. NUNCA destilda.</summary>
+    ''' <param name="sender">El botón.</param>
+    ''' <param name="e">Sin uso.</param>
+    Private Sub OnSlotsFromModel(sender As Object, e As EventArgs)
+        Const TITULO As String = "Slots declared by the models"
+        ' ⛔ CONVERSION EXPLICITA: SessionGame() devuelve WbGame y LecturaDelJuego toma
+        ' Config_App.Game_Enum. Son DOS enums distintos y con Option Strict apagado la conversion seria
+        ' muda: hoy anda solo porque los dos numeran igual, y el dia que a WbGame se le agregue un
+        ' miembro adelante el boton leeria con el lector del otro juego sin un solo error.
+        Dim esSkyrim As Boolean = (Canon.CanonBridge.SessionGame() = Canon.WbGame.Skyrim)
+        Dim juego As Config_App.Game_Enum = If(esSkyrim, Config_App.Game_Enum.Skyrim, Config_App.Game_Enum.Fallout4)
+        Dim modo = SlotsDeLaMalla.LecturaDelJuego(juego)
+
+        ' El tag del Pip-Boy sale de la RAZA. Sin raza resuelta no se propone: fail-closed.
+        Dim bitPipboy As UInteger = 0UI
+        If juego <> Config_App.Game_Enum.Skyrim Then
+            Dim resuelta As Boolean = False
+            bitPipboy = BitPipboyDeLasRazas(resuelta)
+            If Not resuelta Then
+                MessageBox.Show(Me,
+                    "The Pip-Boy biped object comes from the RACE, and this addon's race could not be " &
+                    "resolved, so the proposal cannot tell a real slot from the Pip-Boy tag. Set the race first.",
+                    TITULO, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+            End If
+        End If
+
+        ' ⛔ Los paths salen del PANEL y no del borrador: el usuario puede acabar de tipear uno, y el
+        ' volcado al borrador va por el debounce. MOD4/MOD5 quedan afuera A PROPÓSITO: son los modelos de
+        ' 1ª persona, que un NPC no viste.
+        Dim male = SlotsDelModelo.Leer(TextBoxMod2.Text, modo)
+        Dim female = SlotsDelModelo.Leer(TextBoxMod3.Text, modo)
+        Dim p = SlotsDelModelo.Proponer(male, female, ReadSlotChecks(), bitPipboy)
+
+        If Not p.HuboLectura Then
+            Dim ningunModelo = male.Estado = SlotsDelModelo.EstadoDeLectura.SinPath AndAlso
+                               female.Estado = SlotsDelModelo.EstadoDeLectura.SinPath
+            MessageBox.Show(Me,
+                If(ningunModelo,
+                   "This addon has no models yet: set the male mesh (MOD2) and/or the female mesh (MOD3) " &
+                   "first, and then this button can tell you which biped slots they declare.",
+                   "Neither model could be read. Check the mesh paths (MOD2 / MOD3) — the file must exist " &
+                   "as a loose file or inside a game archive."),
+                TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        If p.TodoFueraDeBanda Then
+            ' ⛔ La consecuencia de caer fuera de [30,61] es OPUESTA en los dos motores, y no se re-enuncia
+            ' acá: se le pregunta a la sede de cada juego.
+            Dim ocultan = SlotsDelModelo.FueraDeBandaSeOculta(modo)
+            MessageBox.Show(Me,
+                If(ocultan,
+                   "The models DO declare partitions, but every one of them folds outside the biped range " &
+                   "30-61 (for example BodyPart = 0). This game hides those, and no BOD2 slot changes it — " &
+                   "the mesh has to be re-partitioned.",
+                   "The models DO declare segment tags, but none of them is a biped object in the range " &
+                   "30-61. This game leaves those segments visible, so they are not the reason anything is " &
+                   "hidden, and no BOD2 slot relates to them."),
+                TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        If p.Declarado = 0UI Then
+            MessageBox.Show(Me,
+                If(modo = SlotsDeLaMalla.ModoDeLectura.ParticionesDismember,
+                   "The models declare no biped slot (no BSDismemberSkinInstance partitions). Skyrim only " &
+                   "hides geometry that HAS partitions, so this mesh is not being hidden for lack of a slot.",
+                   "The models declare no biped object in their segments. That is the usual case in " &
+                   "Fallout 4, where segment tags are mostly material and damage sub-indices; and the " &
+                   "Pip-Boy tag, when present, has its own rule and is not a slot declaration."),
+                TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        If p.Faltan = 0UI Then
+            MessageBox.Show(Me,
+                "Everything the models declare is already checked: " & TextoDeSlots(p.Declarado) & "." &
+                If(p.Sobran = 0UI, "",
+                   Environment.NewLine & Environment.NewLine &
+                   "Slots you declare without geometry (they evict, they do not draw): " & TextoDeSlots(p.Sobran) &
+                   ". This button never removes those."),
+                TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        Using dlg As New SlotsDelModeloDialog(p, AvisoDeHerencia())
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim elegidos = dlg.SlotsElegidos
+            If elegidos = 0UI Then Return
+            SetSlotChecks(SlotsDelModelo.MascaraAplicada(ReadSlotChecks(), elegidos))
+            OnFieldEdited(Me, EventArgs.Empty)
+        End Using
+    End Sub
 
     ' =====================================================================
     ' FormID textbox helpers ("Name [0xFORMID]"; Tag carries the raw UInteger)

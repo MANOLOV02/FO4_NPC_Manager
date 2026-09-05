@@ -70,6 +70,7 @@ Partial Class ArmoEditor_Form
         GridAddons = New DataGridView()
         AddonsButtons = New FlowLayoutPanel()
         ButtonAddArma = New Button()
+        ButtonNewArma = New Button()
         ButtonEditIndx = New Button()
         ButtonRemoveAddon = New Button()
         ButtonAddonUp = New Button()
@@ -892,6 +893,7 @@ Partial Class ArmoEditor_Form
         ' AddonsButtons
         '
         AddonsButtons.Controls.Add(ButtonAddArma)
+        AddonsButtons.Controls.Add(ButtonNewArma)
         AddonsButtons.Controls.Add(ButtonEditIndx)
         AddonsButtons.Controls.Add(ButtonRemoveAddon)
         AddonsButtons.Controls.Add(ButtonAddonUp)
@@ -912,6 +914,14 @@ Partial Class ArmoEditor_Form
         ButtonAddArma.TabIndex = 0
         ButtonAddArma.Text = "Add ARMA…"
         ButtonAddArma.UseVisualStyleBackColor = True
+        '
+        ' ButtonNewArma
+        '
+        ButtonNewArma.Name = "ButtonNewArma"
+        ButtonNewArma.Size = New Size(110, 26)
+        ButtonNewArma.TabIndex = 1
+        ButtonNewArma.Text = "New ARMA…"
+        ButtonNewArma.UseVisualStyleBackColor = True
         '
         ' ButtonEditIndx
         '
@@ -2060,6 +2070,7 @@ Partial Class ArmoEditor_Form
     Friend WithEvents GridAddons As System.Windows.Forms.DataGridView
     Friend WithEvents AddonsButtons As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonAddArma As System.Windows.Forms.Button
+    Friend WithEvents ButtonNewArma As System.Windows.Forms.Button
     Friend WithEvents ButtonEditIndx As System.Windows.Forms.Button
     Friend WithEvents ButtonRemoveAddon As System.Windows.Forms.Button
     Friend WithEvents ButtonAddonUp As System.Windows.Forms.Button

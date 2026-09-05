@@ -101,10 +101,28 @@ Public Class ArmoEditor_Form
     ''' <summary>Snapshot of the draft taken at open (after load/create + panel populate). On Cancel, editing an
     ''' EXISTING/override draft re-registers this snapshot to revert the live-commit mutations. See <see cref="OnCancel"/>.</summary>
     Private _openSnapshot As ArmoDraft
-    ''' <summary>True when the draft was created fresh in THIS editor (not passed in as editDraft, not an override
-    ''' of an existing registered record) — i.e. <see cref="ArmoDraft.IsNew"/> at open. On Cancel a brand-new draft
-    ''' is UNregistered (discarded); an existing/override draft is reverted from <see cref="_openSnapshot"/>.</summary>
-    Private _draftWasNew As Boolean
+    ''' <summary>El FormID del ARMO que este editor dejó ACEPTADO: provisional para uno nuevo, el global real
+    ''' para un override. 0 hasta el primer Apply exitoso, así que el llamador puede distinguir «aceptó» de
+    ''' «cerró». Gemelo de <c>ArmaEditor_Form.ResultArmaFormID</c>.
+    ''' <para>⛔ Existe porque sin él «New armor…» del selector de atuendos no tenía QUÉ agregar: el editor
+    ''' terminaba, la armadura quedaba de borrador y no entraba al atuendo. El gesto se veía completo y no
+    ''' lo estaba.</para></summary>
+    Public ReadOnly Property ResultArmoFormID As UInteger
+        Get
+            Return _resultArmoFormID
+        End Get
+    End Property
+    Private _resultArmoFormID As UInteger = 0UI
+
+    ''' <summary>La TOMA de este editor sobre el registro: qué había bajo el FormID del borrador cuando lo
+    ''' agarramos, cuál es su línea de base pristina, y qué hay que hacer al abandonar sin aceptar. La ley
+    ''' vive en <see cref="TomaDeBorrador(Of TD)"/>, sin UI, para que un testigo pueda recorrerla.
+    ''' <para>⛔ Reemplaza al par (<c>_editingExistingDraft</c>, <c>_draftWasNew</c>) que decidía la
+    ''' reversión: contestaban «¿me lo pasaron por constructor?», que NO es la pregunta. Un OVERRIDE
+    ''' abierto por plantilla llega con esa bandera en False y su FormID ES el del record real, así que la
+    ''' baja por FormID borraba el borrador que el usuario había construido antes.
+    ''' <c>_draftWasNew</c> además no lo leía nadie: sólo se escribía.</para></summary>
+    Private _toma As TomaDeBorrador(Of ArmoDraft)
 
     ''' <param name="mainForm">Owner — supplies the draft registrars, the PluginManager for the FormID pickers,
     ''' parsed-record access and the WYSIWYG preview host.</param>
@@ -130,6 +148,14 @@ Public Class ArmoEditor_Form
         _raceFormID = raceFormID
         _isFemale = isFemale
         _outfitContextFormID = outfitContextFormID
+
+        ' ⛔ Acá y no como inicializador de campo: un inicializador corre ANTES del cuerpo del
+        ' constructor, con `_mainForm` todavía en Nothing, y los cinco delegados tiran. Va antes de
+        ' cualquier `SnapshotCurrentDraft` (el primero llega recién con la siembra del borrador).
+        _toma = New TomaDeBorrador(Of ArmoDraft)(
+            AddressOf _mainForm.TryGetArmoDraft, AddressOf _mainForm.RegisterArmoDraft,
+            AddressOf _mainForm.UnregisterArmoDraft, Function(d) d.FormID,
+            Function(f) OverridePristino(f, _mainForm.PluginManagerForEditor))
 
         BuildSlotCheckBoxes()
         BuildAddonsGridColumns()
@@ -172,6 +198,7 @@ Public Class ArmoEditor_Form
 
         ' Addons tab — grid is read-only; every mutation goes through a button / the double-click modal.
         AddHandler ButtonAddArma.Click, AddressOf OnAddArma
+        AddHandler ButtonNewArma.Click, AddressOf OnNewArma
         AddHandler ButtonEditIndx.Click, AddressOf OnEditAddon
         AddHandler ButtonRemoveAddon.Click, AddressOf OnRemoveAddon
         AddHandler ButtonAddonUp.Click, Sub() MoveAddon(-1)
@@ -234,11 +261,21 @@ Public Class ArmoEditor_Form
         ' El motivo se recoge y se muestra igual que en la acción "New from template…": este camino puede
         ' entrar con asOverride=False, así que puede toparse con la misma negativa (plantilla escrita con
         ' otra Form Version) y el usuario tiene que ver POR QUÉ el editor abrió vacío.
+        Dim tomado As Boolean = False
         If editDraft Is Nothing AndAlso initialTemplateArmoFormID <> 0UI Then
             Dim motivoApertura As String = Nothing
-            If Not LoadRealArmoTemplate(initialTemplateArmoFormID, asOverride:=templateAsOverride,
-                                        motivoParaElUsuario:=motivoApertura) AndAlso motivoApertura <> "" Then
-                MessageBox.Show(Me, motivoApertura, "Cannot clone this armor",
+            tomado = LoadRealArmoTemplate(initialTemplateArmoFormID, asOverride:=templateAsOverride,
+                                          motivoParaElUsuario:=motivoApertura)
+            If Not tomado Then
+                ' ⛔ AVISA SIEMPRE, tenga o no una causa que sepamos NOMBRAR. Con el `AndAlso
+                ' motivoApertura <> ""` de antes, el caso más frecuente —un FormID que no resuelve ni a
+                ' un record ni a un borrador— abría el editor EN BLANCO sin decir una palabra, y el
+                ' usuario creía estar editando su armadura.
+                Dim texto = If(motivoApertura <> "", motivoApertura,
+                               $"Could not open that armor [0x{initialTemplateArmoFormID:X8}]: it is not " &
+                               "a record in the load order and has no draft in memory. The editor opened " &
+                               "on a new, empty ARMO instead.")
+                MessageBox.Show(Me, texto, "Cannot open this armor",
                                 MessageBoxButtons.OK, MessageBoxIcon.Warning)
             End If
         End If
@@ -248,9 +285,14 @@ Public Class ArmoEditor_Form
                                    "Select an NPC in the main window to preview.",
                                    "Preview: this ARMO equipped on the current NPC.")
 
-        ' Snapshot the draft AS OPENED (pre-edit state) so a not-OK'd close can revert the live-commit mutations
-        ' that the debounced preview writes back into the registered draft. Remember whether it's brand-new.
-        SnapshotCurrentDraft()
+        ' Snapshot del borrador TAL COMO SE ABRIÓ, para que un cierre sin OK pueda revertir las mutaciones
+        ' que el volcado del preview le escribe al borrador registrado.
+        ' ⛔ UNA SOLA TOMA: si la plantilla cargó, `LoadRealArmoTemplate` ya la hizo. Repetirla acá clonaba
+        ' el borrador y parseaba la línea de base DOS veces por apertura, y —lo que importa— dejaba el
+        ' invariante «Tomar antes del primer volcado» colgado de que `RequestPreview` sea no-op antes de
+        ' `Shown`: el día que algo comprometa entre las dos capturas, la segunda encontraría al propio
+        ' borrador como «registro previo» y un nuevo cancelado dejaría de darse de baja.
+        If Not tomado Then SnapshotCurrentDraft()
     End Sub
 
     ' =====================================================================
@@ -356,6 +398,17 @@ Public Class ArmoEditor_Form
     ''' IsOverride=False), seeded with the preview race. A brand-new record from scratch.</summary>
     Private Sub OnActionNewBlank(sender As Object, e As EventArgs)
         RevertOrDiscardCurrentDraft()
+        EmpezarBorradorEnBlanco()
+    End Sub
+
+    ''' <summary>Arrancar un borrador NUEVO en blanco como objetivo, SIN abandonar nada: el abandono lo
+    ''' decide el llamador.
+    ''' <para>Lo comparten «New (blank)» y el camino de recuperación del revert: cuando el record que se
+    ''' estaba sobrescribiendo DEJA DE EXISTIR —revertir un record que la app creó lo saca de
+    ''' <c>AllRecords</c>—, el editor no puede quedarse mostrando un override de un FormID que ya no
+    ''' resuelve: al aceptar se re-registra sucio y el guardado ENTERO tira
+    ''' (<c>ResolveArmorDraftHeader</c>: «override draft targets FormID …, which is not a loaded record»).</para></summary>
+    Private Sub EmpezarBorradorEnBlanco()
         _draft = ArmoDraft.Nuevo(_mainForm.AllocateDraftFormID(), Canon.CanonBridge.SessionGame())
         _draft.Record.EditorID = ArmoDraft.EditorIdPrefix & "new"
         _draft.Record.Race = _raceFormID
@@ -373,7 +426,6 @@ Public Class ArmoEditor_Form
     Private Sub OnActionNewFromTemplate(sender As Object, e As EventArgs)
         Dim fid = PickRealArmo("Copy ARMO into a NEW record")
         If fid = 0UI Then Return
-        RevertOrDiscardCurrentDraft()
         Dim motivo As String = Nothing
         If Not LoadRealArmoTemplate(fid, asOverride:=False, motivoParaElUsuario:=motivo) Then
             ' Cuando la causa se sabe NOMBRAR se dice ésa, y no el genérico: "could not parse" sobre un
@@ -393,7 +445,6 @@ Public Class ArmoEditor_Form
     Private Sub OnActionOverrideExisting(sender As Object, e As EventArgs)
         Dim fid = PickRealArmo("Override an existing ARMO")
         If fid = 0UI Then Return
-        RevertOrDiscardCurrentDraft()
         If Not LoadRealArmoTemplate(fid, asOverride:=True) Then
             MessageBox.Show(Me, "Could not parse that ARMO record.", "Override existing",
                             MessageBoxButtons.OK, MessageBoxIcon.Error)
@@ -426,19 +477,12 @@ Public Class ArmoEditor_Form
                                            onDeleteEntry:=AddressOf OnDeleteDraftEntry)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             Dim fid = dlg.SelectedFormID
-            ' Clean up the draft we're leaving BEFORE switching to the picked one.
-            RevertOrDiscardCurrentDraft()
-            Dim existingDraft = _mainForm.TryGetArmoDraft(fid)
-            If existingDraft IsNot Nothing Then
-                _draft = existingDraft
-                _templateRealFormID = 0UI
-                _templateRealEditorID = ""
-                _editingExistingDraft = True
-                LoadDraftIntoPanels()
-                SnapshotCurrentDraft()
-                UpdateStatusBanner()
-                RequestPreview()
-            ElseIf Not LoadRealArmoTemplate(fid, asOverride:=True) Then   ' a saved authored ARMO → re-open as OVERRIDE
+            ' ⛔ La decisión «hay borrador ⇒ adoptarlo» NO se toma acá: la toma
+            ' `Borradores.QueHacerAlAbrir` adentro de `LoadRealArmoTemplate`, que es donde vive la ley.
+            ' Escrita también en esta puerta era la misma duplicación que se sacó del modal de addons: dos
+            ' lugares que mañana se separan al primer arreglo. Un borrador se adopta; un record propio ya
+            ' GUARDADO (que el picker lista como "(saved)" y no tiene borrador) se abre como override.
+            If Not LoadRealArmoTemplate(fid, asOverride:=True) Then
                 MessageBox.Show(Me, "Could not parse that ARMO record.", "Edit mine",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
             End If
@@ -449,6 +493,37 @@ Public Class ArmoEditor_Form
     ''' (<c>Not IsNew</c>) revert to the original record; new drafts are deleted only when nothing references
     ''' them. Guards the draft that's currently open. Returns True when the draft was removed (picker drops the row).</summary>
     Private Function OnDeleteDraftEntry(entry As FormIdPickerEntry) As Boolean
+        Dim eraElObjetivo = (_draft IsNot Nothing AndAlso entry IsNot Nothing AndAlso entry.FormID = _draft.FormID)
+        Dim quitado = QuitarSegunSuClase(entry)
+        ' ⛔ LA RECUPERACIÓN ES LA POSTCONDICIÓN DEL GESTO, y va UNA sola vez después de TODAS las ramas.
+        ' Escrita adentro de cada rama eran dos copias —y durante un rato faltó en una—: el editor quedaba
+        ' sobre un override de un FormID que `PluginManager.RevertAppOverride` acababa de sacar de
+        ' `AllRecords`, y el guardado ENTERO tiraba (`ResolveArmorDraftHeader`). Acá arriba la rama que
+        ' alguien agregue mañana nace cubierta; ahí abajo habría que acordarse.
+        If quitado AndAlso eraElObjetivo Then ReTomarObjetivoTrasLaBaja(entry.FormID)
+        Return quitado
+    End Function
+
+    ''' <summary>Volver a tomar el objetivo después de que el usuario lo dio de baja desde el selector.
+    ''' <para>⛔ Se SUELTA la toma y no se abandona: la toma todavía tiene el snapshot del borrador, así que
+    ''' dejar correr la ley lo REPONDRÍA —por encima del <c>MarkRecordForRemoval</c> del mismo gesto— y el
+    ''' guardado lo emitiría igual. Soltar y abandonar son gestos distintos.</para>
+    ''' <para>Y si el record ya no resuelve —revertir uno que la app CREÓ lo saca de <c>AllRecords</c>— no
+    ''' hay override posible: se arranca uno NUEVO en blanco y se avisa. Dejar el editor sobre un override
+    ''' fantasma terminaba en un guardado que TIRA, con el gesto viéndose exitoso.</para></summary>
+    Private Sub ReTomarObjetivoTrasLaBaja(fid As UInteger)
+        _toma.Soltar()
+        If LoadRealArmoTemplate(fid, asOverride:=True) Then Return
+        EmpezarBorradorEnBlanco()
+        MessageBox.Show(Me,
+            "That record no longer exists after the revert, so it can't be edited as an override. " &
+            "The editor started a new, empty ARMO instead.",
+            "Reverted", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    End Sub
+
+    ''' <summary>El cuerpo del gesto: dar de baja lo que la fila representa —un borrador propio o un record
+    ''' ya guardado— y decir si se quitó. NO recupera el editor: eso es la postcondición del llamador.</summary>
+    Private Function QuitarSegunSuClase(entry As FormIdPickerEntry) As Boolean
         Dim fid = entry.FormID
         If fid = 0UI Then Return False
         Dim isCurrent = (_draft IsNot Nothing AndAlso fid = _draft.FormID)
@@ -468,7 +543,6 @@ Public Class ArmoEditor_Form
                 ' records); when isCurrent reloads a pristine override draft it stays Not-IsDirty and is never re-emitted.
                 _mainForm.MarkRecordForRemoval(fid)
                 _mainForm.RevertAppOverrideInMemory(fid)   ' restore the mod's winning record in memory (not the ESP override)
-                If isCurrent Then LoadRealArmoTemplate(fid, asOverride:=True)   ' reloads the now-restored original for continued editing
                 Return True
             End If
             ' NEW draft → DELETE, but not the one you're currently building.
@@ -503,13 +577,28 @@ Public Class ArmoEditor_Form
         Return True
     End Function
 
-    ''' <summary>FormIdPicker over REAL ARMO records (race/gender-filtered to the preview NPC), no draft entries.
-    ''' Returns the chosen global FormID, or 0 when cancelled. Shared by New-from-template + Override.</summary>
+    ''' <summary>FormIdPicker sobre los ARMO del orden de carga MÁS los borradores PROPIOS del usuario,
+    ''' filtrado por raza/género del NPC de preview. Devuelve el FormID elegido, o 0 si se canceló.
+    ''' Lo comparten «New from template…» y «Override existing…».
+    ''' <para>⛔ Los borradores entran porque «copiar» tiene que poder copiar lo que el usuario acaba de
+    ''' crear: sin ellos, la decisión de clonar DESDE el borrador sólo alcanzaba a los override (que
+    ''' comparten FormID con un record real y por eso ya aparecían). Elegir una fila de borrador entra por
+    ''' <see cref="Borradores.QueHacerAlAbrir"/>: como override ADOPTA, como plantilla CLONA.</para>
+    ''' <para>⛔ Y los borradores propios ESCAPAN al filtro de raza. <c>FormIdPicker_Form.PassesRaceGate</c>
+    ''' aplica el predicado también a las filas de borrador, y un ARMO recién creado todavía no tiene
+    ''' ningún addon que matchee la raza: con el filtro puesto se ocultaba solo. Es la MISMA ley que ya
+    ''' declara la lista de candidatos —«Own ARMO drafts are the user's OWN creations — ALWAYS list them»—
+    ''' y el mismo defecto que se cerró ahí («Hiding a just-created armor was the reported bug»).</para></summary>
     Private Function PickRealArmo(title As String) As UInteger
+        Dim drafts = _mainForm.ArmoDrafts().Select(Function(d) New FormIdPickerEntry With {
+            .FormID = d.FormID, .EditorID = d.Record.EditorID,
+            .DisplayName = d.Record.EditorID, .Signature = "ARMO"}).ToList()
         ' Pre-select the CURRENT source record (if any) so switching Override ⇄ New-from-template keeps it selected.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMO"},
                                            title, CurrentTemplateSelection(), allowNull:=False,
-                                           formIdFilter:=Function(fid) _mainForm.IsArmoRaceCompatible(fid, _raceFormID, _isFemale))
+                                           extraDraftEntries:=drafts,
+                                           formIdFilter:=Function(fid) _mainForm.TryGetArmoDraft(fid) IsNot Nothing _
+                                                                       OrElse _mainForm.IsArmoRaceCompatible(fid, _raceFormID, _isFemale))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
             Return dlg.SelectedFormID
         End Using
@@ -526,16 +615,73 @@ Public Class ArmoEditor_Form
         Return 0UI
     End Function
 
-    ''' <summary>Load a REAL ARMO record as the editing target: build a draft copy (asOverride=False → NEW copy
-    ''' with a fresh draft FormID; =True → an override keeping the real global FormID + EditorID), remember the
-    ''' source for the banner, refresh panels + preview. Returns False if unparseable (draft unchanged). Shared
-    ''' by the actions + the initialTemplateArmoFormID constructor path (Outfit Picker double-click).</summary>
+    ''' <summary>TOMAR <paramref name="fid"/> como objetivo de edición, venga de donde venga: es la ÚNICA
+    ''' puerta, y por eso también es la que abandona el borrador que se está dejando.
+    ''' <para>Qué hace depende de lo que decida <see cref="Borradores.QueHacerAlAbrir"/>:</para>
+    ''' <list type="bullet">
+    ''' <item><b>Adoptar</b> — hay un borrador bajo ese FormID y lo piden como override: se sigue editando ÉSE.</item>
+    ''' <item><b>ClonarDeBorrador</b> — hay borrador y piden copia: el clon sale de él, no del disco.</item>
+    ''' <item><b>IrAlDisco</b> — no hay borrador: se construye del record real, como override o como copia.</item>
+    ''' </list>
+    ''' <para>Devuelve False cuando no se pudo construir nada; en ese caso el borrador actual queda intacto y
+    ''' SIGUE registrado. ⛔ El llamador tiene que MIRAR ese False: dejar el editor sobre un objetivo que no
+    ''' se pudo cargar termina en un guardado que tira.</para>
+    ''' <para>La comparten las acciones de la barra, el camino <c>initialTemplateArmoFormID</c> del constructor
+    ''' (el doble clic del selector de atuendos) y la recarga tras un revert.</para></summary>
     Private Function LoadRealArmoTemplate(fid As UInteger, asOverride As Boolean,
                                           Optional ByRef motivoParaElUsuario As String = Nothing) As Boolean
-        Dim copy = BuildDraftFromExisting(fid, asOverride, motivoParaElUsuario)
-        If copy Is Nothing Then Return False
+        motivoParaElUsuario = ""
+        ' ⛔ SE PREGUNTA POR EL BORRADOR ANTES DE IR AL DISCO. La ley y su porqué viven en
+        ' `Borradores.QueHacerAlAbrir`: `BuildDraftFromExisting` lee por `PluginManager.GetRecord`, que
+        ' sólo ve lo que se cargó de ARCHIVO, así que sin esta pregunta reabrir una armadura ya editada
+        ' la rearmaba desde el record vanilla —el trabajo del usuario desaparecía sin aviso— y un ARMO
+        ' NUEVO abría el editor EN BLANCO, mudo, porque no hay record que leer.
+        Dim borrador As ArmoDraft = Nothing
+        Dim accion = Borradores.QueHacerAlAbrir(fid, asOverride, AddressOf _mainForm.TryGetArmoDraft, borrador)
+        ' ⛔ SE RESUELVE ANTES DE ABANDONAR, y por eso el abandono vive ACÁ y no en los manejadores. Al
+        ' revés —que es como estaba— el gesto daba de baja POR FORMID el borrador que el usuario acababa
+        ' de elegir como objetivo, y la ley lo buscaba un instante después, cuando ya no estaba: el editor
+        ' decía «Could not parse» sobre algo que existía y el borrador quedaba fuera del registro (lista y
+        ' foto) hasta el próximo volcado.
+        ' ⛔ Y se abandona DESPUÉS de construir: si la construcción falla, el editor sigue mostrando el
+        ' borrador actual, así que el actual tiene que seguir registrado.
+        Select Case accion
+            Case Borradores.AccionAlAbrir.Adoptar
+                ' Ya lo estoy editando: no hay nada que abandonar, ni que recargar, ni que re-TOMAR.
+                ' Re-tomarlo lo convertiría en su propio «registro previo», y un borrador NUEVO que el
+                ' usuario nunca aceptó dejaría de darse de baja al cancelar — el guardado lo emitiría.
+                If ReferenceEquals(borrador, _draft) Then Return True
+                RevertOrDiscardCurrentDraft()
+                AdoptarBorradorRegistrado(borrador)
+                Return True
+            Case Borradores.AccionAlAbrir.ClonarDeBorrador
+                ' «Copiar» copia LO QUE EL USUARIO VE: el clon sale de su borrador, no del disco.
+                Dim copiaDeBorrador = BuildDraftFromExisting(fid, asOverride:=False,
+                                                             motivoParaElUsuario:=motivoParaElUsuario,
+                                                             origenBorrador:=borrador)
+                If copiaDeBorrador Is Nothing Then Return False
+                ' ⛔ Se abandona DESPUÉS de construir, e INCONDICIONALMENTE — también cuando la fuente es
+                ' el borrador ACTUAL. La copia ya es un árbol independiente (`Copia()`, con contexto
+                ' propio; G4/G6-independencia lo miden), así que abandonar la fuente no le saca nada.
+                ' Y NO abandonarla dejaba registrado un borrador que el usuario nunca aceptó: el guardado
+                ' lo emite igual —«Emit EVERY authored draft (new + override, referenced or not)… all NEW
+                ' drafts are dirty», `NpcOverrideSaver`— así que el .esp salía con una armadura en blanco
+                ' que nadie pidió. Irse sin aceptar ABANDONA, en las seis puertas y sin excepción.
+                RevertOrDiscardCurrentDraft()
+                Return CargarComoObjetivo(copiaDeBorrador, fid)
+            Case Else
+                Dim copy = BuildDraftFromExisting(fid, asOverride, motivoParaElUsuario)
+                If copy Is Nothing Then Return False
+                RevertOrDiscardCurrentDraft()
+                Return CargarComoObjetivo(copy, fid)
+        End Select
+    End Function
+
+    ''' <summary>La cola común de las dos ramas que construyen un borrador NUEVO como objetivo de edición
+    ''' (un override recién copiado del disco, o un clon). Deja el editor mostrando ese borrador.</summary>
+    Private Function CargarComoObjetivo(copy As ArmoDraft, fidOrigen As UInteger) As Boolean
         _draft = copy
-        _templateRealFormID = fid
+        _templateRealFormID = fidOrigen
         _templateRealEditorID = copy.Record.EditorID
         _editingExistingDraft = False
         LoadDraftIntoPanels()
@@ -544,6 +690,23 @@ Public Class ArmoEditor_Form
         RequestPreview()
         Return True
     End Function
+
+    ''' <summary>Tomar un borrador YA REGISTRADO como objetivo de edición: es la ley de «seguir editando lo
+    ''' mío». No hay plantilla de origen —el borrador YA es el objetivo—, el banner dice «Editing draft», y
+    ''' abandonar sin aceptar lo REVIERTE al snapshot en vez de darlo de baja.
+    ''' <para>⛔ Esta secuencia estaba escrita a mano en <see cref="OnActionEditDraft"/> y la OTRA puerta
+    ''' —la apertura por plantilla, que es por donde entra el selector de atuendos— no la tenía: por eso
+    ''' reabrir «Edit armor…» sobre una pieza ya editada la rearmaba desde el record real.</para></summary>
+    Private Sub AdoptarBorradorRegistrado(d As ArmoDraft)
+        _draft = d
+        _templateRealFormID = 0UI
+        _templateRealEditorID = ""
+        _editingExistingDraft = True
+        LoadDraftIntoPanels()
+        SnapshotCurrentDraft()
+        UpdateStatusBanner()
+        RequestPreview()
+    End Sub
 
     ''' <summary>Update the persistent status banner to state EXACTLY the current target + what Save will do:
     ''' OVERRIDE (real record replaced), Editing draft (an already-registered draft), or NEW record. Called after
@@ -555,7 +718,16 @@ Public Class ArmoEditor_Form
         Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
         If edid.Length = 0 Then edid = If(_draft.Record.EditorID, "")
         If _editingExistingDraft Then
-            LabelStatusBanner.Text = $"Editing draft — {edid} ({If(_draft.IsOverride, "override", "new")})"
+            ' ⛔ La línea del plugin depende de que el borrador SEA un override, no de cómo se abrió.
+            ' Ahora la apertura por plantilla ADOPTA el borrador que ya existe, así que sin esto un
+            ' override reabierto dejaba de decir qué record del orden de carga está pisando — que es
+            ' justo lo que el usuario necesita saber antes de guardar.
+            Dim plugAdoptado = SourcePluginName(_draft.FormID)
+            Dim tailAdoptado = If(String.IsNullOrEmpty(plugAdoptado), "",
+                                  $" · {plugAdoptado} → your plugin replaces it")
+            LabelStatusBanner.Text = If(_draft.IsOverride,
+                $"Editing draft — {edid} (override{tailAdoptado}) [0x{_draft.FormID:X8}]",
+                $"Editing draft — {edid} (new)")
         ElseIf _draft.IsOverride Then
             Dim plug = SourcePluginName(_draft.FormID)
             Dim tail = If(String.IsNullOrEmpty(plug), "", $" · {plug} → your plugin replaces it")
@@ -588,12 +760,14 @@ Public Class ArmoEditor_Form
     ''' <summary>EditorID + FormID del ARMO, para nombrar el terminal en el aviso. Solo el FormID si no
     ''' resuelve — que es tambien la precondicion de la ley: un TNAM colgado y el motor usa los del hijo.</summary>
     Private Function DescribeArmoBreve(fid As UInteger) As String
-        Dim pm = _mainForm?.PluginManagerForEditor
-        If pm Is Nothing Then Return $"[{fid:X8}]"
-        Dim rec = pm.GetRecord(fid)
-        If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return $"[{fid:X8}] (no resuelve)"
-        Dim v = Canon.CanonRecords.Armo(rec, pm)
-        If v Is Nothing OrElse String.IsNullOrEmpty(v.EditorID) Then Return $"[{fid:X8}]"
+        ' ⛔ Por el lector DRAFT-AWARE y no por `PluginManager.GetRecord`: un `TNAM` que apunta a un ARMO
+        ' propio todavía sin guardar existe —el usuario lo acaba de crear— pero no está en ningún archivo,
+        ' así que el lector crudo lo describía como «no resuelve» y el aviso de herencia nombraba mal al
+        ' terminal. `GetParsedArmoForEditor` consulta el borrador primero.
+        If _mainForm Is Nothing Then Return $"[{fid:X8}]"
+        Dim v = _mainForm.GetParsedArmoForEditor(fid)
+        If v Is Nothing Then Return $"[{fid:X8}] (no resuelve)"
+        If String.IsNullOrEmpty(v.EditorID) Then Return $"[{fid:X8}]"
         Return $"{v.EditorID} [{fid:X8}]"
     End Function
 
@@ -650,13 +824,22 @@ Public Class ArmoEditor_Form
     ''' <param name="motivoParaElUsuario">Sale con el texto que hay que MOSTRAR cuando la función devuelve
     ''' Nothing por una causa que sabemos nombrar (hoy: el clon de un ARMO cuya plantilla se escribió con
     ''' otra Form Version). Vacío = no hay causa nombrable y el llamador pone su mensaje genérico.</param>
+    ''' <param name="origenBorrador">Cuando viene, el CLON se copia de ESTE borrador propio en vez del
+    ''' record del disco: «copiar» tiene que copiar lo que el usuario ve. Sólo aplica a la rama
+    ''' <paramref name="asOverride"/> = False; un override no copia nada, edita el record que ya existe.</param>
     Private Function BuildDraftFromExisting(fid As UInteger, asOverride As Boolean,
-                                            Optional ByRef motivoParaElUsuario As String = Nothing) As ArmoDraft
+                                            Optional ByRef motivoParaElUsuario As String = Nothing,
+                                            Optional origenBorrador As ArmoDraft = Nothing) As ArmoDraft
         motivoParaElUsuario = ""
         Dim pm = _mainForm.PluginManagerForEditor
         If pm Is Nothing Then Return Nothing
-        Dim rec = pm.GetRecord(fid)
-        If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return Nothing
+        ' ⛔ La guarda del record vale SÓLO para lo que va al DISCO. Un clon que sale de un borrador
+        ' propio no necesita `PluginRecord` —un borrador NUEVO no tiene ninguno, su FormID es
+        ' provisional—, y exigirlo devolvía Nothing y abría el editor en blanco.
+        If origenBorrador Is Nothing Then
+            Dim recGuarda = pm.GetRecord(fid)
+            If recGuarda Is Nothing OrElse recGuarda.Header.Signature <> "ARMO" Then Return Nothing
+        End If
         ' ⛔ SE PREGUNTA ANTES DE CLONAR, y la respuesta es del MOTOR, no de acá: un clon de un ARMO cuyo
         ' terminal se escribió con otra Form Version sale INGUARDABLE —los injertos traen las ramas de
         ' unión fijadas por la versión del terminal y el record se emite con la del hijo—, y hasta ahora eso
@@ -671,9 +854,17 @@ Public Class ArmoEditor_Form
                 fid, AddressOf _mainForm.GetParsedArmoForEditor)
             If motivoParaElUsuario <> "" Then Return Nothing
         End If
-        Dim d = If(asOverride,
-                   ArmoDraft.Edicion(rec, pm),
-                   ArmoDraft.Clon(rec, pm, _mainForm.AllocateDraftFormID()))
+        ' TRES fuentes, una sola cola. El override sale de `OverridePristino` —la MISMA fábrica que
+        ' construye la línea de base contra la que se decide si el borrador quedó sucio—; el clon, del
+        ' borrador propio cuando lo hay y del disco cuando no.
+        Dim d As ArmoDraft
+        If asOverride Then
+            d = OverridePristino(fid, pm)
+        ElseIf origenBorrador IsNot Nothing Then
+            d = ArmoDraft.ClonDeBorrador(origenBorrador, _mainForm.AllocateDraftFormID())
+        Else
+            d = ArmoDraft.Clon(pm.GetRecord(fid), pm, _mainForm.AllocateDraftFormID())
+        End If
         If d Is Nothing Then Return Nothing
         ' ⛔ El CLON nace SIN herencia. `ArmoDraft.Clon` copia el arbol entero, `TNAM` incluido, asi
         ' que la armadura nueva nacia heredando: el usuario le editaba mallas, slots y keywords, las
@@ -711,11 +902,60 @@ Public Class ArmoEditor_Form
             ' referencia a cero- vive en `CanonInterpretacion` y se usa, no se reescribe.
             Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(d.Record, 0UI, "TNAM", Sub(v) d.Record.TemplateArmor = v)
         End If
-        ' El EditorID sólo se SINTETIZA si el record no traía uno: `EDID` no es requerido en el esquema,
-        ' pero el commit exige uno no vacío para poder guardar.
+        SintetizarEdidSiFalta(d, fid)
+        d.IsModified = False
+        Return d
+    End Function
+
+    ''' <summary>El EditorID se SINTETIZA sólo si el record no traía uno: <c>EDID</c> no es requerido en el
+    ''' esquema, pero el commit exige uno no vacío para poder guardar. Idempotente.
+    ''' <para>⛔ Es UNA función y no la línea suelta repetida, porque ahora la recorren DOS caminos que
+    ''' tienen que producir el MISMO árbol: el borrador que el usuario edita y la LÍNEA DE BASE contra la
+    ''' que se decide si quedó sucio. Si divergen, un ARMO sin EDID sale marcado como modificado sin que
+    ''' nadie lo haya tocado — o sea el override redundante que la ley de suciedad existe para evitar.</para>
+    ''' <para>En la rama del clon esto casi nunca dispara: un clon conserva el EDID de su fuente en el
+    ''' árbol (<c>Record.EditorID</c> es el subrecord <c>EDID\Editor ID</c>, no el <c>EditorId</c> del
+    ''' contexto que apaga <see cref="Borradores.ReidentificarComoClon"/>). Sólo muerde clonando un record
+    ''' que de verdad no traía EDID.</para></summary>
+    Friend Shared Sub SintetizarEdidSiFalta(d As ArmoDraft, fidOrigen As UInteger)
+        If d Is Nothing OrElse d.Record Is Nothing Then Return
         If String.IsNullOrEmpty(d.Record.EditorID) Then
-            d.Record.EditorID = ArmoDraft.EditorIdPrefix & fid.ToString("X8")
+            d.Record.EditorID = ArmoDraft.EditorIdPrefix & fidOrigen.ToString("X8")
         End If
+    End Sub
+
+    ''' <summary>El borrador OVERRIDE PRISTINO de un ARMO real: el record del archivo, copiado, con el
+    ''' EditorID sintetizado si no traía. Es LA FÁBRICA, y por eso la usan los DOS lados —
+    ''' <see cref="BuildDraftFromExisting"/> para armar lo que el usuario edita, y
+    ''' <see cref="TomaDeBorrador(Of TD)"/> para armar la línea de base contra la que se decide la suciedad.
+    ''' <para>⛔ Tiene que ser LA MISMA función para los dos. Con la base armada por <c>Edicion</c> crudo,
+    ''' un ARMO sin EDID daba distinto ya en el primer volcado —el borrador lo trae sintetizado y la base
+    ''' no— y el editor marcaba SUCIO un record que el usuario no tocó.</para>
+    ''' <para><c>Friend Shared</c> para que un testigo la recorra sin instanciar el formulario: es la misma
+    ''' razón por la que son <c>Friend Shared</c> <see cref="LeerReferencias"/> y
+    ''' <see cref="AplicarReferencias"/>.</para></summary>
+    Friend Shared Function OverridePristino(fid As UInteger, pm As PluginManager) As ArmoDraft
+        If pm Is Nothing Then Return Nothing
+        Return OverridePristino(pm.GetRecord(fid), pm)
+    End Function
+
+    ''' <summary>LA MISMA FÁBRICA, por RECORD. Es la puerta por la que un testigo le puede meter un
+    ''' sujeto que NO está en <c>AllRecords</c> — un ARMO sin EDID, por ejemplo, que el corpus no tiene y
+    ''' hay que sintetizar.
+    ''' <para>⛔ Existe porque sin ella el gate no podía LLAMAR a la fábrica: la componía a mano
+    ''' (<c>Edicion</c> + <c>SintetizarEdidSiFalta</c>) y así medía la función auxiliar, no la ley — que es
+    ''' que el borrador y su línea de base salgan de LA MISMA construcción. Con la fábrica reimplementada
+    ''' en el testigo, sacarle la síntesis a ESTA función dejaba el gate en verde y la app marcando sucio
+    ''' todo ARMO sin EDID en el primer volcado.</para>
+    ''' <para>El FormID del EDID sintetizado sale del propio record: <c>PluginManager.AllRecords</c> está
+    ''' indexado por <c>Header.FormID</c> —lo fija al cargar, <c>PluginManager.vb</c>:
+    ''' <c>kvp.Value.Header.FormID = globalFormID</c> y acto seguido <c>AllRecords(globalFormID) = kvp.Value</c>—,
+    ''' así que por la puerta de arriba es EXACTAMENTE el <c>fid</c> pedido.</para></summary>
+    Friend Shared Function OverridePristino(rec As PluginRecord, pm As PluginManager) As ArmoDraft
+        If pm Is Nothing OrElse rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return Nothing
+        Dim d = ArmoDraft.Edicion(rec, pm)
+        If d Is Nothing Then Return Nothing
+        SintetizarEdidSiFalta(d, rec.Header.FormID)
         d.IsModified = False
         Return d
     End Function
@@ -902,6 +1142,10 @@ Public Class ArmoEditor_Form
         ' y cerrarla del todo pide un candado compartido con el render, que no está hecho.
         If _previewDebounce IsNot Nothing Then _previewDebounce.Stop()
         If CommitProtegido(validate:=True) Then
+            ' El FormID que el llamador necesita para ENGANCHAR lo que se acaba de crear: sin esto,
+            ' «New armor…» terminaba y la armadura no entraba al atuendo — quedaba de borrador y el
+            ' usuario tenía que ir a buscarla a la lista de items.
+            _resultArmoFormID = _draft.FormID
             ' Set DialogResult.OK BEFORE Close() so the ensuing FormClosing sees OK and does NOT
             ' revert/discard the draft we just finalized.
             DialogResult = DialogResult.OK
@@ -917,19 +1161,14 @@ Public Class ArmoEditor_Form
         Close()
     End Sub
 
-    ''' <summary>Clean up the CURRENT draft when the editor is abandoned WITHOUT an OK — either switching to
-    ''' another intent action, or closing via Cancel / the window X. A draft that PRE-EXISTED this editor
-    ''' (<see cref="_editingExistingDraft"/>: the editDraft ctor arg or the "Edit draft…" action) is REVERTED by
-    ''' re-registering its open-time snapshot (RegisterArmoDraft replaces by FormID) — never unregistered, it
-    ''' existed before us. A SESSION-created draft (New / New-from-template / Override, not yet finalized) is
-    ''' UNregistered outright (discarded). Guards against a missing draft/snapshot.</summary>
+    ''' <summary>Limpiar el borrador ACTUAL cuando el editor se abandona SIN aceptar — al cambiar de acción
+    ''' de intención, o al cerrar por Cancel / la X de la ventana.
+    ''' <para>La ley entera vive en <see cref="Borradores.QueHacerAlAbandonar"/> y la aplica
+    ''' <see cref="TomaDeBorrador(Of TD)"/>: la pregunta es «¿el registro que hay bajo este FormID lo puse
+    ''' YO?». Antes preguntaba «¿me pasaron el borrador por constructor?» y por eso un OVERRIDE abierto por
+    ''' plantilla daba de baja, por FormID, el borrador que el usuario había construido antes.</para></summary>
     Private Sub RevertOrDiscardCurrentDraft()
-        If _draft Is Nothing Then Return
-        If _editingExistingDraft Then
-            If _openSnapshot IsNot Nothing Then _mainForm.RegisterArmoDraft(_openSnapshot)
-        Else
-            _mainForm.UnregisterArmoDraft(_draft.FormID)
-        End If
+        _toma.Abandonar()
     End Sub
 
     ''' <summary>Re-take the pre-edit baseline of the CURRENT draft (in the ctor and after each intent action
@@ -952,7 +1191,11 @@ Public Class ArmoEditor_Form
             _openSnapshot = Nothing
             Logger.Log(ex.ToString())
         End Try
-        _draftWasNew = _draft.IsNew
+        ' ⛔ EN EL MISMO GESTO que el snapshot y ANTES del primer volcado: `CommitPanelsToDraft` es lo
+        ' que REGISTRA el borrador, y corre recién desde `RequestPreview`. Capturado acá, el registro
+        ' previo dice si lo que hay bajo este FormID lo pusimos nosotros; capturado al cerrar, el editor
+        ' se encontraría a sí mismo y no daría de baja nunca.
+        _toma.Tomar(_draft, _openSnapshot)
     End Sub
 
     ''' <summary>Commit the panel state into <see cref="_draft"/> and register it on MainForm. When
@@ -1046,9 +1289,10 @@ Public Class ArmoEditor_Form
                         Return False
                     End If
                 End If
-            ElseIf Not String.Equals(edid, _draft.Record.EditorID,
-                                     StringComparison.OrdinalIgnoreCase) _
-                   AndAlso Not _mainForm.IsRecordEditorIdAvailable(edid) Then
+                ' ⛔ La excepción es por IDENTIDAD, no por texto: el atajo viejo («si el EditorID no
+                ' cambió, no consulto») confundía «es el mío» con «se llama igual», y un clon hereda el
+                ' EditorID de su fuente — así que dos borradores NUEVOS podían quedar con el mismo.
+            ElseIf Not _mainForm.IsRecordEditorIdAvailable(edid, _draft) Then
                 MessageBox.Show(Me, $"EditorID '{edid}' is already in use. Choose another.", "Apply",
                                 MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Return False
@@ -1164,17 +1408,20 @@ Public Class ArmoEditor_Form
         If Not String.Equals(rec.WorldModelModelFilename, mod2, StringComparison.Ordinal) Then rec.WorldModelModelFilename = mod2
         If Not String.Equals(rec.WorldModelModelFilename2, mod4, StringComparison.Ordinal) Then rec.WorldModelModelFilename2 = mod4
 
-        ' Dirty only on a REAL change (mirror of ArmaEditor). The preview commits the panels on
-        ' every render, so setting IsModified unconditionally re-emitted an identical override at
-        ' save time (e.g. opening an ARMO just to edit its ARMA marked the ARMO dirty). Compare
-        ' content against the open-time snapshot instead — ContentEquals ahora compara el record
-        ' entero (combinaciones incluidas) por bytes, así que ya no hace falta una marca aparte
-        ' para "se tocó el Object Template". Two-way so reverting a change clears it; NEW drafts
-        ' are always dirty.
+        ' Sucio sólo ante un cambio REAL, y la comparación va contra la LÍNEA DE BASE PRISTINA —el record
+        ' tal como está en el archivo—, NO contra el estado de apertura. El volcado corre en cada
+        ' repintado del preview, así que marcarlo sucio siempre re-emitía un override idéntico (abrir un
+        ' ARMO sólo para editarle la ARMA lo ensuciaba). Pero preguntarle al estado de APERTURA contesta
+        ' «¿cambió algo desde que abrí?», que no es lo que decide si hay que emitir: sobre un borrador
+        ' ADOPTADO —ya editado en una sesión anterior— la respuesta era «no cambió nada» y aceptarlo sin
+        ' retocar lo dejaba LIMPIO, o sea que el saver lo salteaba y la edición del usuario no llegaba al
+        ' .esp mientras el render la seguía dibujando. La ley y su porqué: `Borradores.SucioContraLaBase`.
+        ' `ContentEquals` compara el record entero por bytes (combinaciones incluidas), así que no hace
+        ' falta una marca aparte para "se tocó el Object Template", y es de DOS direcciones: deshacer un
+        ' cambio vuelve a dejarlo limpio — ahora también entre sesiones. Los NUEVOS son siempre sucios.
+        ' `_openSnapshot` queda SÓLO para la reversión del Cancel.
         If Not _draft.IsNew Then
-            Dim unchanged = (_openSnapshot IsNot Nothing) _
-                            AndAlso _draft.ContentEquals(_openSnapshot)
-            _draft.IsModified = Not unchanged
+            _draft.IsModified = _toma.Sucio(_draft.ContentEquals(_toma.Base))
         End If
         _mainForm.RegisterArmoDraft(_draft)
         Return True
@@ -1424,6 +1671,29 @@ Public Class ArmoEditor_Form
             _addons.Add(New ARMO_AddonEntry With {.AddonIndex = 0US, .ArmaFormID = dlg.SelectedFormID})
             RefreshAddonsGrid()
             OnFieldEdited(Me, EventArgs.Empty)
+        End Using
+    End Sub
+
+    ''' <summary>«New ARMA…» → crear un addon DESDE CERO: abre el editor de ARMA en blanco y, si el usuario
+    ''' acepta, agrega la fila apuntando al borrador recién creado.
+    ''' <para>⛔ Faltaba la puerta entera. <see cref="OnAddArma"/> es un SELECTOR (<c>allowNull:=False</c>):
+    ''' sólo deja elegir una ARMA que ya existe, así que armar una prenda de cero no tenía camino desde acá —
+    ''' había que salir del editor, crear la ARMA por otro lado y volver.</para>
+    ''' <para>Sin plantilla y sin <c>editDraft</c>: el editor de ARMA siembra un borrador NUEVO, así que
+    ''' cancelar lo da de baja y aceptar lo registra. La raza sale del ARMO que se está armando, que es la
+    ''' misma fuente que usa el camino de edición (<see cref="EditAddonAt"/> → ARMA).</para></summary>
+    Private Sub OnNewArma(sender As Object, e As EventArgs)
+        Using dlg As New ArmaEditor_Form(_mainForm, _previewNpcFormID, _draft.Record.Race, _isFemale,
+                                         parentArmoFormID:=_draft.FormID,
+                                         outfitContextFormID:=_outfitContextFormID)
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultArmaFormID <> 0UI Then
+                _addons.Add(New ARMO_AddonEntry With {.AddonIndex = 0US, .ArmaFormID = dlg.ResultArmaFormID})
+                RefreshAddonsGrid()
+                OnFieldEdited(Me, EventArgs.Empty)
+            End If
+            ' Igual que `EditAddonAt`: el editor anidado da de baja el OTFT descartable que los dos
+            ' comparten, así que al volver hay que pedir el repintado aunque el usuario haya cancelado.
+            RequestPreview()
         End Using
     End Sub
 

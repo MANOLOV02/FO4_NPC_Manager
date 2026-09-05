@@ -87,13 +87,44 @@ Public Class ArmoDraft
                                 formIDNuevo As UInteger) As ArmoDraft
         Dim d = Edicion(rec, plugins)
         If d Is Nothing Then Return Nothing
-        d.FormID = formIDNuevo
-        d.IsOverride = False
-        d.IsNew = True
-        ' La identidad del clon la pone `Borradores`, no cada borrador: `Clon` existe hoy en dos de
-        ' los cinco, y la ley tiene que estar donde la encuentre el tercero.
+        Return ClonDesdeCopia(d.Record, formIDNuevo)
+    End Function
+
+    ''' <summary>La cola COMÚN de todo clon: exigir la copia y darle identidad nueva.
+    ''' <para>⛔ Existe para que <see cref="Clon"/> (que copia desde el DISCO) y
+    ''' <see cref="ClonDeBorrador"/> (que copia desde un borrador PROPIO) no puedan divergir en la
+    ''' identidad — que es exactamente donde ya se cazó un defecto una vez: un clon que nacía
+    ''' <c>Deleted</c> porque heredaba <c>RecordFlags</c> de su fuente. La identidad del clon la pone
+    ''' <see cref="Borradores.ReidentificarComoClon"/>, no cada borrador.</para></summary>
+    Private Shared Function ClonDesdeCopia(copia As Canon.IArmo, formIDNuevo As UInteger) As ArmoDraft
+        Borradores.ExigirRecord(copia, "ARMO", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Dim d As New ArmoDraft With {.Record = copia, .FormID = formIDNuevo,
+                                     .IsOverride = False, .IsNew = True}
         Borradores.ReidentificarComoClon(d.Record, formIDNuevo)
         Return d
+    End Function
+
+    ''' <summary>Un record NUEVO a partir de un BORRADOR PROPIO que el usuario ya está editando.
+    ''' <para>⛔ Existe porque «copiar» tiene que copiar LO QUE EL USUARIO VE. <see cref="Clon"/> parte de
+    ''' un <c>PluginRecord</c>, o sea del ARCHIVO: clonar desde ahí una armadura que el usuario ya editó
+    ''' le devolvía la versión vanilla, sin los addons que acababa de agregar. Decisión del usuario
+    ''' (2026-09-05), no derivada.</para>
+    ''' <para>⛔ Y es una GEMELA, no un cambio de firma de <see cref="Clon"/>. Hacer que <c>Clon</c> tome
+    ''' la vista sacaría del camino la guarda <see cref="Borradores.ExigirPluginsNormalizados"/> que hoy
+    ''' le impone <see cref="Edicion"/>: <c>Clon(CanonRecords.Armo(rec, Nothing), …)</c> compilaría y el
+    ''' clon nacería con los FormID LOCALES del archivo fuente, apuntando al mod equivocado sin un aviso.
+    ''' Un <c>ArmoDraft</c>, en cambio, ya está normalizado por construcción —lo garantizan sus cuatro
+    ''' puertas—, así que acá la garantía la lleva el TIPO y no una guarda que se pueda saltear.</para></summary>
+    Public Shared Function ClonDeBorrador(origen As ArmoDraft, formIDNuevo As UInteger) As ArmoDraft
+        ' ⛔ TIRA, no devuelve Nothing: pasar un borrador sin record es error de LLAMADOR, no un dato
+        ' posible, y con un `Return Nothing` el editor abriría EN BLANCO — que es justo el defecto que
+        ' esta ola cierra, reproducido por la puerta de al lado.
+        If origen Is Nothing OrElse origen.Record Is Nothing Then
+            Throw New ArgumentException(
+                "ClonDeBorrador necesita un borrador CON record: sin él no hay árbol que copiar y el " &
+                "editor abriría vacío en vez de con la copia que el usuario pidió.", NameOf(origen))
+        End If
+        Return ClonDesdeCopia(origen.Record.Copia(), formIDNuevo)
     End Function
 
     '==============================================================================================

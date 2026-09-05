@@ -1491,15 +1491,37 @@ Public Class OutfitPicker_Form
     ''' scratch, then run the same post-return Create refresh as an edit.</summary>
     Private Sub OnNewArmor(sender As Object, e As EventArgs)
         Dim outfitCtx = RegisterOutfitContextDraft()
+        Dim aceptado As UInteger = 0UI
         Try
             Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
                                              outfitContextFormID:=outfitCtx)
-                dlg.ShowDialog(Me)
+                If dlg.ShowDialog(Me) = DialogResult.OK Then aceptado = dlg.ResultArmoFormID
             End Using
         Finally
             UnregisterOutfitContextDraft()
         End Try
+        ' ⛔ PRIMERO el refresh y DESPUÉS el alta, y el orden no es cosmético: `AddItemFidAsPiece` resuelve
+        ' la pieza por `_itemCandidatesByFid` y hace `Return` MUDO si el FormID no está ahí. Es el mismo
+        ' orden que ya usa `OnOverrideLvl`.
         RefreshCreateAfterArmorEdit()
+        ' ⛔ Y SE AGREGA AL ATUENDO. Antes el gesto terminaba acá: la armadura quedaba registrada como
+        ' borrador —o sea que NO se perdía— pero no entraba al atuendo, y el usuario tenía que ir a
+        ' buscarla a la lista de items sin que nada se lo dijera. Crear una prenda desde «New armor…» es
+        ' pedir una prenda PARA ESTE atuendo.
+        If aceptado <> 0UI AndAlso IsAtTopLevel() Then
+            AddItemFidAsPiece(aceptado)
+            ' El alta puede no entrar: `AddItemFidAsPiece` se va callado si el FormID no quedó en el
+            ' universo de candidatos. Un borrador propio SUCIO siempre entra —la lista de candidatos los
+            ' incluye aunque no tengan addon para esta raza/género—, así que esto sólo muerde cuando el
+            ' usuario cambió de acción adentro del editor y aceptó un record REAL que no califica. Antes
+            ' de este aviso, ese caso era mudo.
+            If Not _pieces.Any(Function(p) p.FormID = aceptado) Then
+                MessageBox.Show(Me,
+                    "The armor was saved, but it could not be added to this outfit: it has no addon for " &
+                    "this NPC's race/gender. You can still find it in the item list.",
+                    "New armor", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            End If
+        End If
     End Sub
 
     ''' <summary>The pieces-list action button is enabled whenever ANY row is focused in the Create lists, and its

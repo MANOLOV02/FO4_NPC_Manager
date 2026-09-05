@@ -522,22 +522,20 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' <summary>Máscara (bit i = biped slot 30+i) de las particiones BSDismember del shape. 0 cuando el
     ''' shape no trae dismember o el NIF no se puede leer — y 0 significa "sin dato", que hace caer a
     ''' <see cref="SelectArmatureForShape"/> en el comportamiento histórico. El plegado 2xx/1xx→base es la
-    ''' ley compartida <c>BipedSlots.FoldPartitionBodyPart</c>; el filtro [30,61] es de este call site.
+    ''' ley compartida <c>BipedSlots.FoldPartitionBodyPart</c>. ⛔ Ni el plegado ni el filtro [30,61] viven ya
+    ''' en este call site: los dos se fueron a <c>SlotsDeLaMalla.DeParticiones</c>, que es la sede.
     ''' <para>Usa <c>IRenderableShape.NifSkin</c> —el accesor de la INTERFAZ, que ya hace el deref del skin
     ''' instance con sus guardas— en vez de re-derefear `NifShape.SkinInstanceRef` sobre `NifContent.Blocks`:
     ''' mismo argumento que el del fold, no hace falta una tercera copia del mismo deref. Bonus: funciona
     ''' también para las shapes OSP de Wardrobe_Manager, que implementan la interfaz sin ser NifRenderableShape.</para></summary>
     Friend Shared Function ShapeBipedSlotMask(shape As IRenderableShape) As UInteger
+        ' ⛔ La guarda de nulo y el Try/Catch NO se van con la delegación: `IRenderableShape.NifSkin` PUEDE
+        ' TIRAR —la implementación de Wardrobe_Manager indexa Blocks sin chequear el rango— y este método
+        ' corre POR SHAPE dentro del loop de material del render, donde una excepción se lleva puesto el
+        ' NPC entero. El átomo se queda puro; el envoltorio degrada a 0 como siempre.
         If shape Is Nothing Then Return 0UI
         Try
-            Dim dism = TryCast(shape.NifSkin, NiflySharp.Blocks.BSDismemberSkinInstance)
-            If dism Is Nothing OrElse dism.Partitions Is Nothing Then Return 0UI
-            Dim m As UInteger = 0UI
-            For Each p In dism.Partitions
-                Dim v = BipedSlots.FoldPartitionBodyPart(CInt(p.BodyPart))
-                If v >= 30 AndAlso v <= 61 Then m = m Or (1UI << (v - 30))
-            Next
-            Return m
+            Return SlotsDeLaMalla.DeParticiones(TryCast(shape.NifSkin, NiflySharp.Blocks.BSDismemberSkinInstance)).Mascara
         Catch
             Return 0UI
         End Try

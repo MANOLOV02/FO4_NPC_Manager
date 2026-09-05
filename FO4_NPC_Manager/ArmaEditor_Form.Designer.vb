@@ -67,6 +67,7 @@ Partial Class ArmaEditor_Form
         SlotsLayout = New TableLayoutPanel()
         LabelSlots = New Label()
         FlowSlots = New FlowLayoutPanel()
+        ButtonSlotsFromModel = New Button()
         TabSkin = New TabPage()
         SkinLayout = New TableLayoutPanel()
         GroupRace = New GroupBox()
@@ -700,10 +701,13 @@ Partial Class ArmaEditor_Form
         '
         ' SlotsLayout
         '
-        SlotsLayout.ColumnCount = 1
+        SlotsLayout.ColumnCount = 2
         SlotsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SlotsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 240F))
         SlotsLayout.Controls.Add(LabelSlots, 0, 0)
+        SlotsLayout.Controls.Add(ButtonSlotsFromModel, 1, 0)
         SlotsLayout.Controls.Add(FlowSlots, 0, 1)
+        SlotsLayout.SetColumnSpan(FlowSlots, 2)
         SlotsLayout.Dock = DockStyle.Fill
         SlotsLayout.Location = New Point(6, 6)
         SlotsLayout.Name = "SlotsLayout"
@@ -729,7 +733,18 @@ Partial Class ArmaEditor_Form
         FlowSlots.Location = New Point(3, 18)
         FlowSlots.Name = "FlowSlots"
         FlowSlots.Size = New Size(694, 489)
-        FlowSlots.TabIndex = 1
+        FlowSlots.TabIndex = 2
+        '
+        ' ButtonSlotsFromModel
+        '
+        ButtonSlotsFromModel.Anchor = AnchorStyles.Right
+        ButtonSlotsFromModel.AutoSize = True
+        ButtonSlotsFromModel.Location = New Point(477, 3)
+        ButtonSlotsFromModel.Name = "ButtonSlotsFromModel"
+        ButtonSlotsFromModel.Size = New Size(220, 26)
+        ButtonSlotsFromModel.TabIndex = 1
+        ButtonSlotsFromModel.Text = "Slots declared by the models..."
+        ButtonSlotsFromModel.UseVisualStyleBackColor = True
         '
         ' TabSkin
         '
@@ -1982,6 +1997,7 @@ Partial Class ArmaEditor_Form
     Friend WithEvents SlotsLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelSlots As System.Windows.Forms.Label
     Friend WithEvents FlowSlots As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonSlotsFromModel As System.Windows.Forms.Button
     Friend WithEvents TabSkin As System.Windows.Forms.TabPage
     Friend WithEvents SkinLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents GroupRace As System.Windows.Forms.GroupBox

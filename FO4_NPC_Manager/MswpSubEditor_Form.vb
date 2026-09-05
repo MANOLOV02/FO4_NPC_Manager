@@ -17,9 +17,15 @@ Public Class MswpSubEditor_Form
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _draft As MswpDraft
-    ''' <summary>Deep clone of the draft at open time — the baseline for the "dirty only on real change" rule
-    ''' (mirror of the ArmA/ArmO editors' _openSnapshot). Nothing when the passed-in draft is Nothing.</summary>
-    Private ReadOnly _openSnapshot As MswpDraft
+    ''' <summary>La LÍNEA DE BASE PRISTINA del swap: el record tal como está en el archivo. Es contra ESTO
+    ''' que se decide si el borrador quedó sucio — ver <see cref="Borradores.SucioContraLaBase"/>.
+    ''' <para>⛔ Antes acá había un clon del borrador AL ABRIR, y esa pregunta —«¿cambió algo desde que
+    ''' abrí?»— dejaba LIMPIO un swap que ya venía editado de una sesión anterior: aceptarlo sin retocar
+    ''' apagaba <c>IsModified</c>, el saver lo salteaba y las sustituciones del usuario no llegaban al
+    ''' .esp mientras el render las seguía aplicando.</para>
+    ''' <para>Nothing para un borrador NUEVO (su FormID es provisional, no hay record que leer) o si
+    ''' construirla falla ⇒ SUCIO, que es la dirección segura.</para></summary>
+    Private ReadOnly _base As MswpDraft
     ''' <summary>Material paths the gender mesh NIF references (BaseMaterials). Seeds the Original combo in the
     ''' per-substitution modal. Empty when no mesh path was supplied or the mesh couldn't be loaded.</summary>
     Private ReadOnly _meshMaterials As New List(Of String)
@@ -42,20 +48,20 @@ Public Class MswpSubEditor_Form
         InitializeComponent()
         _mainForm = mainForm
         _draft = draft
-        ' ⛔ Con `Try`, por lo mismo que en `CommitProtegido`: `Clone()` tiene una precondición que
-        ' puede tirar, esto corre desde cuatro manejadores sin `Try`, y la app usa
-        ' `UnhandledExceptionMode.ThrowException` — un throw acá CIERRA la app. Sin snapshot no hay
-        ' reversión, que es peor que tenerla; con la app cerrada no hay nada.
-        ' ⛔ Y la SEGUNDA consecuencia, declarada: sin snapshot, el cálculo de «no cambió nada»
-        ' (`_openSnapshot IsNot Nothing AndAlso …`) da False, o sea que un OVERRIDE abierto y aceptado
-        ' sin tocar nada sale marcado como modificado y se emite al .esp como override redundante.
-        ' Es la dirección SEGURA a propósito: el otro error —darlo por no modificado— perdería un
-        ' cambio real del usuario. Un override de más es ruido; un cambio perdido es daño.
+        ' ⛔ Con `Try`: construir la base parsea y copia un record del disco y eso puede tirar; esto corre
+        ' desde un manejador de clic sin `Try` y la app usa `UnhandledExceptionMode.ThrowException`, o sea
+        ' que un throw acá CIERRA la app — un `Using dlg As New MswpSubEditor_Form(...)` no lo atrapa.
+        ' ⛔ Sin base, el volcado marca SUCIO. Es la dirección SEGURA a propósito: el otro error —darlo por
+        ' no modificado— perdería un cambio real del usuario. Un override de más es ruido; un cambio
+        ' perdido es daño.
         Try
-            _openSnapshot = draft?.Clone()
+            If draft IsNot Nothing AndAlso Not draft.IsNew Then
+                _base = MswpDraft.Edicion(mainForm.PluginManagerForEditor?.GetRecord(draft.FormID),
+                                          mainForm.PluginManagerForEditor)
+            End If
         Catch ex As Exception
-            _openSnapshot = Nothing
-            Logger.Log(ex.ToString())
+            _base = Nothing
+            Logger.Log("MswpSubEditor (línea de base): " & ex.ToString())
         End Try
 
         Text = $"Material Swap (MSWP) — {genderLabel}"
@@ -237,9 +243,14 @@ Public Class MswpSubEditor_Form
             DialogResult = DialogResult.None
             Return
         End If
-        ' Unchanged EditorID on the same draft is fine; a CHANGED one must be free.
-        If Not String.Equals(edid, _draft.Record.EditorID, StringComparison.OrdinalIgnoreCase) _
-           AndAlso Not _mainForm.IsRecordEditorIdAvailable(edid) Then
+        ' El EditorID propio no cuenta como tomado: se exceptúa por IDENTIDAD, no por texto (ver
+        ' `MainForm.IsRecordEditorIdAvailable`).
+        ' ⛔ Y SÓLO PARA LOS NUEVOS. A diferencia de ARMO/ARMA, acá el chequeo también alcanzaba a los
+        ' OVERRIDE, cuya caja está deshabilitada y cuyo EditorID ES el del record REAL —que
+        ' `IsOutfitEditorIdAvailable` reporta como tomado, porque está en `AllRecords`—. Hasta ahora los
+        ' salvaba el atajo por texto; con la identidad sola, TODO override de MSWP se rechazaría al
+        ' aceptar. Un override no elige nombre: no hay nada que validar.
+        If _draft.IsNew AndAlso Not _mainForm.IsRecordEditorIdAvailable(edid, _draft) Then
             MessageBox.Show(Me, $"EditorID '{edid}' is already in use. Choose another.", "MSWP",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)
             DialogResult = DialogResult.None
@@ -271,10 +282,13 @@ Public Class MswpSubEditor_Form
             antes = _draft?.Clone()
             _draft.Record.EditorID = edid
             _draft.Record.ReemplazarSustituciones(subs)
-            ' Dirty only on a REAL change (mirror of ArmA/ArmO): an OVERRIDE opened and OK'd without edits is not
-            ' marked modified, so the saver won't re-emit an identical MSWP override. NEW drafts are always dirty.
+            ' Sucio sólo ante un cambio REAL y contra la LÍNEA DE BASE PRISTINA (espejo de ARMA/ARMO): un
+            ' OVERRIDE abierto y aceptado sin editar nada no se marca modificado, así que el saver no
+            ' re-emite un MSWP idéntico — pero uno que YA venía editado sí queda sucio y sí se emite, que
+            ' es lo que antes se perdía. Los NUEVOS son siempre sucios. Ver `Borradores.SucioContraLaBase`.
             If Not _draft.IsNew Then
-                _draft.IsModified = (_openSnapshot Is Nothing) OrElse Not _draft.ContentEquals(_openSnapshot)
+                _draft.IsModified = Borradores.SucioContraLaBase(_base IsNot Nothing,
+                                                                 _draft.ContentEquals(_base))
             End If
         Catch ex As Exception
             ' Primero deshacer, después avisar, y NO cerrar: el borrador vive en MainForm y el árbol es

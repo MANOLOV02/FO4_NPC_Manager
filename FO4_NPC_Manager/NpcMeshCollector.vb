@@ -2143,25 +2143,10 @@ Friend NotInheritable Class NpcMeshCollector
         Dim cached As UInteger
         If _candidateTagsEnCanalCache.TryGetValue(meshKey, cached) Then Return cached And canal
 
-        Dim result As UInteger = 0UI
-        Try
-            Dim bytes = FilesDictionary_class.GetBytes(meshKey)
-            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                Dim nif As New Nifcontent_Class_Manolo()
-                nif.Load_Manolo(bytes)
-                For Each shp In nif.GetShapes()
-                    Dim subIdx = TryCast(shp, BSSubIndexTriShape)
-                    If subIdx Is Nothing Then Continue For
-                    ' Todos los tags de la banda [30,61] → su bit. El recorte al canal va afuera.
-                    For Each tag In BSTriShapeGeometry.GetBipedObjects(subIdx)
-                        If tag >= 30UI AndAlso tag <= 61UI Then result = result Or (1UI << CInt(tag - 30UI))
-                    Next
-                Next
-            End If
-        Catch ex As Exception
-            ' Mesh unreadable / unknown blocks / no segments → 0 (safe under-hide: show the hair).
-            result = 0UI
-        End Try
+        ' La lectura del archivo vive en SlotsDeLaMalla (sede única, compartida con el resolvedor de
+        ' material y con el editor). Acá sólo queda la caché y el recorte al canal. Malla ilegible ⇒
+        ' Nothing ⇒ 0, igual que antes (safe under-hide: se muestra el pelo).
+        Dim result As UInteger = If(SlotsDeLaMalla.DeLaMalla(meshKey, SlotsDeLaMalla.ModoDeLectura.SegmentosBiped)?.Mascara, 0UI)
 
         _candidateTagsEnCanalCache(meshKey) = result
         result = result And canal
@@ -2185,27 +2170,10 @@ Friend NotInheritable Class NpcMeshCollector
         Dim cached As UInteger
         If _candidatePartitionSlotMaskCache.TryGetValue(meshKey, cached) Then Return cached
 
-        Dim result As UInteger = 0UI
-        Try
-            Dim bytes = FilesDictionary_class.GetBytes(meshKey)
-            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                Dim nif As New Nifcontent_Class_Manolo()
-                nif.Load_Manolo(bytes)
-                For Each shp In nif.GetShapes()
-                    Dim dism = TryCast(nif.GetBlock(Of NiSkinInstance)(shp.SkinInstanceRef), BSDismemberSkinInstance)
-                    If dism Is Nothing OrElse dism.Partitions Is Nothing Then Continue For
-                    For Each p In dism.Partitions
-                        ' Ley del plegado: BipedSlots.FoldPartitionBodyPart (una sola sede). El filtro
-                        ' [30,61] es de ESTE call site, no de la ley — ver su doc.
-                        Dim v = BipedSlots.FoldPartitionBodyPart(CInt(p.BodyPart))
-                        If v >= 30 AndAlso v <= 61 Then result = result Or (1UI << (v - 30))
-                    Next
-                Next
-            End If
-        Catch ex As Exception
-            ' Mesh unreadable / unknown blocks → 0 (fallback whole-node cull, matches engine SetAppCulled).
-            result = 0UI
-        End Try
+        ' La lectura del archivo (y el plegado, y el filtro [30,61]) viven en SlotsDeLaMalla: sede única.
+        ' Malla ilegible ⇒ Nothing ⇒ 0, que es el mismo valor que «leída y sin particiones» y cae en el
+        ' fallback de cull de nodo entero del motor (SetAppCulled), igual que antes.
+        Dim result As UInteger = If(SlotsDeLaMalla.DeLaMalla(meshKey, SlotsDeLaMalla.ModoDeLectura.ParticionesDismember)?.Mascara, 0UI)
 
         _candidatePartitionSlotMaskCache(meshKey) = result
         Return result

@@ -47,6 +47,15 @@
     <InternalsVisibleTo Include="SlotResolutionProbe" />
     <InternalsVisibleTo Include="ContextoPropioGate" />
     <InternalsVisibleTo Include="OutfitDraftSaveGate" />
+    <!-- ⛔ EL ÚNICO TESTIGO de las tres leyes que un editor de borrador aplica sobre el registro:
+         ABRIR (¿el borrador manda sobre el disco?), ENSUCIAR (¿contra qué se compara la suciedad?) y
+         ABANDONAR (¿el registro que hay bajo este FormID lo puse yo?). Vivían escritas a mano dentro de
+         tres Form de WinForms, que no se instancian desde una consola: NO SE PODÍAN MEDIR, y por ese
+         hueco pasaron tres defectos que le perdían trabajo al usuario en silencio. `TomaDeBorrador`,
+         `ArmoEditor_Form.OverridePristino` y `SintetizarEdidSiFalta` son Friend y así se quedan: el
+         testigo LLAMA al sujeto. Ver Tools/BorradorTrasReaperturaGate y
+         00-reglas-el-testigo-tiene-que-compartir-el-codigo-del-sujeto. -->
+    <InternalsVisibleTo Include="BorradorTrasReaperturaGate" />
     <!-- ⛔ GATE DE BUILD del parser del buscador. Era el flag `filter-selftest` DENTRO de este exe (233
          líneas + una entrada en la ayuda); salió el 2026-08-08 porque un parser de strings da lo mismo en
          toda máquina y no tiene por qué viajar con lo que se distribuye. Llega a NpcFilterQuery / NpcFilterFacet /
@@ -78,6 +87,11 @@
          SlotsCubiertosPorOtroModelo), que son Friend. Un gate con su propia copia de la ley mediria su
          copia, no la de produccion. -->
     <InternalsVisibleTo Include="OclusionCanonicaGate" />
+    <!-- Ejerce la POLITICA del boton "Slots declared by the models..." (SlotsDelModelo.Proponer /
+         MascaraAplicada / FueraDeBandaSeOculta), que es Friend porque es decision de producto de esta
+         app y no ley del motor. La LEY que si es del motor vive en FO4_Base_Library.SlotsDeLaMalla y es
+         publica: el gate la ejerce sin IVT. -->
+    <InternalsVisibleTo Include="SlotsDelModeloGate" />
   </ItemGroup>
 
   <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save

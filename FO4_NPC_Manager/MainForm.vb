@@ -3855,17 +3855,30 @@ Public Class MainForm
     ''' <summary>True if <paramref name="edid"/> is free for a new owned ARMO/ARMA/MSWP record: not used by
     ''' another draft (any kind) or any loaded record. EditorIDs are globally unique. Reuses the outfit-draft
     ''' check (which already covers OTFT/LVLI drafts + AllRecords) and adds the armor draft kinds.</summary>
-    Friend Function IsRecordEditorIdAvailable(edid As String) As Boolean
+    ''' <param name="exceptoEsteBorrador">El borrador que se está editando, para que su PROPIO EditorID no
+    ''' se reporte como tomado por él mismo.
+    ''' <para>⛔ SE PREGUNTA POR IDENTIDAD (<c>Is</c>), no porque el texto coincida. El llamador tenía el
+    ''' atajo «si el EditorID no cambió, no consulto», y eso confunde «es el mío» con «se llama igual»:
+    ''' un CLON hereda el EditorID de su fuente en el árbol, así que el texto coincidía, el chequeo no
+    ''' corría, y quedaban dos borradores NUEVOS con el mismo EditorID. Al guardar, el desempate
+    ''' (<c>MakeUniqueEditorId</c>) le pone <c>_2</c> a UNO de los dos según el orden de la lista —que el
+    ''' volcado del preview reordena—, así que podía terminar renombrando el ORIGINAL y dejándole el
+    ''' nombre bueno a la copia. Es la misma confusión que esta ola vino a cerrar en la reversión.</para>
+    ''' <para>Nothing ⇒ no se exceptúa a nadie (es la pregunta cruda «¿está libre?»).</para></param>
+    Friend Function IsRecordEditorIdAvailable(edid As String, exceptoEsteBorrador As Object) As Boolean
         If String.IsNullOrWhiteSpace(edid) Then Return False
         For Each d In _armoDrafts
+            If d Is exceptoEsteBorrador Then Continue For
             If String.Equals(d.Record.EditorID, edid,
                              StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         For Each d In _armaDrafts
+            If d Is exceptoEsteBorrador Then Continue For
             If String.Equals(d.Record.EditorID, edid,
                              StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         For Each d In _mswpDrafts
+            If d Is exceptoEsteBorrador Then Continue For
             If String.Equals(d.Record.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         Return IsOutfitEditorIdAvailable(edid)

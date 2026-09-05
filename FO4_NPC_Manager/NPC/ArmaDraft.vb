@@ -86,13 +86,29 @@ Public Class ArmaDraft
                                 formIDNuevo As UInteger) As ArmaDraft
         Dim d = Edicion(rec, plugins)
         If d Is Nothing Then Return Nothing
-        d.FormID = formIDNuevo
-        d.IsOverride = False
-        d.IsNew = True
-        ' La identidad del clon la pone `Borradores`, no cada borrador: `Clon` existe hoy en dos de
-        ' los cinco, y la ley tiene que estar donde la encuentre el tercero.
+        Return ClonDesdeCopia(d.Record, formIDNuevo)
+    End Function
+
+    ''' <summary>La cola COMÚN de todo clon: exigir la copia y darle identidad nueva. Gemela de la de
+    ''' <c>ArmoDraft</c>; el porqué está allá.</summary>
+    Private Shared Function ClonDesdeCopia(copia As Canon.IArma, formIDNuevo As UInteger) As ArmaDraft
+        Borradores.ExigirRecord(copia, "ARMA", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Dim d As New ArmaDraft With {.Record = copia, .FormID = formIDNuevo,
+                                     .IsOverride = False, .IsNew = True}
         Borradores.ReidentificarComoClon(d.Record, formIDNuevo)
         Return d
+    End Function
+
+    ''' <summary>Un record NUEVO a partir de un BORRADOR PROPIO que el usuario ya está editando. Gemela
+    ''' de <c>ArmoDraft.ClonDeBorrador</c>; el porqué —incluido por qué NO se le cambia la firma a
+    ''' <see cref="Clon"/>— está allá.</summary>
+    Public Shared Function ClonDeBorrador(origen As ArmaDraft, formIDNuevo As UInteger) As ArmaDraft
+        If origen Is Nothing OrElse origen.Record Is Nothing Then
+            Throw New ArgumentException(
+                "ClonDeBorrador necesita un borrador CON record: sin él no hay árbol que copiar y el " &
+                "editor abriría vacío en vez de con la copia que el usuario pidió.", NameOf(origen))
+        End If
+        Return ClonDesdeCopia(origen.Record.Copia(), formIDNuevo)
     End Function
 
     '==============================================================================================
