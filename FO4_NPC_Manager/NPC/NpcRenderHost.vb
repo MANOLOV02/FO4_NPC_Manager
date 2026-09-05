@@ -462,6 +462,18 @@ Friend Class NpcRenderHost
         Dim sseHeadMask As UInteger = If(isSse,
             NpcMeshCollector.HeadPartHideMask(LastRenderData.HeadHairSlotMask, occupiedVisible, tablaDeSlots), 0UI)
 
+        ' ⛔ POR QUÉ "Render headwear" OFF NO le saca la gorra al escudero, y por qué NO se arregla acá.
+        ' `ClothesSquire` (BOD2 {30,33,34,35}) cubre cabeza y cuerpo en UNA sola malla, así que no cae en
+        ' la categoría `Headwear` y ocultarlo entero escondería el traje. La idea era zapear por segmento
+        ' su rebanada de cabeza — y NO SE PUEDE: medido, `Clothes\Squire\Squire.nif` no trae NINGÚN tag
+        ' de segmento (sus dos shapes dan el set vacío), o sea que gorra y cuerpo son la misma geometría
+        ' indiferenciada y no hay nada que seleccionar.
+        ' Y el zap tampoco servía para el resto: de los 46 ARMO de Fallout que cubren cabeza Y cuerpo,
+        ' sólo 4 mallas traen un tag de la región de cabeza (MHat, MHelmet, MHelmetDamaged,
+        ' GrandmaMonkHat) y esas cuatro son mallas SEPARADAS cuyo candidato toma el slot del ARMA, así que
+        ' ya salen como `Headwear` y el toggle ya las alcanza. Cero casos ganados ⇒ era código muerto.
+        ' Alcance de lo que queda sin resolver: 8 NPC en Fallout (escuderos) y 3 en Skyrim, dos de los
+        ' cuales son un fantasma y el jinete sin cabeza.
         Dim fase2FO4 As UInteger = 0UI
         If Not isSse Then
             fase2FO4 = NpcMeshCollector.SlotsDeFase2(tablaDeSlots, LastRenderData.HeadHairFirstBit) Or

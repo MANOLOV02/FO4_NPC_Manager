@@ -442,7 +442,9 @@ Friend NotInheritable Class NpcMeshCollector
         ' ap_armor_Lining/Tier/Size), el shared early-returns sin emitir candidates.
         ' Capa V2 ahora SÍ aplica a biped: el gate Fase 2.5 fue removido. Toda shape con
         ' MountSocket recibe el mount vía RE-BIND de su skin (huesos del esqueleto intactos).
-        CollectOmodChunkCandidates(omodResolution, "ARMO", state, candidates, order, warnings)
+        ' El ARMO está en mano: su BOD2 es lo que hace que un casco montado por socket cuente como
+        ' headwear para el toggle. Por el otro camino (NPC_) no hay ítem y va 0.
+        CollectOmodChunkCandidates(omodResolution, armo.SlotMaskDe(), "ARMO", state, candidates, order, warnings)
 
         Dim addonOrder As List(Of UInteger)
         If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
@@ -868,7 +870,9 @@ Friend NotInheritable Class NpcMeshCollector
         ' Delegate to shared OMOD chunk-mounting collector (robot + biped share capas 1+2:
         ' coord fix + socket disambig). Capa 3 (V2 SKEL-OVERRIDE) aplica a robot Y biped
         ' (gate Fase 2.5 removido).
-        CollectOmodChunkCandidates(resolution, "NPC_", state, candidates, order, warnings)
+        ' Chunks de robot y de criatura: salen del record del NPC, no de un ARMO, así que no hay slots
+        ' que heredar. Es lo que deja los CUERNOS DE BRAHMIN fuera del toggle de headwear.
+        CollectOmodChunkCandidates(resolution, 0UI, "NPC_", state, candidates, order, warnings)
     End Sub
 
     ''' <summary>Shared OMOD chunk-mounting candidate emit. Toma una CombinationResolution
@@ -877,7 +881,11 @@ Friend NotInheritable Class NpcMeshCollector
     ''' origen ("NPC_" robot, "ARMO" biped) y se propaga al candidate para downstream
     ''' filtering. La capa V2 SKEL-OVERRIDE NO vive aquí — se colecta en CollectV2PlanForShape
     ''' (shape loop) y se aplica en ApplyMountPlanForActor. Robot Y biped por igual.</summary>
+    ''' <param name="ownerSlotMask">BOD2 del ítem del que cuelgan estos chunks, o 0 cuando no hay ítem
+    ''' con slots (camino <c>NPC_</c>: robots y criaturas). Viaja al candidato como
+    ''' <see cref="MainForm.MeshCandidate.MountOwnerSlotMask"/> y lo consume SÓLO la categoría de display.</param>
     Private Sub CollectOmodChunkCandidates(resolution As ObjectTemplateResolver.CombinationResolution,
+                                           ownerSlotMask As UInteger,
                                            formType As String,
                                            state As MainForm.NPCVisualState,
                                            candidates As List(Of MainForm.MeshCandidate),
@@ -1097,6 +1105,7 @@ Friend NotInheritable Class NpcMeshCollector
                 .SourceFormID = omod.FormID,
                 .ChunkOmodFormID = omod.FormID,
                 .AttachPointKywdEditorId = apEditorId,
+                .MountOwnerSlotMask = ownerSlotMask,
                 .MountApIdx = apIdx,
                 .MountSocket = socket,
                 .SkeletonFallbackSocket = skelFallbackSocket,
@@ -2219,7 +2228,12 @@ Friend NotInheritable Class NpcMeshCollector
         Dim A_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Over)
         Dim HEADWEAR As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Headwear)
 
-        Dim slot = candidate.SlotMask
+        ' ⛔ Un ATTACHMENT no declara slots (monta por socket), así que para decidir su CATEGORÍA DE
+        ' DISPLAY se usa el BOD2 del ítem del que cuelga. Sin esto, un casco montado por OMOD —el minero,
+        ' el headlamp— cae en `Other` y "Render headwear" no lo alcanza: medido, 10 NPC de Fallout.
+        ' ⛔ Esto NO le da slots: `SlotMask` sigue en 0 y el chunk sigue fuera de la tabla de bipeds.
+        Dim slot = If(candidate.Kind = MainForm.MeshCandidateKind.Attachment,
+                      candidate.MountOwnerSlotMask, candidate.SlotMask)
         Dim touchesBody = (slot And BODY_MASK) <> 0UI
         Dim touchesU = (slot And U_MASK) <> 0UI
         Dim touchesA = (slot And A_MASK) <> 0UI
@@ -2234,7 +2248,11 @@ Friend NotInheritable Class NpcMeshCollector
         ' (raro, ej. casco-cuello combinado) gana la categoría de cuerpo — el toggle headwear no
         ' debería desaparecer una pieza que también cubre torso. Evaluar antes que las otras
         ' porque las otras no chequean bits 16-19 que algunos headwear (Headband) usan en exclusiva.
-        If touchesHeadwear AndAlso Not touchesBodyParts AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.Headwear
+        ' Vale para un ítem equipado y para un chunk que cuelga de uno: en los dos casos `slot` son los
+        ' slots del ítem. Un chunk sin ítem (robot, criatura) trae 0 y no entra acá.
+        If touchesHeadwear AndAlso Not touchesBodyParts AndAlso
+           (candidate.Kind = MainForm.MeshCandidateKind.Outfit OrElse
+            candidate.Kind = MainForm.MeshCandidateKind.Attachment) Then Return MainForm.ShapeRenderCategory.Headwear
         ' Body skin desnudo: Kind=Skin con BODY (cubre torso+piernas+pies en FO4 — no hay slot feet).
         If touchesBody AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin Then Return MainForm.ShapeRenderCategory.BodySkin
         ' Naked hands: Skin con bits hand y sin BODY.

@@ -507,6 +507,18 @@ Public Class MainForm
         ''' transform once resolved (Nothing if no socket matches; chunk falls back to origin).</summary>
         Public ChunkOmodFormID As UInteger
         Public AttachPointKywdEditorId As String = ""
+        ''' <summary>Los slots que declara el ÍTEM del que cuelga este chunk (su BOD2), o 0 si no cuelga
+        ''' de un ítem con slots — que es el caso de los chunks de robot y de criatura, que salen del
+        ''' record del NPC y no de un ARMO.
+        ''' <para>⛔ SÓLO para la categoría de display y el toggle. <see cref="SlotMask"/> se queda en 0 a
+        ''' propósito: un attachment monta por SOCKET y NO está en la tabla de bipeds, así que no participa
+        ''' del reparto de slots ni de la oclusión per-slot.</para>
+        ''' <para>⛔ Y NO se deduce del hueso del socket, que sería una heurística con contraejemplo
+        ''' medido: 16 NPC vanilla llevan CUERNOS DE BRAHMIN montados como chunk, y los cuernos cuelgan del
+        ''' hueso de la cabeza. Por hueso, "Render headwear" les arrancaría los cuernos. El BOD2 del ítem
+        ''' no se confunde: `Armor_MiningHelmet` (001240F1) declara {30,46}; los cuernos no vienen de
+        ''' ningún ARMO.</para></summary>
+        Public MountOwnerSlotMask As UInteger = 0UI
         ''' <summary>AttachPointIndex carried from the OBTS Include that referenced this OMOD.
         ''' For multi-instance sockets (P-X|0/|1/|2 like Mr Handy arms or eyes) this picks which
         ''' indexed socket to mount on. For single-socket APs (P-X) it's typically 0 and the
