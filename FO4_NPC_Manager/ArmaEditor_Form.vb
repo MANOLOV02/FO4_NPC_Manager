@@ -87,6 +87,14 @@ Public Class ArmaEditor_Form
     Private _host As NpcRenderHost
     Private _previewDraftRegistered As Boolean
     Private _previewArmaWrapperRegistered As Boolean
+    ' Memo de SlotsDeLasMallasDelBorrador: clave = las dos rutas de modelo. Ver su doc.
+    Private _claveMallasMemo As String = Nothing
+    Private _mascaraMallasMemo As UInteger = 0UI
+    ' Memo de BitPipboyDeLasRazas: clave = las razas que sirve el ARMA. Ver su doc.
+    Private _claveRazasMemo As String = Nothing
+    Private _bitPipboyMemo As UInteger = 0UI
+    Private _razaResueltaMemo As Boolean = False
+    Private _razasMemoValido As Boolean = False
     Private _lastPreviewKey As String = Nothing
     Private _previewInProgress As Boolean
     ''' <summary>Ya se avisó que el volcado del preview falló. Se avisa UNA vez: el temporizador vuelve
@@ -778,6 +786,9 @@ Public Class ArmaEditor_Form
     ' =====================================================================
 
     Private Sub LoadDraftIntoPanels()
+        ' El memo de las mallas es del BORRADOR: cambiar de borrador lo invalida.
+        _claveMallasMemo = Nothing : _mascaraMallasMemo = 0UI
+        _claveRazasMemo = Nothing : _bitPipboyMemo = 0UI : _razaResueltaMemo = False : _razasMemoValido = False
         _loading = True
         Try
             RefreshEditorIdField()
@@ -1692,6 +1703,7 @@ Public Class ArmaEditor_Form
         If pm Is Nothing Then Return 0UI
 
         Dim fids As New List(Of UInteger)()
+        ' (el memo se arma con esta lista; ver el bloque de abajo)
         Dim rnam = GetFid(TextBoxRace)
         If rnam = 0UI AndAlso _draft IsNot Nothing AndAlso _draft.Record IsNot Nothing Then rnam = _draft.Record.Race
         If rnam = 0UI Then rnam = _raceFormID
@@ -1706,6 +1718,25 @@ Public Class ArmaEditor_Form
             Logger.Log($"[ARMA-SLOTS] no se pudieron leer las razas adicionales: {ex.Message}")
         End Try
 
+        ' ⛔ MEMO, y no por gusto: desde que el envoltorio de la vista previa llama a esta función,
+        ' corre en CADA disparo del debounce de 400 ms, antes del corto-circuito por `_lastPreviewKey`
+        ' y antes de cualquier `Await` — o sea en el hilo de UI. Sin esto, sacamos dos parseos de NIF
+        ' por tick y pusimos N parseos de RACE en el mismo lugar, y en Fallout un RACE es de los
+        ' records más grandes. La clave son las razas mismas; se limpia con el borrador.
+        ' ⛔ Con `_claveRazasMemo` en Nothing y `fids` vacía, `claveRazas` vale "" y en VB `"" = Nothing`
+        ' da True: sin la bandera, la primera llamada de un ARMA sin ninguna raza devolvería el memo sin
+        ' calcular. Hoy acertaría por COINCIDENCIA (el loop no correría y daría 0/False igual), y con
+        ' Option Strict apagado ésta es justo la clase que no avisa.
+        ' ⛔ Y una consecuencia del memo que conviene tener presente: antes, un fallo de resolución se
+        ' reintentaba en cada tick y un transitorio se auto-curaba en 400 ms; ahora el fail-closed de FO4
+        ' PERSISTE hasta recargar el borrador. Los modos de falla son determinísticos dado (razas, load
+        ' order), así que no cuesta nada — pero «fail-closed + memo» se lee mejor dicho que deducido.
+        Dim claveRazas = String.Join(",", fids)
+        If _razasMemoValido AndAlso claveRazas = _claveRazasMemo Then
+            algunaResuelta = _razaResueltaMemo
+            Return _bitPipboyMemo
+        End If
+
         Dim bits As UInteger = 0UI
         For Each rf In fids
             Dim rec = pm.GetRecord(rf)
@@ -1717,6 +1748,10 @@ Public Class ArmaEditor_Form
                 Logger.Log($"[ARMA-SLOTS] no se pudo leer el Pipboy Biped Object de la raza 0x{rf:X8}: {ex.Message}")
             End Try
         Next
+        _claveRazasMemo = claveRazas
+        _razasMemoValido = True
+        _bitPipboyMemo = bits
+        _razaResueltaMemo = algunaResuelta
         Return bits
     End Function
 
@@ -1739,23 +1774,18 @@ Public Class ArmaEditor_Form
         End If
 
         If mascaraPadre <> 0UI Then
-            ' ⛔ Y la advertencia que falta acá: la herencia es del PLUGIN, no de la vista previa. Con
-            ' el alcance «sólo este addon» el editor arma un ARMO descartable SIN slots, así que un
-            ' addon con BOD2 vacío no es dueño de nada y la vista previa lo esconde igual. Sin esta
-            ' línea el cartel dice «está todo bien» al lado de una vista previa vacía, que es
-            ' exactamente el bucle del reporte original.
+            ' ⛔ Acá HUBO una nota que avisaba que la herencia no aplicaba a la vista previa, porque el
+            ' ARMO descartable nacía SIN slots y escondía la geometría. Se fue junto con el defecto que
+            ' describía: desde que el envoltorio declara lo que declara la malla
+            ' (`SlotsDelModelo.BipedDelEnvoltorio`), un addon con BOD2 vacío cuya malla declara algo SE
+            ' VE en ese alcance. Lo único que le quedaba de dominio era el estado en que el borrador y
+            ' el panel están desincronizados —y ahí, además, hablaba de una vista previa que sin NPC de
+            ' contexto ni siquiera existe—. ⛔ Si alguna vez se revierte el envoltorio, vuelve la nota.
             Return "This addon declares no slot of its own, so in the plugin it INHERITS the armor's" &
                    If(nombrePadre = "", "", $" ({nombrePadre})") & ": " & TextoDeSlots(mascaraPadre) & "." &
                    Environment.NewLine &
                    "Ticking anything here makes it declare its own slots and STOP inheriting, so it will no " &
-                   "longer occupy the rest." &
-                   If(Not VistaPreviaUsaElEnvoltorio(), "",
-                      Environment.NewLine &
-                      "Note: with the preview scope you have selected, that inheritance does NOT apply. " &
-                      "Previewing just this addon wraps it in a throwaway armor with no slots, so with an " &
-                      "empty BOD2 nothing owns a slot for it and the preview hides its geometry anyway. " &
-                      "That is a known limitation of the preview, not a problem with this addon: switching " &
-                      "the preview to Full armor shows it inherited.")
+                   "longer occupy the rest."
         End If
 
         Dim quien As String
@@ -2187,9 +2217,79 @@ Public Class ArmaEditor_Form
             Dim m = sseW.AgregarArmature()
             If m IsNot Nothing Then m.ModelFilename = armaFid
         End If
+        ' ⛔ El envoltorio DECLARA, y sin esto nace en 0: como `ArmaGeometryMask` hereda del ARMO
+        ' cuando la ARMA no declara nada, un addon con BOD2 vacío no es dueño de NINGÚN slot,
+        ' `MeterAdjunto` lo rechaza y la fase 1 —sin dueño = cubierto— le esconde la geometría entera.
+        ' La ley (y por qué sólo cuando la ARMA no declara, y por qué se descuenta el Pip-Boy) vive en
+        ' `SlotsDelModelo.BipedDelEnvoltorio`, que es lo que el gate recorre.
+        ' ⛔ Consecuencia ACEPTADA por escrito: en el caso que esto destraba, la ARMA pasa a ser dueña de
+        ' esos slots, así que el preview puede ocluir pelo/barba (`wornEquipMask` y la fase 2), tapar el
+        ' cuerpo con «Include Body» (`IsCoveredByOutfit`) y cambiar el alcance de «Render headwear»
+        ' (`ClassifyShapeCategory`). Es lo que hace el motor con esa prenda puesta. Medido: en Fallout
+        ' 57 de 65 mallas declaran un bit de los canales de la raza (Tools/SlotsDelModeloProbe, línea
+        ' «RIESGO REAL DE H-B2»), o sea que allá es el caso NORMAL, no un borde. En Skyrim, 373 de 1155.
+        wrapper.Record.PonerSlotMaskEn(BipedDelEnvoltorioDeEsteBorrador(_draft.Record.SlotMaskDe()))
         _mainForm.RegisterArmoDraft(wrapper)
         _previewArmaWrapperRegistered = True
         Return PreviewArmoWrapperFormID
+    End Function
+
+
+    ''' <summary>Los biped slots que DECLARAN las mallas de este borrador (MOD2 male ∪ MOD3 female),
+    ''' con el lector del juego. Es lo que el ARMO descartable del preview declara para que la ARMA sea
+    ''' dueña de su propia geometría en el alcance «sólo este addon».
+    ''' <para>⛔ MEMOIZADO por la pareja de rutas, y no por gusto: esto corre en
+    ''' <see cref="EnsureArmaPreviewWrapper"/>, que se llama ANTES del corto-circuito por
+    ''' <c>_lastPreviewKey</c> y antes de cualquier <c>Await</c> — o sea en el hilo de UI, cada vez que
+    ''' el debounce de 400 ms dispara, incluso en los refrescos que después se descartan. Sin memo son
+    ''' dos lecturas de BA2 y dos parseos de NIF por disparo del debounce (cada 400 ms de pausa de
+    ''' tipeo), no por tecla.</para>
+    ''' <para>⛔ AGUJERO DECLARADO: si el usuario re-exporta el NIF desde Outfit Studio SIN cambiar la
+    ''' ruta, el memo sirve la máscara vieja. Se limpia al recargar el borrador, pero eso no alcanza para
+    ''' el re-export con la ventana abierta. Queda escrito, no tapado.</para></summary>
+    Private Function SlotsDeLasMallasDelBorrador() As UInteger
+        If _draft Is Nothing OrElse _draft.Record Is Nothing Then Return 0UI
+        Dim rutaM = If(_draft.Record.MaleModelFilename, "")
+        Dim rutaF = If(_draft.Record.FemaleModelFilename, "")
+        Dim clave = rutaM & "|" & rutaF
+        If clave = _claveMallasMemo Then Return _mascaraMallasMemo
+        Dim modo = SlotsDeLaMalla.LecturaDelJuego(JuegoDeLaSesion())
+        _mascaraMallasMemo = SlotsDelModelo.Leer(rutaM, modo).Mascara Or
+                             SlotsDelModelo.Leer(rutaF, modo).Mascara
+        _claveMallasMemo = clave
+        Return _mascaraMallasMemo
+    End Function
+
+    ''' <summary>El juego de la sesión, en el tipo que toman las sedes. UNA sola forma de contestarlo en
+    ''' este formulario: <c>SessionGame()</c> devuelve <c>WbGame</c>, que es OTRO enum, y con Option
+    ''' Strict apagado la conversión sería muda.</summary>
+    Private Shared Function JuegoDeLaSesion() As Config_App.Game_Enum
+        Return If(Canon.CanonBridge.SessionGame() = Canon.WbGame.Skyrim,
+                  Config_App.Game_Enum.Skyrim, Config_App.Game_Enum.Fallout4)
+    End Function
+
+    ''' <summary>El BOD2 que le corresponde al ARMO descartable del preview. Separado del envoltorio
+    ''' para que el llamador quede legible y para que las tres máscaras vayan por ARGUMENTO CON NOMBRE:
+    ''' son tres <c>UInteger</c> contiguos y el compilador no los distingue — intercambiar dos apagaría
+    ''' el fix en silencio, y este call site vive en un Form, que es lo único que ningún arnés mira.</summary>
+    ''' <param name="bod2DelArma">El BOD2 lo pone el LLAMADOR con SU fuente, y NO se lee acá adentro.
+    ''' <para>⛔ Hoy hay UN solo llamador —el envoltorio, que corre después del volcado y pasa el del
+    ''' borrador—, y el parámetro parece de más. NO lo saques: hubo un segundo llamador (el aviso del
+    ''' diálogo, que corría desde un clic y tenía que pasar el del PANEL, la misma fuente que su propio
+    ''' gate), y leer el BOD2 adentro hacía que `= 0` significara dos cosas OPUESTAS —«la ARMA ya
+    ''' declara, así que se ve» y «no hay nada que declarar, así que se esconde»—, con el cartel
+    ''' afirmando que la vista previa lo escondía mientras la vista previa lo mostraba. Ese aviso se
+    ''' borró junto con el defecto que describía, pero puede volver si alguna vez se revierte el
+    ''' envoltorio: con el parámetro adentro, el defecto volvería con él y en silencio.</para></param>
+    Private Function BipedDelEnvoltorioDeEsteBorrador(bod2DelArma As UInteger) As UInteger
+        If _draft Is Nothing OrElse _draft.Record Is Nothing Then Return 0UI
+        Dim razaResuelta As Boolean = False
+        Dim bitPipboy = BitPipboyDeLasRazas(razaResuelta)
+        Return SlotsDelModelo.BipedDelEnvoltorio(slotsDeLaMalla:=SlotsDeLasMallasDelBorrador(),
+                                                 bod2DelArma:=bod2DelArma,
+                                                 bitPipboy:=bitPipboy,
+                                                 razaResuelta:=razaResuelta,
+                                                 juego:=JuegoDeLaSesion())
     End Function
 
     ' =====================================================================

@@ -9,7 +9,7 @@
 ''' <para>⛔ Las tres decisiones que sostienen este módulo salen de MEDICIÓN sobre el load order
 ''' instalado, no de criterio: (1) el botón NUNCA destilda, porque 550 ARMA de Skyrim y 29 de Fallout
 ''' declaran slots SIN geometría a propósito y así es como el motor desaloja lo que había; (2) la unión
-''' de los dos géneros no se aplica en bloque, porque 21 de los 39 ARMA de Skyrim a los que el botón
+''' de los dos géneros no se aplica en bloque, porque 21 de los 28 ARMA de Skyrim (⛔ el denominador es del load order INSTALADO y se mueve cuando el usuario edita: era 39) a los que el botón
 ''' agregaría algo traen ese bit de UN SOLO género; (3) el tag del Pip-Boy se descuenta, porque sin eso
 ''' el botón le propondría el slot 60 a los 51 brazos izquierdos de armadura del vanilla.</para></summary>
 Friend Class SlotsDelModelo
@@ -169,7 +169,7 @@ Friend Class SlotsDelModelo
         Ninguno = 7
     End Enum
 
-    ''' <summary>La atribución de UN slot. Medido: 21 de los 39 ARMA de Skyrim a los que el botón
+    ''' <summary>La atribución de UN slot. Medido: 21 de los 28 ARMA de Skyrim (⛔ el denominador es del load order INSTALADO y se mueve cuando el usuario edita: era 39) a los que el botón
     ''' agregaría algo traen ese bit de un solo género, así que esta etiqueta no es cosmética — es lo
     ''' que evita que el usuario le regale a un género un slot que sólo dibuja el otro.</summary>
     ''' <param name="p">La propuesta.</param>
@@ -208,6 +208,41 @@ Friend Class SlotsDelModelo
     ''' <param name="elegidos">Los bits que el usuario tildó en el diálogo.</param>
     Friend Shared Function MascaraAplicada(actual As UInteger, elegidos As UInteger) As UInteger
         Return actual Or elegidos
+    End Function
+
+    ''' <summary>Qué BOD2 declara el ARMO DESCARTABLE que sostiene una ARMA en el alcance «sólo este
+    ''' addon» de la vista previa. Sin esto nace en 0, y como <c>EquipResolver.ArmaGeometryMask</c>
+    ''' hereda del ARMO cuando la ARMA no declara nada, el addon no es dueño de NINGÚN slot:
+    ''' <c>MeterAdjunto</c> lo rechaza y la fase 1 —donde «sin dueño = cubierto»— le esconde la
+    ''' geometría entera. Ése es el motivo por el que «sólo este addon» mostraba vacío mientras
+    ''' «Full armor» con el ARMO padre real mostraba bien.
+    ''' <para>⛔ SÓLO cuando la ARMA no declara. Es la MISMA condición que gobierna
+    ''' <c>ArmaGeometryMask</c> —el ARMO sólo importa cuando el ARMA no declara— y es lo que mantiene
+    ''' inertes las otras puertas del BOD2 del ARMO. Sin ella, un ARMA que YA declara vería cambiar
+    ''' <c>wornEquipMask</c> y se le apagaría el pelo del NPC, que hoy funciona bien.</para>
+    ''' <para>⛔ El tag del Pip-Boy se DESCUENTA, y NO por lo mismo que en el botón: su visibilidad no
+    ''' depende del dueño (<c>BSTriShapeGeometry.SegmentoOculto</c> devuelve el estado del dispositivo
+    ''' sin mirar la cobertura), así que declararlo no lo muestra — y en cambio dejaría la máscara
+    ''' valiendo EXACTAMENTE ese bit, que <c>NpcMountingResolver</c> compara por IGUALDAD y toma por un
+    ''' Pip-Boy suelto. Medido (<c>Tools/SlotsDelModeloProbe</c>, línea «mallas cuya mascara es
+    ''' EXACTAMENTE ese bit»): en Fallout, <b>146</b> mallas del corpus tienen por máscara EXACTAMENTE
+    ''' ese bit — que es la propiedad fuerte que hace falta acá, no la de «lo incluyen».</para>
+    ''' <para>⛔ El fail-closed de la raza es FO4-only: en Skyrim no hay tag con regla propia ni
+    ''' consumidor que se confunda (<c>NpcMountingResolver</c> corta con un gate de juego), así que
+    ''' cerrar allá sólo costaría el caso que el usuario reportó. Y el juego va POR PARÁMETRO y no
+    ''' derivado adentro, por lo mismo que <see cref="SlotsDeLaMalla.ModoDeLectura"/>: el default de
+    ''' <c>Config_App.Current.Game</c> es Skyrim.</para></summary>
+    ''' <param name="slotsDeLaMalla">Unión de lo que declaran MOD2 y MOD3.</param>
+    ''' <param name="bod2DelArma">BOD2 propio de la ARMA.</param>
+    ''' <param name="bitPipboy">Unión de los biped objects de Pip-Boy de las razas que sirve.</param>
+    ''' <param name="razaResuelta">False si no se pudo resolver NINGUNA de sus razas.</param>
+    ''' <param name="juego">El juego de la sesión, resuelto por el llamador.</param>
+    Friend Shared Function BipedDelEnvoltorio(slotsDeLaMalla As UInteger, bod2DelArma As UInteger,
+                                              bitPipboy As UInteger, razaResuelta As Boolean,
+                                              juego As Config_App.Game_Enum) As UInteger
+        If bod2DelArma <> 0UI Then Return 0UI
+        If juego <> Config_App.Game_Enum.Skyrim AndAlso Not razaResuelta Then Return 0UI
+        Return slotsDeLaMalla And Not bitPipboy
     End Function
 
     ''' <summary>¿El motor OCULTA la geometría cuya declaración cae FUERA de [30,61]? La respuesta es POR
