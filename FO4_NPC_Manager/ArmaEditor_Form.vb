@@ -1739,11 +1739,23 @@ Public Class ArmaEditor_Form
         End If
 
         If mascaraPadre <> 0UI Then
-            Return "This addon declares no slot of its own, so today it INHERITS the armor's" &
+            ' ⛔ Y la advertencia que falta acá: la herencia es del PLUGIN, no de la vista previa. Con
+            ' el alcance «sólo este addon» el editor arma un ARMO descartable SIN slots, así que un
+            ' addon con BOD2 vacío no es dueño de nada y la vista previa lo esconde igual. Sin esta
+            ' línea el cartel dice «está todo bien» al lado de una vista previa vacía, que es
+            ' exactamente el bucle del reporte original.
+            Return "This addon declares no slot of its own, so in the plugin it INHERITS the armor's" &
                    If(nombrePadre = "", "", $" ({nombrePadre})") & ": " & TextoDeSlots(mascaraPadre) & "." &
                    Environment.NewLine &
                    "Ticking anything here makes it declare its own slots and STOP inheriting, so it will no " &
-                   "longer occupy the rest."
+                   "longer occupy the rest." &
+                   If(Not VistaPreviaUsaElEnvoltorio(), "",
+                      Environment.NewLine &
+                      "Note: with the preview scope you have selected, that inheritance does NOT apply. " &
+                      "Previewing just this addon wraps it in a throwaway armor with no slots, so with an " &
+                      "empty BOD2 nothing owns a slot for it and the preview hides its geometry anyway. " &
+                      "That is a known limitation of the preview, not a problem with this addon: switching " &
+                      "the preview to Full armor shows it inherited.")
         End If
 
         Dim quien As String
@@ -1757,8 +1769,8 @@ Public Class ArmaEditor_Form
             quien = "Neither this addon nor " & nombrePadre & " declares any biped slot."
         End If
         Return quien &
-               " With no owner, the engine treats every slot as covered and the preview hides this mesh " &
-               "entirely — ticking a slot here is what makes it show."
+               " With no owner, the engine treats every slot as covered and the preview hides the geometry " &
+               "of those slots - ticking a slot here is what makes it show."
     End Function
 
     ''' <summary>"37, 38" a partir de una máscara de biped slots (bit i = slot 30+i).</summary>
@@ -1810,11 +1822,12 @@ Public Class ArmaEditor_Form
             Dim ningunModelo = male.Estado = SlotsDelModelo.EstadoDeLectura.SinPath AndAlso
                                female.Estado = SlotsDelModelo.EstadoDeLectura.SinPath
             MessageBox.Show(Me,
+                SlotsDelModeloDialog.TextoDeLecturas(p) & Environment.NewLine & Environment.NewLine &
                 If(ningunModelo,
                    "This addon has no models yet: set the male mesh (MOD2) and/or the female mesh (MOD3) " &
                    "first, and then this button can tell you which biped slots they declare.",
-                   "Neither model could be read. Check the mesh paths (MOD2 / MOD3) — the file must exist " &
-                   "as a loose file or inside a game archive."),
+                   "No model could be read. Check the mesh paths above - the file must exist as a loose file " &
+                   "or inside a game archive."),
                 TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
@@ -1824,11 +1837,14 @@ Public Class ArmaEditor_Form
             ' acá: se le pregunta a la sede de cada juego.
             Dim ocultan = SlotsDelModelo.FueraDeBandaSeOculta(modo)
             MessageBox.Show(Me,
+                SlotsDelModeloDialog.TextoDeLecturas(p) & Environment.NewLine & Environment.NewLine &
                 If(ocultan,
-                   "The models DO declare partitions, but every one of them folds outside the biped range " &
-                   "30-61 (for example BodyPart = 0). This game hides those, and no BOD2 slot changes it — " &
+                   "The models that could be read DO declare partitions, but every one of them folds outside " &
+                   "the biped range " &
+                   "30-61 (for example BodyPart = 0). This game hides those, and no BOD2 slot changes it - " &
                    "the mesh has to be re-partitioned.",
-                   "The models DO declare segment tags, but none of them is a biped object in the range " &
+                   "The models that could be read DO declare segment tags, but none of them is a biped object " &
+                   "in the range " &
                    "30-61. This game leaves those segments visible, so they are not the reason anything is " &
                    "hidden, and no BOD2 slot relates to them."),
                 TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -1837,10 +1853,13 @@ Public Class ArmaEditor_Form
 
         If p.Declarado = 0UI Then
             MessageBox.Show(Me,
+                SlotsDelModeloDialog.TextoDeLecturas(p) & Environment.NewLine & Environment.NewLine &
                 If(modo = SlotsDeLaMalla.ModoDeLectura.ParticionesDismember,
-                   "The models declare no biped slot (no BSDismemberSkinInstance partitions). Skyrim only " &
+                   "The models that could be read declare no biped slot (no BSDismemberSkinInstance partitions). " &
+                   "Skyrim only " &
                    "hides geometry that HAS partitions, so this mesh is not being hidden for lack of a slot.",
-                   "The models declare no biped object in their segments. That is the usual case in " &
+                   "The models that could be read declare no biped object in their segments. That is the usual " &
+                   "case in " &
                    "Fallout 4, where segment tags are mostly material and damage sub-indices; and the " &
                    "Pip-Boy tag, when present, has its own rule and is not a slot declaration."),
                 TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -1849,11 +1868,17 @@ Public Class ArmaEditor_Form
 
         If p.Faltan = 0UI Then
             MessageBox.Show(Me,
-                "Everything the models declare is already checked: " & TextoDeSlots(p.Declarado) & "." &
-                If(p.Sobran = 0UI, "",
+                SlotsDelModeloDialog.TextoDeLecturas(p) & Environment.NewLine & Environment.NewLine &
+                "Everything the models that could be read declare is already checked: " & TextoDeSlots(p.Declarado) & "." &
+                If(p.Sobran <> 0UI,
                    Environment.NewLine & Environment.NewLine &
                    "Slots you declare without geometry (they evict, they do not draw): " & TextoDeSlots(p.Sobran) &
-                   ". This button never removes those."),
+                   ". This button never removes those.",
+                   If(male.Estado <> SlotsDelModelo.EstadoDeLectura.Ilegible AndAlso
+                      female.Estado <> SlotsDelModelo.EstadoDeLectura.Ilegible, "",
+                      Environment.NewLine & Environment.NewLine &
+                      "Slots declared without geometry are NOT listed: one of the models could not be read, " &
+                      "so which slots have geometry is unknown.")),
                 TITULO, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
@@ -1891,6 +1916,27 @@ Public Class ArmaEditor_Form
         If v < num.Minimum Then Return num.Minimum
         If v > num.Maximum Then Return num.Maximum
         Return v
+    End Function
+
+    ''' <summary>La vista previa arma el OTFT de contexto real (no un envoltorio) cuando el alcance es
+    ''' Full Outfit y hay un atuendo de contexto enhebrado.</summary>
+    Private Function VistaPreviaConOtftDeContexto() As Boolean
+        Return RadioFullOutfit.Checked AndAlso _outfitContextFormID <> 0UI
+    End Function
+
+    ''' <summary>La vista previa monta el ARMO PADRE real (no un envoltorio) cuando el alcance es Full
+    ''' armor y hay un ARMO padre enhebrado.</summary>
+    Private Function VistaPreviaConArmoPadre() As Boolean
+        Return RadioFullArmor.Checked AndAlso _parentArmoFormID <> 0UI
+    End Function
+
+    ''' <summary>⛔ Sede ÚNICA de «¿esta vista previa pasa por el ARMO descartable?». Importa porque ese
+    ''' envoltorio nace SIN slots, así que un addon con BOD2 vacío no hereda nada y la fase 1 le esconde
+    ''' la geometría — y el aviso del botón de slots tiene que decir eso SÓLO cuando es cierto. En los
+    ''' otros dos alcances se monta el record real y la herencia sí aplica: afirmarlo siempre sería
+    ''' decirle al usuario que no le crea a una vista previa que en ese momento está bien.</summary>
+    Private Function VistaPreviaUsaElEnvoltorio() As Boolean
+        Return Not VistaPreviaConOtftDeContexto() AndAlso Not VistaPreviaConArmoPadre()
     End Function
 
     ' =====================================================================
@@ -2084,8 +2130,8 @@ Public Class ArmaEditor_Form
         '    ARMO with this ARMA applied via the draft-aware resolver).
         '  • Only Model, or Full armor / Full Outfit with NO context ⇒ throwaway single-item OTFT holding the
         '    synthetic ARMA wrapper (this ARMA alone) — the existing fallback.
-        Dim fullOutfitWithContext As Boolean = RadioFullOutfit.Checked AndAlso _outfitContextFormID <> 0UI
-        Dim fullArmorWithParent As Boolean = RadioFullArmor.Checked AndAlso _parentArmoFormID <> 0UI
+        Dim fullOutfitWithContext As Boolean = VistaPreviaConOtftDeContexto()
+        Dim fullArmorWithParent As Boolean = VistaPreviaConArmoPadre()
         Dim throwawayItemFid As UInteger = 0UI
         Dim previewOtftFid As UInteger
         If fullOutfitWithContext Then

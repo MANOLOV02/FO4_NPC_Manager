@@ -115,11 +115,32 @@ Friend Class SlotsDelModelo
         ' geometria» (la malla lo dibuja) y no debe listarse. Si NO lo trae, es un «declarado sin
         ' geometria» LEGITIMO —el mecanismo de desalojo— y el usuario tiene que verlo: sacarlo siempre
         ' le esconderia justo el slot por el que su armadura desaloja el Pip-Boy.
+        ' ⛔ Y una guarda mas: para AFIRMAR que la malla no trae el tag del Pip-Boy hay que haber
+        ' podido LEERLA. Con un modelo ilegible, `Mascara` vale 0 por no saber, no por no declarar, y
+        ' listarlo como «declarado sin geometria» seria afirmar algo sobre el archivo que no se leyo.
+        ' En ese caso no se afirma: el bit sale de `Sobran` y punto.
         Dim pipboyEnLaMalla = (male.Mascara Or female.Mascara) And bitPipboy
         p.Sobran = actual And Not (p.Declarado Or pipboyEnLaMalla)
 
+        ' ⛔ Y la guarda que vale para los TREINTA Y DOS bits, no para uno: `Sobran` es la AFIRMACION
+        ' «este slot lo declaras sin geometria», y con un modelo que no se pudo leer no se sabe que
+        ' declara — `Mascara` vale 0 por no saber, no por no declarar. Entonces no se afirma nada.
+        ' (Aplicarla solo al bit del Pip-Boy era peor que inutil: en Skyrim `bitPipboy` es 0, asi que
+        ' no protegia ningun bit, y dejaba la misma ley con dos respuestas en lineas contiguas.)
+        If male.Estado = EstadoDeLectura.Ilegible OrElse female.Estado = EstadoDeLectura.Ilegible Then
+            p.Sobran = 0UI
+        End If
+
         Dim decl = male.Declaraciones + female.Declaraciones
         Dim fuera = male.FueraDeBanda + female.FueraDeBanda
+        ' ⛔ Este flag describe LO QUE SE LEYO, y se queda exacto a proposito. Guardarlo contra el
+        ' caso «un modelo ilegible» parecia la misma ley que la de `Sobran`, pero NO lo es: desviaba el
+        ' caso al cartel de `Declarado = 0`, que en Skyrim dice «(no BSDismemberSkinInstance
+        ' partitions)» sobre una malla que SI las tiene, y le sacaba al usuario el unico cartel que le
+        ' nombra la causa real (caer fuera de banda). La diferencia con `Sobran` es que `Sobran` es una
+        ' AFIRMACION sobre el archivo que falta, y esto es un DIAGNOSTICO del que se leyo: lo que no
+        ' puede afirmar de mas es el TEXTO, y por eso el cartel dice «the models that could be read» y
+        ' la cabecera nombra al que fallo.
         p.TodoFueraDeBanda = (p.Declarado = 0UI) AndAlso decl > 0 AndAlso fuera = decl
         Return p
     End Function
@@ -190,7 +211,8 @@ Friend Class SlotsDelModelo
     End Function
 
     ''' <summary>¿El motor OCULTA la geometría cuya declaración cae FUERA de [30,61]? La respuesta es POR
-    ''' JUEGO y es OPUESTA. Las dos salen de la sede de cada juego, pero NO en el mismo sentido, y el
+    ''' JUEGO y es OPUESTA.
+    ''' <para>Las dos salen de la sede de cada juego, pero NO en el mismo sentido, y el
     ''' matiz importa: en Fallout 4 la respuesta se DERIVA (la sede tiene una rama propia que devuelve
     ''' False para todo lo que no matchea); en Skyrim la sede devuelve el <c>hideOutOfBand</c> que se le
     ''' pasa, así que lo derivado es la BANDA —que bodyPart 0 caiga afuera— y el True es una CONSTANTE

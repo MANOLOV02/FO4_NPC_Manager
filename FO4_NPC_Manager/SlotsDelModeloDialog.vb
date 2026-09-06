@@ -58,7 +58,7 @@ Friend Class SlotsDelModeloDialog
             If (p.Faltan And (1UI << bit)) = 0UI Then Continue For
             Dim slot = bit + 30
             _slotDeFila.Add(slot)
-            _lista.Items.Add($"{BipedSlotCheckboxes.SlotName(slot)}   ({TextoDeAtribucion(p, bit)})", False)
+            _lista.Items.Add($"{BipedSlotCheckboxes.SlotName(slot)}   ({TextoDeAtribucion(SlotsDelModelo.AtribucionDe(p, bit))})", False)
         Next
         raiz.Controls.Add(_lista, 0, 1)
 
@@ -66,7 +66,7 @@ Friend Class SlotsDelModeloDialog
             .AutoSize = True, .MaximumSize = New Size(590, 0), .Margin = New Padding(3, 8, 3, 3),
             .Text = "Ticking a slot makes THIS addon the owner of it: the engine evicts whatever occupied " &
                     "that slot, and geometry whose slot this addon does NOT own is hidden. Slots you already " &
-                    "declare without geometry are how an item hides what is underneath — this never removes them." &
+                    "declare without geometry are how an item hides what is underneath - this never removes them." &
                     If(p.Sobran <> 0UI, Environment.NewLine & "Declared without geometry (left untouched): " & Lista(p.Sobran), "")}, 0, 2)
 
         If Not String.IsNullOrEmpty(avisoHerencia) Then
@@ -88,7 +88,12 @@ Friend Class SlotsDelModeloDialog
     ''' <summary>Las dos líneas de cabecera: qué se leyó de cada modelo. Los tres estados dicen cosas
     ''' distintas y ninguno se puede confundir con otro.</summary>
     ''' <param name="p">La propuesta.</param>
-    Private Shared Function TextoDeLecturas(p As SlotsDelModelo.Propuesta) As String
+    ''' <summary>⛔ <c>Friend</c> y no <c>Private</c>: los carteles de estado del editor cortan ANTES de
+    ''' construir este diálogo, y sin esto afirmaban «The models…» en plural habiendo leído uno solo — en
+    ''' Skyrim llegando a mandar a re-particionar una malla por evidencia parcial. El estado por género
+    ''' vive acá, en UNA sede, y se antepone a todos esos carteles.</summary>
+    ''' <param name="p">La propuesta.</param>
+    Friend Shared Function TextoDeLecturas(p As SlotsDelModelo.Propuesta) As String
         Return "Male model:   " & UnaLectura(p.Male, p.MaleNeto) & Environment.NewLine &
                "Female model: " & UnaLectura(p.Female, p.FemaleNeto)
     End Function
@@ -101,10 +106,10 @@ Friend Class SlotsDelModeloDialog
             Case SlotsDelModelo.EstadoDeLectura.SinPath
                 Return "(this addon declares no model for this gender)"
             Case SlotsDelModelo.EstadoDeLectura.Ilegible
-                Return $"'{g.Ruta}' — could NOT be read (not found as a loose file or inside a game archive)"
+                Return $"'{g.Ruta}' - could NOT be read (not found as a loose file or inside a game archive)"
             Case Else
-                If neto = 0UI Then Return $"'{g.Ruta}' — read; declares no biped slot"
-                Return $"'{g.Ruta}' — read; declares {Lista(neto)}"
+                If neto = 0UI Then Return $"'{g.Ruta}' - read; declares no biped slot"
+                Return $"'{g.Ruta}' - read; declares {Lista(neto)}"
         End Select
     End Function
 
@@ -113,8 +118,8 @@ Friend Class SlotsDelModeloDialog
     ''' Acá sólo se traduce a palabras.</summary>
     ''' <param name="p">La propuesta.</param>
     ''' <param name="bit">Bit del slot (slot menos 30).</param>
-    Private Shared Function TextoDeAtribucion(p As SlotsDelModelo.Propuesta, bit As Integer) As String
-        Select Case SlotsDelModelo.AtribucionDe(p, bit)
+    Friend Shared Function TextoDeAtribucion(a As SlotsDelModelo.Atribucion) As String
+        Select Case a
             Case SlotsDelModelo.Atribucion.Ambos : Return "declared by both models"
             Case SlotsDelModelo.Atribucion.SoloMale : Return "declared by the MALE model only"
             Case SlotsDelModelo.Atribucion.SoloFemale : Return "declared by the FEMALE model only"
@@ -122,8 +127,15 @@ Friend Class SlotsDelModeloDialog
             Case SlotsDelModelo.Atribucion.MaleYFemeninoIlegible : Return "declared by the male model; the female model could not be read"
             Case SlotsDelModelo.Atribucion.FemaleYNoHayMasculino : Return "declared by the female model; this addon has no male model"
             Case SlotsDelModelo.Atribucion.FemaleYMasculinoIlegible : Return "declared by the female model; the male model could not be read"
-            Case Else : Return "declared by neither model"
+            Case SlotsDelModelo.Atribucion.Ninguno : Return "declared by neither model"
         End Select
+        ' ⛔ NADA DE `Throw` ACA. Esto lo arma el constructor de un modal que abre un manejador de clic
+        ' sin `Try`, y la app corre con `UnhandledExceptionMode.ThrowException` (Program.vb): un throw
+        ' cierra la app y se lleva TODOS los borradores sin guardar, que es justo lo que esta ola
+        ' existe para no perder. Se DEGRADA al nombre del miembro, y la completitud del enum la exige
+        ' el GATE recorriendo [Enum].GetValues — ahi el noveno miembro sale rojo en la bateria, que es
+        ' donde tiene que salir, y nunca en la cara del usuario.
+        Return $"declared by {a}"
     End Function
 
     ''' <summary>"37, 38" a partir de una máscara.</summary>
