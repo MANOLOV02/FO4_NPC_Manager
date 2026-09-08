@@ -42,6 +42,21 @@ Public Class NpcRecordOverride
     ''' Fallout 4 es un bloque de estadísticas calculadas que la app no edita (lo recalcula el motor), así
     ''' que no hay contraparte.</summary>
     Public Property SsePlayerSkills As Canon.NpcSSE = Nothing
+
+    ''' <summary>La RESOLUCION congelada de cada categoria que este NPC volvio propia, tomada UNA vez
+    ''' en el instante del desprendimiento: el desenlace MÁS la fuente cruda.
+    ''' <para>⛔ NO caduca: es lo que el usuario ELIGIO al sacar el NPC de su plantilla. Volver a
+    ''' resolver la cadena al guardar daría otra respuesta si el arbol cambio entre medio.</para>
+    ''' <para>⛔⛔ Guarda la RESOLUCION y no un `NPC_Data` a proposito: con un record pelado, los dos
+    ''' desenlaces sin fuente llegan como `Nothing` y se fusionan — y son OPUESTOS.
+    ''' <c>NoSourceToLose</c> (bandera puesta y sin TPTA/TPLT detras) significa que el
+    ''' <c>CopyFromTemplate</c> del motor tampoco tiene nada que copiar, asi que hay que BAJAR el bit;
+    ''' <c>Unresolvable</c> significa lo contrario. Un `Nothing` que quiere decir dos cosas es un
+    ''' centinela, y ya costo caro en otro campo.</para></summary>
+    ' ⛔ `Friend`, no `Public`: `TraitsResolution` vive dentro de `NpcTemplateMaterializer`, que es
+    ' `Friend`, y una clase `Public` no puede exponer un tipo `Friend`. La alternativa —subir
+    ' `TraitsResolution` a `Public`— ampliaria la superficie de la app por una razon de sintaxis.
+    Friend MaterializedSources As New Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution)
     Public Property RaceFormID As UInteger? = Nothing       ' RNAM
     Public Property VoiceFormID As UInteger? = Nothing      ' VTCK
     Public Property ClassFormID As UInteger? = Nothing      ' CNAM
@@ -75,11 +90,18 @@ Public Class NpcRecordOverride
     Public Property TraitsChanged As Boolean = False
     Public Property BaseDataChanged As Boolean = False
     Public Property StatsChanged As Boolean = False
+    ''' <summary>El Combat Style (<c>ZNAM</c>) lo gobierna <b>Use AI Data</b>, no Traits. Sin este latch
+    ''' el guardado escribia el ZNAM y no bajaba el bit 4, asi que el motor se lo pisaba al cargar y la
+    ''' edicion desaparecia en el juego. Se latchea igual que los otros tres: una sesion posterior, cuyo
+    ''' snapshot ya refleja la edicion, no debe soltar el hook.</summary>
+    Public Property AiDataChanged As Boolean = False
 
-    ''' <summary>True when this override carries at least one edited field — used to decide whether to store it.</summary>
+    ''' <summary>True when this override carries at least one edited field — used to decide whether to store it.
+    ''' <para>⛔ Mira TAMBIEN <see cref="MaterializedSources"/>: un override que solo lleve el snapshot
+    ''' del desprendimiento se descartaria en silencio en `SetNpcRecordOverride`.</para></summary>
     Public ReadOnly Property IsEmpty As Boolean
         Get
-            Return FullName Is Nothing AndAlso ShortName Is Nothing AndAlso Not AcbsFlags.HasValue AndAlso
+            Return MaterializedSources.Count = 0 AndAlso FullName Is Nothing AndAlso ShortName Is Nothing AndAlso Not AcbsFlags.HasValue AndAlso
                    Not XpValueOffset.HasValue AndAlso Not Level.HasValue AndAlso Not CalcMinLevel.HasValue AndAlso
                    Not CalcMaxLevel.HasValue AndAlso Not DispositionBase.HasValue AndAlso Not TemplateFlags.HasValue AndAlso
                    Not MagickaOffset.HasValue AndAlso Not StaminaOffset.HasValue AndAlso
@@ -89,7 +111,7 @@ Public Class NpcRecordOverride
                    Keywords Is Nothing AndAlso AttachParentSlots Is Nothing AndAlso
                    Factions Is Nothing AndAlso Inventory Is Nothing AndAlso Perks Is Nothing AndAlso
                    ActorEffects Is Nothing AndAlso Properties Is Nothing AndAlso ObjectTemplateCombinations Is Nothing AndAlso
-                   Not TraitsChanged AndAlso Not BaseDataChanged AndAlso Not StatsChanged
+                   Not TraitsChanged AndAlso Not BaseDataChanged AndAlso Not StatsChanged AndAlso Not AiDataChanged
         End Get
     End Property
 

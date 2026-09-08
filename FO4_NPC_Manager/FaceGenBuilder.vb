@@ -813,28 +813,27 @@ Public Module FaceGenBuilder
             ' Nothing fuera de Skyrim: el overlay solo lo puebla en SSE.
             ' (El comentario vive ACÁ y no entre los miembros: VB no admite comentarios dentro de un
             '  inicializador With { } — rompe el parser con BC30985.)
-            state = New MainForm.NPCVisualState With {
-                .FormID = npcFormID,
-                .RootNpcFormID = npcFormID,
-                .ModelSourceFormID = npcFormID,
-                .RaceFormID = npcData.Record.Race,
-                .IsFemale = npcData.Record.ConfigurationFlagsFemale,
-                .SkinFormID = npcData.Record.Skin,
-                .HeadTextureFormID = npcData.Record.HeadTexture,
-                .HairColorFormID = npcData.Record.HairColor,
-                .SseHairColorRgb = npcData.SseHairColorRgb,
-                .FacialHairColorFormID = npcData.Record.ColorDeBarba(),
-                .HasTextureLighting = npcData.Record.TextureLightingRedPresente,
-                .TextureLightingColor = npcData.Record.ColorDeIluminacionDeTextura(),
-                .HeadDiffuseAlphaTest = (npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.Record.ConfigurationFlags And &H1000000UI) <> 0UI
-            }
-            state.HeadPartFormIDs.AddRange(npcData.Record.PartesDeCabeza())
-            ' Engine race fallbacks: NPC.WNAM=0 → RACE.SkinFormID, NPC head parts/texture/hair
-            ' → RACE defaults, NPC.MWGT sentinel substitution. Same path the render uses; without
-            ' it ResolveActorSkinTextureSet returns Nothing for NPCs that leave WNAM=0 (e.g.
-            ' vanilla children) and the bake falls through to HDPT.TNAM, which for ChildHeadRear
-            ' is hardcoded SkinBodyChildMale — wrong for female actors.
-            NpcStateResolver.ApplyRaceFallbacks(state, NpcStateFactory.CreateOwnTraitsState(npcData), pluginManager)
+            ' ⛔⛔ LA SEDE UNICA: el bake proyecta con la MISMA funcion que el render
+            ' (`NpcStateFactory.ProyectarEstado`). Antes esta ley estaba escrita dos veces y las dos
+            ' ya divergian por ORDEN — de ahi salian el MWGT parcial y las re-sustituciones de raza.
+            ' ⛔ `presetDeDibujo:=Nothing` NO es un descuido: hoy el estado del bake nunca lleva
+            ' `SkinToneOffset` (el `With {}` de arriba no lo asignaba) y el unico consumidor del
+            ' offset tiene TODOS sus llamadores en el render. Pasarle el preset "porque parece mas
+            ' completo" cambiaria BYTES HORNEADOS.
+            ' ⛔ Y el bake sigue proyectando desde su record PROPIO, sin caminar la cadena: eso es
+            ' correcto y este cambio no lo toca.
+            Dim proy = NpcStateFactory.ProyectarEstado(npcData, npcData,
+                                                       NpcStateFactory.CreateOwnInventoryState(npcData),
+                                                       presetDeDibujo:=Nothing)
+            state = proy.Estado
+            ' `ModelSourceFormID` es dato del BAKE, no de la proyeccion: el render lo deja en 0.
+            state.ModelSourceFormID = npcFormID
+            ' Engine race fallbacks: NPC.WNAM=0 -> RACE.SkinFormID, head parts/texture/hair -> RACE
+            ' defaults, sustitucion del centinela de MWGT. El mismo camino que usa el render; sin el,
+            ' `ResolveActorSkinTextureSet` devuelve Nothing para los NPC que dejan WNAM=0 y el bake cae
+            ' a HDPT.TNAM, que para ChildHeadRear esta cableado a SkinBodyChildMale.
+            ' ⛔ Con el `traits` de la PROYECCION, no con uno recalculado: una sola vez y una sola ley.
+            NpcStateResolver.ApplyRaceFallbacks(state, proy.Traits, pluginManager)
         End If
         Dim result As New BuildResult()
 
@@ -3670,6 +3669,8 @@ Public Module FaceGenBuilder
         ' PANTALLA y en un batch le daba a todo el lote el LUT del NPC seleccionado. Con el origen en el
         ' RACE el peligro desaparece de raíz: no hay malla que recorrer ni host del que leer, y GUI, batch
         ' y CLI comparten literalmente el mismo código.
+        ' ⛔ BAKE ==> `overlayPreset` es la AUTORIA. Hornear es authorear: el .dds que sale es del
+        ' NPC y no de su plantilla, y por eso este camino deja `DibujoHeredado` en Nothing (lo mide G10).
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=npcFormID,
             rootFormID:=npcFormID,
@@ -3677,6 +3678,7 @@ Public Module FaceGenBuilder
             isFemale:=npcData.Record.ConfigurationFlagsFemale,
             pluginManager:=pluginManager,
             appliedPresets:=appliedPresets,
+            overlayPreset:=NpcRecordOverlay.OverlayDeAutoria(npcFormID, appliedPresets),
             tintBytesCache:=Nothing,
             hairColorFormID:=state.HairColorFormID,
             hasTextureLighting:=state.HasTextureLighting,

@@ -407,9 +407,15 @@ Friend Module BakeAllRunner
                     If String.IsNullOrEmpty(templateId) Then Return Nothing
                     Return lmTemplates.FirstOrDefault(Function(t) String.Equals(t.Id, templateId, StringComparison.Ordinal))
                 End Function
-            Dim overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data) =
-                Function(raw As NPC_Data, fid As UInteger) NpcRecordOverlay.ApplyPresetOverlayToNpcData(
-                    raw, fid, appliedPresets, pm, resolveLmSkin, AddressOf ctx.ParseRaceCanonCached)
+            ' ⛔ El resolver lleva el ESTADO, igual que en el render -- pero el BAKE se queda con la
+            ' AUTORIA a proposito, y por eso pregunta `OverlayDeAutoria` en vez de `OverlayDeDibujo`:
+            ' hornear es authorear. El .dds que sale es del NPC y no de su plantilla, aunque en
+            ' pantalla se lo dibuje con la cara del terminal mientras hereda. Es la misma ley que hace
+            ' que `FaceGenBuilder` deje `DibujoHeredado` en Nothing, y la mide G10.
+            Dim overlayResolver As Func(Of NPC_Data, MainForm.NPCVisualState, NPC_Data) =
+                Function(raw As NPC_Data, st As MainForm.NPCVisualState) NpcRecordOverlay.AplicarOverlay(
+                    raw, NpcRecordOverlay.OverlayDeAutoria(st.RootNpcFormID, appliedPresets),
+                    st.RootNpcFormID, pm, resolveLmSkin, AddressOf ctx.ParseRaceCanonCached)
             Dim materialResolver As New NpcMaterialResolver(ctx, overlayResolver, appliedPresets)
 
             ' ---------------------------------------------------------------------------------

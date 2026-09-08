@@ -24,6 +24,7 @@ Friend NotInheritable Class NpcFaceTintResolver
     Private ReadOnly _materialResolver As NpcMaterialResolver
     Private ReadOnly _hostProvider As Func(Of NpcRenderHost)
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+    Private ReadOnly _resolveLmSkinTemplate As Func(Of String, LmSkinTemplate)
 
     ''' <summary>Process-lifetime cache of every face-tint DDS byte buffer we have ever pulled
     ''' from the FilesDictionary. Keyed by the normalized "textures\..." path. A Nothing entry
@@ -33,13 +34,19 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' when the FilesDictionary is rebuilt. (Owner moved from MainForm._tintBytesCache.)</summary>
     Private ReadOnly _tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
 
+    ''' <summary>⛔ `resolveLmSkinTemplate` NO es opcional: el re-pull en vivo del color de pelo compone LA
+    ''' SOMBRA, y la sombra es una sola composición — no existe «la sombra pero sin la rama de la plantilla de
+    ''' piel». Pasar Nothing sería construirla a medias y leerle dos campos con la excusa de que esos dos no
+    ''' dependen de la rama que falta: una suposición no escrita, esperando a que alguien lea un tercero.</summary>
     Public Sub New(ctx As NpcRenderContext, materialResolver As NpcMaterialResolver,
                    hostProvider As Func(Of NpcRenderHost),
-                   appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset))
+                   appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                   resolveLmSkinTemplate As Func(Of String, LmSkinTemplate))
         _ctx = ctx
         _materialResolver = materialResolver
         _hostProvider = hostProvider
         _appliedPresets = appliedPresets
+        _resolveLmSkinTemplate = resolveLmSkinTemplate
     End Sub
 
     ''' <summary>Run the face-tint compositor + the two skin-softlight pre-passes for the given
@@ -213,6 +220,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Next
             End If
         End If
+        ' ⛔ RENDER ==> `overlayPreset` es el de DIBUJO: un heredero se dibuja con los tintes de
+        ' su plantilla, no con los suyos (que estan vacios).
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=modelFormID,
             rootFormID:=state.RootNpcFormID,
@@ -220,6 +229,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             isFemale:=state.IsFemale,
             pluginManager:=_ctx.PluginManager,
             appliedPresets:=_appliedPresets,
+            overlayPreset:=NpcRecordOverlay.OverlayDeDibujo(state, _appliedPresets),
             tintBytesCache:=_tintBytesCache,
             hairColorFormID:=state.HairColorFormID,
             hasTextureLighting:=state.HasTextureLighting,
@@ -401,8 +411,10 @@ Friend NotInheritable Class NpcFaceTintResolver
                 '       lista SIN filtrar (la filtrada es justamente la que quedó vacía).
                 If Logger.Enabled AndAlso Not mustFold AndAlso Not noFoldReported Then
                     Dim allFace = 0, magicFace = 0
-                    Dim pAll As LooksmenuLoader.LooksmenuPreset = Nothing
-                    If _appliedPresets IsNot Nothing AndAlso _appliedPresets.TryGetValue(npcData.FormID, pAll) AndAlso
+                    ' ⛔⛔ OJO: pregunta con `npcData.FormID`, NO con el ROOT como los demas. Queda a la
+                    ' vista a proposito: nombrar la pregunta es lo que hace legible esta divergencia.
+                    Dim pAll = NpcRecordOverlay.OverlayDeAutoria(npcData.FormID, _appliedPresets)
+                    If pAll IsNot Nothing AndAlso
                        pAll IsNot Nothing AndAlso pAll.SseBodyOverlays IsNot Nothing Then
                         For Each ov0 In pAll.SseBodyOverlays
                             If Not SseOverlayCompositor.IsFaceOverlay(ov0) Then Continue For
@@ -667,8 +679,11 @@ Friend NotInheritable Class NpcFaceTintResolver
 
     Private Function ResolveFaceOverlaysForNpc(npcData As NPC_Data) As IList(Of RaceMenuJslot.JslotOverlayNode)
         If npcData Is Nothing OrElse _appliedPresets Is Nothing Then Return Nothing
-        Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not _appliedPresets.TryGetValue(npcData.FormID, preset) OrElse preset Is Nothing Then Return Nothing
+        ' ⛔⛔ OJO: pregunta con `npcData.FormID`, NO con el ROOT como los demas. Queda a la vista
+        ' a proposito — nombrar la pregunta es lo que hace legible esta divergencia. Cambiar la
+        ' clave es cambio de CONDUCTA y va con su propia medicion, no en un cambio de forma.
+        Dim preset = NpcRecordOverlay.OverlayDeAutoria(npcData.FormID, _appliedPresets)
+        If preset Is Nothing Then Return Nothing
         If preset.SseBodyOverlays Is Nothing Then Return Nothing
         ' FILTRO POR NODO Y POR POOL, y NADA MÁS de textura — es el MISMO predicado que usa el bake
         ' (SseOverlayCompositor.FaceOverlaysOnly = cara MENOS el pool magic: un Face [SOvl] no se pliega nunca).
@@ -1166,6 +1181,30 @@ Friend NotInheritable Class NpcFaceTintResolver
         Return id
     End Function
 
+    ''' <summary>La SOMBRA de dibujo del NPC que se esta previsualizando: el record de la fuente de Traits con
+    ''' el overlay del usuario estampado encima. Es la MISMA composicion que usa el render completo, asi que
+    ''' cualquier campo que se lea de aca tiene una sola sede de precedencia.
+    ''' <para>Devuelve Nothing cuando no hay de donde -- sin state, sin record parseado -- y el llamador deja
+    ''' el valor que ya tenia.</para></summary>
+    Private Function SombraDeDibujo(host As NpcRenderHost,
+                                    preset As LooksmenuLoader.LooksmenuPreset) As NPC_Data
+        If host Is Nothing OrElse host.LastRenderedState Is Nothing Then Return Nothing
+        Dim raw = _ctx.GetParsedNpc(NpcStateFactory.FaceAppearanceSourceFormID(host.LastRenderedState))
+        If raw Is Nothing Then Return Nothing
+        Return NpcRecordOverlay.AplicarOverlay(raw, preset, host.LastRenderedState.RootNpcFormID,
+                                               _ctx.PluginManager,
+                                               New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
+                                                   AddressOf ResolverLmSkinTemplate),
+                                               AddressOf _ctx.ParseRaceCanonCached)
+    End Function
+
+    ''' <summary>Envoltorio del resolvedor de plantillas de piel de LooksMenu. Existe porque VB no convierte
+    ''' solo un <c>Func(Of String, LmSkinTemplate)</c> al delegado NOMBRADO que pide el overlay.</summary>
+    Private Function ResolverLmSkinTemplate(templateId As String) As LmSkinTemplate
+        If _resolveLmSkinTemplate Is Nothing Then Return Nothing
+        Return _resolveLmSkinTemplate(templateId)
+    End Function
+
     ''' <summary>Camino BARATO para el editor de "Skin Tint Adjustment": re-resuelve el tono del CUERPO desde
     ''' el overlay y lo vuelve a escribir en los materiales de las shapes de piel. NO recompone la cara ni toca
     ''' una sola textura -el ajuste solo entra por el uniform del soft-light del cuerpo-, asi que sirve tanto
@@ -1175,11 +1214,18 @@ Friend NotInheritable Class NpcFaceTintResolver
         If host Is Nothing Then host = _hostProvider()
         If host Is Nothing OrElse host.LastRenderedState Is Nothing Then Return False
         If host.PreviewCtl Is Nothing OrElse host.PreviewCtl.Model Is Nothing Then Return False
-        host.LastRenderedState.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(offset)
+        ' ⛔ Este sitio NO reconstruye la sombra, y el motivo es COSTO medido, no que el dato "no viva en el
+        ' record": corre en cada movimiento del slider, y componer la sombra es parsear la RACE, mergear head
+        ' parts, resolver el bundle de LooksMenu y derivar el QNAM -- por tick, en el camino que existe para ser
+        ' barato. Tampoco duplica ninguna precedencia: `ResolveNpcBodySkinToneColor` ya delega en el dueno unico.
+        ' Lo que si gana es la doble cache explicita.
+        NpcRenderHost.EscribirEnLasDosCaches(host, Sub(st) st.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(offset))
         Dim tone = _materialResolver.ResolveNpcBodySkinToneColor(host.LastRenderedState)
         If Not tone.HasValue Then Return False
-        host.LastRenderedState.HasTextureLighting = True
-        host.LastRenderedState.TextureLightingColor = tone.Value
+        NpcRenderHost.EscribirEnLasDosCaches(host, Sub(st)
+                                                      st.HasTextureLighting = True
+                                                      st.TextureLightingColor = tone.Value
+                                                  End Sub)
         TryApplyBodySkinSoftLight(host.LastRenderedState, host)
         Return True
     End Function
@@ -1518,19 +1564,38 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' (NpcStateResolver.ResolveNPCBaseState) so it's stale after the user changes the combo. Without this sync,
         ' the rest of the function reads the OLD HairColorFormID — render shows previous hair
         ' color regardless of what the user picked.
-        Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(host.LastRenderedState.RootNpcFormID, overlayPreset) Then
-            If overlayPreset.HairColorFormID <> 0UI Then
-                host.LastRenderedState.HairColorFormID = overlayPreset.HairColorFormID
-            End If
-            ' Mismo motivo que el HCLF de arriba: el state se sembró una vez al cargar el NPC, así que sin este
-            ' re-pull una edición del RGB de pelo (SSE) no se vería hasta recargar. Se asigna DIRECTO (incluido
-            ' Nothing) porque limpiar el override es una edición válida: volver al CLFM. SSE-only por origen
-            ' (en FO4 el campo es siempre Nothing).
-            host.LastRenderedState.SseHairColorRgb = overlayPreset.SseHairColorRgb
-            ' Mismo re-pull para el ajuste manual del tono del cuerpo: el state se sembro al cargar el NPC, asi
-            ' que sin esto mover un slider de "Skin Tint Adjustment" no se veria hasta recargar.
-            host.LastRenderedState.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(overlayPreset.SkinToneOffset)
+        ' ⛔ Nombra su pregunta en vez de hacer su propio `TryGetValue`: es AUTORIA, con la clave del
+        ' ROOT. Este sitio preguntaba por su cuenta y por eso otros dos del mismo archivo terminaron
+        ' preguntando con `npcData.FormID` en vez del root, sin que nadie lo viera.
+        ' ⛔ EL MISMO preset que usa el render: `OverlayDeDibujo`, no la autoria pelada. Para un heredero son
+        ' presets DISTINTOS, y con la autoria este repintado en vivo lo dejaba con lo del root donde el render
+        ' completo pone lo heredado del terminal -- el mismo NPC visto distinto segun por que camino se repinto.
+        Dim overlayPreset = NpcRecordOverlay.OverlayDeDibujo(host.LastRenderedState, _appliedPresets)
+        ' ⛔⛔ HCLF y RGB salen de LA SOMBRA, no de un `preset -> state` escrito de nuevo aca. Este bloque
+        ' reimplementaba la precedencia que ya vive en el overlay + la proyeccion, y dos copias de una
+        ' precedencia divergen: la de aca miraba `HairColorFormID <> 0` y la otra no.
+        ' ⛔ Este sitio SI puede pagar la sombra: ya es un camino pesado -- abajo restaura los diffuses
+        ' pristinos y corre dos pasadas de compositor. No es el caso del camino de arrastre.
+        Dim sombraHcl = SombraDeDibujo(host, overlayPreset)
+        If sombraHcl IsNot Nothing Then
+            ' El RGB de pelo es SSE-only por origen (en FO4 el campo es siempre Nothing) y se asigna DIRECTO,
+            ' incluido Nothing: limpiar el override es una edicion valida -- volver al CLFM.
+            Dim hcl = sombraHcl
+            NpcRenderHost.EscribirEnLasDosCaches(host, Sub(st)
+                                                          st.HairColorFormID = hcl.Record.HairColor
+                                                          st.SseHairColorRgb = hcl.SseHairColorRgb
+                                                       End Sub)
+        End If
+        ' ⛔⛔ El offset NO sale de la sombra: no es campo de `NPC_Data`, vive en el PRESET. Derivarlo de la
+        ' sombra ya perdio este campo dos veces. Y va por `CloneOrNothing` SIEMPRE: `SkinToneQnamOffset` es una
+        ' clase MUTABLE, y compartir la instancia con el overlay que el editor esta moviendo hace que un
+        ' comparador de estados compare el mismo objeto contra si mismo y de VERDE con el campo ya perdido.
+        ' ⛔ Por el MISMO preset, no por la autoria: el offset viaja dentro de `FaceTints`, que en FO4 SI
+        ' hereda (0x140651752) y en SSE no. Sacarlo aparte seria una TERCERA politica de herencia escrita a
+        ' mano, justo en el campo que ya se perdio dos veces.
+        If overlayPreset IsNot Nothing Then
+            Dim ov0 = overlayPreset
+            NpcRenderHost.EscribirEnLasDosCaches(host, Sub(st) st.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(ov0.SkinToneOffset))
         End If
 
         ' Stage 1: roll every face/body diffuse cache entry back to its pristine bytes. Each
@@ -1559,8 +1624,11 @@ Friend NotInheritable Class NpcFaceTintResolver
             Dim fsB = freshSkinTone.Value.B
             Dim fsA = freshSkinTone.Value.A
             Logger.LogLazy(Function() $"[LIVE-EDIT] Stage 2a fresh skinTone=RGBA({fsR},{fsG},{fsB},{fsA}) — pushing to state.TextureLightingColor")
-            host.LastRenderedState.HasTextureLighting = True
-            host.LastRenderedState.TextureLightingColor = freshSkinTone.Value
+            Dim tono = freshSkinTone.Value
+            NpcRenderHost.EscribirEnLasDosCaches(host, Sub(st)
+                                                          st.HasTextureLighting = True
+                                                          st.TextureLightingColor = tono
+                                                       End Sub)
         Else
             Logger.LogLazy(Function() $"[LIVE-EDIT] Stage 2a freshSkinTone=Nothing — state.TextureLightingColor NOT updated")
         End If

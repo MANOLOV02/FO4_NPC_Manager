@@ -19,12 +19,15 @@ Friend NotInheritable Class NpcMaterialResolver
     Private ReadOnly _ctx As NpcRenderContext
     ''' <summary>Overlay resolver injected from MainForm (ApplyPresetOverlayToNpcData) so the
     ''' skin-tone path stays decoupled from MainForm's preset/LM-template machinery.</summary>
-    Private ReadOnly _overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data)
+    ' ⛔ Lleva el ESTADO y no un FormID: el estado trae `DibujoHeredado`, o sea la respuesta de
+    ' herencia YA calculada. Con el FormID pelado este resolver componia con la AUTORIA del root y a un
+    ' heredero le resolvia el tono de piel con los tintes de X sobre una sombra hecha con los del terminal.
+    Private ReadOnly _overlayResolver As Func(Of NPC_Data, MainForm.NPCVisualState, NPC_Data)
     ''' <summary>Shared preset overlays (keyed by root NPC FormID) — the source of SSE RaceMenu skin overrides, which
     ''' are applied as an in-place texture-set slot replacement on the skin shape's material (see
     ''' <see cref="ApplySseSkinOverrideToMaterial"/>). Skyrim only; Nothing/absent on FO4.</summary>
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
-    Public Sub New(ctx As NpcRenderContext, overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data),
+    Friend Sub New(ctx As NpcRenderContext, overlayResolver As Func(Of NPC_Data, MainForm.NPCVisualState, NPC_Data),
                    Optional appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset) = Nothing)
         _ctx = ctx
         _overlayResolver = overlayResolver
@@ -1148,7 +1151,7 @@ Friend NotInheritable Class NpcMaterialResolver
     Private Function ResolveNpcSkinToneCore(state As MainForm.NPCVisualState, offset As SkinToneQnamOffset) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim npcData = _overlayResolver(_ctx.GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
+        Dim npcData = _overlayResolver(_ctx.GetParsedNpc(modelNpcFormID), state)
         If npcData Is Nothing Then Return Nothing
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
@@ -1444,8 +1447,8 @@ Friend NotInheritable Class NpcMaterialResolver
         ' Nothing on FO4 (SseSkinOverrides is never populated there), so the FO4 path is untouched.
         Dim sseSkinOverrides As List(Of RaceMenuJslot.JslotSkinOverride) = Nothing
         If _appliedPresets IsNot Nothing AndAlso state IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-            Dim ssePreset As LooksmenuLoader.LooksmenuPreset = Nothing
-            If _appliedPresets.TryGetValue(state.RootNpcFormID, ssePreset) AndAlso ssePreset IsNot Nothing _
+            Dim ssePreset = NpcRecordOverlay.OverlayDeDibujo(state, _appliedPresets)
+            If ssePreset IsNot Nothing _
                AndAlso ssePreset.SseSkinOverrides IsNot Nothing AndAlso ssePreset.SseSkinOverrides.Count > 0 Then
                 sseSkinOverrides = ssePreset.SseSkinOverrides
             End If

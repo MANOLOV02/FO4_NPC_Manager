@@ -43,6 +43,25 @@ Public Module PresetCategoryFilter
     ''' <param name="isSse">True under Skyrim: SSE carriers are used and the FO4-only categories are inert.</param>
     ''' <param name="resolveHdpt">FormID → HDPT resolver for the orphan-Misc cascade. Nothing skips that step.</param>
     ''' <param name="resolveLmTemplate">LM skin-template resolver (FO4). Nothing skips the injected-HDPT tracker.</param>
+    ''' <summary>⛔ CONTADOR DE LLAMADAS — superficie de arnés, hermana de
+    ''' <c>MainForm.AppliedPresetsForEditor</c>.
+    ''' <para>Existe porque `BuildFiltered` es CARO — clon de ~41 campos, un `Revert` por cada una de
+    ''' las 16 categorías (uno recorre `FaceMorphs` entero) y resolución de HDPTs— y la DECISIÓN 36
+    ''' dice que para un heredero se calcula **UNA vez por render** y se cachea en el state. Sin
+    ''' contarlo, ese caché se cae en cualquier refactor y **nadie se entera hasta que el preview se
+    ''' pone lento**: es una decisión sin gate, que es como no haberla tomado.</para>
+    ''' <para>En producción no cuesta nada: un incremento de entero. No se resetea sola — la pone en
+    ''' cero quien mide.</para></summary>
+    Private _llamadasABuildFiltered As Long = 0
+    Public Property LlamadasABuildFiltered As Long
+        Get
+            Return Threading.Interlocked.Read(_llamadasABuildFiltered)
+        End Get
+        Set(value As Long)
+            Threading.Interlocked.Exchange(_llamadasABuildFiltered, value)
+        End Set
+    End Property
+
     Public Function BuildFiltered(source As LooksmenuLoader.LooksmenuPreset,
                                   targetRaw As NPC_Data,
                                   baseline As LooksmenuLoader.LooksmenuPreset,
@@ -51,6 +70,11 @@ Public Module PresetCategoryFilter
                                   Optional resolveHdpt As Func(Of UInteger, Canon.IHdpt) = Nothing,
                                   Optional resolveLmTemplate As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As LooksmenuLoader.LooksmenuPreset
         If source Is Nothing Then Return Nothing
+        ' ⛔ cg-04: `Interlocked`, no `+= 1`. `PresetCategoryFilter` es un Module => estado ESTATICO
+        ' de proceso. Hoy los dos sitios de produccion que llaman aca son de UI y no hay carrera, pero
+        ' el bake corre con `Parallel.ForEach` por NPC y el dia que toque este camino un `+= 1L` no
+        ' atomico pierde cuentas en silencio. Cuesta lo mismo.
+        Threading.Interlocked.Increment(_llamadasABuildFiltered)
         Dim p = LooksmenuLoader.ClonePreset(source)
 
         For Each cat In AllCategories
@@ -213,7 +237,12 @@ Public Module PresetCategoryFilter
     ''' <summary>Overwrite ONE category of <paramref name="p"/> with the target's current value: the
     ''' baseline overlay's when it declares that field, else the raw record's. Record-less carriers
     ''' (F4SE/RaceMenu-only) end up empty when there is no baseline.</summary>
-    Private Sub Revert(p As LooksmenuLoader.LooksmenuPreset,
+    ''' <summary>⛔ Friend y no Private: es LA primitiva de combinación, y ahora tiene DOS políticas encima.
+    ''' <c>BuildFiltered</c> la usa con <c>baseline := el overlay del propio NPC</c> para «preservá lo que este
+    ''' NPC muestra»; <c>OverlayDeDibujo</c> la usa con <c>baseline := el overlay del TERMINAL</c> y
+    ''' <c>raw := el record del TERMINAL</c> para «heredá lo que muestra tu plantilla». Es la misma frase — «lo
+    ''' del baseline si lo declara, si no lo del record» — y por eso no nace un segundo combinador.</summary>
+    Friend Sub Revert(p As LooksmenuLoader.LooksmenuPreset,
                        cat As PresetCategory,
                        raw As NPC_Data,
                        baseline As LooksmenuLoader.LooksmenuPreset,
@@ -486,6 +515,187 @@ Public Module PresetCategoryFilter
 
         End Select
     End Sub
+
+    ''' <summary>Qué hacer con UN canal de una categoría. <paramref name="leer"/> y <paramref name="escribir"/>
+    ''' salen de la reflexión sobre el campo, no de una lambda escrita a mano por canal.</summary>
+    Friend Delegate Sub AccionDeCanal(nombre As String,
+                                      leer As Func(Of LooksmenuLoader.LooksmenuPreset, Object),
+                                      escribir As Action(Of LooksmenuLoader.LooksmenuPreset, Object))
+
+    ''' <summary>LA TABLA: qué campos del preset son los canales de cada categoría. Sale de recorrer las
+    ''' ramas de <see cref="Revert"/> y anotar cada <c>p.&lt;campo&gt;</c> que toca cada una — no de lo que uno
+    ''' se acuerde.
+    ''' <para>⛔⛔ CINCO canales son SUB-CARRIERS que no tienen categoría propia y que un comparador escrito a
+    ''' mano se come, siempre: <c>SkinToneOffset</c> viaja dentro de <c>FaceTints</c> aunque su panel viva en Edit
+    ''' Body; <c>SseHeadTextureFormIDOverride</c> y <c>HeadPartFormIDsIncludeRawExtras</c> dentro de
+    ''' <c>FaceParts</c>; <c>SseHairColorRgb</c> dentro de <c>HairColor</c>; y <c>SseVampireMorph</c> dentro de
+    ''' <c>FaceVertexMorphs</c> — éste último con su propio comentario en Revert diciendo que olvidarlo ya
+    ''' causó una fuga al ESP.</para>
+    ''' <para>⛔ Cinco categorías son GAME-AWARE porque su CARRIER cambia de juego, no porque la ley cambie:
+    ''' el peso, los tintes, los morfos de cara, los deslizadores y los overlays.</para></summary>
+    Private Function CanalesDe(cat As PresetCategory, isSse As Boolean) As String()
+        Select Case cat
+            Case PresetCategory.BodyWeight
+                ' NAM7 en Skyrim (un escalar) contra MWGT en Fallout (tres). Carrier distinto, misma ley.
+                Return If(isSse, New String() {"SseWeight"},
+                                 New String() {"WeightThin", "WeightMuscular", "WeightFat"})
+
+            Case PresetCategory.BodyRegions
+                Return New String() {"BodyMorphValues", "HasBodyMorphValues"}
+
+            Case PresetCategory.BodySliders
+                ' `BodyMorphsKeyed` se limpia en los DOS juegos y sólo se rellena en SSE, así que es canal de
+                ' los dos: si estuviera sólo en SSE, un FO4 con el campo sucio no se detectaría como cambio.
+                Return New String() {"BodyMorphSliders", "BodyMorphsKeyed", "HasBodyMorphSliders"}
+
+            Case PresetCategory.BodyScale
+                Return New String() {"SseNodeTransforms", "SseFirstPersonTransformsRaw"}
+
+            Case PresetCategory.Overlays
+                Return If(isSse, New String() {"SseBodyOverlays", "SseSkinOverrides", "Overlays", "HasOverlays"},
+                                 New String() {"Overlays", "HasOverlays", "SseBodyOverlays", "SseSkinOverrides"})
+
+            Case PresetCategory.SkinOverride
+                Return New String() {"SkinFormIDOverride"}
+
+            Case PresetCategory.LmSkinTemplate
+                Return New String() {"SkinTemplateId", "LmTemplateInjectedHdptFormIDs",
+                                     "HasHeadPartFormIDsSetByTemplate"}
+
+            Case PresetCategory.Outfit
+                Return New String() {"DefaultOutfitFormIDOverride", "SleepOutfitFormIDOverride"}
+
+            Case PresetCategory.FaceParts
+                Return New String() {"HeadPartFormIDs", "UnresolvedHeadParts", "SseUnresolvedHeadParts",
+                                     "SseHeadPartsFiltradasPorMotor", "HeadPartFormIDsIncludeRawExtras",
+                                     "SseHeadTextureFormIDOverride", "HasHeadPartFormIDs"}
+
+            Case PresetCategory.HairColor
+                Return New String() {"HairColorFormID", "SseHairColorRgb", "UnresolvedHairColor"}
+
+            Case PresetCategory.FaceTints
+                ' El ajuste manual del tono (QNAM) NO es game-aware: viaja con los tintes en los dos juegos,
+                ' fuera del If de Revert. Por eso va en las dos ramas.
+                Return If(isSse,
+                          New String() {"SseTintLayers", "SseTintTexOverride", "HasSseTints", "SkinToneOffset"},
+                          New String() {"FaceTintLayers", "HasFaceTintLayers", "SkinToneOffset"})
+
+            Case PresetCategory.FaceVertexMorphs
+                Return If(isSse,
+                          New String() {"SseNam9", "SseNama", "HasSseMorphs", "SseVampireMorph"},
+                          New String() {"ChargenFaceMorphs", "HasChargenFaceMorphs"})
+
+            Case PresetCategory.CustomMorphs
+                Return New String() {"SseCustomMorphs"}
+
+            Case PresetCategory.FaceBoneRegions
+                ' Las regiones (FMRS) y la intensidad (FMIN) son UNA categoría: el motor escribe la intensidad
+                ' con las regiones, y por eso Revert las revierte juntas con dos helpers.
+                Return New String() {"FaceBoneRegions", "HasFaceBoneRegions",
+                                     "FacialMorphIntensity", "HasFacialMorphIntensity"}
+
+            Case PresetCategory.Sculpt
+                Return New String() {"SseSculptHead", "SseSculptParts"}
+
+            Case PresetCategory.IsCharGenPreset
+                ' No es un canal de apariencia: es el bit 2 de ACBS, y el RE mostró que GATEA los tintes.
+                Return New String() {"IsCharGenFacePreset"}
+
+        End Select
+        Throw New ArgumentOutOfRangeException(NameOf(cat), cat,
+            "No hay tabla de canales para esta categoria. Una categoria nueva SIN canales es una que " &
+            "el predicado del COMMIT nunca ve cambiar: el desprendimiento no se latchea y el motor le " &
+            "pisa la edicion al usuario.")
+    End Function
+
+    ''' <summary>Los campos de <c>LooksmenuPreset</c>, por nombre. Cacheado: la tabla se recorre por cada
+    ''' categoría de cada comparación.</summary>
+    Private ReadOnly CamposDelPreset As Dictionary(Of String, Reflection.FieldInfo) =
+        GetType(LooksmenuLoader.LooksmenuPreset).
+            GetFields(Reflection.BindingFlags.Public Or Reflection.BindingFlags.Instance).
+            ToDictionary(Function(f) f.Name, StringComparer.Ordinal)
+
+    Private Function CampoDelPreset(nombre As String) As Reflection.FieldInfo
+        Dim f As Reflection.FieldInfo = Nothing
+        If Not CamposDelPreset.TryGetValue(nombre, f) Then
+            ' ⛔ Revienta con nombre en vez de devolver Nothing: un canal mal escrito que se saltea en silencio
+            ' es un canal que el predicado del COMMIT no mira, y el sintoma aparece recien en el ESP.
+            Throw New InvalidOperationException(
+                "La tabla de canales nombra un campo que LooksmenuPreset no tiene: " & nombre)
+        End If
+        Return f
+    End Function
+
+    ''' <summary>Recorre los canales de UNA categoría.
+    ''' <para>⛔ <see cref="Revert"/> NO se reescribió encima de esta tabla, y va declarado por qué: sus ramas no
+    ''' son "copiar un campo" sino "el baseline si lo declara, si no EXTRAERLO DEL RECORD", con reglas propias
+    ''' por canal que están documentadas una por una — el tri-estado del FTST, el centinela de NAMA, el
+    ''' <c>PickSingle</c> del MWGT. Reescribirlas para que pasen por acá es justo la clase de cambio que en esta
+    ''' misma ola perdió un campo cuatro veces. ⇒ la tabla es UNA, y que <c>Revert</c> escriba exactamente estos
+    ''' canales y ningún otro se afirma POR MEDICIÓN: clonar un preset, correr <c>Revert</c> de la categoría y
+    ''' diferenciar por reflexión contra el clon. Eso caza las dos direcciones — canal en Revert que falta en la
+    ''' tabla, y canal en la tabla que Revert no toca — y una lista compartida por construcción sólo cazaba la
+    ''' primera.</para></summary>
+    Friend Sub PorCanal(cat As PresetCategory, isSse As Boolean, accion As AccionDeCanal)
+        If accion Is Nothing Then Return
+        For Each nombre In CanalesDe(cat, isSse)
+            Dim f = CampoDelPreset(nombre)
+            accion(nombre, Function(p) f.GetValue(p), Sub(p, v) f.SetValue(p, v))
+        Next
+    End Sub
+
+    ''' <summary>⛔⛔ `Revert`, PERO SOLO DE LOS CANALES QUE EL BUCKET COPIA. Es lo que necesita el
+    ''' overlay de dibujo de un heredero: la categoria `FaceTints` de SSE tiene que traer el QNAM del terminal
+    ''' y NO sus capas, y `FaceBoneRegions` de FO4 las regiones y NO la intensidad.
+    '''
+    ''' <para>⛔ No reimplementa `Revert`: lo CORRE sobre un clon y despues copia al destino unicamente los
+    ''' canales heredables, leyendo la lista de la tabla de `PorCanal`. Por eso no nace una segunda ley -- las
+    ''' reglas propias de cada canal (el tri-estado del FTST, el centinela de NAMA, el `PickSingle` del MWGT)
+    ''' siguen viviendo en `Revert`, que es su unica sede. La equivalencia "Revert escribe exactamente los
+    ''' canales de la tabla" ya se afirma por medicion; esta funcion se apoya en esa misma medicion.</para>
+    '''
+    ''' <para>Con todos los canales heredables el resultado es identico a `Revert`.</para></summary>
+    Friend Sub RevertirLoHeredable(p As LooksmenuLoader.LooksmenuPreset,
+                                   cat As PresetCategory,
+                                   raw As NPC_Data,
+                                   baseline As LooksmenuLoader.LooksmenuPreset,
+                                   isSse As Boolean)
+        If p Is Nothing Then Return
+        Dim delTerminal = LooksmenuLoader.ClonePreset(p)
+        Revert(delTerminal, cat, raw, baseline, isSse)
+        PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
+                                 If Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
+                                 escribirCanal(p, leerCanal(delTerminal))
+                             End Sub)
+    End Sub
+
+    ''' <summary>El NOMBRE del primer canal que difiere, o Nothing. Es la forma que necesita un gate para poder
+    ''' decir QUÉ se rompió; un booleano pelado obliga a re-recorrer a mano, y esa segunda pasada es una
+    ''' segunda ley.</summary>
+    ''' <param name="soloHeredables">True = mirar SOLO los canales que el bucket Traits copia. Lo usa la
+    ''' puerta del desprendimiento: authorear un canal que el motor NO hereda no puede desprender a nadie,
+    ''' porque el bit 0 no se lo va a pisar. Ver <see cref="PresetCategories.HeredaElCanal"/>.</param>
+    Friend Function PrimerCanalDistinto(a As LooksmenuLoader.LooksmenuPreset,
+                                        b As LooksmenuLoader.LooksmenuPreset,
+                                        cat As PresetCategory, isSse As Boolean,
+                                        Optional soloHeredables As Boolean = False) As String
+        If a Is Nothing OrElse b Is Nothing Then Return If(a Is b, Nothing, "(uno de los dos presets es Nothing)")
+        Dim distinto As String = Nothing
+        PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
+                                 If distinto IsNot Nothing Then Return
+                                 If soloHeredables AndAlso
+                                    Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
+                                 ' ⛔ Y ademas tiene que ser un canal de VALOR: las banderas de
+                                 ' contabilidad de la app no son campos del motor, asi que el bit 0 no
+                                 ' puede pisarlas. Ver `EsCanalDeValor`.
+                                 If soloHeredables AndAlso
+                                    Not PresetCategories.EsCanalDeValor(nombre) Then Return
+                                 If Not ComparacionPorValor.IgualPorValor(leerCanal(a), leerCanal(b)) Then
+                                     distinto = nombre
+                                 End If
+                             End Sub)
+        Return distinto
+    End Function
 
     ''' <summary>Baseline value when the overlay declares one, else the record's (Nothing when the record
     ''' has none either = preserve).</summary>

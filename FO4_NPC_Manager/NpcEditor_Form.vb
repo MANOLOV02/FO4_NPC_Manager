@@ -370,24 +370,43 @@ Public Class NpcEditor_Form
             Dim factionsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Factions, _getParsedNpc, lvlnPick)
             Dim inventoryNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, lvlnPick)
             Dim spellsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, lvlnPick)
+            ' ⛔ AI Data tiene su propio terminal: el Combat Style sale de ACA, no del de Traits. En
+            ' FO4 la diferencia es real — el origen se resuelve POR BUCKET (`sub_140664FC0`), asi que
+            ' cada categoria puede tener un terminal distinto.
+            Dim aiNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.AIData, _getParsedNpc, lvlnPick)
             ' General.
             TextBoxFull.Text = If(baseNpc.Record.Name, "")
             TextBoxShort.Text = If(baseNpc.Record.ShortName, "")
             Dim raceFid = If(traitsNpc.Record.Race <> 0UI, traitsNpc.Record.Race, fallbackRaceFormID)
             SetFidText(TextBoxRace, raceFid)
             SetFidText(TextBoxVoice, traitsNpc.Record.Voice)
-            SetFidText(TextBoxClass, traitsNpc.Record.[Class])
-            SetFidText(TextBoxZnam, traitsNpc.Record.CombatStyle)
+            ' La Class la gobierna Use STATS (SSE 0x1403C233E, FO4 0x1406585B7) y el Combat Style
+            ' Use AI DATA (SSE 0x1403C250E, FO4 0x1406587BD). Leerlas del terminal de Traits mostraba
+            ' el valor de la cadena equivocada.
+            SetFidText(TextBoxClass, statsNpc.Record.[Class])
+            SetFidText(TextBoxZnam, aiNpc.Record.CombatStyle)
 
             Dim traitsFlags As UInteger = traitsNpc.Record.ConfigurationFlags
             Dim statsFlags As UInteger = statsNpc.Record.ConfigurationFlags
             Dim baseFlags As UInteger = baseNpc.Record.ConfigurationFlags
             Dim ownFlags As UInteger = _npc.Record.ConfigurationFlags
-            Dim governedMask As UInteger = NpcTemplateHelpers.ClassifiedAcbsFlagsMask
+            ' Las mascaras pasan a depender del JUEGO (la de Base Data no es la misma en los dos) y
+            ' el bit 0x10 sale de la mascara plana de Stats porque es una REGLA, no un bit copiado.
+            Dim governedMask As UInteger = NpcTemplateHelpers.ClassifiedAcbsFlagsMask(_isSkyrim)
             Dim flagsWord As UInteger = (ownFlags And Not governedMask) Or
                                         (traitsFlags And NpcTemplateHelpers.TraitsAcbsFlagsMask) Or
-                                        (baseFlags And NpcTemplateHelpers.BaseDataAcbsFlagsMask) Or
-                                        (statsFlags And NpcTemplateHelpers.StatsAcbsFlagsMask)
+                                        (baseFlags And NpcTemplateHelpers.BaseDataAcbsFlagsMask(_isSkyrim)) Or
+                                        (statsFlags And NpcTemplateHelpers.StatsAcbsFlagsMaskPlana)
+            ' El 0x10 se DERIVA del origen de Stats — pero SOLO si el NPC hereda Stats. La regla es una
+            ' ley de la COPIA: aplicarla a un NPC que no hereda fabricaba el bit. Un NPC propio con
+            ' 0x80 puesto y 0x10 apagado veia "Auto-calc" encendido, `_snapFlags` congelaba el bit
+            ' fabricado y cualquier otra edicion se lo llevaba al ESP.
+            If NpcTemplateHelpers.HasTemplateFlag(_npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Stats) Then
+                flagsWord = NpcTemplateHelpers.AplicarReglaAutoCalc(flagsWord, statsFlags)
+            Else
+                flagsWord = (flagsWord And Not NpcTemplateHelpers.AcbsBitAutoCalc) Or
+                            (ownFlags And NpcTemplateHelpers.AcbsBitAutoCalc)
+            End If
             _loadedFlagsWord = flagsWord
             SetFlagChecks(flagsWord)   ' fires ChkPCLevelMult.CheckedChanged, guarded by _loading (no-op here)
             ' Level union — mode from the PC Level Mult flag (0x80), value from the raw u16.
@@ -396,7 +415,12 @@ Public Class NpcEditor_Form
             NumXp.Value = ClampDec(CDec(If(statsFo4 Is Nothing, 0S, statsFo4.ConfigurationXPValueOffset)), NumXp)
             NumCalcMin.Value = ClampDec(CDec(statsNpc.Record.ConfigurationCalcMinLevel), NumCalcMin)
             NumCalcMax.Value = ClampDec(CDec(statsNpc.Record.ConfigurationCalcMaxLevel), NumCalcMax)
-            NumDisp.Value = ClampDec(CDec(traitsNpc.Record.BaseDeDisposicion()), NumDisp)
+            ' ⛔ La disposicion base sale del RECORD PROPIO, no del terminal: el motor no la hereda.
+            ' Los dos llaman al setter con el valor del propio destino — SSE 0x1403C2188 lee
+            ' `[rdi+0x18]` y 0x1403C218F escribe `[rcx+0x18]` con rcx=rdi, la MISMA direccion; FO4
+            ' 0x140658387 lee `[r14+0x14]`. El origen no participa. Mostrar la de la plantilla hacia
+            ' que el usuario viera un valor que su NPC no tiene y que, al aceptar, se lo escribiera.
+            NumDisp.Value = ClampDec(CDec(_npc.Record.BaseDeDisposicion()), NumDisp)
             ' SSE-only ACBS offsets (hidden on FO4, whose 20-byte struct has no slot for them).
             Dim statsSse = TryCast(statsNpc.Record, Canon.NpcSSE)
             NumMagickaOff.Value = ClampDec(CDec(If(statsSse Is Nothing, 0S, statsSse.ConfigurationMagickaOffset)), NumMagickaOff)
@@ -1115,7 +1139,7 @@ Public Class NpcEditor_Form
         Dim changedFlagBits = newFlags Xor _snapFlags
         Dim flagsChanged = changedFlagBits <> 0UI
         Dim unsupportedChangedFlagBits = changedFlagBits And
-                                         (_managedFlagMask And Not NpcTemplateHelpers.ClassifiedAcbsFlagsMask)
+                                         (_managedFlagMask And Not NpcTemplateHelpers.ClassifiedAcbsFlagsMask(_isSkyrim))
         If unsupportedChangedFlagBits <> 0UI AndAlso _npc.Record.ConfigurationTemplateFlags <> 0US Then
             Dim flagNames = String.Join(", ", _flagChecks.
                                         Where(Function(fc) (unsupportedChangedFlagBits And fc.Mask) <> 0UI).
@@ -1126,23 +1150,34 @@ Public Class NpcEditor_Form
                             "Unsupported templated flag edit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
-        Dim baseDataChanged = (changedFlagBits And NpcTemplateHelpers.BaseDataAcbsFlagsMask) <> 0UI OrElse
+        Dim baseDataChanged = (changedFlagBits And NpcTemplateHelpers.BaseDataAcbsFlagsMask(_isSkyrim)) <> 0UI OrElse
                               Not String.Equals(TextBoxFull.Text.Trim(), _snapFull, StringComparison.Ordinal) OrElse
                               Not String.Equals(TextBoxShort.Text.Trim(), _snapShort, StringComparison.Ordinal)
         Dim combosChanged = Not String.Equals(CombosSignature(_combos), _snapCombosSig, StringComparison.Ordinal)
         Dim apprChanged = Not SequenceEqualU(_appr, _snapAppr)
         Dim traitsChanged = (changedFlagBits And NpcTemplateHelpers.TraitsAcbsFlagsMask) <> 0UI OrElse
                             (GetFid(TextBoxRace) <> _snapRace) OrElse (GetFid(TextBoxVoice) <> _snapVoice) OrElse
-                            (GetFid(TextBoxClass) <> _snapClass) OrElse (GetFid(TextBoxZnam) <> _snapZnam) OrElse
-                            CShort(NumDisp.Value) <> _snapDisp OrElse combosChanged OrElse apprChanged
-        ' DNAM, level and the SSE-only ACBS offsets ride Use-Stats. Class and Combat Style are
-        ' Traits under the historical FNV actor-template field categorization (see
-        ' NpcTemplateHelpers); do not move them here without runtime evidence.
+                            combosChanged OrElse apprChanged
+        ' ⛔⛔ Class y Combat Style SALIERON de aca. El comentario que estaba en este lugar pedia
+        ' *«runtime evidence»* para moverlos; la evidencia llego y es mejor que la de runtime: es la
+        ' FUNCION DE COPIA. Midiendo los limites de cada bucket por el `edx` de su gate, la copia de
+        ' `CNAM` cae en el bloque del bit 1 (Use Stats) y la de `ZNAM` en el del bit 4 (Use AI Data).
+        ' El sintoma que esto arregla NO es cosmetico: la app materializaba Traits y bajaba el bit 0,
+        ' pero Use Stats / Use AI Data quedaban PUESTOS, asi que el motor pisaba los dos campos al
+        ' cargar y la edicion del usuario desaparecia en el juego, sin error y sin log.
+        Dim aiDataChanged = (GetFid(TextBoxZnam) <> _snapZnam)
+        ' ⛔ La disposicion base tiene su propio cambio y NO pertenece a ninguna categoria: como el
+        ' motor no la copia, el valor propio siempre gana y no hay nada que materializar ni ningun bit
+        ' que bajar. Antes viajaba en `traitsChanged`, asi que editarla escribia el bloque de Traits
+        ' ENTERO al ESP y el NPC dejaba de heredar su cara — un cambio de bytes desproporcionado para
+        ' un campo que el motor ni siquiera hereda.
+        Dim dispositionChanged = CShort(NumDisp.Value) <> _snapDisp
         Dim skillsChanged = PlayerSkillsChanged()
         ' El DNAM del borrador se compone ACA, antes de registrar el override y antes de aplicar: los dos
         ' salen del mismo bloque.
         If skillsChanged Then ComposePlayerSkills()
-        Dim statsChanged = (changedFlagBits And NpcTemplateHelpers.StatsAcbsFlagsMask) <> 0UI OrElse CurrentLevelRaw() <> _snapLevel OrElse
+        Dim statsChanged = (GetFid(TextBoxClass) <> _snapClass) OrElse
+                           (changedFlagBits And (NpcTemplateHelpers.StatsAcbsFlagsMaskPlana Or NpcTemplateHelpers.AcbsBitAutoCalc)) <> 0UI OrElse CurrentLevelRaw() <> _snapLevel OrElse
                            CShort(NumXp.Value) <> _snapXp OrElse CUShort(NumCalcMin.Value) <> _snapCalcMin OrElse
                            CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse skillsChanged OrElse SseAcbsOffsetsChanged()
         Dim keywordsChanged = Not SequenceEqualU(_keywords, _snapKeywords)
@@ -1159,15 +1194,33 @@ Public Class NpcEditor_Form
         If traitsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Traits)
         If baseDataChanged Then categoriesToOwn.Add(NPC_TemplateCategory.BaseData)
         If statsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Stats)
+        If aiDataChanged Then categoriesToOwn.Add(NPC_TemplateCategory.AIData)
         If keywordsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Keywords)
         If factionsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Factions)
         If inventoryChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Inventory)
-        If actorEffectsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.SpellList)
+        ' ⛔⛔ Los perks viajan en el bucket 3 JUNTO con los hechizos -- SSE 0x1403C24C3
+        ' `call sub_1401DB120` sobre +0x138, FO4 0x14065875A -- asi que editarlos desprende lo MISMO que
+        ' editar los actor effects. Antes `perksChanged` no entraba en ninguna categoria: el ESP salia con
+        ' el bit 3 puesto y el PRKR escrito, y el motor le copiaba los del terminal al cargar.
+        If actorEffectsChanged OrElse perksChanged Then categoriesToOwn.Add(NPC_TemplateCategory.SpellList)
+        ' ⛔ PRPS viaja en el bucket 1 (Use Stats), solo FO4: 0x140658644 `call sub_140256EF0` sobre
+        ' TESNPC+0x1A0. Mismo caso.
+        If propertiesChanged AndAlso Not categoriesToOwn.Contains(NPC_TemplateCategory.Stats) Then _
+            categoriesToOwn.Add(NPC_TemplateCategory.Stats)
 
         ' Validate every changed bucket before mutating any of them or registering an override. A broken chain
         ' must fail closed; otherwise Use-X remains active and the engine silently overwrites the edit.
+        ' ⛔⛔ Y lo que resolvio SE GUARDA. Esta es LA SEDE del desprendimiento: la cadena se camina UNA
+        ' vez, aca, con el arbol que el usuario esta mirando. Antes esta respuesta se tiraba, `MakeCategoryOwn`
+        ' la volvia a caminar unas lineas mas abajo y el guardado la caminaba una TERCERA vez -- tres
+        ' respuestas a la misma pregunta, y las dos ultimas podian diferir de la que el usuario vio si el arbol
+        ' cambiaba entre medio. Ahora viaja congelada hasta el ESP, en `ov.MaterializedSources`.
+        Dim resoluciones As New Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution)
         For Each category In categoriesToOwn
             Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(_npc, category, _getParsedNpc, lvlnPick)
+            ' ⛔ CONGELADA: la fuente viaja clonada. `ProbeCategoryOwn` devuelve la instancia cacheada del
+            ' parse, y unas lineas mas abajo este mismo formulario la muta en vivo.
+            resoluciones(category) = NpcTemplateMaterializer.CongelarResolucion(probe)
             If probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
                probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then
                 MessageBox.Show(Me,
@@ -1180,32 +1233,29 @@ Public Class NpcEditor_Form
 
         ' Mutate the LIVE in-memory NPC_Data (render cache) so the preview reflects the edit immediately.
         ' Materialize → clear Use-X flag for each edited category BEFORE applying (engine CopyFromTemplate rule).
-        ' Traits uses the SAME skip-overlay-owned rule as the save apply so the preview matches the written record
-        ' (overlay-owned appearance fields come from the LM overlay at render, not the template).
         ' Traits: el resolver de LVLN es lo que evita que una cadena que termina en una lista nivelada se
         ' quede sin materializar y ADEMÁS pierda el bit (= NPC sin cara). Con varias hojas se FIJA una —
         ' la que se está previsualizando— y el NPC deja de re-sortear plantilla: es exactamente para lo que
-        ' está el editor (volver concreto a un NPC genérico), así que no se bloquea ni se pregunta nada.
-        If traitsChanged Then
-            NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Traits, _getParsedNpc,
-                                                    skipOverlayOwned:=_mainForm.NpcHasOverlay(_npcFormID),
-                                                    resolveLvlnPick:=AddressOf _mainForm.ResolveLvlnPick_Friend)
-        End If
-        If baseDataChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc, resolveLvlnPick:=lvlnPick)
-        If statsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Stats, _getParsedNpc, resolveLvlnPick:=lvlnPick)
-        If keywordsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc, resolveLvlnPick:=lvlnPick)
-        If factionsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Factions, _getParsedNpc, resolveLvlnPick:=lvlnPick)
-        If inventoryChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, resolveLvlnPick:=lvlnPick)
-        If actorEffectsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, resolveLvlnPick:=lvlnPick)
+        ' está el editor (volver concreto a un NPC genérico), así que no se bloquea ni se pregunta nada. Ese
+        ' `lvlnPick` ya viajo en el preflight, que es donde ahora se resuelve.
+        ' ⛔ `skipOverlayOwned` ya no existe: el overlay pasa a estamparse DESPUES de materializar, asi que
+        ' gana por llegar ultimo, campo por campo, en vez de saltearse con un booleano grueso por NPC -- un
+        ' overlay de solo CUERPO hacia saltear TODA la cara.
+        ' ⛔ Se recorre `categoriesToOwn`, la MISMA lista que valido el preflight, en vez de repetir las ocho
+        ' banderas: una novena categoria agregada arriba y olvidada aca se materializaba sin avisar.
+        For Each category In categoriesToOwn
+            NpcTemplateMaterializer.MakeCategoryOwn(_npc, category, resoluciones(category))
+        Next
 
         ' Persist only after every preflight passed and each required bucket was made own.
         RegisterRecordOverride(newFlags, flagsChanged, baseDataChanged, traitsChanged, statsChanged,
                                keywordsChanged, apprChanged, factionsChanged, inventoryChanged, combosChanged,
-                               perksChanged, actorEffectsChanged, propertiesChanged)
+                               perksChanged, actorEffectsChanged, propertiesChanged,
+                               aiDataChanged, dispositionChanged, resoluciones)
 
         ApplyToNpc(newFlags, changedFlagBits, baseDataChanged, traitsChanged, statsChanged, skillsChanged,
                    keywordsChanged, factionsChanged, inventoryChanged, perksChanged,
-                   actorEffectsChanged, propertiesChanged)
+                   actorEffectsChanged, propertiesChanged, aiDataChanged, dispositionChanged)
 
         ' Outfits (DOFT/SOFT) are committed to the LooksMenu overlay — the SAME path the Edit Outfit picker uses —
         ' so the preview, the outfit combo (rebuilt by the caller's re-render) and Save all resolve them once.
@@ -1221,7 +1271,7 @@ Public Class NpcEditor_Form
             _mainForm.SetNpcSleepOutfitOverrideFromEditor(_npcFormID, If(v = _rawSleepOutfit, CType(Nothing, UInteger?), v))
         End If
 
-        _hasChanges = flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse
+        _hasChanges = flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse aiDataChanged OrElse dispositionChanged OrElse
                       keywordsChanged OrElse apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse
                       perksChanged OrElse actorEffectsChanged OrElse propertiesChanged OrElse
                       defaultOutfitChanged OrElse sleepOutfitChanged
@@ -1237,8 +1287,16 @@ Public Class NpcEditor_Form
     Private Sub RegisterRecordOverride(newFlags As UInteger, flagsChanged As Boolean, baseDataChanged As Boolean, traitsChanged As Boolean,
                                        statsChanged As Boolean, keywordsChanged As Boolean, apprChanged As Boolean,
                                        factionsChanged As Boolean, inventoryChanged As Boolean, combosChanged As Boolean,
-                                       perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean)
+                                       perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean,
+                                       aiDataChanged As Boolean, dispositionChanged As Boolean,
+                                       resoluciones As Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution))
+        ' ⛔ `aiDataChanged` y `dispositionChanged` van EN LA GUARDA. Sin ellos, editar SOLO el Combat
+        ' Style o SOLO la disposicion salia por este `Return` y el override no se creaba nunca: la UI
+        ' mostraba el valor nuevo y el ESP se guardaba con el viejo. Y con un override preexistente era
+        ' peor — el `Return` ocurre ANTES de leer `ov`, asi que al guardar se re-aplicaba el valor
+        ' viejo y se revertia lo que la pantalla mostraba.
         If Not (flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse keywordsChanged OrElse
+                aiDataChanged OrElse dispositionChanged OrElse
                 apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse perksChanged OrElse
                 actorEffectsChanged OrElse propertiesChanged) Then Return
         Dim ov = _mainForm.TryGetNpcRecordOverride(_npcFormID)
@@ -1285,6 +1343,18 @@ Public Class NpcEditor_Form
         ov.TraitsChanged = ov.TraitsChanged OrElse traitsChanged
         ov.BaseDataChanged = ov.BaseDataChanged OrElse baseDataChanged
         ov.StatsChanged = ov.StatsChanged OrElse statsChanged
+        ' ⛔ El ZNAM lo gobierna Use AI Data: sin este latch el guardado escribe el valor y no baja el
+        ' bit 4, asi que el motor se lo pisa al cargar. La disposicion NO necesita latch: el motor no la
+        ' hereda, asi que no hay bucket que materializar — alcanza con que `ov.DispositionBase` viaje.
+        ov.AiDataChanged = ov.AiDataChanged OrElse aiDataChanged
+
+        ' ⛔⛔ EL SNAPSHOT DE LA CADENA. Sin esto el guardado no tiene de donde sacar la fuente y
+        ' `MaterializarCategorias` rechaza el NPC: la resolucion es dato del override, no algo que se
+        ' re-derive mas tarde. Se ACUMULA -- una categoria que se desprendio en una pasada anterior conserva
+        ' la suya aunque esta edicion no la toque.
+        For Each par In resoluciones
+            ov.MaterializedSources(par.Key) = par.Value
+        Next
 
         _mainForm.SetNpcRecordOverride(_npcFormID, ov)
     End Sub
@@ -1304,7 +1374,8 @@ Public Class NpcEditor_Form
     Private Sub ApplyToNpc(newFlags As UInteger, changedFlagBits As UInteger,
                            baseDataChanged As Boolean, traitsChanged As Boolean, statsChanged As Boolean, skillsChanged As Boolean,
                            keywordsChanged As Boolean, factionsChanged As Boolean, inventoryChanged As Boolean,
-                           perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean)
+                           perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean,
+                           aiDataChanged As Boolean, dispositionChanged As Boolean)
         ' General identity.
         If baseDataChanged Then
             ' Escribir el campo CREA el subrecord; con el texto vacio y el record sin traerlo, se saca,
@@ -1324,16 +1395,20 @@ Public Class NpcEditor_Form
             ' lo dice en su propio docstring: «NO va para campos REQUERIDOS de hecho, como el RNAM».
             Canon.CanonInterpretacion.PonerReferenciaRequerida(GetFid(TextBoxRace), Sub(x) _npc.Record.Race = x)
             Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxVoice), "VTCK", Sub(v) _npc.Record.Voice = v)
-            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxClass), "CNAM", Sub(v) _npc.Record.[Class] = v)
-            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxZnam), "ZNAM", Sub(v) _npc.Record.CombatStyle = v)
         End If
 
-        If traitsChanged Then _npc.Record.PonerBaseDeDisposicion(CShort(NumDisp.Value))
+        If dispositionChanged Then _npc.Record.PonerBaseDeDisposicion(CShort(NumDisp.Value))
         If changedFlagBits <> 0UI Then
             _npc.Record.ConfigurationFlags = (_npc.Record.ConfigurationFlags And Not changedFlagBits) Or
                                              (newFlags And changedFlagBits)
         End If
+        ' CNAM viaja con Stats y ZNAM con AI Data — cada uno bajo el bloque de SU categoria, que es
+        ' el que baja el bit que corresponde.
+        If aiDataChanged Then
+            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxZnam), "ZNAM", Sub(v) _npc.Record.CombatStyle = v)
+        End If
         If statsChanged Then
+            Canon.CanonInterpretacion.PonerReferenciaOSacarSubrecord(_npc.Record, GetFid(TextBoxClass), "CNAM", Sub(v) _npc.Record.[Class] = v)
             _npc.Record.PonerNivelDeConfiguracion(CurrentLevelRaw())
             _npc.Record.ConfigurationCalcMinLevel = CUShort(NumCalcMin.Value)
             _npc.Record.ConfigurationCalcMaxLevel = CUShort(NumCalcMax.Value)

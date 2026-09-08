@@ -72,8 +72,23 @@ Module Program
     <STAThread>
     Sub Main(args As String())
         CrashReport.Install()
-        ' ⛔ La carpeta de diarios va antes de cualquier guardado (ver RecuperacionDeLotes).
-        RecuperacionDeLotes.ConfigurarCarpeta("NpcManager")
+        ' ⛔ ACÁ SE FUE `RecuperacionDeLotes.ConfigurarCarpeta`, QUE ROMPÍA EL CONTRATO DE ARRIBA: vive en
+        ' FO4_Base_Library, así que su sola presencia en este cuerpo hacía que el JIT de Main resolviera la
+        ' librería ANTES de ejecutar la primera línea — exactamente el agujero que el comentario describe, con
+        ' CrashReport.Install() ya escrito pero sin llegar a correr. Ahora abre RealMain, que es donde el
+        ' contrato permite tocar la librería y sigue estando antes de cualquier guardado.
+        '
+        ' EL CHEQUEO DE INSTALACIÓN VA ACÁ, ANTES DE TODO Y SIN TOCAR NINGÚN DLL PROPIO. Si la carpeta tiene
+        ' DLL de releases distintas, este es el único punto en el que todavía se puede AVISAR: más adelante,
+        ' según la dirección de la mezcla, o muere el JIT (librería más vieja que la pedida) o la app arranca
+        ' normal y revienta a mitad de camino con un MissingMethodException (librería más nueva, MEDIDO: .NET 8
+        ' hace roll-forward en silencio). Ver Shared\VersionGate.vb.
+        If HasFlag(args, "--bake-all") OrElse HasFlag(args, "--help") OrElse
+           HasFlag(args, "-h") OrElse HasFlag(args, "/?") Then VersionGate.UsarConsola()
+        If Not VersionGate.VerificarInstalacion() Then
+            Environment.ExitCode = 1
+            Return
+        End If
         ' ThrowException y no Automatic: fija que una excepción no atrapada del hilo de UI SALGA de
         ' Application.Run en vez de quedar a criterio del host. Así toda caída pasa por el reporte, y ninguna
         ' deja la app viva en un estado roto. Debe ir antes de crear cualquier control.
@@ -88,6 +103,10 @@ Module Program
 
     <MethodImpl(MethodImplOptions.NoInlining)>
     Private Sub RealMain(args As String())
+        ' ⛔ LA CARPETA DE DIARIOS, ANTES DE CUALQUIER GUARDADO (ver RecuperacionDeLotes). Estaba en Main, de
+        ' donde tuvo que salir: es de FO4_Base_Library y hacía que el JIT resolviera la librería antes de la
+        ' primera línea de Main. Acá adentro es lo primero que se hace, así que la garantía es la misma.
+        RecuperacionDeLotes.ConfigurarCarpeta("NpcManager")
         ' NPC Manager es un VISOR: no dibuja helper shapes (colisiones, marcadores, emisores) salvo que
         ' el usuario prenda la casilla. UNA sola linea acá porque los CUATRO Config_App.LoadConfig del
         ' archivo y el --bake-all cuelgan todos de RealMain. Ver Config_App.DefaultShowHelperShapes:

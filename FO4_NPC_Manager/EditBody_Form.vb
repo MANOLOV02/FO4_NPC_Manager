@@ -235,14 +235,14 @@ Public Class EditBody_Form
         _initialWnamFormID = currentWnamFormID
 
         ' Snapshot the existing overlay so Cancel can restore it byte-for-byte.
-        Dim existing As LooksmenuLoader.LooksmenuPreset = Nothing
-        _hadPriorOverlay = _appliedPresets.TryGetValue(rootNpcFormID, existing)
+        Dim existing = NpcRecordOverlay.OverlayDeAutoria(rootNpcFormID, _appliedPresets)
+        _hadPriorOverlay = existing IsNot Nothing
         _priorPreset = If(_hadPriorOverlay, ClonePreset(existing), Nothing)
 
         ' Ensure an overlay preset exists for live editing — even if the NPC currently has none.
         ' We'll roll it back in Cancel if the user bails out.
-        Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not _appliedPresets.TryGetValue(rootNpcFormID, p) OrElse p Is Nothing Then
+        Dim p = NpcRecordOverlay.OverlayDeAutoria(rootNpcFormID, _appliedPresets)
+        If p Is Nothing Then
             p = New LooksmenuLoader.LooksmenuPreset()
             _appliedPresets(rootNpcFormID) = p
         End If
@@ -580,14 +580,22 @@ Public Class EditBody_Form
     ''' <summary>Deep-clone for snapshot/restore. Delegates to LooksmenuLoader.ClonePreset
     ''' (canonical) so any new field added to LooksmenuPreset propagates through every
     ''' snapshot path automatically.</summary>
+
+    ''' <summary>El overlay PRE-DIÁLOGO, para que la puerta del desprendimiento tenga contra qué comparar. Es
+    ''' el mismo clon que usa el rollback de Cancel: una sola foto del antes, no dos.</summary>
+    Friend ReadOnly Property OverlayPrevio As LooksmenuLoader.LooksmenuPreset
+        Get
+            Return _priorPreset
+        End Get
+    End Property
+
     Private Shared Function ClonePreset(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
         Return LooksmenuLoader.ClonePreset(p)
     End Function
 
     Private ReadOnly Property Preset As LooksmenuLoader.LooksmenuPreset
         Get
-            Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
-            _appliedPresets.TryGetValue(_rootNpcFormID, p)
+            Dim p = NpcRecordOverlay.OverlayDeAutoria(_rootNpcFormID, _appliedPresets)
             Return p
         End Get
     End Property
@@ -858,16 +866,17 @@ Public Class EditBody_Form
         ' a live slider edit there is no full reload to re-run that sync, so we mutate both
         ' caches in place. Without this, the editor's preview would not reflect MWGT changes
         ' until the user closes the editor with OK and triggers a full reload.
-        If _editorHost IsNot Nothing AndAlso _editorHost.LastRenderedState IsNot Nothing Then
-            _editorHost.LastRenderedState.WeightThin = t
-            _editorHost.LastRenderedState.WeightMuscular = m
-            _editorHost.LastRenderedState.WeightFat = f
-        End If
-        If _editorHost IsNot Nothing AndAlso _editorHost.CurrentBaseState IsNot Nothing Then
-            _editorHost.CurrentBaseState.WeightThin = t
-            _editorHost.CurrentBaseState.WeightMuscular = m
-            _editorHost.CurrentBaseState.WeightFat = f
-        End If
+        ' ⛔ Este sitio tampoco reconstruye la sombra, y por lo mismo que el tono del cuerpo: corre dentro de
+        ' un ARRASTRE. Tampoco duplica precedencia -- escribe el valor crudo del slider. Y aunque fuera por la
+        ' sombra el resultado seria IDENTICO: con los tres pesos presentes, `ResolveBodyWeights` los devuelve
+        ' tal cual, sin renormalizar.
+        ' ⛔ La doble cache era LA UNICA escrita a mano del arbol; ahora la escribe la primitiva que le dio
+        ' dueno, y los otros tres fast paths -que escribian una sola- quedan alineados con este.
+        NpcRenderHost.EscribirEnLasDosCaches(_editorHost, Sub(st)
+                                                             st.WeightThin = t
+                                                             st.WeightMuscular = m
+                                                             st.WeightFat = f
+                                                          End Sub)
         ' Throttled refresh — same path the BodySlide / MRSV sliders use. Drag many values
         ' through the slider without slamming the render pipeline; FlushRefresh on DragEnded
         ' guarantees the final value renders immediately.
@@ -3440,13 +3449,44 @@ Public Class EditBody_Form
         Dim maxChanged As Boolean = (Not _isSSE) AndAlso mayWriteMax AndAlso mx <> snapMx
         If Not (minChanged OrElse maxChanged) Then Return
 
-        Dim ov = _mainForm.TryGetNpcRecordOverride(_rootNpcFormID)
-        If ov Is Nothing Then ov = New NpcRecordOverride()
-        If minChanged Then ov.HeightMin = CSng(mn)
-        If maxChanged Then ov.HeightMax = CSng(mx)
-        ov.TraitsChanged = True
-        _mainForm.SetNpcRecordOverride(_rootNpcFormID, ov)
+        ' [X][X] ACA SE LATCHEABA EL DESPRENDIMIENTO, y era un SEGUNDO dueño de la ley. La altura es un
+        ' campo del bucket TRAITS, así que editarla sobre un heredero lo desprende — pero este método corre
+        ' DENTRO de `OnOk`, o sea ANTES de que MainForm abra el aviso de desprendimiento. Escribía
+        ' `TraitsChanged` + el snapshot, y el "No" del aviso sólo restauraba el overlay: el usuario decía que
+        ' NO, leía el cartel «Changes not applied», guardaba, y el ESP salía con el NPC DESPRENDIDO y la
+        ' altura nueva. Bytes que había rechazado explícitamente.
+        ' ⇒ acá ya no se latchea NADA. La altura queda PENDIENTE y la aplica MainForm después de que la
+        ' puerta haya dicho que sí; la resolución de la cadena y el fallo cerrado también viven allá, que es
+        ' donde vive el resto del desprendimiento. La puerta es UNA.
+        If minChanged Then _alturaPendienteMin = CSng(mn)
+        If maxChanged Then _alturaPendienteMax = CSng(mx)
     End Sub
+
+    ''' <summary>La altura que el usuario dejó en los sliders y que TODAVÍA no se escribió en ningún lado.
+    ''' <para>[X] Nothing = ese slider no cambió. Las lee MainForm después de la puerta del
+    ''' desprendimiento: ver <c>AutorearOverlay</c> y su parámetro <c>cambioExtra</c>.</para></summary>
+    Friend ReadOnly Property AlturaPendienteMin As Single?
+        Get
+            Return _alturaPendienteMin
+        End Get
+    End Property
+
+    Friend ReadOnly Property AlturaPendienteMax As Single?
+        Get
+            Return _alturaPendienteMax
+        End Get
+    End Property
+
+    ''' <summary>True si el OK dejó una altura por aplicar. Es lo que MainForm le pasa a la puerta como
+    ''' <c>cambioExtra</c>, porque este canal es heredable y no viaja en el overlay.</summary>
+    Friend ReadOnly Property HayAlturaPendiente As Boolean
+        Get
+            Return _alturaPendienteMin.HasValue OrElse _alturaPendienteMax.HasValue
+        End Get
+    End Property
+
+    Private _alturaPendienteMin As Single? = Nothing
+    Private _alturaPendienteMax As Single? = Nothing
 
     ''' <summary>Restore the Height sliders to their open-time state. Called from the Body tab's
     ''' "Reset Section" — without it the group would visually reset with everything else while

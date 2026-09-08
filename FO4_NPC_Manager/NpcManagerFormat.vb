@@ -112,49 +112,49 @@ Friend NotInheritable Class NpcManagerFormat
     ' (ver Canon.INpc.ConfigurationFlags y el DNAM de Skyrim del record).
     ' ========================================================================
 
-    ''' <summary>ACBS Flags (u32). Bits 0x01..0x80, 0x800, 0x4000, 0x10000, 0x40000..0x100000,
-    ''' 0x20000000, 0x80000000 carry the same meaning in both games; four bits do not, so the
-    ''' game decides. Unnamed set bits are reported as unk0xN rather than dropped — an unknown
-    ''' bit is information, and silently hiding it would misreport the record.</summary>
-    Public Shared Function DescribeAcbsFlags(flags As UInteger, game As Config_App.Game_Enum) As String
-        If flags = 0UI Then Return "(none)"
-        Dim isSse = (game = Config_App.Game_Enum.Skyrim)
-        Dim names As New Dictionary(Of UInteger, String) From {
-            {&H1UI, "Female"},
-            {&H2UI, "Essential"},
-            {&H4UI, "Is CharGen Face Preset"},
-            {&H8UI, "Respawn"},
-            {&H10UI, "Auto-calc stats"},
-            {&H20UI, "Unique"},
-            {&H40UI, "Doesn't affect stealth meter"},
-            {&H80UI, "PC Level Mult"},
-            {&H800UI, "Protected"},
-            {&H4000UI, "Summonable"},
-            {&H10000UI, "Doesn't bleed"},
-            {&H40000UI, "Bleedout Override"},
-            {&H80000UI, "Opposite Gender Anims"},
-            {&H100000UI, "Simple Actor"},
-            {&H20000000UI, "Is Ghost"},
-            {&H80000000UI, "Invulnerable"}
-        }
-        If isSse Then
-            names.Add(&H100UI, "Use Template?")
-            names.Add(&H200000UI, "looped script?")
-            names.Add(&H10000000UI, "looped audio?")
-        Else
-            names.Add(&H200UI, "Calc For Each Template")
-            names.Add(&H800000UI, "No Activation/Hellos")
-            names.Add(&H1000000UI, "Diffuse Alpha Test")
-        End If
+    ''' <summary>Un campo de banderas, escrito con el nombre de cada bit PRENDIDO.
+    '''
+    ''' <para>⛔ LOS NOMBRES SALEN DEL ESQUEMA, no de una tabla escrita acá. Acá había un
+    ''' <c>Dictionary(Of UInteger, String)</c> a mano para ACBS con 19 de los 32 bits que Fallout 4
+    ''' declara: los otros 13 salían como <c>unk0x400</c>, y el bit 19 salía con el nombre de Skyrim
+    ''' («Opposite Gender Anims») cuando en Fallout es «Swap Gender Anims» — o sea que el panel
+    ''' mostraba un nombre EQUIVOCADO, que es peor que no mostrar ninguno. El formato ya declara los
+    ''' 32 nombres por juego (<c>WbIntegerDef.FlagNames</c>), así que la tabla a mano no sumaba nada
+    ''' y se podía quedar vieja sin que nadie se enterara.</para>
+    '''
+    ''' <para>Sirve para CUALQUIER campo de banderas del record, no sólo ACBS: los flags de etapa de
+    ''' destrucción, los de ataque y los de plantilla se piden igual, con su ruta.</para></summary>
+    ''' <summary>El campo de banderas se busca por (FIRMA del subrecord, NOMBRE del campo).
+    '''
+    ''' <para>⛔ NO POR RUTA COMPLETA, y no es preferencia: las rutas del esquema llevan el nombre del
+    ''' CONTENEDOR, que no se adivina —<c>«Attack\ATKD\Attack Data\Attack Flags»</c>,
+    ''' <c>«Stage\DSTD\Destruction Stage Data\Flags»</c>—, se comparan con
+    ''' <c>StringComparison.Ordinal</c>, y una ruta equivocada no falla: devuelve Nothing y el renglón
+    ''' sale «(absent)» sobre un record que SÍ trae las banderas. Ya había escrito las dos mal. Con
+    ''' (firma, campo) el contenedor no participa, que es justamente lo que <c>WbEdit.FindField</c>
+    ''' existe para resolver.</para></summary>
+    Public Shared Function DescribirBanderas(nodo As Canon.WbNode, firma As String, campo As String) As String
+        If nodo Is Nothing Then Return "(absent)"
+        Dim n = Canon.WbEdit.FindField(nodo, firma, campo)
+        If n Is Nothing OrElse n.Value Is Nothing Then Return "(absent)"
+        Dim def = TryCast(n.Def, Canon.WbIntegerDef)
+        Return NombresDeBits(Canon.CanonBridge.AEntero(n.Value), If(def Is Nothing, Nothing, def.FlagNames))
+    End Function
 
-        Dim parts As New List(Of String)
-        For bit = 0 To 31
-            Dim mask As UInteger = 1UI << bit
-            If (flags And mask) = 0UI Then Continue For
+    ''' <summary>Los bits prendidos de <paramref name="valor"/> con el nombre que les da
+    ''' <paramref name="nombres"/> (indexado por número de bit).
+    ''' <para>Un bit prendido SIN nombre declarado sale como <c>unk bit N</c> y no se descarta: un bit
+    ''' desconocido es información, y esconderlo haría que el panel describa mal el record.</para></summary>
+    Public Shared Function NombresDeBits(valor As Long, nombres As String()) As String
+        If valor = 0L Then Return "(none)"
+        Dim partes As New List(Of String)
+        For bit = 0 To 63
+            If (valor And (1L << bit)) = 0L Then Continue For
             Dim nm As String = Nothing
-            parts.Add(If(names.TryGetValue(mask, nm), nm, $"unk0x{mask:X}"))
+            If nombres IsNot Nothing AndAlso bit < nombres.Length Then nm = nombres(bit)
+            partes.Add(If(String.IsNullOrEmpty(nm), $"unk bit {bit}", nm))
         Next
-        Return String.Join(", ", parts)
+        Return String.Join(", ", partes)
     End Function
 
     ''' <summary>ACBS +6 (FO4) / +8 (SSE) is a union: a fixed Level, or — when the PC Level Mult
@@ -167,54 +167,6 @@ Friend NotInheritable Class NpcManagerFormat
         If npc.ConfigurationFlagsPCLevelMult Then Return $"PC Level Mult: {nivel / 1000.0F:F2}x  {rango}"
         Return $"Level: {nivel}  {rango}"
     End Function
-
-    Private Shared Function EnumName(names As String(), value As Integer) As String
-        If value >= 0 AndAlso value < names.Length Then Return $"{names(value)} ({value})"
-        Return value.ToString()
-    End Function
-
-    Public Shared Function AggressionName(v As Byte) As String
-        Return EnumName({"Unaggressive", "Aggressive", "Very Aggressive", "Frenzied"}, v)
-    End Function
-
-    Public Shared Function ConfidenceName(v As Byte) As String
-        Return EnumName({"Cowardly", "Cautious", "Average", "Brave", "Foolhardy"}, v)
-    End Function
-
-    Public Shared Function MoralityName(v As Byte) As String
-        Return EnumName({"Any Crime", "Violence Against Enemies", "Property Crime Only", "No Crime"}, v)
-    End Function
-
-    Public Shared Function AssistanceName(v As Byte) As String
-        Return EnumName({"Helps Nobody", "Helps Allies", "Helps Friends and Allies"}, v)
-    End Function
-
-    Public Shared Function MoodName(v As Byte) As String
-        Return EnumName({"Neutral", "Angry", "Fear", "Happy", "Sad", "Surprised", "Puzzled", "Disgusted"}, v)
-    End Function
-
-    ''' <summary>NAM8 Sound Level. FO4 appends a 5th value ('Quiet') that Skyrim does not have.</summary>
-    Public Shared Function SoundLevelName(v As UInteger, game As Config_App.Game_Enum) As String
-        Dim names As String()
-        If game = Config_App.Game_Enum.Skyrim Then
-            names = {"Loud", "Normal", "Silent", "Very Loud"}
-        Else
-            names = {"Loud", "Normal", "Silent", "Very Loud", "Quiet"}
-        End If
-        Return EnumName(names, CInt(v))
-    End Function
-
-    ''' <summary>NPC_.NAM9 slider order — SSE only. This IS the byte layout (slider i = float at +4i),
-    ''' so the order is schema, not presentation. The "Farward" spellings are preserved as-is
-    ''' (not a typo in this code).</summary>
-    Public Shared ReadOnly SseFaceMorphSliderNames As String() = {
-        "Nose Long/Short", "Nose Up/Down", "Jaw Up/Down", "Jaw Narrow/Wide", "Jaw Farward/Back",
-        "Cheeks Up/Down", "Cheeks Farward/Back", "Eyes Up/Down", "Eyes In/Out", "Brows Up/Down",
-        "Brows In/Out", "Brows Farward/Back", "Lips Up/Down", "Lips In/Out", "Chin Narrow/Wide",
-        "Chin Up/Down", "Chin Underbite/Overbite", "Eyes Farward/Back", "VampireMorph"}
-
-    ''' <summary>NPC_.NAMA fields — SSE only. Index 1 is unnamed in the schema.</summary>
-    Public Shared ReadOnly SseFacePartNames As String() = {"Nose", "Unknown", "Eyes", "Mouth"}
 
     Public Shared Function FormatSlotMask(mask As UInteger) As String
         If mask = 0UI Then Return "(none)"

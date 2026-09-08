@@ -47,40 +47,43 @@ Friend NotInheritable Class NpcSkinLivePreview
         _previewRequestVersionProvider = previewRequestVersionProvider
     End Sub
 
-    ''' <summary>Recompute the effective SkinFormID for an NPC by re-applying the same overlay
-    ''' precedence chain that <see cref="ApplyPresetOverlayToNpcData"/> uses: LM SkinTemplate
-    ''' bundle wins, then NPC.WNAM SkinFormIDOverride (Some(0) → fall back to RACE.WNAM), else
-    ''' the raw NPC.WNAM. Used by the fast-path so a combo edit lands on state.SkinFormID
-    ''' without re-running the full ResolveNPCBaseState pipeline.
-    ''' Returns the effective FormID (may be 0 if no resolution succeeds).</summary>
-    Private Function RecomputeEffectiveSkinFormID(rootNpcFormID As UInteger, raceFormID As UInteger,
-                                                   rawNpcFormID As UInteger) As UInteger
+    ''' <summary>La SkinFormID efectiva del NPC que se esta previsualizando, por LA MISMA sede que el render
+    ''' completo y el guardado: sombra (overlay estampado sobre el record) -> proyeccion -> fallbacks de raza.
+    ''' <para>⛔⛔ Aca vivia una REIMPLEMENTACION de esa precedencia -- las tres ramas escritas de nuevo:
+    ''' override de WNAM, plantilla de piel de LooksMenu, y caida a RACE.WNAM. Su propio comentario ya lo
+    ''' declaraba copia, y traia escrito el motivo por el que no debia serlo: "con dos copias, el dia que la ley
+    ''' cambie el preview muestra una piel y el ESP graba otra". Este es exactamente el cambio que ese
+    ''' comentario pedia.</para>
+    ''' <para>⛔ `raceFormID` desaparecio de la firma: la raza sale de la proyeccion, que la deriva de la MISMA
+    ''' sombra. Pasarla aparte era una segunda fuente para el mismo dato.</para>
+    ''' <para>Devuelve 0 cuando no hay record del que proyectar.</para></summary>
+    ''' <param name="preset">El preset DE DIBUJO, ya resuelto por el llamador desde el estado. ⛔ No se
+    ''' re-pregunta aca: `SkinOverride` es una categoria HEREDABLE, asi que para un heredero la autoria del
+    ''' root y el dibujo son presets DISTINTOS, y preguntar por separado hacia que este camino rapido pintara
+    ''' una piel y el render completo otra.</param>
+    Private Function RecomputeEffectiveSkinFormID(rootNpcFormID As UInteger, rawNpcFormID As UInteger,
+                                                  preset As LooksmenuLoader.LooksmenuPreset) As UInteger
         Dim raw = _ctx.GetParsedNpc(rawNpcFormID)
-        Dim effective As UInteger = If(raw IsNot Nothing, raw.Record.Skin, 0UI)
-        Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(rootNpcFormID, overlayPreset) AndAlso overlayPreset IsNot Nothing Then
-            If overlayPreset.SkinFormIDOverride.HasValue Then
-                effective = overlayPreset.SkinFormIDOverride.Value
-            End If
-            ' LM SkinTemplate ARMO wins (matches NpcRecordOverlay.ApplyPresetOverlayToNpcData order).
-            If Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then
-                Dim tpl = _resolveLmSkinTemplate(overlayPreset.SkinTemplateId)
-                If tpl IsNot Nothing AndAlso tpl.SkinArmoFormID <> 0UI Then
-                    effective = tpl.SkinArmoFormID
-                End If
-            End If
-        End If
-        ' RACE.WNAM fallback: matches ApplyRaceFallbacks (state.SkinFormID = 0 → race.SkinFormID).
-        If effective = 0UI AndAlso raceFormID <> 0UI Then
-            Dim raceRec = _ctx.PluginManager.GetRecord(raceFormID)
-            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-                ' Por SkinDe y no por .Skin a pelo: es la MISMA ley que el guardado, y este es el
-                ' preview EN VIVO de la piel. Con dos copias, el día que la ley cambie el preview
-                ' muestra una piel y el ESP graba otra — RENDER == BAKE.
-                effective = Canon.CanonInterpretacion.SkinDe(_ctx.ParseRaceCanonCached(raceRec))
-            End If
-        End If
-        Return effective
+        If raw Is Nothing Then Return 0UI
+        Dim sombra = NpcRecordOverlay.AplicarOverlay(raw, preset, rootNpcFormID, _ctx.PluginManager,
+                                                     New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
+                                                         AddressOf ResolverLmSkinTemplate),
+                                                     AddressOf _ctx.ParseRaceCanonCached)
+        ' El root aporta la IDENTIDAD; si no se puede parsear, la sombra sirve de si misma -- el unico campo
+        ' que se lee de aca es la piel, que no depende de la identidad.
+        Dim root = If(_ctx.GetParsedNpc(rootNpcFormID), sombra)
+        Dim proy = NpcStateFactory.ProyectarEstado(sombra, root,
+                                                   NpcStateFactory.CreateOwnInventoryState(sombra), preset)
+        ' La caida a RACE.WNAM es UNA rama de esto, no una ley aparte.
+        NpcStateResolver.ApplyRaceFallbacks(proy.Estado, proy.Traits, _ctx.PluginManager)
+        Return proy.Estado.SkinFormID
+    End Function
+
+    ''' <summary>Envoltorio del resolvedor de plantillas de piel de LooksMenu. Existe porque VB no convierte
+    ''' solo un <c>Func(Of String, LmSkinTemplate)</c> al delegado NOMBRADO que pide el overlay.</summary>
+    Private Function ResolverLmSkinTemplate(templateId As String) As LmSkinTemplate
+        If _resolveLmSkinTemplate Is Nothing Then Return Nothing
+        Return _resolveLmSkinTemplate(templateId)
     End Function
 
     ''' <summary>Resolve the body skin's MeshCandidates from the host's current state. A skin
@@ -149,8 +152,8 @@ Friend NotInheritable Class NpcSkinLivePreview
         ' face TXST (state.HeadTextureFormID) is just a texture override — that COULD be
         ' fast-pathed, but skipping it together keeps the rule simple and consistent: any
         ' face-side LM bundle ⇒ full reload.
-        Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(host.LastRenderedState.RootNpcFormID, overlayPreset) AndAlso overlayPreset IsNot Nothing _
+        Dim overlayPreset = NpcRecordOverlay.OverlayDeDibujo(host.LastRenderedState, _appliedPresets)
+        If overlayPreset IsNot Nothing _
            AndAlso Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then
             Dim tpl = _resolveLmSkinTemplate(overlayPreset.SkinTemplateId)
             If tpl IsNot Nothing Then
@@ -169,7 +172,7 @@ Friend NotInheritable Class NpcSkinLivePreview
         Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(host.LastRenderedState)
         Dim oldSkinFid = host.LastRenderedState.SkinFormID
         host.LastRenderedState.SkinFormID = RecomputeEffectiveSkinFormID(
-            host.LastRenderedState.RootNpcFormID, host.LastRenderedState.RaceFormID, modelFormID)
+            host.LastRenderedState.RootNpcFormID, modelFormID, overlayPreset)
         Dim newSkinFid = host.LastRenderedState.SkinFormID
 
         Dim newCandidates = ResolveBodySkinCandidates(host.LastRenderedState)

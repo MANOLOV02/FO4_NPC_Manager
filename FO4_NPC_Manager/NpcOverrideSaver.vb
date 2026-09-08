@@ -110,17 +110,21 @@ Public Module NpcOverrideSaver
         Public ApplyScriptSalt As String = ""
         Public ApplyScriptPluginFile As String = Nothing
 
-        ''' <summary>MainForm helper (optional): apply the NPC-record scalar/list override authored in the NPC
-        ''' Editor onto the post-round-trip shadow. Args = (shadow NPC_Data, NPC global FormID). Invoked in
-        ''' <see cref="BuildOverrideEntry"/> JUST AFTER the round-trip copy so the user's Name/flags/keywords/
-        ''' factions/inventory/OBTS edits win over the source record. Nothing = no NPC-record overrides authored
-        ''' (existing callers / no-op).</summary>
-        ''' <para>Lleva <c>strict</c> y DEVUELVE el motivo del fallo (Nothing = resolvio todo) porque los DOS
-        ''' llamadores son el mismo codigo con distinto derecho a romper: el guardado ABORTA si una categoria de
-        ''' plantilla no se puede materializar, y el dialogo -que compone lo MISMO para decidir si el bake se puede
-        ''' destildar- no puede matar el proceso al abrirse. Un segundo delegado "tolerante" seria esta ley escrita
-        ''' dos veces, que es justo el defecto que <see cref="ComposeSaveShadow"/> vino a cerrar.</para></summary>
-        Public ApplyNpcRecordOverride As Func(Of NPC_Data, UInteger, Boolean, String) = Nothing
+        ''' <summary>Primera mitad del override del NPC Editor: materializa las categorias de plantilla que el
+        ''' usuario edito y que el NPC todavia HEREDA, y baja su bit Use-X. Args = (sombra, FormID global, strict);
+        ''' devuelve el motivo del fallo, o Nothing si resolvio todo.
+        ''' <para>Lleva <c>strict</c> y DEVUELVE el motivo en vez de fijarlo porque los DOS llamadores son el mismo
+        ''' codigo con distinto derecho a romper: el guardado ABORTA si una categoria no se puede materializar, y
+        ''' el dialogo -que compone lo MISMO para decidir si el bake se puede destildar- no puede matar el proceso
+        ''' al abrirse. Un segundo delegado "tolerante" seria esta ley escrita dos veces.</para>
+        ''' <para>⛔ OBLIGATORIO, no opcional. Ver la guarda de <see cref="ComposeSaveShadow"/>.</para></summary>
+        Public MaterializarCategorias As Func(Of NPC_Data, UInteger, Boolean, String) = Nothing
+        ''' <summary>Segunda mitad: los ESCALARES y las LISTAS que el usuario authored (nombre, raza, ACBS, altura,
+        ''' DNAM, keywords, facciones, inventario, ventajas, propiedades, APPR y OBTS). Corre DESPUES del overlay,
+        ''' asi que lo que el usuario escribio a mano es lo ultimo en llegar.
+        ''' <para>⛔ OBLIGATORIO. Es el mas peligroso de los tres de olvidar: en Nothing, las doce cosas de arriba
+        ''' se pierden EN SILENCIO y el ESP sale sin ninguna.</para></summary>
+        Public AplicarEscalares As Action(Of NPC_Data, UInteger) = Nothing
         ''' <summary>FaceGen bake delegate: invoked once per NPC during Phase 4a. Writes the 4 loose
         ''' files (NIF + 3 DDS) on the UI thread (GL-bound), returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
         ''' identifying that NPC's bake outputs so the orchestrator can batch them into one pack call.
@@ -1307,11 +1311,20 @@ Public Module NpcOverrideSaver
     ''' <param name="strict">True = camino de ESCRITURA: una categoria de plantilla irresoluble LANZA y aborta el
     ''' guardado. False = camino de LECTURA: no lanza, deja el motivo en <paramref name="fallo"/> y sigue con la
     ''' sombra a medio materializar, que el llamador tiene que tratar como NO RESUELTA y nunca como un valor.</param>
+    ''' <param name="baseMaterializada">La sombra JUSTO DESPUES de materializar y ANTES del overlay. La piden
+    ''' las tres lecturas de <see cref="BuildOverrideEntry"/> que antes leian el crudo (PNAM, DOFT y WNAM): para
+    ''' un NPC recien desprendido el crudo es el heredero del plugin, con esos tres subrecords VACIOS.
+    ''' <para>Es <c>Optional ByRef</c> y no un parametro obligatorio porque el otro llamador
+    ''' (<see cref="EffectiveIsCharGenFacePreset"/>) no la necesita y no tiene por que declarar una variable para
+    ''' tirarla. ⚠ No es un centinela: <c>Nothing</c> ahi significa "no me la devuelvas", nunca "no hay base"
+    ''' -- adentro la base SIEMPRE existe.</para></param>
     Public Function ComposeSaveShadow(rawNpcSpec As NPC_Data, npcFormID As UInteger, ctx As SaveContext,
-                                      strict As Boolean, ByRef fallo As String) As NPC_Data
+                                      strict As Boolean, ByRef fallo As String,
+                                      Optional ByRef baseMaterializada As NPC_Data = Nothing) As NPC_Data
         fallo = Nothing
+        baseMaterializada = Nothing
         If rawNpcSpec Is Nothing Then Return Nothing
-        ' ⛔ NO cae al crudo si el delegado falta. Guardar el record sin overlay tira TODAS las ediciones de
+        ' ⛔ NO cae al crudo si un delegado falta. Guardar el record sin overlay tira TODAS las ediciones de
         ' LooksMenu EN SILENCIO, que es el modo de falla que este par de funciones vino a eliminar; y el
         ' contrato de SaveContext ya dice que los campos son obligatorios. Se rompe FUERTE y con nombre.
         If ctx.ApplyPresetOverlayToNpcData Is Nothing Then
@@ -1319,9 +1332,29 @@ Public Module NpcOverrideSaver
                 "SaveContext.ApplyPresetOverlayToNpcData es Nothing. Sin el overlay, la sombra de guardado " &
                 "seria el record crudo y toda edicion de LooksMenu se perderia sin aviso.")
         End If
-        Dim npcSpec = ctx.ApplyPresetOverlayToNpcData(rawNpcSpec, npcFormID)
-        If ReferenceEquals(npcSpec, rawNpcSpec) Then npcSpec = rawNpcSpec.Copia()
-        If ctx.ApplyNpcRecordOverride IsNot Nothing Then fallo = ctx.ApplyNpcRecordOverride(npcSpec, npcFormID, strict)
+        ' ⛔⛔ Los otros DOS, con la misma guarda dura y por la misma razon. Partir el applier en dos DUPLICA
+        ' la superficie de olvido: antes habia un delegado para olvidar, ahora hay dos, y un arnes que wiree uno
+        ' solo daria VERDE midiendo otra ley. Con `AplicarEscalares` en Nothing se perderian en silencio nombre,
+        ' raza, ACBS, altura, DNAM, keywords, facciones, inventario, ventajas, propiedades, APPR y OBTS.
+        If ctx.MaterializarCategorias Is Nothing OrElse ctx.AplicarEscalares Is Nothing Then
+            Throw New InvalidOperationException(
+                "SaveContext.MaterializarCategorias/AplicarEscalares es Nothing. Sin ellos el record se " &
+                "guarda SIN las categorias materializadas y SIN los escalares del editor, EN SILENCIO.")
+        End If
+        ' ⛔⛔ EL ORDEN ES LA LEY: materializar -> overlay -> escalares.
+        ' Antes el overlay iba PRIMERO, asi que la materializacion tenia que saltear lo que el overlay ya habia
+        ' puesto -- y ese salteo era un booleano GRUESO por NPC: un overlay de solo CUERPO hacia saltear TODA la
+        ' cara, y el NPC se quedaba con los campos propios VACIOS del heredero. Ahora el overlay se estampa
+        ' encima de lo materializado, asi que gana por llegar ultimo, campo por campo; y los escalares del
+        ' editor van al final, que es lo que el usuario escribio a mano.
+        ' ⛔ El clon es INCONDICIONAL: `rawNpcSpec` puede ser la instancia cacheada del parse, y de aca en
+        ' adelante se le escribe encima. De paso elimina el aliasing `npcSpec IS rawNpcSpec` contra el que se
+        ' defendian las tres lecturas del llamador.
+        Dim npcSpec = rawNpcSpec.Copia()
+        fallo = ctx.MaterializarCategorias(npcSpec, npcFormID, strict)
+        baseMaterializada = npcSpec.Copia()
+        npcSpec = ctx.ApplyPresetOverlayToNpcData(npcSpec, npcFormID)
+        ctx.AplicarEscalares(npcSpec, npcFormID)
         Return npcSpec
     End Function
 
@@ -1358,7 +1391,12 @@ Public Module NpcOverrideSaver
         ' Fases 1a y 1a' (sombra del preset + override del editor) = ComposeSaveShadow. strict:=True: este es el
         ' camino de ESCRITURA, y una categoria de plantilla irresoluble tiene que ABORTAR el guardado.
         Dim falloOverride As String = Nothing
-        Dim npcSpec = ComposeSaveShadow(rawNpcSpec, npcFormID, ctx, strict:=True, fallo:=falloOverride)
+        ' ⛔ `baseMaterializada` es la sombra despues de materializar y ANTES del overlay. La piden las tres
+        ' lecturas de mas abajo (PNAM, DOFT, WNAM): para un NPC recien desprendido `rawNpcSpec` es el heredero
+        ' del plugin y esos tres subrecords estan VACIOS ahi.
+        Dim baseMaterializada As NPC_Data = Nothing
+        Dim npcSpec = ComposeSaveShadow(rawNpcSpec, npcFormID, ctx, strict:=True, fallo:=falloOverride,
+                                        baseMaterializada:=baseMaterializada)
         ' strict:=True implica que el applier LANZA en vez de reportar, asi que llegar aca con un motivo es
         ' imposible. Se asserta en vez de comentarse: el dia que alguien ponga strict:=False en esta linea
         ' -para 'que el guardado no aborte'- el motivo se perderia EN SILENCIO y el ESP saldria con la sombra
@@ -1403,35 +1441,26 @@ Public Module NpcOverrideSaver
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
 
-        ' Phase 1b: detect a user MWGT edit from the OVERLAY (not the live render dual-cache, so the
-        ' check works for non-loaded NPCs too). EditBody's ApplyMwgt writes overlay.WeightX on every
-        ' weight drag, so a HasValue weight that differs from the raw record by >eps is a real edit.
-        ' Guard on raw HasValue mirrors the single-NPC path: an NPC whose raw weight is the
-        ' Single.MaxValue sentinel ("inherit from race") is left as-is rather than baked to a literal.
-        Dim mwgtUserEdited As Boolean = False
-        If overlay IsNot Nothing AndAlso
-           overlay.WeightThin.HasValue AndAlso overlay.WeightMuscular.HasValue AndAlso overlay.WeightFat.HasValue AndAlso
-           rawNpcSpec.Record.PesoDelCuerpo(0).HasValue AndAlso rawNpcSpec.Record.PesoDelCuerpo(1).HasValue AndAlso rawNpcSpec.Record.PesoDelCuerpo(2).HasValue Then
-            Const eps As Single = 0.0001F
-            mwgtUserEdited = (Math.Abs(overlay.WeightThin.Value - rawNpcSpec.Record.PesoDelCuerpo(0).Value) > eps) OrElse
-                             (Math.Abs(overlay.WeightMuscular.Value - rawNpcSpec.Record.PesoDelCuerpo(1).Value) > eps) OrElse
-                             (Math.Abs(overlay.WeightFat.Value - rawNpcSpec.Record.PesoDelCuerpo(2).Value) > eps)
-        End If
-        If mwgtUserEdited Then
-            npcSpec.Record.PonerPesoDelCuerpo(0, overlay.WeightThin.Value)
-            npcSpec.Record.PonerPesoDelCuerpo(1, overlay.WeightMuscular.Value)
-            npcSpec.Record.PonerPesoDelCuerpo(2, overlay.WeightFat.Value)
-        End If
-
+        ' ⛔ Aca vivia la "fase 1b", que detectaba una edicion de MWGT en el overlay y escribia los tres
+        ' pesos. Era un SEGUNDO ESCRITOR REDUNDANTE, no un lector con ley propia, y se borro entera:
+        ' `NpcRecordOverlay.AplicarOverlay` ya los escribe slot por slot con `HasValue` (:396-398) y corre
+        ' ANTES, asi que la sombra que llegaba aca YA los tenia. Su condicion era ademas un subconjunto
+        ' estricto: exigia los TRES pesos y que difirieran del crudo. Y su guarda del centinela tampoco
+        ' protegia nada -- la sombra hornea el literal igual. Re-basarla habria dejado dos duenos de la misma
+        ' ley "overlay MWGT -> record".
         ' Phase 1c: rebuild HeadPartFormIDs, dedup main types (1-9) by PartType. For a FILTERED preset
         ' the source is raw NPC PNAM ∪ preset (union restores IsExtraPart addons the preset dropped);
         ' for a COMPLETE superset preset (Edit Face) the preset alone is authoritative (see below).
-        ' Snapshot the raw head parts FIRST. When no overlay is applied, ApplyPresetOverlayToNpcData returns
-        ' the SAME instance (npcSpec IS rawNpcSpec), so clearing npcSpec.HeadPartFormIDs would also empty
-        ' rawNpcSpec.HeadPartFormIDs — and the rebuild below would then read an empty list, WIPING every head
-        ' part on a no-op re-save (the "save again with no changes → parts lost" bug). The snapshot is a
-        ' separate list, so the clear can't cannibalize the source.
-        Dim rawHeadParts = rawNpcSpec.Record.PartesDeCabeza()
+        ' ⛔ Sale de `baseMaterializada`, NO del crudo. Para un NPC recien desprendido el crudo es el heredero
+        ' del plugin y su PNAM esta VACIO: el preset copiado por `Revert(FaceParts)` sale con `Has=True` e
+        ' `IncludeRawExtras=False`, asi que no es superconjunto completo, y el "crudo vivo" seria el PNAM vacio
+        ' del desprendido union el preset ⇒ los `IsExtraPart` que el preset filtro NO VOLVERIAN, mientras que
+        ' para el terminal SI vuelven. Con la base materializada los dos recuperan lo mismo.
+        ' ⛔ El motivo por el que esto leia el crudo -el aliasing `npcSpec IS rawNpcSpec` cuando no hay overlay-
+        ' desaparecio con el clon INCONDICIONAL de `ComposeSaveShadow`: no se cambia una ley, se saca una
+        ' defensa que quedo sin objeto. Sigue siendo una lista SEPARADA, asi que el `clear` de abajo tampoco
+        ' puede canibalizar la fuente.
+        Dim rawHeadParts = baseMaterializada.Record.PartesDeCabeza()
         Dim headParts As New List(Of UInteger)
         Dim presetHasHeadParts = (overlay IsNot Nothing AndAlso overlay.HasHeadPartFormIDs)
         If presetHasHeadParts Then
@@ -1482,8 +1511,11 @@ Public Module NpcOverrideSaver
         ' record outfit (the user's rule). Draft EMISSION (the ON case) is handled once per batch in
         ' ExecuteWritePhases Phase 2c. A DOFT pointing at a real OTFT is kept either way.
         If Not target.SaveNewOutfits AndAlso Borradores.EsFormIdDeBorrador(npcSpec.Record.DefaultOutfit) Then
-            If rawNpcSpec.Record.DefaultOutfitPresente Then
-                npcSpec.Record.DefaultOutfit = rawNpcSpec.Record.DefaultOutfit
+            ' ⛔ De la base MATERIALIZADA: un X desprendido con "Save new outfits" apagado no tiene
+            ' `DefaultOutfitPresente` en el crudo, se iria por el `Else` y se llevaria puesto el DOFT que la
+            ' materializacion acababa de traer del terminal.
+            If baseMaterializada.Record.DefaultOutfitPresente Then
+                npcSpec.Record.DefaultOutfit = baseMaterializada.Record.DefaultOutfit
             Else
                 npcSpec.Record.QuitarSubrecord("DOFT")
             End If
@@ -1495,8 +1527,10 @@ Public Module NpcOverrideSaver
         ' original record's skin. Without this, NPC_.WNAM would be written as a DANGLING 0xFF… reference and the
         ' custom skin armor would be absent from the plugin. Draft EMISSION (the ON case) is Phase 2e.
         If Not target.SaveNewOutfits AndAlso Borradores.EsFormIdDeBorrador(npcSpec.Record.Skin) Then
-            If rawNpcSpec.Record.SkinPresente Then
-                npcSpec.Record.Skin = rawNpcSpec.Record.Skin
+            ' ⛔ Espejo exacto de 1d, y por el mismo motivo: sin esto un X desprendido perdia el WNAM que la
+            ' materializacion habia traido, y el NPC_ salia sin piel.
+            If baseMaterializada.Record.SkinPresente Then
+                npcSpec.Record.Skin = baseMaterializada.Record.Skin
             Else
                 npcSpec.Record.QuitarSubrecord("WNAM")
             End If

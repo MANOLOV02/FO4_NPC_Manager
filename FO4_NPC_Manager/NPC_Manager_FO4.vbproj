@@ -13,6 +13,14 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <!-- Identidad que ve el usuario: Propiedades del archivo en Windows y el volcado de ensamblados
+       de un reporte de caida. El NUMERO no esta aca: sale del Directory.Build.props del repo. -->
+  <PropertyGroup>
+    <Product>FO4 NPC Manager</Product>
+    <AssemblyTitle>FO4 NPC Manager</AssemblyTitle>
+    <Description>NPC editor and FaceGen builder for Fallout 4 and Skyrim SE.</Description>
+  </PropertyGroup>
+
   <ItemGroup>
     <Import Include="System.Data" />
     <Import Include="System.Drawing" />
@@ -29,6 +37,7 @@
        fuente que usa Wardrobe_Manager. Ver ..\..\FO4_Base_Library\Shared\CrashReport.vb y Program.Main. -->
   <ItemGroup>
     <Compile Include="..\..\FO4_Base_Library\Shared\CrashReport.vb" Link="CrashReport.vb" />
+    <Compile Include="..\..\FO4_Base_Library\Shared\VersionGate.vb" Link="VersionGate.vb" />
   </ItemGroup>
 
   <!-- El CLI headless (FO4_FaceTint_CLI) llama FaceGenBuilder.BuildCharGen + NpcMaterialResolver
@@ -39,6 +48,25 @@
     <!-- Sonda de medición (Tools/, sólo lectura): ejercita NpcTemplateMaterializer.MakeCategoryOwn REAL
          sobre el load order en vez de reimplementar su lógica. Ver Tools/TemplateMaterializeProbe. -->
     <InternalsVisibleTo Include="TemplateMaterializeProbe" />
+    <!-- arq-05: el gate del bucket Traits necesita ProbeCategoryOwn/MakeCategoryOwn, que son
+         Friend a proposito. Mismo criterio que TemplateMaterializeProbe: IVT antes que ampliar
+         la superficie publica. -->
+    <InternalsVisibleTo Include="BucketTraitsGate" />
+    <InternalsVisibleTo Include="EstadoAbGate" />
+    <!-- ChargenFlagSaveGate: `NpcRecordOverride.MaterializedSources` es un
+         `Dictionary(Of ..., NpcTemplateMaterializer.TraitsResolution)` y `TraitsResolution` es Friend, asi
+         que sin IVT el arnes no puede ARMAR el fixture "hereda la categoria, la edito, y SI hay snapshot",
+         el unico que ejercita el camino feliz del fallo cerrado. Pasaria en vacio, que es peor que rojo.
+         Mismo criterio que TemplateMaterializeProbe: IVT antes que ampliar la superficie publica.
+         ⛔ LO QUE ESTE IVT APAGA, declarado: hasta hoy este era el UNICO arnes del camino de guardado que
+         compilaba contra la superficie PUBLICA sola, o sea un testigo pasivo de que NpcRecordOverride +
+         NpcRecordOverrideApplier + SaveContext alcanzan sin Friend. Con el IVT, si manana alguien mueve una
+         de las tres a Friend, ningun arnes se entera. -->
+    <InternalsVisibleTo Include="ChargenFlagSaveGate" />
+    <!-- HerenciaAlDibujarGate: mide la tabla de canales (`PresetCategoryFilter.PorCanal` + `Revert`) y la
+         hoja de comparacion por valor (`ComparacionPorValor`), las tres Friend A PROPOSITO. Mismo criterio
+         que los demas: IVT antes que ampliar la superficie publica. -->
+    <InternalsVisibleTo Include="HerenciaAlDibujarGate" />
     <InternalsVisibleTo Include="SidecarIdentifierProbe" />
     <!-- SlotResolutionProbe: es el unico probe que monta plugins sinteticos REALES con un PluginManager,
          asi que es el unico que puede correr el overload de PRODUCCION de BssliderSidecar.NormalizeKeys
@@ -62,6 +90,7 @@
          NpcFilterAdvanced_Form.ProbeLayout (Friend) desde afuera, sin volver Public nada.
          Ver Tools/NpcFilterGate y la memoria 00-reglas-self-tests-no-van-en-el-binario. -->
     <InternalsVisibleTo Include="NpcFilterGate" />
+    <InternalsVisibleTo Include="DetalleDelRecordGate" />
     <!-- ⛔ EL UNICO GATE QUE EJERCITA NpcFaceGenPacker.PackBatch. Antes no habia ninguno: GateBake corre
          el barrido bake-all, que va por BakeAllRunner y nunca llega al packer, y ChargenFlagSaveGate
          stubea RunChargenBake con Skipped:=True, asi que la fase de pack ni se llama. Se podia invertir

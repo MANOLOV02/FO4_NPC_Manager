@@ -9,62 +9,112 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' <item><b>Media ley del guardado era inalcanzable para un arnés.</b> El bit ACBS que decide cosas del
 ''' diálogo (0x04, "Is CharGen Face Preset") lo pisa la palabra entera que escribe este código, así que
 ''' cualquier gate que quisiera medir la PRECEDENCIA overlay-vs-override tenía que replicarlo — y una réplica
-''' mide otra cosa. <c>HeadPartSaveGate</c> deja el delegado en Nothing por eso mismo.</item>
+''' mide otra cosa.</item>
 ''' <item><b>El lado LECTOR no puede tirar.</b> <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/> ya
 ''' devuelve <c>Unresolvable</c>; el que lanzaba era el envoltorio. Ahora esa rama se apaga por
 ''' <paramref name="strict"/> en vez de reescribir la función: con <c>strict:=False</c> el fallo VUELVE en
 ''' <c>fallo</c> y el llamador decide, que es lo que necesita el diálogo para no matar el proceso al abrirse.</item>
 ''' </list>
 '''
-''' <para>⛔ El wrapper de <c>MainForm</c> es fino a propósito: sólo enhebra los cuatro estados de la app
-''' (<c>_npcRecordOverrides</c>, <c>_ctx.GetParsedNpc</c>, <c>_appliedPresets</c>, <c>ResolveLvlnPick_Friend</c>).
+''' <para>⛔ Son DOS funciones y no una: <see cref="MaterializarCategorias"/> corre ANTES del overlay y
+''' <see cref="AplicarEscalares"/> DESPUÉS. Ese orden es la ley — mientras fueron una sola, el overlay se
+''' estampaba primero y la materialización tenía que saltearle los campos con un booleano grueso por NPC.</para>
+''' <para>⛔ Los wrappers de <c>MainForm</c> son finos a propósito: ya sólo enhebran <c>_npcRecordOverrides</c>.
+''' El resolvedor de la cadena, el de LVLN y «¿tiene overlay?» desaparecieron — la cadena se resuelve UNA vez en
+''' el NPC Editor y viaja congelada en <c>NpcRecordOverride.MaterializedSources</c>.
 ''' Mismo patrón que <c>MainForm.ApplyPresetOverlayToNpcData</c> sobre <see cref="NpcRecordOverlay"/>.</para></summary>
 Public Module NpcRecordOverrideApplier
 
-    ''' <summary>Aplica el override authored sobre <paramref name="npcSpec"/> (la copia de round-trip). Para
-    ''' cada categoría editada que el NPC todavía HEREDA se materializa la plantilla y recién ahí se baja el
-    ''' bit Use-X, para que el <c>CopyFromTemplate</c> del motor no pise la edición. No-op cuando el NPC no
-    ''' tiene override.</summary>
-    ''' <param name="strict">True (el camino de ESCRITURA): una categoría que no se puede materializar LANZA y
-    ''' aborta el guardado — comportamiento idéntico al de antes de la mudanza. False (el camino de LECTURA):
-    ''' no lanza, DEVUELVE el motivo y sigue; la sombra queda INCOMPLETA y el llamador
-    ''' tiene que tratar su resultado como no resuelto, nunca como un valor.</param>
+    ''' <summary>Materializa las categorias de plantilla que el usuario edito y que el NPC todavia
+    ''' HEREDA, y baja el bit Use-X de cada una para que el <c>CopyFromTemplate</c> del motor no le pise
+    ''' la edicion al cargar. No-op cuando el NPC no tiene override.
+    ''' <para>⛔ Es la PRIMERA de las dos mitades en que se partio `Aplicar`, y el orden entre ellas es la
+    ''' ley: materializar -> overlay -> escalares. Mientras fueron una sola funcion el overlay se estampaba
+    ''' ANTES, y la materializacion tenia que saltear lo que el overlay habia puesto -- con un booleano
+    ''' GRUESO por NPC, asi que un overlay de solo CUERPO hacia saltear TODA la cara. Ahora el overlay gana
+    ''' por llegar ultimo, campo por campo, y el salteo no hace falta.</para></summary>
+    ''' <param name="strict">True (el camino de ESCRITURA): una categoria que no se puede materializar LANZA
+    ''' y aborta el guardado. False (el camino de LECTURA): no lanza, DEVUELVE el motivo y sigue; la sombra
+    ''' queda INCOMPLETA y el llamador tiene que tratar su resultado como no resuelto, nunca como un valor.</param>
     ''' <returns>Nothing cuando todo resolvio. Con <c>strict:=False</c>, el motivo de la PRIMERA categoria que
     ''' no se pudo materializar. Se DEVUELVE en vez de tomarse <c>ByRef</c> porque esta es la forma exacta del
-    ''' delegado <c>SaveContext.ApplyNpcRecordOverride</c>, y un ByRef no entra en una lambda.</returns>
-    Public Function Aplicar(npcSpec As NPC_Data,
-                            npcFormID As UInteger,
-                            overridesPorNpc As Dictionary(Of UInteger, NpcRecordOverride),
-                            getParsedNpc As Func(Of UInteger, NPC_Data),
-                            hasOverlayFor As Func(Of UInteger, Boolean),
-                            resolveLvlnPick As Func(Of UInteger, UInteger),
-                            strict As Boolean) As String
+    ''' delegado <c>SaveContext.MaterializarCategorias</c>, y un ByRef no entra en una lambda.</returns>
+    Public Function MaterializarCategorias(npcSpec As NPC_Data,
+                                           npcFormID As UInteger,
+                                           overridesPorNpc As Dictionary(Of UInteger, NpcRecordOverride),
+                                           strict As Boolean) As String
         Dim fallo As String = Nothing
         Dim ov As NpcRecordOverride = Nothing
         If Not overridesPorNpc.TryGetValue(npcFormID, ov) OrElse ov Is Nothing Then Return Nothing
-        Dim resolver As Func(Of UInteger, NPC_Data) = getParsedNpc
 
-        ' --- Template-flag hook (materialize → clear Use-X) for each edited category the NPC still inherits. ---
-        ' Every supported category is fully materialized before its Use-X bit is cleared.
-        If ov.BaseDataChanged Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.BaseData, resolver, resolveLvlnPick, strict, fallo)
-        If ov.StatsChanged Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Stats, resolver, resolveLvlnPick, strict, fallo)
-        If ov.Keywords IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Keywords, resolver, resolveLvlnPick, strict, fallo)
-        If ov.Factions IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Factions, resolver, resolveLvlnPick, strict, fallo)
-        If ov.Inventory IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Inventory, resolver, resolveLvlnPick, strict, fallo)
-        ' Actor Effects (SPLO) belong to the SpellList category; Perks (PRKR) and Properties (PRPS) have no
-        ' template category (engine copies them under other buckets), so they are just replaced below.
-        If ov.ActorEffects IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.SpellList, resolver, resolveLvlnPick, strict, fallo)
-        ' Traits (Race/Voice/OBTS): materialize the template Traits set + clear Use-Traits. When a LooksMenu
-        ' overlay is applied for this NPC, skip the overlay-OWNED appearance fields (skin/hair/headparts/morphs/
-        ' tints/weight) so the overlay's already-applied values win — the template still fills the non-overlaid,
-        ' non-edited Traits fields (Race/DeathItem/FarAwayModel/Height/OBTS), so nothing falls back to the record's
-        ' empty own-value. The user's Race/Voice/OBTS edits are written below, on top of the materialized set.
-        If ov.TraitsChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then
-            Dim hasOverlay = hasOverlayFor IsNot Nothing AndAlso hasOverlayFor(npcFormID)
-            ' resolveLvlnPick: sin esto la cadena que termina en un LVLN era irresoluble y el bit se bajaba
-            ' igual, dejando al NPC sin cara. Ver NpcTemplateMaterializer.ResolveCategorySource.
-            MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Traits, resolver, resolveLvlnPick, strict, fallo, skipOverlayOwned:=hasOverlay)
+        ' ⛔⛔ LA GUARDA DE BANDERA VA EN LAS OCHO. Antes vivia adentro, en `ProbeCategoryOwn`, y desde
+        ' afuera no se veia; ahora que la resolucion se EXIGE del snapshot, mirarla adentro llega tarde: un
+        ' NPC que NO hereda Keywords y al que el editor le agrega uno nunca paso por la sede del
+        ' desprendimiento, no tiene entrada, y se le rechazaria un guardado perfectamente legitimo.
+        ' Reproducido: FO4, NPC no heredero -> NPC Editor -> agregar keyword -> OK -> Save.
+        If ov.BaseDataChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.BaseData, strict, fallo)
         End If
+        ' ⛔ `ov.Properties` entra por ACA: el motor copia PRPS bajo el bit 1 (FO4 0x140658644
+        ' `call sub_140256EF0` sobre TESNPC+0x1A0), asi que authorearlo obliga a materializar Stats.
+        If (ov.StatsChanged OrElse ov.Properties IsNot Nothing) AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Stats) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Stats, strict, fallo)
+        End If
+        If ov.Keywords IsNot Nothing AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Keywords) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Keywords, strict, fallo)
+        End If
+        If ov.Factions IsNot Nothing AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Factions) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Factions, strict, fallo)
+        End If
+        If ov.Inventory IsNot Nothing AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Inventory) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Inventory, strict, fallo)
+        End If
+        ' ⛔ Actor Effects (SPLO) es la categoria SpellList: el nombre del campo y el de la categoria
+        ' NO coinciden.
+        ' ⛔⛔ ACA DECIA *"Perks (PRKR) y Properties (PRPS) no tienen categoria de plantilla -- el motor
+        ' los copia bajo otros buckets -- y por eso se reemplazan abajo, sin materializar"*, y esa frase se
+        ' contradice sola: que el motor los copie bajo otro bucket es justo la razon para materializar ESE
+        ' bucket. Los perks viajan con los hechizos en el bit 3 (SSE 0x1403C24C3 `call sub_1401DB120` sobre
+        ' +0x138, FO4 0x14065875A) y el PRPS en el bit 1 (arriba). Sin esto, el ESP salia con el bit puesto
+        ' y la lista escrita, y el motor la pisaba al cargar: la edicion no existia en el juego.
+        If (ov.ActorEffects IsNot Nothing OrElse ov.Perks IsNot Nothing) AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.SpellList) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.SpellList, strict, fallo)
+        End If
+        ' ⛔ AI Data (ZNAM/AIDT/GNAM). Su ausencia era un bug entero: el editor bajaba el bit 4 sobre el
+        ' parse VIVO, pero el guardado escribia el ZNAM sin materializar el bucket ni bajar el bit, asi
+        ' que el motor se lo pisaba al cargar. El CNAM si estaba enhebrado por Stats: el cableado estaba
+        ' asimetrico. ⛔ NO esta en la lista de siete del documento porque nacio despues, en el corte 4.
+        If ov.AiDataChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.AIData) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.AIData, strict, fallo)
+        End If
+        ' ⛔ Traits es la unica que YA tenia guarda de bandera en el codigo viejo; ahora la tienen las
+        ' ocho, y por eso desaparece de aca la asimetria. Las ediciones de Race/Voice/OBTS del usuario se
+        ' escriben en la SEGUNDA mitad, encima del juego materializado.
+        If ov.TraitsChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(
+               npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then
+            MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Traits, strict, fallo)
+        End If
+        Return fallo
+    End Function
+
+    ''' <summary>Escribe sobre la sombra los ESCALARES y las LISTAS que el usuario authored. Segunda mitad de
+    ''' `Aplicar`, y corre DESPUES del overlay: lo que el usuario escribio a mano es lo ultimo en llegar.
+    ''' <para>⛔ Es un Sub y no una Function porque aca no hay nada que pueda quedar sin resolver: la cadena
+    ''' ya se camino en la primera mitad.</para></summary>
+    Public Sub AplicarEscalares(npcSpec As NPC_Data,
+                                npcFormID As UInteger,
+                                overridesPorNpc As Dictionary(Of UInteger, NpcRecordOverride))
+        Dim ov As NpcRecordOverride = Nothing
+        ' ⛔ El preambulo va en LAS DOS mitades. Sin el, `ov` es Nothing y todo el bloque de abajo revienta
+        ' con NRE en el primer NPC sin override -- que es la mayoria.
+        If Not overridesPorNpc.TryGetValue(npcFormID, ov) OrElse ov Is Nothing Then Exit Sub
 
         ' --- Scalars. ---
         ' Escribir un campo CREA su subrecord; una referencia en cero significa "ninguna" y por eso se
@@ -119,7 +169,13 @@ Public Module NpcRecordOverrideApplier
         ' Sin preset el resultado no cambia: la sombra trae el bit del crudo, que es el mismo que ov.AcbsFlags.
         If ov.AcbsFlags.HasValue Then
             Dim chargenDelOverlay = npcSpec.Record.ConfigurationFlagsIsCharGenFacePreset
-            npcSpec.Record.ConfigurationFlags = ov.AcbsFlags.Value
+            ' ⛔ TODO menos los bits que la materializacion DERIVA. `ov.AcbsFlags` es el snapshot de
+            ' ANTES de materializar; escribir la palabra entera se llevaba puesto el 0x100 que
+            ' `CopiarSonidos` acababa de derivar, y dejaba un record donde el grupo `Actor Sounds` y
+            ' su bit de propiedad se contradicen.
+            Const derivados = NpcTemplateHelpers.AcbsBitsDerivadosPorMaterializacion
+            npcSpec.Record.ConfigurationFlags =
+                (ov.AcbsFlags.Value And Not derivados) Or (npcSpec.Record.ConfigurationFlags And derivados)
             npcSpec.Record.ConfigurationFlagsIsCharGenFacePreset = chargenDelOverlay
         End If
         If ov.Level.HasValue Then npcSpec.Record.PonerNivelDeConfiguracion(ov.Level.Value)
@@ -150,24 +206,53 @@ Public Module NpcRecordOverrideApplier
         If ov.ActorEffects IsNot Nothing Then npcSpec.Record.PonerEfectosDeActor(ov.ActorEffects)
         If ov.Properties IsNot Nothing Then npcSpec.Record.PonerPropiedades(ov.Properties)
         If ov.ObjectTemplateCombinations IsNot Nothing Then npcSpec.Record.ReemplazarCombinations(ov.ObjectTemplateCombinations)
-        Return fallo
-    End Function
+    End Sub
 
     ''' <summary>Materializa la categoría y baja su bit Use-X. Una categoría irresoluble es un ABORTO en el
     ''' camino de escritura (si se bajara el bit igual, la plantilla dejaría de llenar el campo y el NPC se
     ''' quedaría con el valor propio vacío); en el de lectura sólo se anota, porque ahí nadie escribe nada.
     ''' <para>El primer fallo gana: <paramref name="fallo"/> no se pisa, así el motivo que ve el usuario es el
     ''' de la categoría que se rompió primero y no el de la última que se probó.</para></summary>
+    ''' <summary>Materializa UNA categoria desde el snapshot CONGELADO en el override. ⛔ El llamador ya
+    ''' verifico el bit de bandera: aca no se vuelve a mirar, porque duplicar esa guarda es duplicar la ley.
+    ''' <para>⛔ La cadena NO se resuelve aca. Se resolvio una vez, en la sede del desprendimiento -- que es
+    ''' donde el usuario estaba mirando -- y viaja congelada. Volver a caminarla al guardar daria OTRA
+    ''' respuesta si el arbol cambio entre medio, y esa segunda respuesta no la eligio nadie.</para></summary>
+    Private Sub MaterializarUna(npcSpec As NPC_Data, npcFormID As UInteger, ov As NpcRecordOverride,
+                                cat As NPC_TemplateCategory, strict As Boolean, ByRef fallo As String)
+        Dim resol As NpcTemplateMaterializer.TraitsResolution = Nothing
+        ' ⛔ `TraitsResolution` es un STRUCTURE. Una clave ausente devuelve `Outcome` = 0, que es
+        ' `NotInheriting` -- un desenlace LEGAL. Se discrimina por el BOOLEANO de `TryGetValue`, NUNCA por el
+        ' contenido, o "no hay entrada" se vuelve "no hereda" y el fallo cerrado se evapora sin hacer ruido.
+        If Not ov.MaterializedSources.TryGetValue(cat, resol) Then
+            ' ⛔ La palabra SNAPSHOT se queda en el texto A PROPOSITO: `ChargenFlagSaveGate` la usa
+            ' para distinguir ESTE rechazo del de la cadena irresoluble (caso H), que dice otra cosa.
+            ' Sin un discriminador, los dos rechazos se ven iguales y el gate mediria cualquiera.
+            ' ⛔ EN INGLES: este texto NO se queda en el log -- viaja a `result.ErrorMessage` y de ahi al
+            ' cartel del guardado, y la UI de la app es toda en ingles. Y dice QUE hacer, porque un
+            ' "no hay snapshot" no le dice nada a quien lo lee: el estado se rearma reabriendo el editor
+            ' sobre ese NPC, o se descarta con Reset.
+            Dim msg = $"NPC 0x{npcFormID:X8} inherits {cat} from a template and was edited, but the " &
+                      "frozen chain SNAPSHOT is missing, so the edit cannot be materialised. Re-open the " &
+                      "editor on this NPC and confirm the change, or use Reset to discard it."
+            If strict Then Throw New InvalidOperationException(msg)
+            ' ⛔ El primer fallo gana y SIGUE: no se hace Return, porque el bloque tiene que intentar las
+            ' demas categorias. Abortar en la primera cambiaria la conducta del camino de LECTURA, que es el
+            ' que compone la sombra para el dialogo.
+            If fallo Is Nothing Then fallo = msg
+            Exit Sub
+        End If
+        MakeCategoryOwnForSave(npcSpec, cat, resol, strict, fallo)
+    End Sub
+
     Private Sub MakeCategoryOwnForSave(npcSpec As NPC_Data,
                                        category As NPC_TemplateCategory,
-                                       resolver As Func(Of UInteger, NPC_Data),
-                                       resolveLvlnPick As Func(Of UInteger, UInteger),
+                                       resol As NpcTemplateMaterializer.TraitsResolution,
                                        strict As Boolean,
-                                       ByRef fallo As String,
-                                       Optional skipOverlayOwned As Boolean = False)
-        Dim outcome = NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, category, resolver,
-                                                               skipOverlayOwned:=skipOverlayOwned,
-                                                               resolveLvlnPick:=resolveLvlnPick)
+                                       ByRef fallo As String)
+        ' ⛔ La cadena YA viene resuelta: aca no se camina ni se pinnea una LVLN. Por eso desaparecieron
+        ' `resolver` y `resolveLvlnPick`, y con ellos la segunda respuesta que nadie eligio.
+        Dim outcome = NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, category, resol)
         If outcome <> NpcTemplateMaterializer.MaterializeOutcome.Unresolvable AndAlso
            outcome <> NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then Return
 

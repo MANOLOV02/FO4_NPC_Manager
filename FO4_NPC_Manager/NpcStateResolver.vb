@@ -77,6 +77,14 @@ Friend NotInheritable Class NpcStateResolver
     ''' <paramref name="host"/> · <see cref="LeveledLeafPin.Reroll"/> = re-sortear (boton de azar, nodo
     ''' LVLN) · instancia con hoja = anclar a esa (un host de editor nace vacio, asi que el llamador le
     ''' pasa la hoja del preview principal). Ver <see cref="LeveledLeafPin"/>.</param>
+    ''' <summary>El resolvedor de LM SkinTemplate con la firma del DELEGADO que pide el overlay.
+    ''' `_resolveLmSkinTemplate` es un `Func(Of String, LmSkinTemplate)`, y VB no convierte solo
+    ''' entre un `Func` y un delegado CON NOMBRE aunque la firma coincida.</summary>
+    Private Function ResolverLmSkinTemplate(templateId As String) As LmSkinTemplate
+        If _resolveLmSkinTemplate Is Nothing Then Return Nothing
+        Return _resolveLmSkinTemplate(templateId)
+    End Function
+
     Friend Function ResolveNPCBaseState(npc As NPC_Data, host As NpcRenderHost,
                                         Optional pin As LeveledLeafPin = Nothing) As MainForm.NPCVisualState
         ' Fresh LVLN pick cache for this resolution — ensures consistent picks across categories
@@ -112,33 +120,52 @@ Friend NotInheritable Class NpcStateResolver
         If traits Is Nothing Then traits = NpcStateFactory.CreateOwnTraitsState(npc)
         If inventory Is Nothing Then inventory = NpcStateFactory.CreateOwnInventoryState(npc)
 
-        ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM
-        ' now sourced from `traits` (was `model`). OBTS combinations stay on `model`.
-        Dim state As New MainForm.NPCVisualState With {
-            .FormID = npc.FormID,
-            .RootNpcFormID = npc.FormID,
-            .IsFemale = traits.IsFemale,
-            .RaceFormID = traits.RaceFormID,
-            .SkinFormID = traits.SkinFormID,
-            .DefaultOutfitFormID = inventory.DefaultOutfitFormID,
-            .SleepOutfitFormID = inventory.SleepOutfitFormID,
-            .HeadTextureFormID = traits.HeadTextureFormID,
-            .HairColorFormID = traits.HairColorFormID,
-            .FacialHairColorFormID = traits.FacialHairColorFormID,
-            .HasTextureLighting = traits.HasTextureLighting,
-            .TextureLightingColor = traits.TextureLightingColor,
-            .TraitsSourceFormID = traits.SourceFormID,
-            .HeadDiffuseAlphaTest = (npc.Game = Config_App.Game_Enum.Fallout4) AndAlso (npc.Record.ConfigurationFlags And &H1000000UI) <> 0UI
-        }
+        ' ⛔⛔ LA SOMBRA SE CONSTRUYE ACA y el estado es su PROYECCION: es el ORDEN DEL BAKE
+        ' (`FaceGenBuilder` arma la sombra y despues los fallbacks). El render lo tenia al reves —
+        ' armaba el estado del `traits` del walk y recien despues miraba el overlay— y de ahi nacian
+        ' las dos re-sustituciones de raza a mano y la divergencia del MWGT parcial.
+        Dim genderOverrideActive As Boolean = host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue
 
-        state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
-        ' OBTE/OBTS + APPR now ride the Traits chain (see TraitsState / CreateOwnTraitsState): inherited
-        ' via Use Traits, not Use Model/Animation. Base robot (no flags) -> own OBTS; rank variants
-        ' (Use Traits) -> template source's OBTS. Measured 225 fixes / 0 regressions across the load order.
-        state.ObjectTemplateOMODFormIDs.AddRange(traits.ObjectTemplateOMODFormIDs)
-        state.ObjectTemplateCombinations.AddRange(traits.ObjectTemplateCombinations)
-        state.HasObjectTemplate = traits.HasObjectTemplate
-        state.AttachParentSlotFormIDs.AddRange(traits.AttachParentSlotFormIDs)
+        ' El TERMINAL de la cadena de Traits. Puede no resolver (plugin faltante, LVLN sin hojas): en
+        ' ese caso el propio NPC hace de terminal, que es lo que el motor tambien termina usando.
+        Dim terminal = _ctx.GetParsedNpc(traits.SourceFormID)
+        If terminal Is Nothing Then terminal = npc
+
+        ' ⛔⛔ LA HERENCIA AL DIBUJAR. La clave del overlay sigue siendo el ROOT -- lo que el usuario
+        ' authoreo es de X -- pero un heredero NO se dibuja solo con eso: las categorias que el bucket Traits
+        ' copia salen del TERMINAL (de su overlay si lo declara, si no de su record), y las que no se heredan
+        ' siguen saliendo de X. Con la autoria pelada, un heredero SIN overlay propio se dibujaba con las
+        ' categorias VACIAS de X en vez de con las de su plantilla.
+        ' ⛔ Para un NO heredero `OverlayDeDibujo` devuelve la MISMA INSTANCIA que la autoria, no un clon:
+        ' sigue leyendo la bolsa viva, asi que los dos Cancel de editor -- que reemplazan la entrada sin
+        ' re-renderizar -- siguen viendose de inmediato.
+        Dim presetDeDibujo = NpcRecordOverlay.OverlayDeDibujo(npc.FormID, traits.SourceFormID, _appliedPresets,
+                                                             Config_App.Current.Game = Config_App.Game_Enum.Skyrim,
+                                                             AddressOf _ctx.GetParsedNpc)
+
+        ' Bajo override de genero NO se estampa el overlay: es identidad del genero ORIGINAL (head
+        ' parts, pesos, piel, tinte) y re-inyectaria justo lo que el bloque de abajo limpia.
+        Dim shadow = If(genderOverrideActive, terminal,
+                        NpcRecordOverlay.AplicarOverlay(terminal, presetDeDibujo, npc.FormID,
+                                                        _ctx.PluginManager,
+                                                        New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
+                                                            AddressOf ResolverLmSkinTemplate),
+                                                        AddressOf _ctx.ParseRaceCanonCached))
+
+        Dim proy = NpcStateFactory.ProyectarEstado(shadow, npc, inventory, presetDeDibujo)
+        Dim state = proy.Estado
+        ' ⛔ El preset de dibujo VIAJA en el estado, y SOLO cuando el NPC hereda. Asi ningun consumidor
+        ' vuelve a derivar herencia por su cuenta -- con nueve derivandola cada uno por su lado, el mismo NPC
+        ' se dibujaba distinto segun por que camino se hubiera repintado.
+        ' ⛔ Para un NO heredero se deja en Nothing A PROPOSITO: el consumidor cae a la bolsa VIVA, y por eso
+        ' los dos Cancel de editor -- que reemplazan la entrada del diccionario SIN re-renderizar -- se ven de
+        ' inmediato. Un clon guardado aca los dejaria dibujando un preset viejo.
+        If traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID Then
+            state.DibujoHeredado = presetDeDibujo
+        End If
+        ' ⛔ `traits` se REASIGNA: el estado salio de la SOMBRA, y todo lo que sigue tiene que ver el
+        ' mismo `traits` del que salio, o vuelve la divergencia por dos fuentes.
+        traits = proy.Traits
 
         ' "Show other gender" preview (ARMA/ARMO editors): render a DEFAULT actor of the target gender
         ' for this NPC's race — NOT the source NPC with a flipped bit. The source NPC's head parts, face
@@ -155,7 +182,7 @@ Friend NotInheritable Class NpcStateResolver
         ' abra costura contra el cuerpo _0/_1), so the head shows the race default without the
         ' original gender's baked face. HOST-SCOPED: the main render leaves PreviewGenderOverride Nothing,
         ' so this whole block is inert there.
-        Dim genderOverrideActive As Boolean = host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue
+        ' (`genderOverrideActive` se declara arriba: la sombra ya lo necesita.)
         If genderOverrideActive Then
             state.IsFemale = host.PreviewGenderOverride.Value
             state.HeadPartFormIDs.Clear()
@@ -181,7 +208,15 @@ Friend NotInheritable Class NpcStateResolver
         ' identity (head parts / weights / skin / tint), which would re-inject exactly what the block
         ' above wiped for the "other gender" default-actor preview.
         Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not genderOverrideActive AndAlso _appliedPresets.TryGetValue(state.RootNpcFormID, overlayPreset) Then
+        ' ⛔⛔ EL MISMO preset que compuso la sombra, no la autoria pelada. Este bloque re-pisa sobre el
+        ' estado head parts, color de pelo, pesos, piel y FTST -- las CINCO cosas que el bucket Traits
+        ' copia -- y leyendo la autoria le devolvia a un heredero los valores de X sobre una sombra que ya
+        ' traia los del terminal. Para un NO heredero `OverlayDeDibujo` devuelve la MISMA INSTANCIA que
+        ' `OverlayDeAutoria`, asi que ahi no cambia nada: la diferencia es exactamente el heredero.
+        ' ⛔ Con esto se vuelve cierta la frase de `OverlayDeDibujo` -- "ningun consumidor deriva
+        ' herencia por su cuenta" -- que hasta aca no lo era.
+        overlayPreset = presetDeDibujo
+        If Not genderOverrideActive AndAlso overlayPreset IsNot Nothing Then
             If overlayPreset.HeadPartFormIDs.Count > 0 Then
                 state.HeadPartFormIDs = overlayPreset.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
             End If
@@ -384,6 +419,7 @@ Friend NotInheritable Class NpcStateResolver
             .InventorySourceFormID = state.InventorySourceFormID,
             .ModelSourceFormID = state.ModelSourceFormID,
             .VariantLabel = state.VariantLabel,
+            .DibujoHeredado = state.DibujoHeredado,
             .IsFemale = state.IsFemale,
             .RaceFormID = state.RaceFormID,
             .SkinFormID = state.SkinFormID,

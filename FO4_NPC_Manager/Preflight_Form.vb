@@ -82,6 +82,10 @@ Public Class Preflight_Form
     Public Property LoadedSidecars As Dictionary(Of String, BssliderSidecar.SidecarFile)
 
     Private Sub Preflight_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+        ' La version, TAMBIEN aca: esta es la PRIMERA ventana que ve el usuario de NPC Manager, y es la
+        ' que estaba en pantalla en el reporte de instalacion mezclada. El nombre sigue saliendo del
+        ' Designer; aca solo se le intercala el numero antes del guion.
+        Me.Text = VersionGate.TituloConVersion("FO4 NPC Manager") & " — Setup"
         WireOrderTooltips()
         ' Seed the game selector from the persisted config, then let an already-configured exe filename
         ' auto-correct it (Fallout4.exe → FO4, SkyrimSE.exe → Skyrim). This keeps returning FO4 users on

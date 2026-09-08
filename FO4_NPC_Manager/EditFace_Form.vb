@@ -324,13 +324,13 @@ Public Class EditFace_Form
         _mainGore = mainGore
 
         ' Snapshot any existing overlay so Cancel can restore byte-equivalent.
-        Dim existing As LooksmenuLoader.LooksmenuPreset = Nothing
-        _hadPriorOverlay = _appliedPresets.TryGetValue(rootNpcFormID, existing)
+        Dim existing = NpcRecordOverlay.OverlayDeAutoria(rootNpcFormID, _appliedPresets)
+        _hadPriorOverlay = existing IsNot Nothing
         _priorPreset = If(_hadPriorOverlay, ClonePreset(existing), Nothing)
 
         ' Ensure an overlay exists for live editing. Removed in Cancel if it didn't exist.
-        Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not _appliedPresets.TryGetValue(rootNpcFormID, p) OrElse p Is Nothing Then
+        Dim p = NpcRecordOverlay.OverlayDeAutoria(rootNpcFormID, _appliedPresets)
+        If p Is Nothing Then
             p = New LooksmenuLoader.LooksmenuPreset With {
                 .Gender = If(_isFemale, CByte(1), CByte(0))
             }
@@ -648,14 +648,22 @@ Public Class EditFace_Form
 
     Private ReadOnly Property Preset As LooksmenuLoader.LooksmenuPreset
         Get
-            Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
-            _appliedPresets.TryGetValue(_rootNpcFormID, p)
+            Dim p = NpcRecordOverlay.OverlayDeAutoria(_rootNpcFormID, _appliedPresets)
             Return p
         End Get
     End Property
 
     ''' <summary>Snapshot/restore clone — delegates to the canonical helper so any new
     ''' LooksmenuPreset field propagates here automatically.</summary>
+
+    ''' <summary>El overlay PRE-DIÁLOGO, para que la puerta del desprendimiento tenga contra qué comparar. Es
+    ''' el mismo clon que usa el rollback de Cancel: una sola foto del antes, no dos.</summary>
+    Friend ReadOnly Property OverlayPrevio As LooksmenuLoader.LooksmenuPreset
+        Get
+            Return _priorPreset
+        End Get
+    End Property
+
     Private Shared Function ClonePreset(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
         Return LooksmenuLoader.ClonePreset(p)
     End Function
@@ -2663,12 +2671,21 @@ Public Class EditFace_Form
         End Try
     End Sub
 
+    ''' <summary>El record del que este editor siembra los canales que el overlay todavia no declara.
+    ''' <para>⛔ Es el EFECTIVO, no el propio: para un heredero de Traits el motor le pisa el bucket entero
+    ''' con el del terminal, asi que sembrar de su record propio le mostraba al usuario campos VACIOS que el
+    ''' juego nunca usa -- y peor, el editor reclama el canal (`Has* = True`) sobre esa lista vacia, de modo
+    ''' que al desprender el overlay le BORRABA al record los TETI/MSDK/FMRS recien materializados. Ver
+    ''' `MainForm.RecordEfectivoParaAutoria`, que trae la cita del binario.</para>
+    ''' <para>Sin MainForm (arnes) cae al record propio: es lo que habia, y un arnes que no monta la UI no
+    ''' tiene cadena que resolver.</para></summary>
     Private Function TryGetRawNpc() As NPC_Data
         If _pluginManager Is Nothing Then Return Nothing
         Dim rec = _pluginManager.GetRecord(_rootNpcFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Return Nothing
-        Dim pluginName = If(rec.SourcePluginName <> "", rec.SourcePluginName, "Unknown")
-        Return RecordParsers.ParseNPC(rec, _pluginManager)
+        Dim propio = RecordParsers.ParseNPC(rec, _pluginManager)
+        If _mainForm Is Nothing Then Return propio
+        Return _mainForm.RecordEfectivoParaAutoria(_rootNpcFormID, propio)
     End Function
 
     ' =====================================================================

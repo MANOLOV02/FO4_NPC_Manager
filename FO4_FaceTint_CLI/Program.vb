@@ -1,5 +1,6 @@
 ﻿Imports System.IO
 Imports System.Linq
+Imports System.Runtime.CompilerServices
 Imports System.Text.Json
 Imports FO4_Base_Library
 Imports FO4_Base_Library.Canon.CanonInterpretacion
@@ -188,7 +189,24 @@ Module Program
         End Select
     End Function
 
+    ''' <summary>⛔ ACÁ NO SE TOCA NADA DE FO4_Base_Library: el JIT resuelve las referencias del cuerpo entero
+    ''' antes de la primera línea, y una librería más vieja que la que este exe pide mataría el proceso antes
+    ''' de que el chequeo de instalación llegue a hablar. Todo lo que necesita la librería —el interruptor del
+    ''' Logger, el gate del wrapper nativo— vive en <see cref="RealMain"/>, que es <c>NoInlining</c> POR
+    ''' CONTRATO: inlineado, sus referencias vuelven a resolverse acá y el agujero reaparece. Mismo arreglo que
+    ''' <c>FO4_NPC_Manager\Program.vb</c>. Ver <c>Shared\VersionGate.vb</c>.</summary>
     Sub Main(args As String())
+        ' Nadie mirando: el aviso va por stderr y NUNCA por un MessageBox, que colgaría el barrido.
+        VersionGate.UsarConsola()
+        If Not VersionGate.VerificarInstalacion() Then
+            Environment.ExitCode = 1
+            Return
+        End If
+        RealMain(args)
+    End Sub
+
+    <MethodImpl(MethodImplOptions.NoInlining)>
+    Private Sub RealMain(args As String())
         ' HERRAMIENTA, NO APP. `Logger.Enabled` esta forzado a False en builds Release (ver Logger.vb) para que
         ' ninguna app de usuario pague los calculos de diagnostico. Este CLI es la excepcion DOCUMENTADA: usa
         ' `Logger.Enabled` como interruptor SEMANTICO — `FaceGenBuilder.DebugMode` lo lee y de ahi sale el sufijo
@@ -1491,7 +1509,7 @@ Module Program
             ' Resolver de materiales por-shape = el MISMO que el render (texture-paths/BGSM/tints fieles a CK).
             ' NpcRenderContext solo necesita el PluginManager (sin GL). overlay = identidad (sin presets LM).
             Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, dataPath)
-            Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid As UInteger) raw)
+            Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, st As FO4_NPC_Manager.MainForm.NPCVisualState) raw)
             Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(
                 npcFormID, pm, presets, Nothing,
                 AddressOf mres.ApplyShapeMaterialOverrides,
@@ -2417,7 +2435,7 @@ Module Program
         Dim okCount = 0, failCount = 0, processed = 0
         Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
         Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
-        Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid As UInteger) raw)
+        Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, st As FO4_NPC_Manager.MainForm.NPCVisualState) raw)
         Dim savedOut = Console.Out
         ' FALLOS NUNCA SILENCIOSOS: cada fallo registra NPC + ruta + causa (nunca `failCount += 1` a
         ' secas ni un Catch que se traga la excepcion) — sin eso un "fail=2" no dice que NPCs son ni por que.
@@ -2831,7 +2849,7 @@ Module Program
                 ' estado y CORROMPE la geometría de NPCs posteriores (medido: outlier 0x1995C daba 3.46 en batch
                 ' compartido vs 0.033 con resolver fresco). El path --list ya crea uno por NPC — lo replicamos.
                 Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
-                Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid2 As UInteger) raw)
+                Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, st2 As FO4_NPC_Manager.MainForm.NPCVisualState) raw)
                 Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
                 Console.SetOut(savedOut)
                 Dim origin = pm.GetOriginatingPluginName(fid)

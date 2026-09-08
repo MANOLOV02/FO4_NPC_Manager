@@ -18,6 +18,8 @@ Public Class MainForm
     ''' HDPT/NPC_ parse caches; created once in the ctor and injected into extracted render
     ''' subsystems. Replaces the per-MainForm parse caches + GetParsed* helpers.</summary>
     Private ReadOnly _ctx As NpcRenderContext
+    ''' <summary>Arma el árbol del panel «Record Details». Ver <see cref="RecordDetailsTree"/>.</summary>
+    Private ReadOnly _detailsTree As RecordDetailsTree
     ''' <summary>Material / texture-set / hair-palette / color-form resolution.
     ''' Receives the shared <see cref="_ctx"/>; ApplyShapeMaterialOverrides + skin-tone
     ''' resolvers still live here.</summary>
@@ -1061,6 +1063,16 @@ Public Class MainForm
         ''' <summary>NPC.APPR — Attach Parent Slots declared at the actor level. Seeds the
         ''' AP-pool filter in ObjectTemplateResolver. Brahmin: [ap_HornsL, ap_HornsR, ap_PackBase].</summary>
         Public AttachParentSlotFormIDs As New List(Of UInteger)
+
+        ''' <summary>El PRESET DE DIBUJO de este NPC, ya resuelto: lo que se le aplica al dibujarlo, con la
+        ''' herencia por el bucket Traits adentro. Se calcula UNA vez en la sede del estado y viaja acá para
+        ''' que ningún consumidor vuelva a derivar herencia por su cuenta.
+        ''' <para>⛔ SÓLO cuando el NPC HEREDA. Para un no-heredero queda en Nothing y el consumidor sigue
+        ''' leyendo la bolsa VIVA de overlays: si acá se le guardara un clon, los dos Cancel de editor —que
+        ''' reemplazan la entrada del diccionario SIN re-renderizar— lo dejarían dibujando un preset viejo. La
+        ''' decisión sale de <see cref="TraitsSourceFormID"/>, sin centinela.</para>
+        ''' <para>⚠️ Es de SÓLO LECTURA para el que lo recibe: mutarlo le cambiaría el dibujo a la plantilla.</para></summary>
+        Public DibujoHeredado As LooksmenuLoader.LooksmenuPreset = Nothing
     End Class
 
     Private ReadOnly Property CurrentPreviewMode As PreviewMode
@@ -2347,6 +2359,10 @@ Public Class MainForm
         ' _lvlnDataCache are field initializers (already set before the ctor body runs).
         _pluginManager = pluginManager
         _ctx = New NpcRenderContext(pluginManager)
+        ' El armador del panel de detalle. Vive afuera de MainForm porque es el único lugar de la app
+        ' que enumera el record NPC_ entero, y así lo puede construir un arnés contra el corpus para
+        ' afirmar su cobertura — ver RecordDetailsTree.Cobertura y Tools/DetalleDelRecordGate.
+        _detailsTree = New RecordDetailsTree(pluginManager, _ctx)
         ' Draft-aware resolution: let the parse path (GetParsedArmo/GetParsedArma) "see" unsaved in-memory
         ' ARMO/ARMA drafts so the preview renders them and the candidate lists can resolve their ARMA children.
         ' Same injection contract as the OutfitResolver leveled-list resolver — the resolver returns Nothing for
@@ -2384,12 +2400,13 @@ Public Class MainForm
         _ctx.RaceIsPowerArmor = AddressOf RaceIsPowerArmor
         _ctx.ArmaDraftResolver = AddressOf _fotosArma.ParaRender
         _ctx.MswpDraftResolver = AddressOf BuildMswpDataFromDraft
-        _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, _appliedPresets)
+        _materialResolver = New NpcMaterialResolver(_ctx, AddressOf AplicarOverlayDeDibujo, _appliedPresets)
         _stateResolver = New NpcStateResolver(_ctx, _materialResolver, _appliedPresets, _lvlnDataCache,
                                               Function() CurrentGenderFilter, AddressOf ResolveLmSkinTemplate)
-        _morphPoseResolver = New NpcMorphPoseResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, Function() _renderHost, _appliedPresets,
+        _morphPoseResolver = New NpcMorphPoseResolver(_ctx, AddressOf AplicarOverlayDeDibujo, Function() _renderHost, _appliedPresets,
                                                       AddressOf ResolveOverlayTemplate)
-        _faceTintResolver = New NpcFaceTintResolver(_ctx, _materialResolver, Function() _renderHost, _appliedPresets)
+        _faceTintResolver = New NpcFaceTintResolver(_ctx, _materialResolver, Function() _renderHost, _appliedPresets,
+                                                    AddressOf ResolveLmSkinTemplate)
         _mountingResolver = New NpcMountingResolver(_ctx, _stateResolver)
         _meshCollector = New NpcMeshCollector(_ctx, _materialResolver, _stateResolver, _mountingResolver,
                                               AddressOf ArmoIsPowerArmor, AddressOf RaceIsPowerArmor)
@@ -2439,7 +2456,14 @@ Public Class MainForm
         BssliderSidecar.HydratePresets(sidecars, _pluginManager, _appliedPresets)
     End Sub
 
+    ''' <summary>Nombre + version, y la version es la MISMA que gobierna el binding (AssemblyVersion), no una
+    ''' constante aparte que se pueda desincronizar: asi el numero que el usuario lee en la barra de titulo es
+    ''' el que hay que comparar cuando reporta algo. El titulo se REESCRIBE con la seleccion (ver
+    ''' RefreshMultiSelectControls), por eso la base vive aca y no en el Designer.</summary>
+    Private Shared ReadOnly TituloBase As String = VersionGate.TituloConVersion("FO4 NPC Manager")
+
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+        Me.Text = TituloBase
         SearchDebounceTimer.Interval = 250
         ' Raza EFECTIVA para el BAKE: los caminos de bake resuelven el NPC vía NpcRecordOverlay.
         ' ResolveOverlaidNpcData (crudo + preset LM), que NO ve el NpcRecordOverride del editor. Este hook
@@ -2624,7 +2648,11 @@ Public Class MainForm
         ' dispararía SelectedIndexChanged durante el Load: guardaría la config y forzaría un render con
         ' `_renderHost` todavía en Nothing.
         Dim cfg = Config_App.Current
-        cmb.SelectedIndex = If(cfg.Setting_HavokPhysics, Math.Max(0, Math.Min(2, cfg.Setting_HavokPhysicsMode)), 0)
+        ' El techo es la CANTIDAD DE ÍTEMS del combo, no un número suelto: el combo no ofrece los modos
+        ' de desarrollo del motor (hoy `MotorCanonico = 3`), así que una config guardada con uno de esos
+        ' tiene que caer en el último item ofrecido y no reventar el ComboBox.
+        cmb.SelectedIndex = If(cfg.Setting_HavokPhysics,
+                               Math.Max(0, Math.Min(cmb.Items.Count - 1, cfg.Setting_HavokPhysicsMode)), 0)
 
         AddHandler cmb.SelectedIndexChanged,
             Sub()
@@ -2646,7 +2674,10 @@ Public Class MainForm
                 ' Tirar el estado vivo: al cambiar de modo la próxima pasada RESIEMBRA desde la piel posada
                 ' y corre los `SettleSteps` (10, el `uNumSimSettleSteps` del motor). Sin esto el combo
                 ' mostraría la tela a medio caer del modo anterior, que no es el A/B que se quiere ver.
-                FO4_Base_Library.Havok.Physics.HavokClothSimulation.ResetAll()
+                ' ⛔ Debug-only, como el motor.
+#If DEBUG Then
+                FO4_Base_Library.Havok.Physics.ClothCanonico.ResetAll()
+#End If
 
                 ' POSE dirty: el paso de física vive en la rama `needsPoseUpdate` del pipeline (Render.vb).
                 ' Con Morphs o Textures dirty el combo no movería NADA — medido al escribir esto.
@@ -5629,7 +5660,7 @@ Public Class MainForm
             If ComboBoxGender IsNot Nothing Then ComboBoxGender.Enabled = True
         End If
         Dim n = _selectedNpcFormIDs.Count
-        Me.Text = If(n = 0, "FO4 NPC Manager", $"FO4 NPC Manager  —  {n} NPC(s) selected")
+        Me.Text = If(n = 0, TituloBase, $"{TituloBase}  —  {n} NPC(s) selected")
     End Sub
 
     ''' <summary>Context-menu "Mark as changed": flags the NPC dirty (bold) even with no overlay, so
@@ -8624,15 +8655,9 @@ Public Class MainForm
 
 #Region "Record Details Panel"
 
-    ''' <summary>LVLN parses made while building ONE details tree. The panel resolves ten template
-    ''' categories independently, and a chain hop through the same leveled list would otherwise re-parse
-    ''' it once per category. Scoped to a single PopulateRecordDetails call — cleared on entry — so it
-    ''' cannot go stale against a plugin reload.</summary>
-    Private ReadOnly _detailsLvlnCache As New Dictionary(Of UInteger, Canon.ILvln)
-
     ''' <summary>
-    ''' Populates the record details TreeView for a selected NPC, showing all fields
-    ''' with full inheritance resolution (which template provides each category).
+    ''' Repuebla el árbol de detalle con el NPC seleccionado. La LEY de qué se muestra vive en
+    ''' <see cref="RecordDetailsTree"/>; acá quedan el encabezado del panel y el volcado a controles.
     ''' </summary>
     Private Sub PopulateRecordDetails(npc As NPC_Data)
         If InvokeRequired Then
@@ -8640,606 +8665,64 @@ Public Class MainForm
             Return
         End If
 
-        TreeViewRecordDetails.SuspendLayout()
-        TreeViewRecordDetails.BeginUpdate()
-        TreeViewRecordDetails.Nodes.Clear()
-        _detailsLvlnCache.Clear()
-
         If npc Is Nothing Then
-            ' ⛔ Y EL TÍTULO TAMBIÉN. Se escribe unas líneas más abajo, DESPUÉS de este guard, así que al
+            ' ⛔ Y EL TÍTULO TAMBIÉN. Se escribía unas líneas más abajo, DESPUÉS de este guard, así que al
             ' entrar acá quedaba el encabezado del NPC anterior sobre un árbol de detalles VACÍO:
             ' "Fulano [Mod.esp] FormID:0001A2B3" y cero nodos debajo. Se repone el baseline que fija el
             ' Designer, no la cadena vacía: el label es una banda de 24 px con `BackColor = ControlDark`
             ' y dejarla muda es una franja oscura sin explicación.
             LabelRecordTitle.Text = "  Record Details"
-            TreeViewRecordDetails.EndUpdate()
-            TreeViewRecordDetails.ResumeLayout()
+            RecordDetailsTree.Volcar(TreeViewRecordDetails, Nothing)
             Return
         End If
 
-        Try
-            LabelRecordTitle.Text = $"  {npc} [{npc.PluginName}] FormID:{npc.FormID:X8}"
-
-            ' The NPC_ record is NOT one schema across the two games. FO4 and Skyrim disagree on the ACBS
-            ' layout, on body size (MWGT thin/muscular/fat vs a single NAM7 weight float), on the stats
-            ' block (DNAM = 8-byte calculated stats vs 52-byte player skills), on face data (MSDK/TETI/FMRI
-            ' vs NAM9/NAMA/TINI) and on template resolution (FO4 caches the resolved actor per category in
-            ' TPTA; Skyrim has no TPTA and walks the TPLT chain). Gate on the record's OWN game pin, not the
-            ' session's, so a record always renders under the schema it was parsed with.
-            Dim isSse As Boolean = (npc.Game = Config_App.Game_Enum.Skyrim)
-
-            ' --- Header ---
-            Dim headerNode = AddNode(Nothing, $"NPC_ {npc.EditorID}  [{npc.FormID:X8}]  {npc.PluginName}")
-            AddNode(headerNode, $"Full Name: {If(npc.Record.Name <> "", npc.Record.Name, "(none)")}")
-            If npc.Record.ShortNamePresente AndAlso npc.Record.ShortName <> "" Then AddNode(headerNode, $"Short Name: {npc.Record.ShortName}")
-            AddNode(headerNode, $"Editor ID: {npc.EditorID}")
-            AddNode(headerNode, $"Form ID: {npc.FormID:X8}")
-            AddNode(headerNode, $"Plugin: {npc.PluginName}")
-            AddNode(headerNode, $"Gender: {If(npc.Record.ConfigurationFlagsFemale, "Female", "Male")}")
-            headerNode.Expand()
-
-            ' --- Template Info ---
-            If npc.Record.Plantilla() <> 0UI OrElse npc.Record.ActoresDePlantilla().Count > 0 Then
-                Dim tplNode = AddNode(Nothing, $"Template Configuration  (flags: {npc.Record.ConfigurationTemplateFlags:X4})")
-                If npc.Record.Plantilla() <> 0UI Then
-                    AddNode(tplNode, $"Base Template (TPLT): {DescribeFormID(npc.Record.Plantilla())}")
-                End If
-                If Not isSse Then
-                    ' TPTA + the legendary template pair are Fallout-only subrecords.
-                    For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
-                        Dim actor = npc.Record.ActorDePlantilla(cat)
-                        If actor = 0UI Then Continue For
-                        AddNode(tplNode, $"TPTA[{cat}] ({NpcManagerFormat.GetTemplateCategoryLabel(cat)}): {DescribeFormID(actor)}")
-                    Next
-                    Dim npcFo4 = TryCast(npc.Record, Canon.NpcFO4)
-                    If npcFo4 IsNot Nothing Then
-                        If npcFo4.LegendaryTemplatePresente Then AddNode(tplNode, $"Legendary Template (LTPT): {DescribeFormID(npcFo4.LegendaryTemplate)}")
-                        If npcFo4.LegendaryChancePresente Then AddNode(tplNode, $"Legendary Chance (LTPC): {DescribeFormID(npcFo4.LegendaryChance)}")
-                    End If
-                End If
-                ' The 13 template-flag bits are identical in both engines.
-                Dim flagList As New List(Of String)
-                For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
-                    If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then flagList.Add(NpcManagerFormat.GetTemplateCategoryLabel(cat))
-                Next
-                If flagList.Count > 0 Then AddNode(tplNode, $"Active flags: {String.Join(", ", flagList)}")
-                tplNode.Expand()
-            End If
-
-            ' --- Configuration (ACBS) ---
-            ' The ACBS bytes always live on THIS record (required subrecord) — only the category VALUES
-            ' below are resolved through the template chain, so this section is never "inherited".
-            Dim cfgNode = AddNode(Nothing, "Configuration (ACBS)")
-            AddNode(cfgNode, $"Flags: {NpcManagerFormat.DescribeAcbsFlags(npc.Record.ConfigurationFlags, npc.Game)}")
-            AddNode(cfgNode, NpcManagerFormat.FormatAcbsLevel(npc.Record))
-            Dim cfgSse = TryCast(npc.Record, Canon.NpcSSE)
-            Dim cfgFo4 = TryCast(npc.Record, Canon.NpcFO4)
-            If cfgSse IsNot Nothing Then
-                AddNode(cfgNode, $"Offsets: Magicka={cfgSse.ConfigurationMagickaOffset}  Stamina={cfgSse.ConfigurationStaminaOffset}  Health={cfgSse.ConfigurationHealthOffset}")
-                AddNode(cfgNode, $"Speed Multiplier: {cfgSse.ConfigurationSpeedMultiplier}%")
-            ElseIf cfgFo4 IsNot Nothing Then
-                AddNode(cfgNode, $"XP Value Offset: {cfgFo4.ConfigurationXPValueOffset}")
-                AddNode(cfgNode, $"Disposition Base: {npc.Record.BaseDeDisposicion()}")
-            End If
-            AddNode(cfgNode, $"Bleedout Override: {npc.Record.ConfigurationBleedoutOverride}")
-
-            ' --- Traits (with inheritance) ---
-            Dim traitsNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Traits)
-            Dim traitsNode = AddNode(Nothing, SectionLabel(npc, traitsNpc, "Traits"))
-            AddNode(traitsNode, $"Race: {DescribeFormID(traitsNpc.Record.Race)}")
-            ExpandRaceDetails(traitsNode, traitsNpc.Record.Race, traitsNpc.Record.ConfigurationFlagsFemale)
-            If traitsNpc.Record.Skin <> 0UI Then AddNode(traitsNode, $"Skin Armor: {DescribeFormID(traitsNpc.Record.Skin)}")
-            If traitsNpc.Record.VoicePresente Then AddNode(traitsNode, $"Voice: {DescribeFormID(traitsNpc.Record.Voice)}")
-            If isSse Then
-                ' Skyrim body size = NAM6 Height + NAM7 Weight, both single floats. It has neither the MWGT
-                ' thin/muscular/fat triple nor MRSV body-morph regions. NAM7 is parsed as an opaque payload
-                ' because in FO4 the same signature is an unused field — here it carries the weight.
-                If traitsNpc.Record.TieneAltura() Then AddNode(traitsNode, $"Height: {traitsNpc.Record.Altura():F2}")
-                If traitsNpc.Record.TienePesoDeSkyrim() Then AddNode(traitsNode, $"Weight: {traitsNpc.Record.PesoDeSkyrim():F2}")
-            Else
-                If traitsNpc.Record.TieneAltura() OrElse traitsNpc.Record.TieneAlturaMaxima() Then
-                    ' Each half is reported only when its subrecord is actually present: NPC_Data.HeightMax
-                    ' defaults to 0.0, so printing it unconditionally showed "max=0.00" for a record that
-                    ' simply has no NAM4 — indistinguishable from one that really stores zero.
-                    Dim hMin = If(traitsNpc.Record.TieneAltura(), $"{traitsNpc.Record.Altura():F2}", "(absent)")
-                    Dim hMax = If(traitsNpc.Record.TieneAlturaMaxima(), $"{traitsNpc.Record.AlturaMaxima():F2}", "(absent)")
-                    AddNode(traitsNode, $"Height: min={hMin}  max={hMax}")
-                End If
-                Dim fmtMwgt = Function(v As Single?) If(v.HasValue, v.Value.ToString("F2"), "Default")
-                AddNode(traitsNode, $"Weight: Thin={fmtMwgt(traitsNpc.Record.PesoDelCuerpo(0))}  Muscular={fmtMwgt(traitsNpc.Record.PesoDelCuerpo(1))}  Fat={fmtMwgt(traitsNpc.Record.PesoDelCuerpo(2))}")
-                Dim regiones = traitsNpc.Record.ValoresDeRegionCorporal()
-                If regiones.Count > 0 Then
-                    Dim morphNode = AddNode(traitsNode, $"Body Morph Regions ({regiones.Count} values)")
-                    For i = 0 To regiones.Count - 1
-                        AddNode(morphNode, $"[{i}] = {regiones(i):F4}")
-                    Next
-                End If
-            End If
-            traitsNode.Expand()
-
-            ' --- Stats (with inheritance) ---
-            Dim statsNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Stats)
-            Dim statsNode = AddNode(Nothing, SectionLabel(npc, statsNpc, "Stats"))
-            If statsNpc.Record.ClassPresente Then AddNode(statsNode, $"Class: {DescribeFormID(statsNpc.Record.[Class])}")
-            If isSse Then
-                ' DNAM = 52-byte Player Skills. Nothing when the payload was too short to model.
-                Dim skillsSse = TryCast(statsNpc.Record, Canon.NpcSSE)
-                If skillsSse IsNot Nothing AndAlso skillsSse.PlayerSkillsHealthPresente Then
-                    AddNode(statsNode, $"Health {skillsSse.PlayerSkillsHealth}   Magicka {skillsSse.PlayerSkillsMagicka}   Stamina {skillsSse.PlayerSkillsStamina}")
-                    Dim skillsNode = AddNode(statsNode, $"Player Skills ({skillsSse.SkillValues.Count})")
-                    For i = 0 To skillsSse.SkillValues.Count - 1
-                        Dim off = If(i < skillsSse.SkillOffsets.Count, skillsSse.SkillOffsets(i).Skill, CByte(0))
-                        ' El nombre de la skill sale del esquema, que es donde vive el orden del arreglo.
-                        Dim nombre = skillsSse.SkillValues(i).Node?.Name
-                        AddNode(skillsNode, $"{If(String.IsNullOrEmpty(nombre), $"[{i}]", nombre)}: {skillsSse.SkillValues(i).Skill}  (offset +{off})")
-                    Next
-                End If
-            Else
-                ' DNAM = 8-byte Calculated Stats. Note far-away-model distance is a u16 here, a float on SSE.
-                Dim calcFo4 = TryCast(statsNpc.Record, Canon.NpcFO4)
-                If calcFo4 IsNot Nothing AndAlso calcFo4.CalculatedHealthPresente Then
-                    AddNode(statsNode, $"Calculated Health: {calcFo4.CalculatedHealth}")
-                    AddNode(statsNode, $"Calculated Action Points: {calcFo4.CalculatedActionPoints}")
-                End If
-            End If
-
-            ' --- Factions (with inheritance) ---
-            Dim facNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Factions)
-            Dim facciones = facNpc.Record.Factions
-            If facciones.Count > 0 Then
-                Dim facNode = AddNode(Nothing, SectionLabel(npc, facNpc, $"Factions ({facciones.Count})"))
-                For Each fac In facciones
-                    AddNode(facNode, $"{DescribeFormID(fac.Faction)}  rank {fac.FactionRank}")
-                Next
-            End If
-
-            ' --- AI Data (with inheritance) ---
-            Dim aiNpc = ResolveSectionSource(npc, NPC_TemplateCategory.AIData)
-            If aiNpc.Record.AIDataAggressionPresente Then
-                Dim aiNode = AddNode(Nothing, SectionLabel(npc, aiNpc, "AI Data"))
-                AddNode(aiNode, $"Aggression: {aiNpc.Record.AIDataAggressionNombre}")
-                AddNode(aiNode, $"Confidence: {aiNpc.Record.AIDataConfidenceNombre}")
-                AddNode(aiNode, $"Morality: {aiNpc.Record.AIDataMoralityNombre}")
-                AddNode(aiNode, $"Mood: {aiNpc.Record.AIDataMoodNombre}")
-                AddNode(aiNode, $"Assistance: {aiNpc.Record.AIDataAssistanceNombre}")
-                AddNode(aiNode, $"Energy Level: {aiNpc.Record.AIDataEnergyLevel}")
-                AddNode(aiNode, $"Aggro Radius Behavior: {If(aiNpc.Record.AIDataAggroRadiusBehavior, "Yes", "No")}")
-                AddNode(aiNode, $"Radius: warn={aiNpc.Record.AggroWarn}  warn/attack={aiNpc.Record.AggroWarnAttack}  attack={aiNpc.Record.AggroAttack}")
-            End If
-
-            ' --- AI Packages (with inheritance) ---
-            Dim pkgNpc = ResolveSectionSource(npc, NPC_TemplateCategory.AIPackages)
-            Dim dpltNpc = ResolveSectionSource(npc, NPC_TemplateCategory.DefaultPackageList)
-            If pkgNpc.Record.PaquetesDeIA().Count > 0 OrElse dpltNpc.Record.DefaultPackageListPresente Then
-                Dim pkgNode = AddNode(Nothing, SectionLabel(npc, pkgNpc, $"AI Packages ({pkgNpc.Record.PaquetesDeIA().Count})"))
-                For Each pkgID In pkgNpc.Record.PaquetesDeIA()
-                    AddNode(pkgNode, DescribeFormID(pkgID))
-                Next
-                If dpltNpc.Record.DefaultPackageListPresente Then AddNode(pkgNode, $"Default Package List (DPLT): {DescribeFormID(dpltNpc.Record.DefaultPackageList)}")
-            End If
-
-            ' --- Spell List (with inheritance) ---
-            Dim spellNpc = ResolveSectionSource(npc, NPC_TemplateCategory.SpellList)
-            If spellNpc.Record.EfectosDeActor().Count > 0 Then
-                Dim spellNode = AddNode(Nothing, SectionLabel(npc, spellNpc, $"Actor Effects ({spellNpc.Record.EfectosDeActor().Count})"))
-                For Each spellID In spellNpc.Record.EfectosDeActor()
-                    AddNode(spellNode, DescribeFormID(spellID))
-                Next
-            End If
-
-            ' --- Keywords (with inheritance) ---
-            Dim kwNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Keywords)
-            If kwNpc.Record.PalabrasClave().Count > 0 Then
-                Dim kwNode = AddNode(Nothing, SectionLabel(npc, kwNpc, $"Keywords ({kwNpc.Record.PalabrasClave().Count})"))
-                For Each kwID In kwNpc.Record.PalabrasClave()
-                    AddNode(kwNode, DescribeFormID(kwID))
-                Next
-            End If
-
-            ' --- Perks (no template category — always the record's own) ---
-            Dim ventajas = npc.Record.Perks
-            If ventajas.Count > 0 Then
-                Dim perkNode = AddNode(Nothing, $"Perks ({ventajas.Count})")
-                For Each perk In ventajas
-                    AddNode(perkNode, $"{DescribeFormID(perk.Perk)}  rank {perk.PerkRank}")
-                Next
-            End If
-
-            ' --- Inventory (with inheritance) ---
-            Dim invNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Inventory)
-            Dim invNode = AddNode(Nothing, SectionLabel(npc, invNpc, "Inventory"))
-            If invNpc.Record.DefaultOutfit <> 0UI Then
-                Dim outfitNode = AddNode(invNode, $"Default Outfit: {DescribeFormID(invNpc.Record.DefaultOutfit)}")
-                ExpandOutfitDetails(outfitNode, invNpc.Record.DefaultOutfit)
-            Else
-                AddNode(invNode, "Default Outfit: (none)")
-            End If
-            If invNpc.Record.SleepingOutfit <> 0UI Then
-                Dim sleepNode = AddNode(invNode, $"Sleep Outfit: {DescribeFormID(invNpc.Record.SleepingOutfit)}")
-                ExpandOutfitDetails(sleepNode, invNpc.Record.SleepingOutfit)
-            End If
-            ' CNTO items are listed by name only — deliberately NOT expanded into their ARMO/ARMA graph
-            ' the way the outfit is, so a 40-item merchant doesn't pay for it on every selection.
-            Dim inventario = invNpc.Record.Items
-            If inventario.Count > 0 Then
-                Dim itemsNode = AddNode(invNode, $"Items ({inventario.Count})")
-                For Each item In inventario
-                    AddNode(itemsNode, $"{DescribeFormID(item.Item)}  x{item.ItemCount}")
-                Next
-            End If
-            invNode.Expand()
-
-            ' --- Model / Appearance (with inheritance) ---
-            Dim modelNpc = ResolveSectionSource(npc, NPC_TemplateCategory.ModelAnimation)
-            Dim modelNode = AddNode(Nothing, SectionLabel(npc, modelNpc, "Appearance"))
-            If modelNpc.Record.HeadTexture <> 0UI Then AddNode(modelNode, $"Head Texture: {DescribeFormID(modelNpc.Record.HeadTexture)}")
-            If modelNpc.Record.HairColor <> 0UI Then AddNode(modelNode, $"Hair Color: {DescribeFormID(modelNpc.Record.HairColor)}")
-            ' BCLF (facial hair colour) is a Fallout-only subrecord — Skyrim tints the beard off HCLF.
-            If Not isSse AndAlso modelNpc.Record.ColorDeBarba() <> 0UI Then AddNode(modelNode, $"Facial Hair Color: {DescribeFormID(modelNpc.Record.ColorDeBarba())}")
-            ' QNAM exists in both engines (float RGB(A)).
-            If modelNpc.Record.TextureLightingRedPresente Then AddNode(modelNode, $"Texture Lighting: R={modelNpc.Record.ColorDeIluminacionDeTextura().R} G={modelNpc.Record.ColorDeIluminacionDeTextura().G} B={modelNpc.Record.ColorDeIluminacionDeTextura().B}")
-
-            ' Head Parts (PNAM — both engines)
-            If modelNpc.Record.PartesDeCabeza().Count > 0 Then
-                Dim hpNode = AddNode(modelNode, $"Head Parts ({modelNpc.Record.PartesDeCabeza().Count})")
-                For Each hpFormID In modelNpc.Record.PartesDeCabeza()
-                    Dim hpRec = _pluginManager.GetRecord(hpFormID)
-                    If hpRec IsNot Nothing Then
-                        Dim hdpt = _ctx.ParseHdptCached(hpRec)
-                        Dim typeName = NpcManagerFormat.GetHeadPartTypeName(hdpt.TipoDeParte())
-                        Dim hpChildNode = AddNode(hpNode, $"[{typeName}] {hdpt.EditorID}  [{hpFormID:X8}]")
-                        If hdpt.ModelFileName <> "" Then AddNode(hpChildNode,
-                                                                 $"Mesh: {hdpt.ModelFileName}")
-                        If hdpt.TextureSet <> 0UI Then AddNode(hpChildNode, $"TextureSet: {DescribeFormID(hdpt.TextureSet)}")
-                        If hdpt.Color <> 0UI Then AddNode(hpChildNode, $"Color: {DescribeFormID(hdpt.Color)}")
-                        If hdpt.PartesExtra().Count > 0 Then
-                            For Each epId In hdpt.PartesExtra()
-                                AddNode(hpChildNode, $"Extra Part: {DescribeFormID(epId)}")
-                            Next
-                        End If
-                    Else
-                        AddNode(hpNode, $"HDPT [{hpFormID:X8}] (record not found)")
-                    End If
-                Next
-                hpNode.Expand()
-            End If
-
-            If isSse Then
-                AddSseFaceMorphNodes(modelNode, modelNpc.Record.DeslizadoresDeCara())
-                AddSseFacePartNodes(modelNode, modelNpc.Record.PartesDeCara())
-                AddSseTintLayerNodes(modelNode, TryCast(modelNpc.Record, Canon.NpcSSE))
-            Else
-                ' Face Morph Presets (MSDK/MSDV)
-                If modelNpc.Record.MorfosDeCara().Count > 0 Then
-                    Dim morphNode = AddNode(modelNode, $"Face Morph Presets ({modelNpc.Record.MorfosDeCara().Count})")
-                    For Each kvp In modelNpc.Record.MorfosDeCara()
-                        AddNode(morphNode, $"Key {kvp.Key:X8} = {kvp.Value:F4}")
-                    Next
-                End If
-
-                ' Face Morph Sculpting (FMRI/FMRS)
-                Dim modelFo4 = TryCast(modelNpc.Record, Canon.NpcFO4)
-                If modelFo4 IsNot Nothing AndAlso modelFo4.FaceMorphs.Count > 0 Then
-                    Dim fmNode = AddNode(modelNode, $"Face Morph Sculpting ({modelFo4.FaceMorphs.Count} morphs)")
-                    For Each fm In modelFo4.FaceMorphs
-                        AddNode(fmNode, $"Morph {fm.FaceMorphIndex:X8}: posicion, rotacion y escala")
-                    Next
-                End If
-                If modelNpc.Record.TieneIntensidadDeMorfoFacial() Then AddNode(modelNode, $"Facial Morph Intensity (FMIN): {modelNpc.Record.IntensidadDeMorfoFacial():F2}")
-
-                ' Face Tint Layers (TETI/TEND)
-                Dim capasDeTinte = FaceTintInputBuilder.CapasAutoradasDelRecord(modelNpc.Record)
-                If capasDeTinte.Count > 0 Then
-                    Dim tintNode = AddNode(modelNode, $"Face Tint Layers ({capasDeTinte.Count})")
-                    For Each tl In capasDeTinte
-                        Dim colorStr = If(tl.Color <> Color.Empty, $" Color:({tl.Color.R},{tl.Color.G},{tl.Color.B},{tl.Color.A})", "")
-                        AddNode(tintNode, $"Discr:{tl.Discriminator} Index:{tl.Index} Value:{tl.Value}{colorStr}")
-                    Next
-                End If
-            End If
-            modelNode.Expand()
-
-            ' --- Other ---
-            Dim otherNode = AddNode(Nothing, "Other")
-            If npc.Record.DeathItemPresente Then AddNode(otherNode, $"Death Item (INAM): {DescribeFormID(npc.Record.DeathItem)}")
-            If npc.Record.CombatStylePresente Then AddNode(otherNode, $"Combat Style (ZNAM): {DescribeFormID(npc.Record.CombatStyle)}")
-            If npc.Record.CrimeFactionPresente Then AddNode(otherNode, $"Crime Faction (CRIF): {DescribeFormID(npc.Record.CrimeFaction)}")
-            If npc.Record.GiftFilterPresente Then AddNode(otherNode, $"Gift Filter (GNAM): {DescribeFormID(npc.Record.GiftFilter)}")
-            If npc.Record.FarAwayModelPresente Then AddNode(otherNode, $"Far Away Model (ANAM): {DescribeFormID(npc.Record.FarAwayModel)}")
-            If npc.Record.AttackRacePresente Then AddNode(otherNode, $"Attack Race (ATKR): {DescribeFormID(npc.Record.AttackRace)}")
-            If npc.Record.SoundLevelPresente Then AddNode(otherNode, $"Sound Level (NAM8): {NpcManagerFormat.SoundLevelName(npc.Record.SoundLevel, npc.Game)}")
-            If npc.Record.InheritsSoundsFromPresente Then AddNode(otherNode, $"Inherits Sounds From (CSCR): {DescribeFormID(npc.Record.InheritsSoundsFrom)}")
-            If Not isSse Then
-                ' PFRN (power-armor stand) and NTRM (native terminal) have no Skyrim counterpart.
-                Dim otherFo4 = TryCast(npc.Record, Canon.NpcFO4)
-                If otherFo4 IsNot Nothing Then
-                    If otherFo4.PowerArmorStandPresente Then AddNode(otherNode, $"Power Armor Stand (PFRN): {DescribeFormID(otherFo4.PowerArmorStand)}")
-                    If otherFo4.NativeTerminalPresente Then AddNode(otherNode, $"Native Terminal (NTRM): {DescribeFormID(otherFo4.NativeTerminal)}")
-                End If
-            End If
-            If otherNode.Nodes.Count = 0 Then otherNode.Remove()
-
-        Finally
-            TreeViewRecordDetails.EndUpdate()
-            TreeViewRecordDetails.ResumeLayout()
-        End Try
+        LabelRecordTitle.Text = $"  {npc} [{npc.PluginName}] FormID:{npc.FormID:X8}"
+        RecordDetailsTree.Volcar(TreeViewRecordDetails, _detailsTree.Construir(npc))
     End Sub
 
-    ''' <summary>The NPC that actually provides a template category — the terminal of the chain, or the
-    ''' record itself when the category is not inherited. Never Nothing (falls back to <paramref name="npc"/>).</summary>
-    Private Function ResolveSectionSource(npc As NPC_Data, category As NPC_TemplateCategory) As NPC_Data
-        Return If(ResolveInheritedSourceNpc(npc, category), npc)
-    End Function
+    ''' <summary>Doble click en un renglón del detalle: si nombra un NPC_ o una LVLN, el árbol de la
+    ''' izquierda salta a esa fila.
+    '''
+    ''' <para>De ahí sale lo de las plantillas: «Base Template (TPLT)», cada «TPTA[...]», el
+    ''' «(inherited from X)» de cada sección y el CSCR de sonidos nombran un actor, y hasta ahora
+    ''' llegar a él era buscarlo a mano en la lista. Quién es navegable lo decide el TIPO del record
+    ''' apuntado, no el renglón: el árbol de NPC tiene filas de NPC_ y de LVLN y nada más.</para>
+    '''
+    ''' <para>⛔ El «no está en el árbol» se DICE. Con un filtro puesto o con «Only changed» tildado, el
+    ''' NPC puede existir en el orden de carga y no tener fila; sin aviso, el doble click parecería roto.</para></summary>
+    Private Sub TreeViewRecordDetails_NodeMouseDoubleClick(sender As Object, e As TreeNodeMouseClickEventArgs) _
+            Handles TreeViewRecordDetails.NodeMouseDoubleClick
+        If e.Node Is Nothing OrElse Not (TypeOf e.Node.Tag Is UInteger) Then Return
+        Dim fid = CUInt(e.Node.Tag)
+        If fid = 0UI Then Return
 
-    ''' <summary>Section header text, tagged "(own)" or "(inherited from X)".</summary>
-    Private Shared Function SectionLabel(npc As NPC_Data, source As NPC_Data, title As String) As String
-        If source IsNot Nothing AndAlso source.FormID <> npc.FormID Then
-            Return $"{title}  (inherited from {NpcManagerFormat.DescribeNpc(source)} [{source.FormID:X8}])"
-        End If
-        Return $"{title}  (own)"
-    End Function
+        Dim rec = _pluginManager.GetRecord(fid)
+        If rec Is Nothing Then Return
 
-    ''' <summary>Reads one f32 out of a verbatim-preserved subrecord payload. Nothing when the subrecord
-    ''' was absent or too short to hold one, so a malformed record degrades to a missing row, not a crash.</summary>
-    Private Shared Function ReadSingleAt(raw As Byte(), offset As Integer) As Single?
-        If raw Is Nothing OrElse raw.Length < offset + 4 Then Return Nothing
-        Return BitConverter.ToSingle(raw, offset)
-    End Function
-
-    ''' <summary>NAM9 (SSE) — 19 chargen face sliders, kept verbatim by the parser. Slider i is the f32
-    ''' at +4i; that order IS the byte layout, so the names come from the schema, not from presentation.</summary>
-    Private Sub AddSseFaceMorphNodes(parentNode As TreeNode, nam9 As Single())
-        If nam9 Is Nothing OrElse nam9.Length = 0 Then Return
-        Dim count = Math.Min(NpcManagerFormat.SseFaceMorphSliderNames.Length, nam9.Length)
-        Dim node = AddNode(parentNode, $"Face Morph (NAM9, {count} sliders)")
-        For i = 0 To count - 1
-            AddNode(node, $"{NpcManagerFormat.SseFaceMorphSliderNames(i)}: {nam9(i):F3}")
-        Next
-    End Sub
-
-    ''' <summary>NAMA (SSE) — 4×u32 face parts (Nose / Unknown / Eyes / Mouth).</summary>
-    Private Sub AddSseFacePartNodes(parentNode As TreeNode, nama As UInteger())
-        If nama Is Nothing OrElse nama.Length < 4 Then Return
-        Dim node = AddNode(parentNode, "Face Parts (NAMA)")
-        For i = 0 To 3
-            AddNode(node, $"{NpcManagerFormat.SseFacePartNames(i)}: {nama(i)}")
-        Next
-    End Sub
-
-    ''' <summary>TINI/TINC/TINV/TIAS (SSE): las capas de tinte de cara, el equivalente de Skyrim a los
-    ''' pares TETI/TEND de Fallout. Cada campo se muestra sólo si el record lo declara.</summary>
-    Private Sub AddSseTintLayerNodes(parentNode As TreeNode, npcSse As Canon.NpcSSE)
-        If npcSse Is Nothing OrElse npcSse.TintLayers.Count = 0 Then Return
-        Dim tintNode = AddNode(parentNode, "Face Tint Layers")
-        Dim layerCount = 0
-        For Each tl In npcSse.TintLayers
-            If Not tl.LayerTintIndexPresente Then Continue For
-            layerCount += 1
-            Dim layerNode = AddNode(tintNode, $"Layer index {tl.LayerTintIndex}")
-            If tl.TintColorAlphaPresente Then
-                AddNode(layerNode, $"Color: R={tl.TintColorRed} G={tl.TintColorGreen} B={tl.TintColorBlue} A={tl.TintColorAlpha}")
-            End If
-            If tl.LayerInterpolationValuePresente Then
-                AddNode(layerNode, $"Interpolation: {tl.LayerInterpolationValue / 100.0F:F2}")
-            End If
-            If tl.LayerPresetPresente Then
-                AddNode(layerNode, If(tl.LayerPreset < 0, "Preset: custom (-1)", $"Preset: {tl.LayerPreset}"))
-            End If
-        Next
-        tintNode.Text = $"Face Tint Layers ({layerCount})"
-    End Sub
-
-    ''' <summary>Follow template chain for a category and return the terminal NPC that provides the value.</summary>
-    Private Function ResolveInheritedSourceNpc(npc As NPC_Data, category As NPC_TemplateCategory) As NPC_Data
-        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return npc
-
-        Dim visited As New HashSet(Of UInteger)
-        Dim current = npc
-
-        While current IsNot Nothing
-            If visited.Contains(current.FormID) Then Exit While
-            visited.Add(current.FormID)
-
-            If Not NpcTemplateHelpers.HasTemplateFlag(current.Record.ConfigurationTemplateFlags, category) Then Return current
-
-            Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(current, category)
-            If sourceFormID = 0UI Then Return current
-
-            ' If source is a leveled NPC, try to get the first entry
-            Dim sourceRec = _pluginManager.GetRecord(sourceFormID)
-            If sourceRec Is Nothing Then Return current
-
-            If sourceRec.Header.Signature = "NPC_" Then
-                current = _ctx.GetParsedNpc(sourceFormID)
-                If current Is Nothing Then Return npc
-            ElseIf sourceRec.Header.Signature = "LVLN" Then
-                ' Leveled NPC - get first NPC_ entry
-                Dim lvln As Canon.ILvln = Nothing
-                If Not _detailsLvlnCache.TryGetValue(sourceFormID, lvln) Then
-                    lvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(sourceRec, _pluginManager)
-                    ' El fallo también se cachea: `_detailsLvlnCache` se vacía en CADA repoblado del árbol
-                    ' de detalle (ver PopulateRecordDetails), o sea en cada selección de NPC, así que no
-                    ' puede quedar pegado.
-                    _detailsLvlnCache(sourceFormID) = lvln
-                End If
-                ' TryAbrirLvlnTolerante devuelve Nothing en el LVLN malformado que existe para
-                ' tolerar. Sin este guard el .LeveledListEntries de abajo tira NRE dentro de un handler
-                ' Handles (TreeViewNPCs_FilaEnfocada -> PopulateRecordDetails, que tiene Finally pero NO
-                ' Catch). Mismo patron que los otros call sites de TryAbrirLvlnTolerante en este archivo
-                ' y en NpcTemplateHelpers/NpcStateResolver.
-                If lvln Is Nothing Then Return current
-                Dim firstNpcId = lvln.LeveledListEntries.Select(Function(e) e.LeveledListEntryNPC).
-                    FirstOrDefault(Function(fid)
-                                       Dim r = _pluginManager.GetRecord(fid)
-                                       Return r IsNot Nothing AndAlso r.Header.Signature = "NPC_"
-                                   End Function)
-                If firstNpcId = 0UI Then Return current
-                current = _ctx.GetParsedNpc(firstNpcId)
-                If current Is Nothing Then Return npc
-            Else
-                Return current
-            End If
-        End While
-
-        Return npc
-    End Function
-
-    Private Sub ExpandRaceDetails(parentNode As TreeNode, raceFormID As UInteger, isFemale As Boolean)
-        If raceFormID = 0UI Then Return
-        Dim raceRec = _pluginManager.GetRecord(raceFormID)
-        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
-
-        Dim race = _ctx.ParseRaceCanonCached(raceRec)
-        Dim raceNodeName = If(race.NamePresente, race.Name, "")
-        Dim raceNode = AddNode(parentNode, $"Race: {raceNodeName} [{race.EditorID}]")
-        ' Default Face Texture: DFTM/DFTF, declarado por juego con su propia colección — TryCast al que
-        ' corresponda (nsse.MaleHeadDataDefaultFaceTextureMale/FemaleHeadDataDefaultFaceTextureFemale en
-        ' Skyrim, nf.MaleDefaultFaceTexture/FemaleDefaultFaceTexture en Fallout 4).
-        Dim raceFo4 = TryCast(race, Canon.RaceFO4)
-        Dim raceSse = TryCast(race, Canon.RaceSSE)
-        If isFemale Then
-            If race.FemaleSkeletalModelPresente Then AddNode(raceNode, $"Skeleton: {race.FemaleSkeletalModel}")
-            ' El filtro por ".nif" es del consumidor viejo (sólo mallas): se replica acá para no listar,
-            ' p.ej., un ".egt" de morph de cuerpo como si fuera malla del cuerpo.
-            Dim femaleMeshes = race.Parts2.Select(Function(p) p.PartModelFileName).
-                Where(Function(m) m.EndsWith(".nif", StringComparison.OrdinalIgnoreCase)).ToList()
-            For Each mesh In femaleMeshes
-                AddNode(raceNode, $"Body Mesh: {mesh}")
-            Next
-            Dim femaleFaceTex As UInteger = If(raceFo4 IsNot Nothing, raceFo4.FemaleDefaultFaceTexture,
-                                               If(raceSse IsNot Nothing, raceSse.FemaleHeadDataDefaultFaceTextureFemale, 0UI))
-            If femaleFaceTex <> 0UI Then AddNode(raceNode, $"Default Face Texture: {DescribeFormID(femaleFaceTex)}")
-        Else
-            If race.MaleSkeletalModelPresente Then AddNode(raceNode, $"Skeleton: {race.MaleSkeletalModel}")
-            Dim maleMeshes = race.Parts.Select(Function(p) p.PartModelFileName).
-                Where(Function(m) m.EndsWith(".nif", StringComparison.OrdinalIgnoreCase)).ToList()
-            For Each mesh In maleMeshes
-                AddNode(raceNode, $"Body Mesh: {mesh}")
-            Next
-            Dim maleFaceTex As UInteger = If(raceFo4 IsNot Nothing, raceFo4.MaleDefaultFaceTexture,
-                                             If(raceSse IsNot Nothing, raceSse.MaleHeadDataDefaultFaceTextureMale, 0UI))
-            If maleFaceTex <> 0UI Then AddNode(raceNode, $"Default Face Texture: {DescribeFormID(maleFaceTex)}")
-        End If
-        Dim pielDeLaRaza = Canon.CanonInterpretacion.SkinDe(race)
-        If pielDeLaRaza <> 0UI Then AddNode(raceNode, $"Race Skin: {DescribeFormID(pielDeLaRaza)}")
-    End Sub
-
-    Private Sub ExpandOutfitDetails(parentNode As TreeNode, outfitFormID As UInteger)
-        If outfitFormID = 0UI Then Return
-        Dim outfitRec = _pluginManager.GetRecord(outfitFormID)
-        If outfitRec Is Nothing Then Return
-
-        If outfitRec.Header.Signature = "OTFT" Then
-            Dim otft = Canon.CanonRecords.Otft(outfitRec, _pluginManager)
-            For Each itemFormID In otft.Prendas()
-                ExpandOutfitItem(parentNode, itemFormID)
-            Next
-        End If
-    End Sub
-
-    Private Sub ExpandOutfitItem(parentNode As TreeNode, itemFormID As UInteger)
-        If itemFormID = 0UI Then Return
-        Dim itemRec = _pluginManager.GetRecord(itemFormID)
-        If itemRec Is Nothing Then
-            AddNode(parentNode, $"[{itemFormID:X8}] (missing record)")
-            Return
-        End If
-
-        Select Case itemRec.Header.Signature
-            Case "ARMO"
-                ' CRUDA: el arbol muestra QUE DICE EL ARCHIVO. ⛔ Con `TNAM ≠ 0` el nodo lo MARCA:
-                ' los armatures que se listan aca no son los que el motor va a usar.
-                Dim armo = _ctx.GetParsedArmoCrudo(itemFormID)
-                Dim slotStr = NpcManagerFormat.FormatSlotMask(armo.SlotMaskDe())
-                Dim heredaDe = If(armo.TemplateArmor <> 0UI, "  [INHERITS]", "")
-                Dim armoNode = AddNode(parentNode, $"ARMO {armo.EditorID}  ""{armo.Name}""  [{armo.FormID:X8}]  Slots:{slotStr}{heredaDe}")
-
-                ' Follow template armor
-                If armo.TemplateArmor <> 0UI Then
-                    AddNode(armoNode, $"Template Armor: {DescribeFormID(armo.TemplateArmor)}" &
-                                      "   <- the engine takes the armatures, slots, keywords and mesh FROM HERE")
-                    ' ⛔ Este arbol es un inspector del ARCHIVO, asi que lista lo que el archivo declara.
-                    ' Pero si el motor va a usar OTRA cosa, se dice y se muestra: deducirlo de un renglon
-                    ' de mas arriba no es verlo.
-                    Dim efectivaArbol = _ctx.GetParsedArmoEfectivo(itemFormID)
-                    If efectivaArbol IsNot Nothing Then
-                        Dim propios = Canon.CanonInterpretacion.ComplementosDe(armo)
-                        Dim usados = Canon.CanonInterpretacion.ComplementosDe(efectivaArbol)
-                        If Not New HashSet(Of UInteger)(propios).SetEquals(usados) Then
-                            Dim nEfe = AddNode(armoNode,
-                                $"⚠ What the engine will DRAW: {usados.Count} armature(s) from the terminal " &
-                                $"(this record declares {propios.Count})")
-                            For Each af In usados
-                                AddNode(nEfe, $"ARMA {DescribeFormID(af)}")
-                            Next
-                        End If
-                    End If
-                End If
-
-                ' Armor Addons
-                For Each addon In Canon.CanonInterpretacion.LeerComplementos(armo)
-                    Dim aaFormID = addon.ArmaFormID
-                    Dim aaRec = _pluginManager.GetRecord(aaFormID)
-                    If aaRec Is Nothing OrElse aaRec.Header.Signature <> "ARMA" Then
-                        AddNode(armoNode, $"ARMA [{aaFormID:X8}] (missing)")
-                        Continue For
-                    End If
-                    Dim arma = _ctx.GetParsedArma(aaFormID)
-                    Dim armaFo4 = TryCast(arma, Canon.ArmaFO4)
-                    Dim aaNode = AddNode(armoNode, $"ARMA {arma.EditorID}  [{arma.FormID:X8}]  Slots:{NpcManagerFormat.FormatSlotMask(arma.SlotMaskDe())}")
-                    If arma.MaleModelFilename <> "" Then AddNode(aaNode, $"Male Mesh: {arma.MaleModelFilename}")
-                    If arma.FemaleModelFilename <> "" Then AddNode(aaNode, $"Female Mesh: {arma.FemaleModelFilename}")
-                    If arma.MaleModelFilename2 <> "" Then AddNode(aaNode, $"Male 1P Mesh: {arma.MaleModelFilename2}")
-                    If arma.FemaleModelFilename2 <> "" Then AddNode(aaNode, $"Female 1P Mesh: {arma.FemaleModelFilename2}")
-                    If arma.MaleSkinTexture <> 0UI Then AddNode(aaNode, $"Male Skin Texture: {DescribeFormID(arma.MaleSkinTexture)}")
-                    If arma.FemaleSkinTexture <> 0UI Then AddNode(aaNode, $"Female Skin Texture: {DescribeFormID(arma.FemaleSkinTexture)}")
-                    ' MO2S/MO3S (material swap) sólo existen en Fallout 4.
-                    If armaFo4 IsNot Nothing AndAlso armaFo4.MaleMaterialSwap <> 0UI Then
-                        AddNode(aaNode, $"Male Material Swap: {DescribeFormID(armaFo4.MaleMaterialSwap)}")
-                    End If
-                    If armaFo4 IsNot Nothing AndAlso armaFo4.FemaleMaterialSwap <> 0UI Then
-                        AddNode(aaNode, $"Female Material Swap: {DescribeFormID(armaFo4.FemaleMaterialSwap)}")
-                    End If
-                    If arma.AdditionalRaces.Count > 0 Then
-                        For Each raceId In arma.AdditionalRaces
-                            AddNode(aaNode, $"Additional Race: {DescribeFormID(raceId.Race)}")
-                        Next
-                    End If
-                Next
-
-            Case "LVLI"
-                Dim lvli = Canon.CanonRecords.Lvli(itemRec, _pluginManager)
-                If lvli Is Nothing Then
-                    AddNode(parentNode, $"LVLI [{itemFormID:X8}] (no parsea)")
-                    Return
-                End If
-                Dim lvliNode = AddNode(parentNode, $"LVLI {lvli.EditorID}  [{lvli.FormID:X8}]  ({lvli.LeveledListEntries.Count} entries)")
-                For Each entry In lvli.LeveledListEntries
-                    ExpandOutfitItem(lvliNode, entry.LeveledListEntryItem)
-                Next
-
-            Case Else
-                AddNode(parentNode, $"{itemRec.Header.Signature} {itemRec.EditorID}  [{itemFormID:X8}]")
+        Dim clave As String
+        Select Case rec.Header.Signature
+            Case "NPC_" : clave = $"NPC_{fid:X8}"
+            Case "LVLN" : clave = $"LVLN_{fid:X8}"
+            Case Else : Return
         End Select
+
+        If TreeViewNPCs.EnfocarClave(clave) Then
+            SetStatus($"Jumped to {NpcManagerFormat.DescribeRecord(rec)}")
+            TreeViewNPCs.Focus()
+            Return
+        End If
+        SetStatus($"{NpcManagerFormat.DescribeRecord(rec)} is not in the tree right now — clear the search filter or untick 'Only changed'.")
     End Sub
 
-    Private Function AddNode(parent As TreeNode, text As String) As TreeNode
-        Dim node As New TreeNode(text)
-        If parent Is Nothing Then
-            TreeViewRecordDetails.Nodes.Add(node)
-        Else
-            parent.Nodes.Add(node)
-        End If
-        Return node
+    ''' <summary>El NPC que provee una categoría de plantilla. Envoltorio del armador del detalle: la
+    ''' ley de la cadena TPLT/TPTA vive ahí, y el editor de cuerpo la consume para sembrar la altura.</summary>
+    Private Function ResolveSectionSource(npc As NPC_Data, category As NPC_TemplateCategory) As NPC_Data
+        Return _detailsTree.ResolverFuenteDeSeccion(npc, category)
     End Function
 
+    ''' <summary>Nombre legible de un record por FormID. Mismo envoltorio: lo consume EditFace_Form.</summary>
     Private Function DescribeFormID(formID As UInteger) As String
-        If formID = 0UI Then Return "(none)"
-        Dim rec = _pluginManager.GetRecord(formID)
-        If rec Is Nothing Then Return $"[{formID:X8}]"
-        Dim edid = If(rec.EditorID <> "", rec.EditorID, rec.Header.Signature)
-        Dim pluginSuffix = If(String.IsNullOrWhiteSpace(rec.SourcePluginName), "", $" @{rec.SourcePluginName}")
-        Return $"{edid}  [{formID:X8}]{pluginSuffix}"
+        Return _detailsTree.DescribirFormID(formID)
     End Function
 
 #End Region
@@ -9320,8 +8803,10 @@ Public Class MainForm
     ''' <summary>NPC-record scalar/list overrides authored in the NPC Editor (Name/ACBS/identity FormIDs/
     ''' keywords/factions/inventory/OBTS), keyed by NPC global FormID. Mirror of <see cref="_appliedPresets"/>
     ''' for the record fields the LooksMenu overlay does NOT carry. Consulted at Save time via the
-    ''' <see cref="NpcOverrideSaver.SaveContext.ApplyNpcRecordOverride"/> delegate (applied AFTER the round-trip
-    ''' copy so the edit wins). Cleared per-NPC after a successful Save (the values are now in the saved plugin).</summary>
+    ''' <see cref="NpcOverrideSaver.SaveContext.MaterializarCategorias"/> y
+    ''' <see cref="NpcOverrideSaver.SaveContext.AplicarEscalares"/> delegates (los escalares se aplican DESPUÉS
+    ''' del overlay, así que la edición gana por llegar última). Cleared per-NPC after a successful Save (the
+    ''' values are now in the saved plugin).</summary>
     Private ReadOnly _npcRecordOverrides As New Dictionary(Of UInteger, NpcRecordOverride)
 
     ''' <summary>NPCs the user has changed this session — drives the bold rendering in
@@ -9409,9 +8894,8 @@ Public Class MainForm
         ' Snapshot the overlay state *before* the dialog opens so we can roll back on Cancel.
         ' The dialog drives a live preview via PreviewRequested on every selection change; if the
         ' user picks Cancel we must restore whatever was applied (or unapplied) prior to opening.
-        Dim hadPriorOverlay As Boolean = _appliedPresets.TryGetValue(npcFormID, Nothing)
-        Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        _appliedPresets.TryGetValue(npcFormID, priorOverlay)
+        Dim priorOverlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        Dim hadPriorOverlay As Boolean = priorOverlay IsNot Nothing
 
         ' Determine whether the NPC's body NIF has BODYTRI extra-data on its root, so the dialog
         ' can default the "Apply BodySlide sliders" checkbox sensibly. If no shape carries
@@ -9456,7 +8940,34 @@ Public Class MainForm
         If selected Is Nothing Then Return
 
         ' OK path: the live preview already left `selected` applied in _appliedPresets and rendered.
-        ' Nothing to re-apply or re-render — just mark the NPC changed (bold) and log the commit.
+        ' ⛔ LA PUERTA: si lo que quedo aplicado cambia una categoria que este NPC HEREDA, se lo desprende
+        ' -- materializar el bucket Traits, bajar el bit y congelar la cadena. Sin esto el preset recien
+        ' cargado seria INVISIBLE en las categorias heredables (se dibujarian desde la plantilla) y el motor
+        ' se lo pisaria al cargar el ESP.
+        ' ⛔ Se compara contra el overlay PRE-DIALOGO: contra el que el preview vino reescribiendo, la
+        ' comparacion seria del preset contra si mismo y no cambiaria nunca.
+        Dim desprendioFO4 As Boolean = False
+        Dim falloDesprenderFo4 = AutorearOverlay(npcFormID, NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets), priorOverlay, desprendioFO4)
+        If falloDesprenderFo4 IsNot Nothing Then
+            MessageBox.Show(Me, falloDesprenderFo4, "Preset not applied", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Try
+                Dim restoreVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, restoreVersion)
+            Catch ex As Exception
+            End Try
+            Return
+        End If
+        ' ⛔ Si la puerta DESPRENDIO, el cuadro que quedo en pantalla es el de ANTES: el record cacheado
+        ' cambio (bit abajo + bucket del terminal copiado) y el NPC pasa a dibujarse con SU preset en vez de
+        ' con lo heredado. El "nothing to re-render" de antes valia mientras la puerta no existia.
+        If desprendioFO4 Then
+            Try
+                Dim reVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, reVersion)
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[DESPRENDER] re-render tras desprender fallo: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        End If
         MarkNpcDirty(npcFormID)
 
         ' ⛔ ACÁ VIVÍAN DOS BUCLES CON EL CUERPO VACÍO: uno recorría HeadPartFormIDs resolviendo el HDPT y
@@ -9506,9 +9017,8 @@ Public Class MainForm
 
         ' Snapshot the overlay state *before* the dialog opens so we can roll back on Cancel. The browser drives a
         ' live preview via PreviewRequested on every selection change (same funnel as FO4); Cancel restores this.
-        Dim hadPriorOverlay As Boolean = _appliedPresets.TryGetValue(npcFormID, Nothing)
-        Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        _appliedPresets.TryGetValue(npcFormID, priorOverlay)
+        Dim priorOverlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        Dim hadPriorOverlay As Boolean = priorOverlay IsNot Nothing
 
         ' UN read + UN parse del .jslot, DOS mapeos (el formato de RaceMenu no responde ambas con un objeto):
         '   • APPLY, sobre un CLONE del overlay previo -> con qué queda el NPC. El clone es el ESTADO ACTUAL del
@@ -9583,7 +9093,32 @@ Public Class MainForm
         End If
 
         If selected Is Nothing Then Return
-        ' OK: the live preview already left `selected` applied in _appliedPresets and rendered. Just mark dirty.
+        ' OK: the live preview already left `selected` applied in _appliedPresets and rendered.
+        ' ⛔ LA PUERTA: si lo que quedo aplicado cambia una categoria que este NPC HEREDA, se lo desprende
+        ' -- materializar el bucket Traits, bajar el bit y congelar la cadena. Sin esto el preset recien
+        ' cargado seria INVISIBLE en las categorias heredables (se dibujarian desde la plantilla) y el motor
+        ' se lo pisaria al cargar el ESP.
+        ' ⛔ Se compara contra el overlay PRE-DIALOGO: contra el que el preview vino reescribiendo, la
+        ' comparacion seria del preset contra si mismo y no cambiaria nunca.
+        Dim desprendioSSE As Boolean = False
+        Dim falloDesprender = AutorearOverlay(npcFormID, NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets), priorOverlay, desprendioSSE)
+        If falloDesprender IsNot Nothing Then
+            MessageBox.Show(Me, falloDesprender, "Preset not applied", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Try
+                Dim restoreVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, restoreVersion)
+            Catch ex As Exception
+            End Try
+            Return
+        End If
+        If desprendioSSE Then
+            Try
+                Dim reVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, reVersion)
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[DESPRENDER] re-render tras desprender fallo: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        End If
         MarkNpcDirty(npcFormID)
     End Function
 
@@ -9605,7 +9140,13 @@ Public Class MainForm
             ' ones from the baseline overlay (else the raw record). BuildFiltered clones, so the dialog's
             ' parsed object stays intact when the user toggles categories without re-selecting.
             Dim isSseGame = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
-            Dim toApply = PresetCategoryFilter.BuildFiltered(preset, npc, baseline, options, isSseGame,
+            ' ⛔ El `targetRaw` es el record EFECTIVO, no el propio: para un heredero, las categorias que
+            ' el usuario NO tildo tienen que revertir a lo que se esta VIENDO (lo del terminal), no a los
+            ' campos vacios de X. Con el record propio, un Load de solo "BodySlide sliders" sobre un
+            ' heredero armaba un preset que declaraba tintes y morfos VACIOS, y eso lo desprendia y le
+            ' borraba la cara. Ver `RecordEfectivoParaAutoria`.
+            Dim toApply = PresetCategoryFilter.BuildFiltered(preset, RecordEfectivoParaAutoria(npcFormID, npc),
+                                                            baseline, options, isSseGame,
                                                             ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
             ' WYSIWYG: if the loaded JSON references an LM SkinTemplate, materialize its head/
             ' headRear HDPT swaps into preset.HeadPartFormIDs so Save ESP / Edit Face / Copy see
@@ -9647,6 +9188,9 @@ Public Class MainForm
             toApply.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
                 npc.Record.PartesDeCabeza(), toApply.HeadPartFormIDs, ResolveHdptForOrphanCascade())
 
+            ' ⚠ Esto es el BEGIN de la transaccion, no su escritura: corre en CADA cambio de seleccion y en
+            ' CADA tilde de categoria. La puerta del desprendimiento va en el COMMIT -- donde el dialogo sale
+            ' con OK -- o el aviso saltaria por cada click y el usuario aprenderia a apagarlo.
             _appliedPresets(npcFormID) = toApply
         End If
         Dim previewVersion = Interlocked.Increment(_previewRequestVersion)
@@ -9746,7 +9290,7 @@ Public Class MainForm
             ' non-overlay path. Header fields (FormID/EditorID/Plugin) are preserved by the shallow
             ' copy so the panel still identifies the record correctly.
             Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(baseState)
-            Dim effective = ApplyPresetOverlayToNpcData(_ctx.GetParsedNpc(modelFormID), baseState.RootNpcFormID)
+            Dim effective = AplicarOverlayDeAutoria(_ctx.GetParsedNpc(modelFormID), baseState.RootNpcFormID)
             PopulateRecordDetails(If(effective, npc))
 
             PopulateOutfitCombo()
@@ -9769,16 +9313,40 @@ Public Class MainForm
     ''' con UnhandledExceptionMode.ThrowException — tirar ahí cierra la aplicación. En render el WNAM
     ''' queda como está y el resolvedor cae al fallback de siempre.</para></summary>
     Private Function ApplyPresetOverlayParaGuardado(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
-        Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets,
-                                                            _pluginManager, AddressOf ResolveLmSkinTemplate,
-                                                            AddressOf _ctx.ParseRaceCanonCached,
-                                                            estricto:=True)
+        Return NpcRecordOverlay.AplicarOverlay(raw,
+                                              NpcRecordOverlay.OverlayDeAutoria(selectedNpcFormID, _appliedPresets),
+                                              selectedNpcFormID,
+                                              _pluginManager, AddressOf ResolveLmSkinTemplate,
+                                              AddressOf _ctx.ParseRaceCanonCached,
+                                              estricto:=True)
     End Function
 
-    Private Function ApplyPresetOverlayToNpcData(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
-        Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets,
-                                                            _pluginManager, AddressOf ResolveLmSkinTemplate,
-                                                            AddressOf _ctx.ParseRaceCanonCached)
+    ''' <summary>El overlay de AUTORIA del NPC dado, estampado sobre `raw`. El nombre dice la
+    ''' pregunta: `appliedPresets(fid)` sin herencia.</summary>
+    ''' <summary>⛔⛔ Compone sobre <paramref name="raw"/> el overlay DE DIBUJO del estado -- el que ya
+    ''' trae resuelta la herencia. Es lo que tienen que usar los caminos de RENDER.
+    ''' <para>Para un NO heredero devuelve exactamente lo mismo que <see cref="AplicarOverlayDeAutoria"/>:
+    ''' `OverlayDeDibujo` cae a la bolsa VIVA de overlays. La diferencia es el heredero, y es la que hacia
+    ''' que el tono de piel del cuerpo saliera de los tintes del terminal y la cara compuesta de los del
+    ''' root.</para></summary>
+    Friend Function AplicarOverlayDeDibujo(raw As NPC_Data, state As NPCVisualState) As NPC_Data
+        If state Is Nothing Then Return raw
+        Return NpcRecordOverlay.AplicarOverlay(raw,
+                                               NpcRecordOverlay.OverlayDeDibujo(state, _appliedPresets),
+                                               state.RootNpcFormID,
+                                               _pluginManager, AddressOf ResolveLmSkinTemplate,
+                                               AddressOf _ctx.ParseRaceCanonCached)
+    End Function
+
+    ''' <summary>Compone la AUTORIA pelada. La usan el GUARDADO —que estampa el overlay DESPUES de
+    ''' materializar, asi que la herencia ya esta en el record— y el BAKE, donde hornear es authorear.
+    ''' Para render va <see cref="AplicarOverlayDeDibujo"/>.</summary>
+    Private Function AplicarOverlayDeAutoria(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
+        Return NpcRecordOverlay.AplicarOverlay(raw,
+                                              NpcRecordOverlay.OverlayDeAutoria(selectedNpcFormID, _appliedPresets),
+                                              selectedNpcFormID,
+                                              _pluginManager, AddressOf ResolveLmSkinTemplate,
+                                              AddressOf _ctx.ParseRaceCanonCached)
     End Function
 
     ''' <summary>Resolver passed to the overlay helper so it can map an LM SkinTemplate id to
@@ -9880,11 +9448,322 @@ Public Class MainForm
         Return ov
     End Function
 
-    ''' <summary>True when a LooksMenu overlay (face/body/skin) is applied for this NPC. Lets the NPC Editor's
-    ''' in-memory Traits materialization use the SAME skip-overlay-owned rule as the save apply, so the preview
-    ''' matches the written record exactly (overlay-owned fields come from the overlay, not the template).</summary>
-    Friend Function NpcHasOverlay(npcFormID As UInteger) As Boolean
-        Return _appliedPresets.ContainsKey(npcFormID)
+    ''' <summary>⛔ De sesión, no persistente: el usuario ya vio el aviso y dijo que no se lo repitan HOY.
+    ''' No se guarda en disco a propósito — una preferencia persistente para un aviso de pérdida de herencia
+    ''' es un aviso que nadie vuelve a ver nunca.</summary>
+    Private _noAvisarDesprendimiento As Boolean = False
+
+    ''' <summary>⛔ LA COSTURA DE CONFIRMACIÓN del desprendimiento. Devuelve True = «sí, desprendelo».
+    ''' <para>Existe porque sin ella <see cref="AutorearOverlay"/> —que es la sede de TODA la ley del
+    ''' desprendimiento— no se puede ejercitar: abre un modal y un arnés se queda colgado. Con eso, `G15` (el
+    ''' invariante en sus seis momentos) y `G12` no se podían escribir, y una ley sin gate es una ley que se
+    ''' rompe en silencio.</para>
+    ''' <para>⛔ Lo que se sustituye es la RESPUESTA DEL USUARIO, no la ley: con la costura en «sí» el camino
+    ''' que corre es EXACTAMENTE el de producción cuando el usuario aprieta Yes. Una costura que cambiara la
+    ''' conducta haría que el gate midiera otra cosa.</para>
+    ''' <para>Nothing = el diálogo real. Es el default y el único valor que usa la app.</para></summary>
+    Friend ConfirmarDesprendimientoParaArnes As Func(Of String, Boolean) = Nothing
+
+    ''' <summary>⛔⛔ LA PUERTA DEL DESPRENDIMIENTO, y es UNA. Instala el overlay que el usuario authoreó y, si
+    ''' con eso cambió alguna categoría que este NPC HEREDA, lo desprende: materializa el bucket Traits sobre la
+    ''' caché viva, baja el bit y registra el snapshot congelado de la cadena.
+    '''
+    ''' <para>⛔ La puerta se define por PROPIEDAD, no por enumeración: «cualquier escritura que CAMBIE una
+    ''' categoría de <c>HeredaPorTraits</c> en el overlay del root de un heredero». Un censo por enumeración ya
+    ''' se comió una puerta entera —el Load de LooksMenu/RaceMenu— porque preguntó «¿quién latchea?» en vez de
+    ''' «¿quién escribe una categoría heredable?». Por eso la detección vive acá adentro y usa el predicado de
+    ''' la tabla de canales, no una lista de sitios.</para>
+    '''
+    ''' <para>⛔ TODAS las categorías heredables viven en el bucket Traits (bit 0), así que un solo
+    ''' desprendimiento las cubre: no hay una lista de bits que mantener sincronizada.</para>
+    '''
+    ''' <para>⛔ Falla CERRADO y con ROLLBACK: si la cadena no resuelve, se restaura el overlay anterior y se
+    ''' devuelve el motivo. Dejar el overlay puesto sin desprender sería peor que no hacer nada — el usuario
+    ''' vería su edición y el motor se la pisaría al cargar.</para></summary>
+    ''' <param name="anterior">El overlay que había ANTES. Es el que se compara y el que se restaura.</param>
+    ''' <returns>Nothing si todo salió bien (haya desprendido o no). El motivo, si hubo que hacer rollback.</returns>
+    ''' <param name="cambioExtra">El nombre de un canal HEREDABLE que el usuario cambio y que NO viaja en el
+    ''' overlay. Hoy es uno solo: la ALTURA (NAM6/NAM4), que vive en el `NpcRecordOverride`. Entra por aca en
+    ''' vez de tener su propia puerta porque ⛔ el desprendimiento tiene UNA sede: cuando la altura
+    ''' latcheaba por su cuenta, el usuario podia decir que NO al aviso, ver el cartel "Changes not applied"
+    ''' y guardar igual un NPC desprendido -- bytes que habia rechazado.</param>
+    ''' <param name="desprendio">True cuando el NPC DEJO DE HEREDAR en esta llamada. ⛔ El llamador que no
+    ''' re-renderiza tiene que mirarlo: desprender MUTA el record cacheado -- baja el bit y le copia el bucket
+    ''' del terminal -- y el cuadro que quedo en pantalla es el de ANTES.</param>
+    Friend Function AutorearOverlay(npcFormID As UInteger,
+                                    nuevo As LooksmenuLoader.LooksmenuPreset,
+                                    anterior As LooksmenuLoader.LooksmenuPreset,
+                                    Optional ByRef desprendio As Boolean = False,
+                                    Optional ByRef deshacer As Action = Nothing,
+                                    Optional cambioExtra As String = Nothing) As String
+        desprendio = False
+        deshacer = Nothing
+        If nuevo Is Nothing Then
+            _appliedPresets.Remove(npcFormID)
+        Else
+            _appliedPresets(npcFormID) = nuevo
+        End If
+
+        Dim npc = _ctx.GetParsedNpc(npcFormID)
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return Nothing
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
+                                                  NPC_TemplateCategory.Traits) Then Return Nothing
+
+        ' ⛔ SIN AUTORIA NO HAY NADA QUE PROTEGER. Quitarle el overlay a un heredero lo devuelve a
+        ' mostrar lo del terminal, que es exactamente lo que el motor hace con el bit arriba: no hay
+        ' ninguna edicion que el bit 0 pueda pisar, asi que no se desprende a nadie.
+        If nuevo Is Nothing AndAlso cambioExtra Is Nothing Then Return Nothing
+
+        Dim esSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+
+        ' ⛔⛔ LA CADENA SE CAMINA UNA VEZ, Y ACA. Se necesita ANTES de comparar porque la comparacion
+        ' es contra lo que el NPC MUESTRA, y lo que muestra un heredero sale del terminal. La misma
+        ' resolucion se congela mas abajo: una sola respuesta para la cadena, como en el resto de la ola.
+        Dim resol As NpcTemplateMaterializer.TraitsResolution = Nothing
+        Dim guardarResol As Boolean = False
+        Dim motivo As String = Nothing
+        Dim resolvio As Boolean = ResolverParaDesprendimiento(npcFormID, NPC_TemplateCategory.Traits,
+                                                             resol, guardarResol, motivo)
+
+        ' ⛔⛔ CONTRA QUE SE COMPARA: contra LO QUE SE VEIA, no contra la autoria de antes.
+        ' `PrimerCanalDistinto` con un lado `Nothing` contesta "distinto" sin mirar un valor, y TODO
+        ' productor arma un overlay completo -- los editores siembran en su ctor, `BuildFiltered` revierte
+        ' las 16 categorias. Con la autoria pelada, un heredero SIN overlay previo disparaba el aviso con
+        ' "Edit Body -> OK sin tocar nada", y un Load de solo "BodySlide sliders" -- que ni siquiera es
+        ' heredable -- tambien. Peor: decir "No" ahi restauraba `Nothing` y se llevaba puesto lo que el
+        ' usuario SI queria. Un overlay que se limita a repetir lo que ya se ve no le cambia nada al motor
+        ' y no tiene por que desprender a nadie.
+        ' ⛔ Si la cadena NO resuelve no hay de donde sacar lo que se ve: se cae a la comparacion vieja,
+        ' que es conservadora (dice "cambio" de mas) y termina en el fallo cerrado de mas abajo. Lo que NO
+        ' se hace es fallar cerrado cuando no cambio nada: eso convertiria un OK inocuo en un error.
+        Dim dibujoAnterior As LooksmenuLoader.LooksmenuPreset = anterior
+        If resolvio AndAlso resol.Source IsNot Nothing Then
+            Dim delTerminal = NpcRecordOverlay.OverlayDeAutoria(resol.Source.Record.FormID, _appliedPresets)
+            dibujoAnterior = If(anterior Is Nothing,
+                                New LooksmenuLoader.LooksmenuPreset(),
+                                LooksmenuLoader.ClonePreset(anterior))
+            For Each cat In PresetCategories.AllCategories
+                If Not PresetCategories.HeredaPorTraits(cat, esSse) Then Continue For
+                If Not PresetCategories.AppliesToGame(cat, esSse) Then Continue For
+                PresetCategoryFilter.RevertirLoHeredable(dibujoAnterior, cat, resol.Source, delTerminal, esSse)
+            Next
+        End If
+
+        Dim presetEnBlanco As New LooksmenuLoader.LooksmenuPreset()
+        Dim cambio As String = Nothing
+        For Each cat In PresetCategories.AllCategories
+            If Not PresetCategories.HeredaPorTraits(cat, esSse) Then Continue For
+            If Not PresetCategories.AppliesToGame(cat, esSse) Then Continue For
+            ' ⛔⛔ UNA CATEGORIA EN LA QUE `nuevo` NO SE DISTINGUE DE UN PRESET EN BLANCO NO ES UNA
+            ' AUTORIA. `AplicarOverlay` la PRESERVA,
+            ' y para un heredero preservar es quedarse con la del terminal -- o sea, con lo que ya se ve.
+            ' Sin esta guarda, al comparar contra el DIBUJO (que trae los `Has*` del terminal en True) un
+            ' overlay VACIO "difiere" en todos sus canales y desprende a un NPC al que nadie le authoreo
+            ' nada. Defecto que nacio de este mismo cambio: al mover CONTRA QUE se compara, tambien cambio
+            ' que cuenta como cambio.
+            ' ⛔ El predicado es EL MISMO COMPARADOR contra un preset en blanco, no `MotorEscribe`: aquel
+            ' contesta otra pregunta -- "¿el motor escribe esta categoria al cargar un preset?" -- y su
+            ' `Case Else` devuelve True, asi que daba por authoreado el `SkinOverride` de un preset vacio.
+            ' Usar el comparador que ya existe evita una segunda tabla de "que cuenta como declarar".
+            If PresetCategoryFilter.PrimerCanalDistinto(presetEnBlanco, nuevo, cat, esSse,
+                                                        soloHeredables:=True) Is Nothing Then Continue For
+            ' ⛔ `soloHeredables`: authorear un canal que el bucket NO copia no desprende a nadie. Sin
+            ' este filtro, tocar la intensidad de morfo facial (FMIN) desprendia un NPC entero.
+            Dim canal = PresetCategoryFilter.PrimerCanalDistinto(dibujoAnterior, nuevo, cat, esSse,
+                                                                 soloHeredables:=True)
+            If canal IsNot Nothing Then
+                cambio = $"{cat} ({canal})"
+                Exit For
+            End If
+        Next
+        ' ⛔ `cambioExtra` es el canal heredable que NO viaja en el overlay -- hoy, la ALTURA. Entra por
+        ' la misma puerta en vez de tener la suya: ver el parametro.
+        If cambio Is Nothing Then cambio = cambioExtra
+        If cambio Is Nothing Then Return Nothing
+
+        ' ⛔ Recien ACA la cadena tiene que haber resuelto. Antes de saber que algo cambio, no.
+        If Not resolvio Then
+            RestaurarOverlay(npcFormID, anterior)
+            Return motivo
+        End If
+
+        ' H-1.10 — el aviso va ACA, en el COMMIT: al abrir todavía no se sabe si el usuario va a cambiar algo,
+        ' y avisar por las dudas enseña a apagarlo. En inglés, como toda la UI.
+        If Not _noAvisarDesprendimiento Then
+            Dim etiqueta = NpcLabelParaAviso(npc, npcFormID)
+            Dim siguio As Boolean
+            If ConfirmarDesprendimientoParaArnes IsNot Nothing Then
+                ' Camino del ARNES: la misma ley, sin UI. Ver la costura.
+                siguio = ConfirmarDesprendimientoParaArnes(etiqueta)
+            Else
+                Using dlg As New DetachWarningDialog(etiqueta)
+                    siguio = (dlg.ShowDialog(Me) = DialogResult.Yes)
+                    If siguio AndAlso dlg.NoVolverAAvisar Then _noAvisarDesprendimiento = True
+                End Using
+            End If
+            If Not siguio Then
+                RestaurarOverlay(npcFormID, anterior)
+                Return "detachment cancelled by the user"
+            End If
+        End If
+
+        ' ⛔ La cadena YA se resolvio arriba, antes de comparar: `resol` y `guardarResol` son los de esa
+        ' unica pasada. Aca habia una SEGUNDA llamada a `ResolverParaDesprendimiento`, y dos respuestas a
+        ' la misma pregunta pueden diferir si el arbol cambia entre medio.
+
+        ' ⛔ LA FOTO, antes de tocar nada del record. Materializar MUTA la instancia cacheada -- copia el bucket
+        ' del terminal y baja el bit -- y eso NO se deshace solo. Sin la foto, un llamador que quiera volver
+        ' atras puede restaurar el overlay y nada mas, y deja al NPC en MEDIO ESTADO: sin overlay y desprendido.
+        Dim fotoDelRecord = npc.Record.Copia()
+        ' ⛔ `TryGetNpcRecordOverride` devuelve LA INSTANCIA del diccionario, no una copia, y unas líneas más
+        ' abajo esta misma función la MUTA. Guardar la referencia y volver a ponerla NO deshace nada: hay que
+        ' guardar lo que la puerta va a cambiar, que son exactamente DOS cosas y están a la vista.
+        ' ⛔ No se clona el override entero a propósito: clonarlo traería la pregunta de qué es una copia
+        ' profunda de cada uno de sus campos, y la respuesta correcta no la necesita nadie acá.
+        Dim overrideAnterior = TryGetNpcRecordOverride(npcFormID)
+        Dim traitsChangedAntes As Boolean =
+            overrideAnterior IsNot Nothing AndAlso overrideAnterior.TraitsChanged
+        Dim resolAntes As NpcTemplateMaterializer.TraitsResolution = Nothing
+        Dim habiaResolAntes As Boolean =
+            overrideAnterior IsNot Nothing AndAlso
+            overrideAnterior.MaterializedSources.TryGetValue(NPC_TemplateCategory.Traits, resolAntes)
+
+        ' Se materializa sobre la caché VIVA para que el preview refleje el desprendimiento de inmediato, y con
+        ' la MISMA resolución que se congela: una sola respuesta para la cadena.
+        NpcTemplateMaterializer.MakeCategoryOwn(npc, NPC_TemplateCategory.Traits, resol)
+
+        Dim ov = TryGetNpcRecordOverride(npcFormID)
+        If ov Is Nothing Then ov = New NpcRecordOverride()
+        ov.TraitsChanged = True
+        If guardarResol Then ov.MaterializedSources(NPC_TemplateCategory.Traits) = resol
+        SetNpcRecordOverride(npcFormID, ov)
+        desprendio = True
+        ' El deshacer COMPLETO: record + bit (los dos vienen en la foto), override y overlay. Se lo lleva el
+        ' llamador que tenga un camino de fallo con intencion de dejar al NPC como estaba.
+        deshacer = Sub()
+                       npc.Record = fotoDelRecord
+                       If overrideAnterior IsNot Nothing Then
+                           ' Se DESHACE lo que la puerta escribió sobre la instancia, no se re-instala la
+                           ' referencia: es el mismo objeto y volver a ponerlo no revierte nada.
+                           overrideAnterior.TraitsChanged = traitsChangedAntes
+                           If habiaResolAntes Then
+                               overrideAnterior.MaterializedSources(NPC_TemplateCategory.Traits) = resolAntes
+                           Else
+                               overrideAnterior.MaterializedSources.Remove(NPC_TemplateCategory.Traits)
+                           End If
+                       End If
+                       ' `SetNpcRecordOverride(fid, Nothing)` YA borra la entrada, y con un override que quedó
+                       ' vacío la borra también — que es justo lo que hace falta cuando la puerta lo creó.
+                       SetNpcRecordOverride(npcFormID, overrideAnterior)
+                       RestaurarOverlay(npcFormID, anterior)
+                   End Sub
+        Return Nothing
+    End Function
+
+    ''' <summary>El rollback del overlay. ⛔ Cuando NO había overlay antes se hace <c>Remove</c>, nunca
+    ''' <c>= Nothing</c>: hay lectores que usan la PRESENCIA DE LA CLAVE, no el valor —el filtro del menú Reset
+    ''' hace <c>ContainsKey</c> y el sidecar ITERA el diccionario—, así que un <c>Nothing</c> alojado deja al NPC
+    ''' marcado como «tiene overlay» para siempre.</summary>
+    Private Sub RestaurarOverlay(npcFormID As UInteger, anterior As LooksmenuLoader.LooksmenuPreset)
+        If anterior Is Nothing Then
+            _appliedPresets.Remove(npcFormID)
+        Else
+            _appliedPresets(npcFormID) = anterior
+        End If
+    End Sub
+
+    Private Function NpcLabelParaAviso(npc As NPC_Data, npcFormID As UInteger) As String
+        Dim nombre = If(npc IsNot Nothing AndAlso npc.Record IsNot Nothing, npc.Record.Name, "")
+        If String.IsNullOrEmpty(nombre) AndAlso npc IsNot Nothing Then nombre = npc.EditorID
+        Return If(String.IsNullOrEmpty(nombre), $"0x{npcFormID:X8}", $"{nombre} (0x{npcFormID:X8})")
+    End Function
+
+    ''' <summary>LA SEDE del desprendimiento, para las puertas que NO son el NPC Editor (que tiene su propio
+    ''' preflight sobre la lista de categorías que cambió). Resuelve la cadena de UNA categoría con el árbol que
+    ''' el usuario está mirando y devuelve la resolución CONGELADA que hay que guardar en el override.
+    '''
+    ''' <para>⛔ Falla CERRADO: si la cadena no resuelve devuelve False y el llamador NO tiene que latchear
+    ''' nada. Latchear sin snapshot deja un override que el guardado va a rechazar — el usuario vería su edición
+    ''' aceptada en pantalla y el Save fallaría después, sin poder relacionar las dos cosas.</para>
+    ''' <para>⛔ Un NPC que NO hereda la categoría devuelve True SIN resolución: no hay nada que congelar, y el
+    ''' guardado tampoco va a buscarla — su guarda de bandera lo saltea antes de mirar el snapshot.</para></summary>
+    ''' <returns>False = la cadena no resuelve; <paramref name="motivo"/> trae el texto para el usuario.</returns>
+    Friend Function ResolverParaDesprendimiento(npcFormID As UInteger,
+                                                cat As NPC_TemplateCategory,
+                                                ByRef resol As NpcTemplateMaterializer.TraitsResolution,
+                                                ByRef hayQueGuardarla As Boolean,
+                                                ByRef motivo As String) As Boolean
+        resol = Nothing
+        hayQueGuardarla = False
+        motivo = Nothing
+        Dim npc = _ctx.GetParsedNpc(npcFormID)
+        If npc Is Nothing OrElse npc.Record Is Nothing Then
+            motivo = $"NPC 0x{npcFormID:X8}: no se pudo leer el record."
+            Return False
+        End If
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then Return True
+
+        Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(npc, cat, AddressOf _ctx.GetParsedNpc,
+                                                             AddressOf ResolveLvlnPick_Friend)
+        If probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
+           probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then
+            motivo = $"Cannot make {NpcManagerFormat.GetTemplateCategoryLabel(cat)} editable because its " &
+                     $"template chain could not be resolved. Details: {probe.LogReason}"
+            Return False
+        End If
+        resol = NpcTemplateMaterializer.CongelarResolucion(probe)
+        hayQueGuardarla = True
+        Return True
+    End Function
+
+    ''' <summary>⛔⛔ EL RECORD EFECTIVO de un NPC para SEMBRAR un editor o FILTRAR un preset: para un
+    ''' heredero es su propio record con el bucket Traits YA COPIADO del terminal -- o sea, exactamente lo que
+    ''' el motor deja en memoria al cargarlo. Para un no heredero es su record tal cual.
+    '''
+    ''' <para>⛔ POR QUE NO ALCANZA EL RECORD PROPIO. Con el bit 0 de ACBS Template Flags arriba el motor le
+    ''' PISA al heredero cada campo del bucket, y lo hace INCONDICIONALMENTE: medido en FO4 sobre MWGT
+    ''' (0x140658359-0x140658379: tres `mov` de [rcx+0x278/0x27C/0x280] a [r14+0x210/0x214/0x218], sin un
+    ''' test) y en SSE sobre NAM6/NAM7/WNAM/ANAM (0x1403C2146, 0x1403C2152, 0x1403C215E, 0x1403C216C, cuatro
+    ''' copias seguidas sin un salto). Los bytes propios del heredero en esos campos son LETRA MUERTA: no se
+    ''' ven nunca. Sembrar un editor de ahi le muestra al usuario valores que el juego no usa, y -- lo caro --
+    ''' le hace declarar `Has*` sobre listas VACIAS: al desprender, ese overlay vacio-pero-declarado le BORRA
+    ''' al record los TETI/MSDK/FMRS que la materializacion le acaba de copiar. El dialogo promete "keeps a
+    ''' copy of what you are seeing now" y el resultado era una cara plana y sin tinte.</para>
+    '''
+    ''' <para>⛔ Se construye con <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/>, que YA es la
+    ''' transcripcion de la tabla del bucket: no nace una segunda ley que mantener sincronizada. Y por eso
+    ''' mismo las categorias que el bucket NO copia (FMRI/FMRS, MRSV) quedan con el valor PROPIO de X, que es
+    ''' lo que el motor tambien le deja.</para>
+    '''
+    ''' <para>Cadena que no resuelve ==> se devuelve el record propio. No es un atajo: sin terminal no hay de
+    ''' donde copiar, y el motor en esa situacion tampoco copia nada.</para></summary>
+    ''' <param name="propio">El parse que el llamador ya tiene, para no re-parsear. Nothing ==> se pide.</param>
+    Friend Function RecordEfectivoParaAutoria(rootFid As UInteger,
+                                              Optional propio As NPC_Data = Nothing) As NPC_Data
+        ' ⛔⛔ LA PREGUNTA SE CONTESTA SOBRE UN SOLO RECORD, Y ES LA CACHE. Aca se miraba la bandera
+        ' sobre `propio` -- el parse FRESCO del plugin que le pasa Edit Face, con el bit ARRIBA-- mientras
+        ' `ResolverParaDesprendimiento` la mira sobre la cache. Tras desprender a X en la sesion la cache
+        ' tiene el bit ABAJO, asi que aquella salia `Return True` sin tocar `resol` y de aca se devolvia el
+        ' parse fresco CON EL BUCKET VACIO: Edit Face sembraba de ahi con `Has*=True` y volvia el borrado
+        ' de la cara, un gesto mas tarde. La cache es la que la app DIBUJA y la que la puerta MUTA; es la
+        ' unica que puede contestar. `propio` queda como respaldo para cuando la cache no tiene nada.
+        Dim npc = If(_ctx.GetParsedNpc(rootFid), propio)
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return npc
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
+                                                  NPC_TemplateCategory.Traits) Then Return npc
+
+        Dim resol As NpcTemplateMaterializer.TraitsResolution = Nothing
+        Dim guardarResol As Boolean = False
+        Dim motivo As String = Nothing
+        If Not ResolverParaDesprendimiento(rootFid, NPC_TemplateCategory.Traits,
+                                           resol, guardarResol, motivo) Then Return npc
+        If resol.Source Is Nothing Then Return npc
+
+        ' ⛔ Sobre una COPIA. `GetParsedNpc` devuelve la instancia cacheada del render y esto es una
+        ' consulta de solo lectura: materializar sobre ella desprenderia al NPC sin que nadie lo haya pedido.
+        Dim copia = npc.Copia()
+        NpcTemplateMaterializer.MakeCategoryOwn(copia, NPC_TemplateCategory.Traits, resol)
+        Return copia
     End Function
 
     ''' <summary>Store (or replace) the NPC's authored record override. An empty override is dropped so it never
@@ -9905,8 +9784,8 @@ Public Class MainForm
                                                ByRef effectiveDefault As UInteger, ByRef effectiveSleep As UInteger)
         effectiveDefault = rawDefault
         effectiveSleep = rawSleep
-        Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(npcFormID, p) AndAlso p IsNot Nothing Then
+        Dim p = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        If p IsNot Nothing Then
             If p.DefaultOutfitFormIDOverride.HasValue Then effectiveDefault = p.DefaultOutfitFormIDOverride.Value
             If p.SleepOutfitFormIDOverride.HasValue Then effectiveSleep = p.SleepOutfitFormIDOverride.Value
         End If
@@ -9933,31 +9812,36 @@ Public Class MainForm
     ''' (HasValue). When clearing (value = Nothing) and no preset exists, return Nothing — there's nothing to
     ''' clear, and we must not conjure an empty overlay that would spuriously flag the NPC as changed.</summary>
     Private Function EnsureOverlayPresetForOutfit(npcFormID As UInteger, value As UInteger?) As LooksmenuLoader.LooksmenuPreset
-        Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(npcFormID, p) AndAlso p IsNot Nothing Then Return p
+        Dim p = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        If p IsNot Nothing Then Return p
         If Not value.HasValue Then Return Nothing
         p = New LooksmenuLoader.LooksmenuPreset()
         _appliedPresets(npcFormID) = p
         Return p
     End Function
 
-    ''' <summary>Enhebra el estado de la app en <see cref="NpcRecordOverrideApplier.Aplicar"/>. Es el delegado
-    ''' <see cref="NpcOverrideSaver.SaveContext.ApplyNpcRecordOverride"/>, y por eso lleva <c>strict</c> hasta el
-    ''' fondo en vez de fijarlo: con <c>strict:=True</c> (el guardado) una categoría que no se puede materializar
-    ''' ABORTA, igual que antes de la mudanza — si el bit Use-X se bajara igual, la plantilla dejaría de llenar el
-    ''' campo y el NPC se quedaría con su valor propio vacío. Con <c>strict:=False</c> (el diálogo, que compone lo
-    ''' mismo sólo para LEER un bit) devuelve el motivo en vez de matar el proceso al abrirse.
-    ''' <para>El cuerpo se mudó a <see cref="NpcRecordOverrideApplier"/> para que un arnés pueda medir la
+    ''' <summary>Enhebra el estado de la app en <see cref="NpcRecordOverrideApplier.MaterializarCategorias"/>.
+    ''' Es el delegado <see cref="NpcOverrideSaver.SaveContext.MaterializarCategorias"/>, y por eso lleva
+    ''' <c>strict</c> hasta el fondo en vez de fijarlo: con <c>strict:=True</c> (el guardado) una categoría que no
+    ''' se puede materializar ABORTA — si el bit Use-X se bajara igual, la plantilla dejaría de llenar el campo y
+    ''' el NPC se quedaría con su valor propio vacío. Con <c>strict:=False</c> (el diálogo, que compone lo mismo
+    ''' sólo para LEER un bit) devuelve el motivo en vez de matar el proceso al abrirse.
+    ''' <para>⛔ Ya no enhebra ni el resolvedor de la cadena ni el de LVLN: la cadena se resolvió UNA vez, en el
+    ''' NPC Editor, y viaja congelada en <c>NpcRecordOverride.MaterializedSources</c>. Tampoco enhebra
+    ''' «¿este NPC tiene overlay?»: el overlay ahora se estampa DESPUÉS y gana por llegar último.</para>
+    ''' <para>El cuerpo vive en <see cref="NpcRecordOverrideApplier"/> para que un arnés pueda medir la
     ''' PRECEDENCIA overlay-vs-override sin replicarla: media ley del guardado era inalcanzable desde
     ''' <c>Tools/</c> mientras vivía en un <c>Private</c> de este formulario. Wrapper fino, el mismo patrón que
     ''' <see cref="ApplyPresetOverlayToNpcData"/> sobre <see cref="NpcRecordOverlay"/>.</para></summary>
-    Private Function ApplyNpcRecordOverrideToSpec(npcSpec As NPC_Data, npcFormID As UInteger, strict As Boolean) As String
-        Return NpcRecordOverrideApplier.Aplicar(npcSpec, npcFormID, _npcRecordOverrides,
-                                                AddressOf _ctx.GetParsedNpc,
-                                                Function(f As UInteger) _appliedPresets.ContainsKey(f),
-                                                AddressOf ResolveLvlnPick_Friend,
-                                                strict)
+    Private Function MaterializarCategoriasDelEditor(npcSpec As NPC_Data, npcFormID As UInteger, strict As Boolean) As String
+        Return NpcRecordOverrideApplier.MaterializarCategorias(npcSpec, npcFormID, _npcRecordOverrides, strict)
     End Function
+
+    ''' <summary>La otra mitad: los escalares y las listas del NPC Editor. Delegado
+    ''' <see cref="NpcOverrideSaver.SaveContext.AplicarEscalares"/>, y corre DESPUÉS del overlay.</summary>
+    Private Sub AplicarEscalaresDelEditor(npcSpec As NPC_Data, npcFormID As UInteger)
+        NpcRecordOverrideApplier.AplicarEscalares(npcSpec, npcFormID, _npcRecordOverrides)
+    End Sub
 
 
     ''' <summary>In-memory clipboard for Copy Look / Paste Look. Lives at process scope so the
@@ -10009,7 +9893,7 @@ Public Class MainForm
         Dim raw = _ctx.GetParsedNpc(modelFormID)
         If raw Is Nothing Then Return Nothing
         ' Capture rendered state — overlay-on-top-of-template, just like the renderer reads it.
-        Dim effective = ApplyPresetOverlayToNpcData(raw, state.RootNpcFormID)
+        Dim effective = AplicarOverlayDeAutoria(raw, state.RootNpcFormID)
 
         Dim preset As New LooksmenuLoader.LooksmenuPreset With {
             .SourcePath = $"<clipboard from {raw.EditorID}>",
@@ -10058,8 +9942,8 @@ Public Class MainForm
         ' overlay preset for this NPC because ApplyPresetOverlayToNpcData doesn't touch them
         ' (NPC_Data has no BodyMorphs field). Without this copy Save LooksMenu would drop every
         ' BodySlide slider the user dialed in via the Edit Body form.
-        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(state.RootNpcFormID, overlay) AndAlso overlay IsNot Nothing Then
+        Dim overlay = NpcRecordOverlay.OverlayDeAutoria(state.RootNpcFormID, _appliedPresets)
+        If overlay IsNot Nothing Then
             For Each kv In overlay.BodyMorphSliders
                 preset.BodyMorphSliders(kv.Key) = kv.Value
             Next
@@ -10568,7 +10452,7 @@ Public Class MainForm
         ' resolved through ApplyRaceFallbacks + overlay) and from the post-overlay NPC_Data
         ' for MRSV.
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(_renderHost.LastRenderedState)
-        Dim effectiveNpc = ApplyPresetOverlayToNpcData(_ctx.GetParsedNpc(modelNpcFormID), _renderHost.LastRenderedState.RootNpcFormID)
+        Dim effectiveNpc = AplicarOverlayDeAutoria(_ctx.GetParsedNpc(modelNpcFormID), _renderHost.LastRenderedState.RootNpcFormID)
         Dim initial As New EditBody_Form.InitialValues With {
             .Thin = _renderHost.LastRenderedState.WeightThin,
             .Muscular = _renderHost.LastRenderedState.WeightMuscular,
@@ -10621,8 +10505,8 @@ Public Class MainForm
 
         ' BodySlide sliders that the overlay (or a previously loaded preset) already carries —
         ' open at those values; otherwise zero. There is no record-level source for these.
-        Dim existingPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(_renderHost.LastRenderedState.RootNpcFormID, existingPreset) AndAlso existingPreset IsNot Nothing Then
+        Dim existingPreset = NpcRecordOverlay.OverlayDeAutoria(_renderHost.LastRenderedState.RootNpcFormID, _appliedPresets)
+        If existingPreset IsNot Nothing Then
             For Each kv In existingPreset.BodyMorphSliders
                 initial.BodySlide(kv.Key) = kv.Value
             Next
@@ -10644,6 +10528,27 @@ Public Class MainForm
             ' already rolled back the overlay; without an explicit MainForm render during the
             ' modal session, our preview is still in the pre-edit state — no reload needed.
             If dlg.DialogResult = DialogResult.OK AndAlso dlg.HasUncommittedChanges Then
+                ' ⛔ LA PUERTA: lo que el editor dejo en el overlay puede haber cambiado una categoria que este
+                ' NPC HEREDA; si asi fue, se lo desprende. Compara contra el overlay PRE-DIALOGO, que es el
+                ' mismo clon que usa el rollback de Cancel.
+                ' ⛔ La ALTURA entra por la MISMA puerta: es un canal heredable (NAM6/NAM4) que no viaja
+                ' en el overlay, así que se anuncia con `cambioExtra`. Antes el editor la latcheaba solo y
+                ' un "No" no la deshacía.
+                Dim falloEditor = AutorearOverlay(_renderHost.LastRenderedState.RootNpcFormID,
+                                                  NpcRecordOverlay.OverlayDeAutoria(_renderHost.LastRenderedState.RootNpcFormID, _appliedPresets),
+                                                  dlg.OverlayPrevio,
+                                                  cambioExtra:=If(dlg.HayAlturaPendiente, "Height (NAM6/NAM4)", Nothing))
+                If falloEditor IsNot Nothing Then
+                    MessageBox.Show(Me, falloEditor, "Changes not applied", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                ElseIf dlg.HayAlturaPendiente Then
+                    ' ⛔ Sólo si la puerta dijo que sí. Si devolvió motivo —cancelado o cadena rota— la
+                    ' altura NO se escribe, que es justo lo que el cartel le promete al usuario.
+                    Dim ovAltura = TryGetNpcRecordOverride(_renderHost.LastRenderedState.RootNpcFormID)
+                    If ovAltura Is Nothing Then ovAltura = New NpcRecordOverride()
+                    If dlg.AlturaPendienteMin.HasValue Then ovAltura.HeightMin = dlg.AlturaPendienteMin.Value
+                    If dlg.AlturaPendienteMax.HasValue Then ovAltura.HeightMax = dlg.AlturaPendienteMax.Value
+                    SetNpcRecordOverride(_renderHost.LastRenderedState.RootNpcFormID, ovAltura)
+                End If
                 MarkNpcDirty(_renderHost.LastRenderedState.RootNpcFormID)
                 Try
                     Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
@@ -10693,8 +10598,8 @@ Public Class MainForm
             ' OK: reload the MAIN preview to reflect whatever changed in the picker, then mark the NPC
             ' dirty ONLY when its effective outfit actually changed.
             Dim result As UInteger? = dlg.SelectedOutfitOverride
-            Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-            Dim hadOverlay = _appliedPresets.TryGetValue(npcFormID, previousOverlay) AndAlso previousOverlay IsNot Nothing
+            Dim previousOverlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+            Dim hadOverlay = previousOverlay IsNot Nothing
             Dim priorOutfitOverride As UInteger? = If(hadOverlay, previousOverlay.DefaultOutfitFormIDOverride, Nothing)
 
             ' The NPC_ record only stores the DOFT FormID, so "did the NPC change?" = "did the effective outfit
@@ -10820,6 +10725,15 @@ Public Class MainForm
             ' already rolled back the overlay; the MainForm preview was untouched during the
             ' modal so it's already correct.
             If dlg.DialogResult = DialogResult.OK AndAlso dlg.HasUncommittedChanges Then
+                ' ⛔ LA PUERTA: lo que el editor dejo en el overlay puede haber cambiado una categoria que este
+                ' NPC HEREDA; si asi fue, se lo desprende. Compara contra el overlay PRE-DIALOGO, que es el
+                ' mismo clon que usa el rollback de Cancel.
+                Dim falloEditor = AutorearOverlay(_renderHost.LastRenderedState.RootNpcFormID,
+                                                  NpcRecordOverlay.OverlayDeAutoria(_renderHost.LastRenderedState.RootNpcFormID, _appliedPresets),
+                                                  dlg.OverlayPrevio)
+                If falloEditor IsNot Nothing Then
+                    MessageBox.Show(Me, falloEditor, "Changes not applied", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                End If
                 MarkNpcDirty(_renderHost.LastRenderedState.RootNpcFormID)
                 Try
                     Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
@@ -11093,18 +11007,34 @@ Public Class MainForm
         ' The target's live overlay serves twice: as the preserve BASELINE for the unticked categories
         ' (what the NPC shows RIGHT NOW, editor work included, falling back to the raw record where the
         ' overlay has nothing), and as the rollback value if the render throws.
-        Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        _appliedPresets.TryGetValue(npcFormID, previousOverlay)
-        Dim filtered = PresetCategoryFilter.BuildFiltered(_clipboardPreset, npc, previousOverlay, options, isSseGame,
+        Dim previousOverlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        ' ⛔ Mismo motivo que el Load: `targetRaw` EFECTIVO. Ver `RecordEfectivoParaAutoria`.
+        Dim filtered = PresetCategoryFilter.BuildFiltered(_clipboardPreset,
+                                                          RecordEfectivoParaAutoria(npcFormID, npc),
+                                                          previousOverlay, options, isSseGame,
                                                           ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
-        _appliedPresets(npcFormID) = filtered
+        ' ⛔ Misma puerta que el Load: pegar una categoria heredable sobre un heredero lo desprende.
+        Dim deshacerPegar As Action = Nothing
+        Dim desprendioPegar As Boolean = False
+        Dim falloPegar = AutorearOverlay(npcFormID, filtered, previousOverlay, desprendioPegar, deshacerPegar)
+        If falloPegar IsNot Nothing Then
+            MessageBox.Show(Me, falloPegar, "Paste not applied", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
 
         Try
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
             Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
             MarkNpcDirty(npcFormID)
         Catch ex As Exception
-            If previousOverlay Is Nothing Then
+            ' ⛔ El rollback tiene que deshacer TODO, no solo el overlay. Este `Catch` declara que quiere dejar
+            ' al NPC como estaba, y desde que existe la puerta «como estaba» incluye NO estar desprendido:
+            ' restaurar el overlay y dejar el bit bajado con el bucket del terminal copiado seria un MEDIO
+            ' ESTADO. Los dos Load NO llaman a esto a proposito: ahi el usuario dio OK y el desprendimiento SE
+            ' QUIERE conservar -- su `Catch` solo cubre el re-render, que es cosmetico.
+            If deshacerPegar IsNot Nothing Then
+                deshacerPegar()
+            ElseIf previousOverlay Is Nothing Then
                 _appliedPresets.Remove(npcFormID)
             Else
                 _appliedPresets(npcFormID) = previousOverlay
@@ -11327,7 +11257,8 @@ Public Class MainForm
             .RenderHost = _renderHost,
             .DataPath = _dataPath,
             .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayParaGuardado,
-            .ApplyNpcRecordOverride = AddressOf ApplyNpcRecordOverrideToSpec,
+            .MaterializarCategorias = AddressOf MaterializarCategoriasDelEditor,
+            .AplicarEscalares = AddressOf AplicarEscalaresDelEditor,
             .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
                                         prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
                                    As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
@@ -11582,8 +11513,8 @@ Public Class MainForm
     ''' <para>Si no queda nada no-ESP, el overlay se elimina entero. True si queda overlay residual, o sea si el
     ''' sidecar en disco conserva una fila para este NPC.</para></summary>
     Private Function StripEspFieldsFromOverlay(npcFormID As UInteger) As Boolean
-        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not _appliedPresets.TryGetValue(npcFormID, overlay) OrElse overlay Is Nothing Then Return False
+        Dim overlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        If overlay Is Nothing Then Return False
 
         ' Round-trip through the sidecar's own entry type: EntryFromPreset keeps exactly the fields
         ' MergeOneNpcIntoSidecar persists, and ApplyEntryToPreset rebuilds them exactly like a fresh

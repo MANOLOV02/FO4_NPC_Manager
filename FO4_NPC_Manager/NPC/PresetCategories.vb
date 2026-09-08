@@ -61,6 +61,107 @@ Public Module PresetCategories
         End Select
     End Function
 
+    ''' <summary>¿esta categoría la HEREDA un NPC por el bucket Traits (ACBS Template Flags, bit 0)?
+    '''
+    ''' <para>⛔ El ancla NO es <c>TraitsState</c> — FaceTints, FaceVertexMorphs, FaceBoneRegions y BodyRegions
+    ''' no están ahí. Es la función de copia del bucket 0 en los dos binarios, canal por canal.</para>
+    '''
+    ''' <list type="table">
+    ''' <item><term>FaceParts (PNAM)</term><description>✅ los dos juegos</description></item>
+    ''' <item><term>HairColor (HCLF)</term><description>✅ los dos</description></item>
+    ''' <item><term>SkinOverride (WNAM)</term><description>✅ los dos</description></item>
+    ''' <item><term>BodyWeight (NAM7 en SSE, MWGT en FO4)</term><description>✅ los dos</description></item>
+    ''' <item><term>FaceVertexMorphs (NAM9 en SSE, MSDK/MSDV en FO4)</term><description>✅ los dos</description></item>
+    ''' <item><term>FaceTints</term><description>⚠️ GAME-AWARE: en SSE el bit 0 NO copia TINI (REFUTADO, con control
+    ''' de sujeto sobre offsets que sí se copian); en FO4 SÍ copia TETI/TEND (<c>0x140651752</c>) y además con
+    ''' REEMPLAZO INCLUIDO EL VACÍO — <c>0x1406516D9</c> pregunta <c>cmp qword [r13+0x300], 0</c> y, si la
+    ''' plantilla no trae tintes, <c>0x140651759</c>-<c>0x14065179B</c> LIBERA el contenedor del heredero. Un
+    ''' heredero de FO4 cuya plantilla no tiene tintes NO conserva los suyos: los pierde.</description></item>
+    ''' <item><term>BodyRegions (MRSV)</term><description>⛔ NO hereda: el motor no lo copia bajo el bit 0. La app
+    ''' sí lo copiaba, y eso sale como copia de más en el gate del bucket.</description></item>
+    ''' <item><term>FaceBoneRegions</term><description>⛔ PARTIDA, y por eso devuelve False: el bit 0 copia
+    ''' FMRI/FMRS pero NO copia FMIN. Como la categoría de preset es UNA sola y arrastra las dos mitades
+    ''' (regiones + intensidad), heredarla entera copiaría de más.</description></item>
+    ''' </list>
+    ''' <para>Todo lo demás (Outfit, BodySliders, Overlays, BodyScale, LmSkinTemplate, CustomMorphs, Sculpt,
+    ''' IsCharGenPreset) queda FUERA: o es de otro bucket, o no tiene portador en el record, o no hay cita.</para></summary>
+    Public Function HeredaPorTraits(cat As PresetCategory, isSse As Boolean) As Boolean
+        Select Case cat
+            Case PresetCategory.FaceBoneRegions
+                ' [X] MEDIDO: FO4 copia el contenedor FMRI/FMRS bajo el bit 0. `sub_140651470` (llamada en
+                ' 0x14065847D, adentro del bloque del bit 0) lee [r13+0x2E0] en 0x14065187B y escribe
+                ' [rbp+0x2E0] en 0x140651989, y el handler del NPC_ arma ese mismo contenedor en
+                ' 0x14064FC40-0x14064FC79. Decia False, y con eso un toque de region sobre un heredero no lo
+                ' desprendia: el ESP salia con el bit 0 puesto y el motor le copiaba las del terminal.
+                ' [X] La INTENSIDAD (FMIN) es otro canal y NO hereda -- ver `HeredaElCanal`.
+                ' SSE no tiene FMRI/FMRS en el esquema del NPC_.
+                Return Not isSse
+            Case PresetCategory.FaceParts, PresetCategory.HairColor, PresetCategory.SkinOverride,
+                 PresetCategory.BodyWeight, PresetCategory.FaceVertexMorphs
+                Return True
+            Case PresetCategory.FaceTints
+                ' [X] True en los DOS juegos porque la categoria lleva DOS canales con respuestas distintas y
+                ' esta funcion contesta "¿hereda ALGUNO?". El detalle por canal vive en `HeredaElCanal`:
+                ' las capas de tinte solo las copia FO4, el QNAM (tono de piel) lo copian los dos.
+                Return True
+            Case Else
+                Return False
+        End Select
+    End Function
+
+    ''' <summary>⛔⛔ LA MISMA PREGUNTA, PERO POR CANAL: ¿el bucket Traits copia ESTE campo?
+    ''' <para>Existe porque el motor decide por CAMPO y dos categorias de la app mezclan campos con respuestas
+    ''' distintas. `HeredaPorTraits` contesta "¿hereda alguno?" y sirve de guarda de bucle; esta contesta lo que
+    ''' de verdad hay que saber para comparar un canal o revertirlo.</para>
+    '''
+    ''' <para>⛔ `FaceTints` / `SkinToneOffset` (QNAM) -- hereda en LOS DOS. Medido: SSE `sub_1403BDFC0` copia
+    ''' +0x246/+0x247/+0x248 en 0x1403BE09A, 0x1403BE0AE y 0x1403BE0BB, sin test; FO4 `sub_140651470` copia
+    ''' +0x2EA-0x2ED en 0x140651552, 0x140651560, 0x14065156E y 0x14065157C. Las CAPAS, en cambio, solo las
+    ''' copia FO4: el censo de `sub_1403BDFC0` no toca +0x260 en ninguna instruccion.</para>
+    '''
+    ''' <para>⛔ `FaceBoneRegions` / `FacialMorphIntensity` (FMIN) -- NO hereda. El censo de todo par
+    ''' origen->destino de las dos funciones del bit 0 de FO4 no trae un solo `movss` de origen a destino: el
+    ''' contenedor +0x2E0 que si se copia es un ARRAY de entradas de 0x30 bytes (`add rbx,0x30` en 0x1406518B8,
+    ''' `lea rsi,[rax+rax*2]; shl rsi,4` en 0x1406518F0), o sea las regiones, no un escalar. Se declara por
+    ''' CENSO, no por una VA: es la unica forma honesta de afirmar una ausencia, y el censo es cerrado.</para>
+    '''
+    ''' <para>⛔ El default es `HeredaPorTraits`: una categoria nueva no necesita renglon aca, y si lo necesita
+    ''' es porque mezcla campos -- que es justo lo que hay que ver.</para></summary>
+    ''' <summary>⛔⛔ ¿Este canal lleva un VALOR que el bit 0 puede pisar? Es la pregunta de LA PUERTA,
+    ''' y NO es la misma que <see cref="HeredaElCanal"/>.
+    ''' <para>Un preset lleva, además de los valores, banderas de CONTABILIDAD DE LA APP: las `Has*` de
+    ''' posesión, `HeadPartFormIDsIncludeRawExtras` (dice si la lista ya es un superset del PNAM crudo, para
+    ''' que el saver no re-una) y `SseHeadPartsFiltradasPorMotor` (diagnóstico). El motor NO TIENE ninguno de
+    ''' esos campos, así que no puede destruirlos al copiar el bucket: authorearlos no desprende a nadie.</para>
+    ''' <para>⛔ Sin esto, «Edit Face → OK sin tocar nada» disparaba el aviso SIEMPRE: el editor pone
+    ''' `HeadPartFormIDsIncludeRawExtras = True` y `Revert` lo deja en False, así que el comparador decía
+    ''' «distinto» sin que hubiera un solo valor distinto.</para>
+    ''' <para>⛔ `HeredaElCanal` sigue contestando lo otro —«¿el bucket copia este campo?»— y la usa el
+    ''' REVERT, que SÍ necesita poner los `Has*` para que <c>AplicarOverlay</c> ESCRIBA en vez de preservar.
+    ''' Son dos preguntas distintas sobre la misma tabla de canales, no dos dueños de una.</para></summary>
+    Public Function EsCanalDeValor(canal As String) As Boolean
+        If canal Is Nothing Then Return False
+        If canal.StartsWith("Has", StringComparison.Ordinal) Then Return False
+        Select Case canal
+            Case "HeadPartFormIDsIncludeRawExtras", "SseHeadPartsFiltradasPorMotor" : Return False
+            Case Else : Return True
+        End Select
+    End Function
+
+    Public Function HeredaElCanal(cat As PresetCategory, canal As String, isSse As Boolean) As Boolean
+        Select Case cat
+            Case PresetCategory.FaceTints
+                If String.Equals(canal, "SkinToneOffset", StringComparison.Ordinal) Then Return True
+                Return Not isSse
+            Case PresetCategory.FaceBoneRegions
+                If String.Equals(canal, "FacialMorphIntensity", StringComparison.Ordinal) OrElse
+                   String.Equals(canal, "HasFacialMorphIntensity", StringComparison.Ordinal) Then Return False
+                Return Not isSse
+            Case Else
+                Return HeredaPorTraits(cat, isSse)
+        End Select
+    End Function
+
     ''' <summary>Per-category boolean flags. True = take the field from the SOURCE preset; False = keep the
     ''' TARGET NPC's current value. Categories that don't apply to the running game are ignored by the
     ''' filter regardless of their flag.</summary>

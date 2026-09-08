@@ -190,6 +190,23 @@ Friend Class NpcRenderHost
     ''' code paths that mutate state outside the overlay preset (e.g. MWGT live edit).</summary>
     Public Property CurrentBaseState As MainForm.NPCVisualState = Nothing
 
+    ''' <summary>Escribe la MISMA mutacion en las DOS caches de estado del host.
+    ''' <para>⛔ Nace porque la doble cache no tenia dueno: de los cuatro fast paths que mutan estado fuera
+    ''' del overlay, TRES escribian solo <see cref="LastRenderedState"/> y el unico que hacia las dos lo tenia
+    ''' escrito a mano. Y <see cref="CurrentBaseState"/> es la PREFERIDA -- <c>MainForm</c> hace
+    ''' <c>If(CurrentBaseState, LastRenderedState)</c> en tres sitios y la clona en un cuarto -- asi que
+    ''' escribir una sola hace que el gesto se VEA y despues vuelva solo al valor anterior.</para>
+    ''' <para>⛔⛔ <paramref name="host"/> es OBLIGATORIO: sin Optional y sin caida a un proveedor. No son dos
+    ''' caches, son DOS HOSTS por dos caches -- el del MainForm y el del editor -- y los fast paths corren sobre
+    ''' el DEL EDITOR. El arbol ya tiene tres cicatrices de equivocarse de host, con el comentario escrito en
+    ''' cada una; una primitiva que nace para darle dueno a la doble cache no puede nacer con ese defecto.</para>
+    ''' <para>Una cache en Nothing se saltea: es "todavia no hay estado", no un error.</para></summary>
+    Friend Shared Sub EscribirEnLasDosCaches(host As NpcRenderHost, escribir As Action(Of MainForm.NPCVisualState))
+        If host Is Nothing OrElse escribir Is Nothing Then Return
+        If host.LastRenderedState IsNot Nothing Then escribir(host.LastRenderedState)
+        If host.CurrentBaseState IsNot Nothing Then escribir(host.CurrentBaseState)
+    End Sub
+
     ''' <summary>Render-pipeline boolean knobs. Replaces direct <c>CheckBox*.Checked</c> reads
     ''' inside the pipeline so a render can be requested with a specific configuration regardless
     ''' of which UI surface drives it. The owning Form is responsible for refreshing this snapshot

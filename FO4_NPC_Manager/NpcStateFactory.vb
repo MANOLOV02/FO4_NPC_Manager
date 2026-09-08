@@ -169,6 +169,56 @@ Friend NotInheritable Class NpcStateFactory
     ''' before — only template-inheriting NPCs change. Mirrors how HeadPartFormIDs/Hair already resolve
     ''' from the Traits source. Replaces the old ModelSourceFormID-or-root pattern, which always fell to
     ''' root because ModelSourceFormID was never wired in the render path.</summary>
+    ''' <summary>⛔⛔ LA SEDE UNICA de "de un record sale un estado visual". Antes esta ley estaba
+    ''' escrita DOS veces — una en el render y otra en el bake— y las dos **ya divergian por ORDEN**.
+    ''' <para>⛔ <paramref name="npcData"/> es de donde salen los DATOS (en el render, la SOMBRA: el
+    ''' terminal con el overlay de autoria aplicado). <paramref name="root"/> es de donde sale la
+    ''' IDENTIDAD (el NPC que el usuario esta mirando). No son el mismo, y confundirlos es lo que
+    ''' rompia `_appliedPresets(Root)`.</para>
+    ''' <para>⛔ `traits` **no es parametro**: se computa aca y se DEVUELVE, asi que ningun llamador
+    ''' puede pasar otro. El bake y el render quedan obligados a la misma ley — que es todo el punto
+    ''' de que exista esta funcion.</para>
+    ''' <para>Escribe 21 de los 30 campos de `NPCVisualState`. Los otros NUEVE quedan sin escribir A
+    ''' PROPOSITO y estan nombrados abajo: `ModelSourceFormID` (el render lo deja en 0),
+    ''' `ExplicitHeadTextureFormID` y los tres pesos (los pone `ApplyRaceFallbacks`, que corre
+    ''' despues), `InventorySourceFormID` (declarado y nunca asignado), `VariantLabel` (lo pone el
+    ''' llamador de variantes) y los dos de `Loadout*` (los escribe solo `MainForm`, sobre un clon).
+    ''' El A/B compara los 30 por REFLEXION: si manana aparece un campo 31 y esta funcion no lo
+    ''' escribe, el gate lo ve.</para></summary>
+    Public Shared Function ProyectarEstado(npcData As NPC_Data, root As NPC_Data,
+                                           inventory As MainForm.InventoryState,
+                                           presetDeDibujo As LooksmenuLoader.LooksmenuPreset) _
+                                           As (Estado As MainForm.NPCVisualState, Traits As MainForm.TraitsState)
+        Dim traits = CreateOwnTraitsState(npcData)
+
+        Dim st As New MainForm.NPCVisualState With {
+            .FormID = root.FormID,
+            .RootNpcFormID = root.FormID,
+            .IsFemale = traits.IsFemale,
+            .RaceFormID = traits.RaceFormID,
+            .SkinFormID = traits.SkinFormID,
+            .HeadTextureFormID = traits.HeadTextureFormID,
+            .HairColorFormID = traits.HairColorFormID,
+            .FacialHairColorFormID = traits.FacialHairColorFormID,
+            .HasTextureLighting = traits.HasTextureLighting,
+            .TextureLightingColor = traits.TextureLightingColor,
+            .SseHairColorRgb = npcData.SseHairColorRgb,
+            .TraitsSourceFormID = traits.SourceFormID,
+            .DefaultOutfitFormID = inventory.DefaultOutfitFormID,
+            .SleepOutfitFormID = inventory.SleepOutfitFormID,
+            .HeadDiffuseAlphaTest = (root.Game = Config_App.Game_Enum.Fallout4) AndAlso
+                                    (root.Record.ConfigurationFlags And &H1000000UI) <> 0UI,
+            .SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(
+                                  If(presetDeDibujo Is Nothing, Nothing, presetDeDibujo.SkinToneOffset))
+        }
+        st.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
+        st.ObjectTemplateOMODFormIDs.AddRange(traits.ObjectTemplateOMODFormIDs)
+        st.ObjectTemplateCombinations.AddRange(traits.ObjectTemplateCombinations)
+        st.HasObjectTemplate = traits.HasObjectTemplate
+        st.AttachParentSlotFormIDs.AddRange(traits.AttachParentSlotFormIDs)
+        Return (st, traits)
+    End Function
+
     Public Shared Function FaceAppearanceSourceFormID(state As MainForm.NPCVisualState) As UInteger
         If state Is Nothing Then Return 0UI
         Return If(state.TraitsSourceFormID <> 0UI, state.TraitsSourceFormID, state.FormID)

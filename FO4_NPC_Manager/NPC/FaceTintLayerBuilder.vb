@@ -24,6 +24,7 @@ Public Module FaceTintLayerBuilder
                           isFemale As Boolean,
                           pluginManager As PluginManager,
                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                          overlayPreset As LooksmenuLoader.LooksmenuPreset,
                           tintBytesCache As Dictionary(Of String, Byte()),
                           Optional hairColorFormID As UInteger = 0UI,
                           Optional hasTextureLighting As Boolean = False,
@@ -33,9 +34,15 @@ Public Module FaceTintLayerBuilder
         If pluginManager Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()
 
         ' App-specific: NPC record + LooksMenu preset overlay -> concrete npcData.
-        Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(
+        ' ⛔⛔ EL PRESET LO PASA EL LLAMADOR, no se deriva aca. Los dos llamadores tienen politicas
+        ' distintas y legitimas: el RENDER compone con el overlay de DIBUJO (un heredero se dibuja con los
+        ' tintes de su plantilla) y el BAKE con la AUTORIA (hornear es authorear, y G10 lo mide). Cuando se
+        ' derivaba adentro, los dos se llevaban la autoria y el render de un heredero salia con los tintes
+        ' VACIOS de X. Que la politica se lea en el llamador es justamente el punto.
+        Dim npcData = NpcRecordOverlay.AplicarOverlay(
             NpcRecordOverlay.GetParsedNpc(modelFormID, pluginManager),
-            rootFormID, appliedPresets, pluginManager, Nothing, parseRace)
+            overlayPreset,
+            rootFormID, pluginManager, Nothing, parseRace)
         If npcData Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()
         ' El caller pasa la raza EFECTIVA (state.RaceFormID, con el override del editor); el npcData recién
         ' parseado trae la cruda del récord. Alinearlas acá deja el resultado auto-consistente (built.race y

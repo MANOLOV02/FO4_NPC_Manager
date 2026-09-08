@@ -39,7 +39,9 @@ Public Module NpcRecordOverlay
                                            Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing) As NPC_Data
         Dim raw = GetParsedNpc(npcFormID, pluginManager)
         If raw Is Nothing Then Return Nothing
-        Dim result = ApplyPresetOverlayToNpcData(raw, npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
+        ' ⛔ La pregunta es de AUTORIA y la clave es el propio NPC: escrito, no implicito.
+        Dim result = AplicarOverlay(raw, OverlayDeAutoria(npcFormID, appliedPresets), npcFormID,
+                                    pluginManager, lmSkinTemplateResolver)
         ' Raza efectiva del editor (ver EffectiveRaceResolver). Mutar acá es seguro: `raw` es un parse FRESCO
         ' (GetParsedNpc no cachea) y el shadow del overlay también — nunca es la instancia cacheada del ctx.
         Dim effResolver = EffectiveRaceResolver
@@ -115,17 +117,140 @@ Public Module NpcRecordOverlay
     ''' :462); la decisión de PRODUCTO es no crear el subrecord cuando vale 1.0 y el record no lo tenía.</para></summary>
     ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCanonCached). When Nothing,
     ''' falls back to a direct <c>Canon.CanonRecords.Race</c> — keeps the offline bake path pure.</param>
-    Public Function ApplyPresetOverlayToNpcData(raw As NPC_Data,
-                                                selectedNpcFormID As UInteger,
-                                                appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                                pluginManager As PluginManager,
-                                                Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
-                                                Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
-                                                Optional estricto As Boolean = False) As NPC_Data
-        If raw Is Nothing OrElse raw.Record Is Nothing Then Return raw
-        If appliedPresets Is Nothing Then Return raw
+    ''' <summary>⛔ «Qué authoreó el usuario para ESTE NPC». La SEDE UNICA del `TryGetValue` crudo
+    ''' sobre el diccionario de presets aplicados. Es IDENTIDAD: `appliedPresets(fid)`, sin herencia.
+    ''' <para>Existe porque hasta ahora cada call site hacía su propio lookup y la pregunta correcta
+    ''' le salía por ACCIDENTE de qué overload le tocaba — y por eso ya divergió sola. Con la pregunta
+    ''' NOMBRADA, una divergencia se lee en el renglón y se encuentra con un grep.</para></summary>
+    Public Function OverlayDeAutoria(fid As UInteger,
+                                     appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)) _
+                                     As LooksmenuLoader.LooksmenuPreset
+        If appliedPresets Is Nothing Then Return Nothing
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not appliedPresets.TryGetValue(selectedNpcFormID, preset) Then Return raw
+        If Not appliedPresets.TryGetValue(fid, preset) Then Return Nothing
+        Return preset
+    End Function
+
+    ''' <summary>⛔ «Qué se le aplica al DIBUJARLO». La SEDE UNICA de la herencia por el bucket Traits.
+    '''
+    ''' <para>Se escribe EN TERMINOS de <see cref="OverlayDeAutoria"/> — la llama DOS veces, con el root y con
+    ''' el terminal — así el diccionario se toca en un solo lugar y la regla de herencia no duplica la de
+    ''' autoría: la usa.</para>
+    '''
+    ''' <para>Y la combinación es <c>PresetCategoryFilter.Revert</c>, que YA es exactamente la primitiva que
+    ''' hace falta: «en <c>p</c>, la categoría <c>cat</c> pasa a valer lo del baseline si lo declara, si no lo
+    ''' del record». Acá el baseline es el overlay del TERMINAL y el record es el del TERMINAL. No nace un
+    ''' segundo combinador, y los dos casos que parecían necesitar reglas propias cierran solos: «el terminal
+    ''' no declara la categoría» = <c>Revert</c> cae al record del terminal, y «sin atajo» = las categorías
+    ''' heredables corren SIEMPRE, no sólo cuando el root no trae nada.</para>
+    '''
+    ''' <para>⛔ El NO heredero devuelve la MISMA INSTANCIA que <see cref="OverlayDeAutoria"/>, no un clon:
+    ''' sigue leyendo la bolsa VIVA. Si se le devolviera un clon, los dos Cancel de editor —que reemplazan la
+    ''' entrada del diccionario SIN re-renderizar— lo dejarían dibujando con un preset viejo. La decisión sale
+    ''' de <paramref name="traitsSourceFid"/>, sin centinela.</para>
+    '''
+    ''' <para>⚠ <c>Revert</c> marca <c>Has*</c> en <c>p</c> para categorías que el root nunca authoreó. Eso
+    ''' NO es un efecto colateral: al DESPRENDER, este preset pasa a ser el overlay de X y ese <c>Has*</c> es
+    ''' justamente la posesión buscada. Mientras X hereda, es de sólo lectura.</para></summary>
+    ''' <summary>El preset de dibujo de un ESTADO ya resuelto. Es la forma que usan los consumidores: el
+    ''' estado trae la respuesta calculada, y el que no hereda cae a la bolsa VIVA de overlays — que es lo que
+    ''' hace que un Cancel de editor se vea de inmediato sin re-renderizar.
+    ''' <para>⛔ Ningún consumidor deriva herencia por su cuenta. Cuando cada uno preguntaba
+    ''' <see cref="OverlayDeAutoria"/> por separado, el mismo NPC se dibujaba distinto según por qué camino se
+    ''' hubiera repintado, y encontrarlo pedía acordarse de los nueve sitios.</para></summary>
+    ''' <remarks>⛔ Friend y no Public: `NPCVisualState` es Friend, y un miembro Public no puede exponerlo.
+    ''' Todos sus consumidores viven en este mismo ensamblado.</remarks>
+    Friend Function OverlayDeDibujo(state As MainForm.NPCVisualState,
+                                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)) _
+                                    As LooksmenuLoader.LooksmenuPreset
+        If state Is Nothing Then Return Nothing
+        If state.DibujoHeredado IsNot Nothing Then Return state.DibujoHeredado
+        Return OverlayDeAutoria(state.RootNpcFormID, appliedPresets)
+    End Function
+
+    ''' <param name="traitsSourceFid">El terminal de la cadena de Traits. 0, o igual al root, significa que el
+    ''' NPC no hereda.</param>
+    ''' <param name="getParsedNpc">Con qué leer el record del terminal. Sin él no hay de dónde sacar lo que el
+    ''' terminal no declara en su overlay, así que se devuelve la autoría del root tal cual.</param>
+    Public Function OverlayDeDibujo(rootFid As UInteger,
+                                    traitsSourceFid As UInteger,
+                                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                    isSse As Boolean,
+                                    getParsedNpc As Func(Of UInteger, NPC_Data)) As LooksmenuLoader.LooksmenuPreset
+        Dim delRoot = OverlayDeAutoria(rootFid, appliedPresets)
+        If traitsSourceFid = 0UI OrElse traitsSourceFid = rootFid OrElse getParsedNpc Is Nothing Then Return delRoot
+
+        Dim terminalRaw = getParsedNpc(traitsSourceFid)
+        If terminalRaw Is Nothing Then Return delRoot
+        Dim delTerminal = OverlayDeAutoria(traitsSourceFid, appliedPresets)
+
+        ' ⛔⛔ Sin NADIE que haya authoreado -- ni el root ni el terminal -- no hay overlay de dibujo, y no es
+        ' un atajo: es la definicion. "Que se le aplica al dibujarlo" con nadie que haya escrito nada es NADA, y
+        ' el record del terminal ya ES la sombra.
+        ' MEDIDO por que importa: sin esta guarda, `Revert` sacaba los tintes del record del terminal a un
+        ' preset y `AplicarOverlay` los volvia a escribir sobre EL MISMO terminal -- una IDA Y VUELTA que pierde
+        ' un escalon de 255. El A/B vanilla lo mostro en 51 NPC de SSE y 68 de FO4, en `TextureLightingColor`
+        ' (FF5E7174 -> FF5E7274). El motor no da esa vuelta: para un heredero sin preset el estado sale del
+        ' record del terminal, y el valor bueno es el de antes.
+        ' ⛔ NO alcanza con mirar solo el terminal: con overlay en el ROOT y ninguno en el terminal esta
+        ' funcion SI tiene trabajo, porque es la que evita que el overlay de X -- que declara `Has*` en
+        ' categorias que X tiene vacias -- le BORRE a la sombra justo las que hereda.
+        If delRoot Is Nothing AndAlso delTerminal Is Nothing Then Return Nothing
+
+        ' ⛔ Clon SIEMPRE, incluso cuando el root no trae overlay: de acá en adelante se le escriben las
+        ' categorías heredadas, y escribirlas sobre la instancia del diccionario le cambiaría al usuario el
+        ' overlay que él authoreó.
+        Dim p = If(delRoot Is Nothing, New LooksmenuLoader.LooksmenuPreset(), LooksmenuLoader.ClonePreset(delRoot))
+        ' ⛔⛔ LO AUTHOREADO GANA, LO HEREDADO RELLENA. Antes se revertian TODAS las categorias
+        ' heredables, o sea que el terminal PISABA lo que el root authoreo -- y como la puerta del
+        ' desprendimiento vive en el OK del editor, mientras el editor esta abierto X TODAVIA hereda: el
+        ' usuario cambiaba el pelo, un morfo o un tinte y el preview NO SE MOVIA. Lo mismo el preview del
+        ' Load, recorriendo presets con la cara quieta. Un gesto que se vuelve no-op sin decirlo.
+        ' ⛔ NO relaja la ley del motor: en estado COMMITEADO un heredero no puede tener categorias
+        ' heredables authoreadas, porque authorearlas es exactamente lo que lo desprende. Esto arregla el
+        ' TRANSITORIO, y lo deja mostrando lo que el desprendimiento va a producir.
+        ' ⛔ El motivo original para que el terminal pisara al root -- P26.3(a), "el overlay de X declara
+        ' `Has*` en categorias que X tiene vacias"-- YA NO EXISTE: desde `RecordEfectivoParaAutoria` la
+        ' siembra sale del record EFECTIVO, asi que lo que el root declara ya son los valores del terminal.
+        Dim enBlanco As New LooksmenuLoader.LooksmenuPreset()
+        For Each cat In PresetCategories.AllCategories
+            If Not PresetCategories.HeredaPorTraits(cat, isSse) Then Continue For
+            If Not PresetCategories.AppliesToGame(cat, isSse) Then Continue For
+            ' El root authoreo algo en esta categoria ⇒ gana el root y no se hereda nada.
+            If PresetCategoryFilter.PrimerCanalDistinto(enBlanco, p, cat, isSse,
+                                                        soloHeredables:=True) IsNot Nothing Then Continue For
+            ' [X] `RevertirLoHeredable` y no `Revert`: dos categorias mezclan canales que el bucket copia
+            ' con canales que no. En SSE `FaceTints` tiene que traer el QNAM del terminal y dejarle a X sus
+            ' capas; en FO4 `FaceBoneRegions` las regiones y dejarle su FMIN.
+            PresetCategoryFilter.RevertirLoHeredable(p, cat, terminalRaw, delTerminal, isSse)
+        Next
+
+        ' ⛔ ACA se forzaba `HasSseMorphs = True` con un NAM9 de ceros, "porque heredar es autoritativo".
+        ' RE-MEDIDO: atacaba un defecto que NO EXISTE. La premisa era que `MaterializeTraits` no copia
+        ' NAM9/NAMA, y hoy SI los copia -- `d.CopiarSubrecord(s, "NAM9")` y `"NAMA"` -- y `CopiarSubrecord`
+        ' con el origen AUSENTE hace `RemoveSubrecord` sobre el destino, o sea que el caso "el terminal no
+        ' trae ninguno" YA queda bien. Y del lado del DIBUJO la base de la sombra es el TERMINAL, asi que
+        ' "el overlay no escribe" deja el valor del terminal, que es lo correcto.
+        ' ⇒ el forzado no arreglaba nada y ESCRIBIA un NAM9 de ceros donde el terminal no trae ninguno.
+        ' El residuo real de la DECISION 17b era OTRO y esta cerrado en `MaterializeTraits`: NAM7.
+        Return p
+    End Function
+
+    ''' <summary>⛔ La UNICA función que estampa un preset sobre un record. Es la vieja
+    ''' `ApplyPresetOverlayToNpcData` con el LOOKUP SACADO AFUERA: quién pregunta, y con qué clave, es
+    ''' decisión del llamador y tiene que estar escrita en su renglón.
+    ''' <para>`selectedNpcFormID` sigue siendo parámetro porque adentro se usa más allá del lookup: de
+    ''' él sale la RAZA EFECTIVA (`EffectiveRaceResolver`) y el log.</para>
+    ''' <para>⛔ El render pasa el ROOT, nunca el terminal: el override de raza es del root.</para></summary>
+    Public Function AplicarOverlay(raw As NPC_Data,
+                                   preset As LooksmenuLoader.LooksmenuPreset,
+                                   selectedNpcFormID As UInteger,
+                                   pluginManager As PluginManager,
+                                   Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
+                                   Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
+                                   Optional estricto As Boolean = False) As NPC_Data
+        If raw Is Nothing OrElse raw.Record Is Nothing Then Return raw
+        If preset Is Nothing Then Return raw
 
         ' Raza EFECTIVA (record override del editor, ver EffectiveRaceResolver): la sombra la lleva desde el
         ' arranque, y TODO lo que esta función deriva de la raza (seed de head-parts, QNAM del skin-tone,
