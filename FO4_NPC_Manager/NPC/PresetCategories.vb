@@ -119,14 +119,42 @@ Public Module PresetCategories
     ''' +0x2EA-0x2ED en 0x140651552, 0x140651560, 0x14065156E y 0x14065157C. Las CAPAS, en cambio, solo las
     ''' copia FO4: el censo de `sub_1403BDFC0` no toca +0x260 en ninguna instruccion.</para>
     '''
-    ''' <para>⛔ `FaceBoneRegions` / `FacialMorphIntensity` (FMIN) -- NO hereda. El censo de todo par
-    ''' origen->destino de las dos funciones del bit 0 de FO4 no trae un solo `movss` de origen a destino: el
-    ''' contenedor +0x2E0 que si se copia es un ARRAY de entradas de 0x30 bytes (`add rbx,0x30` en 0x1406518B8,
-    ''' `lea rsi,[rax+rax*2]; shl rsi,4` en 0x1406518F0), o sea las regiones, no un escalar. Se declara por
-    ''' CENSO, no por una VA: es la unica forma honesta de afirmar una ausencia, y el censo es cerrado.</para>
+    ''' <para>⛔ `FaceBoneRegions` / `FacialMorphIntensity` (FMIN) -- NO hereda.</para>
+    '''
+    ''' <para>⛔⛔ LA EVIDENCIA ES LA DE LA TABLA LATERAL, NO LA DE LOS PARES. Aca se citaba "el censo
+    ''' de pares origen->destino no trae un solo `movss`", y eso NO PRUEBA NADA para este campo: el FMIN
+    ''' no vive en `TESNPC` sino en una TABLA GLOBAL, asi que un censo de pares es <b>ciego por
+    ''' construccion</b> -- habria dicho "no se copia" aunque se copiara. Es la misma trampa que este
+    ''' mismo materializador ya describe para el `ATKT`.</para>
+    '''
+    ''' <para>La pregunta que SI contesta es «¿alguien del camino del bit 0 toca la tabla?», y se midio
+    ''' por LLAMADORES de las tres funciones de la tabla: `sub_140654DC0` &lt;- solo 0x14064F230 (el loader
+    ''' del `NPC_`); `sub_1406637B0` &lt;- 0x140650FE0 y el setter; `sub_140667430` &lt;- 0x14064EF50,
+    ''' 0x140650FE0 y el setter. Por RTTI, 0x140650FE0 es el slot 54 de `TESNPC` (`Copy`) y 0x14064EF50
+    ''' el slot 8 (un Clear). Interseccion con los callees de `sub_1406580A0` + `sub_140651470` a
+    ''' profundidad 2 (55 + 64 funciones): <b>VACIA</b>; y ninguna de las dos referencia 0x142F092B8 ni
+    ''' 0x142F092B0. Los indirectos del bloque del bit 0 son los slots 13/68/70/76 y el slot 5 de tres
+    ''' componentes -- ninguno es el 54 ni el 8.</para>
+    '''
+    ''' <para>COBERTURA DECLARADA: llamadas `E8` directas + resolucion de los tres llamadores por
+    ''' vtable. NO se siguieron las indirectas dos niveles adentro.</para>
     '''
     ''' <para>⛔ El default es `HeredaPorTraits`: una categoria nueva no necesita renglon aca, y si lo necesita
     ''' es porque mezcla campos -- que es justo lo que hay que ver.</para></summary>
+    Public Function HeredaElCanal(cat As PresetCategory, canal As String, isSse As Boolean) As Boolean
+        Select Case cat
+            Case PresetCategory.FaceTints
+                If String.Equals(canal, "SkinToneOffset", StringComparison.Ordinal) Then Return True
+                Return Not isSse
+            Case PresetCategory.FaceBoneRegions
+                If String.Equals(canal, "FacialMorphIntensity", StringComparison.Ordinal) OrElse
+                   String.Equals(canal, "HasFacialMorphIntensity", StringComparison.Ordinal) Then Return False
+                Return Not isSse
+            Case Else
+                Return HeredaPorTraits(cat, isSse)
+        End Select
+    End Function
+
     ''' <summary>⛔⛔ ¿Este canal lleva un VALOR que el bit 0 puede pisar? Es la pregunta de LA PUERTA,
     ''' y NO es la misma que <see cref="HeredaElCanal"/>.
     ''' <para>Un preset lleva, además de los valores, banderas de CONTABILIDAD DE LA APP: las `Has*` de
@@ -145,20 +173,6 @@ Public Module PresetCategories
         Select Case canal
             Case "HeadPartFormIDsIncludeRawExtras", "SseHeadPartsFiltradasPorMotor" : Return False
             Case Else : Return True
-        End Select
-    End Function
-
-    Public Function HeredaElCanal(cat As PresetCategory, canal As String, isSse As Boolean) As Boolean
-        Select Case cat
-            Case PresetCategory.FaceTints
-                If String.Equals(canal, "SkinToneOffset", StringComparison.Ordinal) Then Return True
-                Return Not isSse
-            Case PresetCategory.FaceBoneRegions
-                If String.Equals(canal, "FacialMorphIntensity", StringComparison.Ordinal) OrElse
-                   String.Equals(canal, "HasFacialMorphIntensity", StringComparison.Ordinal) Then Return False
-                Return Not isSse
-            Case Else
-                Return HeredaPorTraits(cat, isSse)
         End Select
     End Function
 

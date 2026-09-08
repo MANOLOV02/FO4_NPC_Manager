@@ -55,9 +55,17 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' asi que habia que saltear lo que el overlay habia puesto — con un booleano GRUESO por NPC: un
     ''' overlay de solo CUERPO hacia saltear TODA la cara. Ahora se materializa primero y el overlay
     ''' se estampa despues, asi que gana por llegar ultimo, campo por campo.</para></summary>
+    ''' <param name="soloCopiar">True = copiar el bucket y NADA MAS: no baja el bit ni loguea.
+    ''' <para>⛔⛔ Es lo que necesita LA BASE DEL DIBUJO. La sombra de un heredero es «su propio record con
+    ''' los campos que el bit 0 copia, traidos de la plantilla», o sea EXACTAMENTE esta copia — pero dibujar no
+    ''' desprende a nadie: si bajara el bit, el panel de Record Details mostraria al NPC como si no heredara y
+    ''' el log `[TPLT-MATERIALIZE]` se dispararia en cada repintado.</para>
+    ''' <para>⛔ Va como PARAMETRO y no como funcion aparte a proposito: asi la ley del bucket sigue teniendo
+    ''' UN solo cuerpo. Dos funciones serian dos listas de campos que mantener iguales.</para></param>
     Friend Shared Function MakeCategoryOwn(npc As NPC_Data,
                                            category As NPC_TemplateCategory,
-                                           resolution As TraitsResolution) As MaterializeOutcome
+                                           resolution As TraitsResolution,
+                                           Optional soloCopiar As Boolean = False) As MaterializeOutcome
         If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(
                npc.Record.ConfigurationTemplateFlags, category) Then Return MaterializeOutcome.NotInheriting
 
@@ -117,6 +125,9 @@ Friend NotInheritable Class NpcTemplateMaterializer
                         ' SUS perks donde el motor le habria puesto los de la plantilla.
                         npc.Record.PonerVentajas(resolution.Source.Record.Perks)
                 End Select
+                ' ⛔ `soloCopiar` = LA BASE DEL DIBUJO: copia el bucket y se va. Dibujar no desprende,
+                ' asi que no baja el bit ni loguea. Ver el parametro.
+                If soloCopiar Then Return resolution.Outcome
                 ClearFlagBit(npc, category)
                 If resolution.Outcome = MaterializeOutcome.MaterializedFromLeveledPick Then
                     ' Worth a line in the log: the actor's look is now PINNED to one leaf of a list the game
@@ -127,6 +138,9 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 End If
 
             Case MaterializeOutcome.NoSourceToLose
+                ' ⛔ La base del dibujo tampoco baja el bit aca. Hoy no llega -- `BaseDeDibujo` sale
+                ' antes cuando no hay terminal-- pero dejarlo sin guarda seria un hueco esperando un llamador.
+                If soloCopiar Then Return resolution.Outcome
                 ' Flag set but the chain has no template at all (TPLT and TPTA both 0). The engine's
                 ' CopyFromTemplate has nothing to copy either, so the NPC's own data already wins in game and
                 ' clearing the bit is a semantic no-op — safe, and it makes the record self-consistent.
@@ -352,6 +366,20 @@ Friend NotInheritable Class NpcTemplateMaterializer
         ' motor que se puede estar sin inventarle un valor.
         d.CopiarSubrecord(s, "NAM8")
         d.CopiarGrupo(s, "Destructible")
+        ' ⛔⛔ STCP (Animation Sound -> STAG), SOLO FO4 y bajo el bit 0. El loader del `NPC_` lo
+        ' consume -- 0x1406503FC `cmp ecx,0x50435453` ('STCP') / 0x140650402 `je 0x14065048C` /
+        ' 0x140650492 `call sub_140313280`-- y el bloque del bit 0 copia su componente:
+        '     0x140658451  mov rax,[rcx] / 0x140658454 call [rax+0x230]   getter en el ORIGEN
+        '     0x14065845D  lea rcx,[r14-8] / 0x140658464 call [rsi+0x28]  copia al DESTINO
+        ' (`BGSSoundTagComponent` por RTTI; su copia es 0x140257920, que guarda en una tabla global bajo
+        ' el lock 0x1430E73F8 -- la misma forma que el FMIN.)
+        ' ⛔ YO HABIA REFUTADO ESTE CANAL diciendo que `STCP` no existe en el `NPC_`. Era FALSO: barri el
+        ' bloque del esquema empezando en el `ACBS` (`WbSchemaGen_FO4.vb:1828`) y `STCP` esta en la :1827,
+        ' UNA LINEA ANTES del inicio de mi ventana. La refutacion salio de un instrumento mal apuntado, no
+        ' de una medicion. SSE no declara `STCP` en el bloque del `NPC_`.
+        If TryCast(s, Canon.NpcFO4) IsNot Nothing AndAlso TryCast(d, Canon.NpcFO4) IsNot Nothing Then
+            d.CopiarSubrecord(s, "STCP")
+        End If
         ' NAM7 (peso). Solo Skyrim: en FO4 el peso viaja por MWGT, que ya se copia mas abajo.
         ' ⛔⛔ EL `Else` NO ES DEFENSIVO: el motor copia este campo INCONDICIONALMENTE. Medido en
         ' `SkyrimSE.exe`, cuatro copias seguidas sin un solo test ni salto:
@@ -720,8 +748,12 @@ Friend NotInheritable Class NpcTemplateMaterializer
         '   SSE 0x1403C244C movzx eax,word [rsi+0x4e] / 0x1403C2450 mov [rdi+0x1e],ax
         '   FO4 0x140658695 movzx ecx,word [rax+0x80] / 0x1406586A0 mov [r14+0x18],cx
         ' Es un campo del ACBS, no un subrecord propio, asi que va por la propiedad y no por CopiarSubrecord.
+        ' ⛔⛔ SE COPIA EL VALOR Y NO SE TOCA LA PRESENCIA. `PonerPresencia(ruta, False)` es
+        ' `WbEdit.QuitarCampo`, y sobre `ACBS\Configuration\Bleedout Override` eso SACA UN MIEMBRO de un
+        ' struct de TAMANO FIJO: con un `ACBS` de version vieja -- que tiene otro layout-- el destino
+        ' quedaria con un ACBS recortado. Ningun otro campo del ACBS que copia esta funcion toca
+        ' `Presente`, y el motor tampoco: copia el u16 que el loader dejo en memoria, sea cual sea.
         d.ConfigurationBleedoutOverride = s.ConfigurationBleedoutOverride
-        d.ConfigurationBleedoutOverridePresente = s.ConfigurationBleedoutOverridePresente
 
         Dim sf4 = TryCast(s, Canon.NpcFO4), df4 = TryCast(d, Canon.NpcFO4)
         If sf4 IsNot Nothing AndAlso df4 IsNot Nothing Then

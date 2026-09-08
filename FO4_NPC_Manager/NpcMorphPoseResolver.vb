@@ -18,7 +18,7 @@ Imports OpenTK.Mathematics
 Friend NotInheritable Class NpcMorphPoseResolver
     Private ReadOnly _ctx As NpcRenderContext
     ' ⛔ Lleva el ESTADO y no un FormID -- ver el mismo campo en `NpcMaterialResolver`.
-    Private ReadOnly _overlay As Func(Of NPC_Data, MainForm.NPCVisualState, NPC_Data)
+    Private ReadOnly _overlay As Func(Of MainForm.NPCVisualState, NPC_Data)
     Private ReadOnly _hostProvider As Func(Of NpcRenderHost)
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
     ''' <summary>Resolve an LM body-overlay ("tattoo") template by (id, isFemale) — injected from
@@ -27,7 +27,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' overlay contributes no layer (engine parity: GetTemplateByName null → ForEachOverlayBySlot skips,
     ''' OverlayInterface.cpp:443-448).</summary>
     Private ReadOnly _resolveOverlayTemplate As Func(Of String, Boolean, OverlayTemplate)
-    Friend Sub New(ctx As NpcRenderContext, overlay As Func(Of NPC_Data, MainForm.NPCVisualState, NPC_Data), hostProvider As Func(Of NpcRenderHost),
+    Friend Sub New(ctx As NpcRenderContext, overlay As Func(Of MainForm.NPCVisualState, NPC_Data), hostProvider As Func(Of NpcRenderHost),
                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                    resolveOverlayTemplate As Func(Of String, Boolean, OverlayTemplate))
         _ctx = ctx
@@ -55,7 +55,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
 
         ' Get the full NPC_Data for the model source (the NPC whose face we're rendering)
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state)
+        Dim npcData = _overlay(state)
         If npcData Is Nothing Then Return Nothing
 
         ' No morph data at all? Skip — FO4 ONLY (face morphs live in MorphValues; empty ⇒ empty plan).
@@ -206,7 +206,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' Weight (NAM7) rides the Traits bucket → read it from the same source the face appearance uses.
         ' Wrap in the overlay so an Edit Body SSE weight edit (preset.SseWeight → shadow.Nam7Raw) renders
         ' live — same _overlay(...) seam BuildFaceMorphResolver uses for NAM9/NAMA.
-        Dim npcData = _overlay(_ctx.GetParsedNpc(NpcStateFactory.FaceAppearanceSourceFormID(state)), state)
+        Dim npcData = _overlay(state)
         If npcData Is Nothing Then Return Nothing
         If npcData.Game <> Config_App.Game_Enum.Skyrim Then Return Nothing
         ' Sin NAM7 el peso es 100: es el valor con el que el motor dibuja un actor que no lo declara.
@@ -816,7 +816,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If state Is Nothing Then Return Nothing
 
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state)
+        Dim npcData = _overlay(state)
         Dim npcFo4 = TryCast(npcData?.Record, Canon.NpcFO4)
         If npcFo4 Is Nothing OrElse npcFo4.FaceMorphs.Count = 0 Then Return Nothing
 
@@ -844,7 +844,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If state Is Nothing Then Return (1.0F, 1.0F)
 
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state)
+        Dim npcData = _overlay(state)
         If npcData Is Nothing Then Return (1.0F, 1.0F)
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
@@ -922,7 +922,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If state Is Nothing Then Return Nothing
 
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state)
+        Dim npcData = _overlay(state)
         If npcData Is Nothing Then Return Nothing
 
         ' Use state.WeightX (resolved by ApplyRaceFallbacks) — these are post-sentinel-substitution

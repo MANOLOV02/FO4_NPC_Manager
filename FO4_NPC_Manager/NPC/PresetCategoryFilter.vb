@@ -88,6 +88,36 @@ Public Module PresetCategoryFilter
         Next
         CompletarCanalesQueElMotorNoEscribe(p, source, targetRaw, baseline, options, isSse)
 
+        ' ⛔⛔ LO QUE EL USUARIO NO TILDO Y EL BASELINE NO DECLARA, QUEDA SIN DECLARAR.
+        ' `Revert` deja la categoria con `Has* = True` y el valor del record, y desde que el record que se
+        ' le pasa es el EFECTIVO (X con el bucket de su plantilla) eso convertia una COPIA de la plantilla
+        ' en "decision del usuario". Dos consecuencias, las dos malas:
+        '   - el NPC dejaba de SEGUIR a su plantilla: cambiabas la cara de la plantilla y el seguia
+        '     mostrando la vieja, porque la suya ya contaba como authoreada;
+        '   - y al guardar sin desprender, el ESP se llevaba PNAM/MSDK/TETI de la plantilla con el bit 0
+        '     ARRIBA -- bytes que el usuario no pidio y que el motor pisa al cargar.
+        ' Sin declarar, la BASE los provee, que es de donde tienen que salir.
+        ' ⛔ Se limpia con la tabla de canales, no con una lista a mano: la sede de "que campos tiene esta
+        ' categoria" es `PorCanal` y no puede haber una segunda.
+        Dim enBlanco As New LooksmenuLoader.LooksmenuPreset()
+        ' ⛔⛔ LA PREGUNTA ES "EL PREVIO DECLARA ESTA CATEGORIA", y la sede de esa pregunta es
+        ' `Describe` -- la MISMA que arma las tildes que el usuario ve. Aca decia `MotorEscribe`, que responde
+        ' OTRA pregunta (que canales escribe el cargador del motor al aplicar un preset) y que en Skyrim
+        ' devuelve True SIEMPRE por una linea al tope: con cualquier overlay previo la limpieza no corria
+        ' NUNCA en ese juego, o sea que el defecto que este bloque cierra seguia vivo desde el segundo
+        ' preset. En Fallout pasaba lo mismo por el `Case Else`. Dos preguntas con una sola funcion.
+        Dim declaradasPorElPrevio = If(baseline Is Nothing,
+                                       New Dictionary(Of PresetCategory, PresetCategories.CategoryInfo)(),
+                                       PresetCategories.Describe(baseline, isSse))
+        For Each cat In AllCategories
+            If Not PresetCategories.HeredaPorTraits(cat, isSse) Then Continue For
+            If options.Value(cat) Then Continue For
+            If declaradasPorElPrevio.ContainsKey(cat) Then Continue For
+            PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
+                                     escribirCanal(p, leerCanal(enBlanco))
+                                 End Sub)
+        Next
+
         ' Replacing a main-type parent (e.g. a hair swap) orphans the target's raw Misc parts (hairlines):
         ' record them HERE, at the apply point, so Save drops them the same way Edit Face does. Empty when
         ' the parts were preserved or nothing was replaced, so lashes/AO/wet on untouched parents are safe.
@@ -642,31 +672,6 @@ Public Module PresetCategoryFilter
             Dim f = CampoDelPreset(nombre)
             accion(nombre, Function(p) f.GetValue(p), Sub(p, v) f.SetValue(p, v))
         Next
-    End Sub
-
-    ''' <summary>⛔⛔ `Revert`, PERO SOLO DE LOS CANALES QUE EL BUCKET COPIA. Es lo que necesita el
-    ''' overlay de dibujo de un heredero: la categoria `FaceTints` de SSE tiene que traer el QNAM del terminal
-    ''' y NO sus capas, y `FaceBoneRegions` de FO4 las regiones y NO la intensidad.
-    '''
-    ''' <para>⛔ No reimplementa `Revert`: lo CORRE sobre un clon y despues copia al destino unicamente los
-    ''' canales heredables, leyendo la lista de la tabla de `PorCanal`. Por eso no nace una segunda ley -- las
-    ''' reglas propias de cada canal (el tri-estado del FTST, el centinela de NAMA, el `PickSingle` del MWGT)
-    ''' siguen viviendo en `Revert`, que es su unica sede. La equivalencia "Revert escribe exactamente los
-    ''' canales de la tabla" ya se afirma por medicion; esta funcion se apoya en esa misma medicion.</para>
-    '''
-    ''' <para>Con todos los canales heredables el resultado es identico a `Revert`.</para></summary>
-    Friend Sub RevertirLoHeredable(p As LooksmenuLoader.LooksmenuPreset,
-                                   cat As PresetCategory,
-                                   raw As NPC_Data,
-                                   baseline As LooksmenuLoader.LooksmenuPreset,
-                                   isSse As Boolean)
-        If p Is Nothing Then Return
-        Dim delTerminal = LooksmenuLoader.ClonePreset(p)
-        Revert(delTerminal, cat, raw, baseline, isSse)
-        PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
-                                 If Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
-                                 escribirCanal(p, leerCanal(delTerminal))
-                             End Sub)
     End Sub
 
     ''' <summary>El NOMBRE del primer canal que difiere, o Nothing. Es la forma que necesita un gate para poder

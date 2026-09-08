@@ -1072,7 +1072,16 @@ Public Class MainForm
         ''' reemplazan la entrada del diccionario SIN re-renderizar— lo dejarían dibujando un preset viejo. La
         ''' decisión sale de <see cref="TraitsSourceFormID"/>, sin centinela.</para>
         ''' <para>⚠️ Es de SÓLO LECTURA para el que lo recibe: mutarlo le cambiaría el dibujo a la plantilla.</para></summary>
-        Public DibujoHeredado As LooksmenuLoader.LooksmenuPreset = Nothing
+        ''' <summary>⛔⛔ LA BASE: el record con el que se DIBUJA este NPC, o sea lo que el juego deja en
+        ''' memoria para el — su propio record con los campos del bit 0 traidos de la plantilla.
+        ''' <para>Reemplaza a `DibujoHeredado`, que era un PRESET. Ese era el error de fondo del corte 2: se
+        ''' unifico QUE overlay se aplica y no SOBRE QUE RECORD se aplica, asi que once consumidores seguian
+        ''' pidiendo el record de la plantilla y armando su propia foto. Con la base aca, la herencia se resuelve
+        ''' en UN lugar y el overlay vuelve a ser la autoria pelada.</para>
+        ''' <para>⛔ Es de SOLO LECTURA. `CloneVisualState` la comparte por REFERENCIA, y el horneado despacha en
+        ''' paralelo: escribirle es una carrera. Nadie recibe esta instancia — el que necesite componer sobre ella
+        ''' recibe una copia.</para></summary>
+        Public RecordBase As NPC_Data = Nothing
     End Class
 
     Private ReadOnly Property CurrentPreviewMode As PreviewMode
@@ -9154,7 +9163,9 @@ Public Class MainForm
             ' bundle is otherwise applied only to the runtime shadow; without this call the JSON
             ' could be loaded, the preview would render the template HDPTs, but exporting to ESP
             ' would emit raw NPC PNAM (no headRear swap).
-            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, npc.Record.ConfigurationFlagsFemale, AddressOf ResolveLmSkinTemplate)
+            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, npc.Record.ConfigurationFlagsFemale,
+                                                     AddressOf ResolveLmSkinTemplate,
+                                                     RecordEfectivoParaAutoria(npcFormID, npc))
             ' El ColorID de cada capa de paleta NO se re-deriva del Color: el motor lo VALIDA contra la raza
             ' (f4ee CharGenInterface.cpp:512-527 — índice sin plantilla ⇒ capa salteada; ColorID sin match ⇒ el
             ' primer color de la plantilla). La ley vive en NpcRecordOverlay.ValidarCapasDeTinteContraLaRaza y se
@@ -9290,7 +9301,10 @@ Public Class MainForm
             ' non-overlay path. Header fields (FormID/EditorID/Plugin) are preserved by the shallow
             ' copy so the panel still identifies the record correctly.
             Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(baseState)
-            Dim effective = AplicarOverlayDeAutoria(_ctx.GetParsedNpc(modelFormID), baseState.RootNpcFormID)
+            ' ⛔ El panel muestra LO QUE SE VE, asi que compone con el overlay de DIBUJO. Con la autoria
+            ' pelada, en el transitorio (editor abierto, preview de un Load) el panel decia una cosa y el
+            ' render mostraba otra.
+            Dim effective = AplicarOverlayDeDibujo(baseState)
             PopulateRecordDetails(If(effective, npc))
 
             PopulateOutfitCombo()
@@ -9329,9 +9343,15 @@ Public Class MainForm
     ''' `OverlayDeDibujo` cae a la bolsa VIVA de overlays. La diferencia es el heredero, y es la que hacia
     ''' que el tono de piel del cuerpo saliera de los tintes del terminal y la cara compuesta de los del
     ''' root.</para></summary>
-    Friend Function AplicarOverlayDeDibujo(raw As NPC_Data, state As NPCVisualState) As NPC_Data
-        If state Is Nothing Then Return raw
-        Return NpcRecordOverlay.AplicarOverlay(raw,
+    Friend Function AplicarOverlayDeDibujo(state As NPCVisualState) As NPC_Data
+        ' ⛔⛔ RECIBE SOLO EL ESTADO, y eso es la mitad del arreglo. Mientras aceptaba un record por
+        ' parametro, cada consumidor podia pasarle el equivocado -- y once le pasaban
+        ' `GetParsedNpc(FaceAppearanceSourceFormID(state))`, o sea el record de la PLANTILLA. Con un solo
+        ' argumento no hay forma de equivocarse: la base es la del estado y no hay otra.
+        ' ⛔ `FaceAppearanceSourceFormID` sigue vivo, pero para la OTRA pregunta: que archivos de FaceGen
+        ' carga el juego. Esa sigue siendo la plantilla mientras el NPC hereda.
+        If state Is Nothing OrElse state.RecordBase Is Nothing Then Return Nothing
+        Return NpcRecordOverlay.AplicarOverlay(state.RecordBase,
                                                NpcRecordOverlay.OverlayDeDibujo(state, _appliedPresets),
                                                state.RootNpcFormID,
                                                _pluginManager, AddressOf ResolveLmSkinTemplate,
@@ -9536,16 +9556,20 @@ Public Class MainForm
         ' ⛔ Si la cadena NO resuelve no hay de donde sacar lo que se ve: se cae a la comparacion vieja,
         ' que es conservadora (dice "cambio" de mas) y termina en el fallo cerrado de mas abajo. Lo que NO
         ' se hace es fallar cerrado cuando no cambio nada: eso convertiria un OK inocuo en un error.
+        ' ⛔⛔ "LO QUE SE VEIA" SALE DE LA BASE, no de una segunda derivacion. Antes esto revertia desde
+        ' el terminal con `RevertirLoHeredable`, o sea que caminaba la cadena por segunda vez y aplicaba su
+        ' propia mezcla por canal: la puerta comparaba contra algo que NO era lo que estaba en pantalla.
+        ' La base ya trae lo heredable de la plantilla Y lo propio de X, asi que un `Revert` normal alcanza.
         Dim dibujoAnterior As LooksmenuLoader.LooksmenuPreset = anterior
-        If resolvio AndAlso resol.Source IsNot Nothing Then
-            Dim delTerminal = NpcRecordOverlay.OverlayDeAutoria(resol.Source.Record.FormID, _appliedPresets)
+        Dim laBase = RecordEfectivoParaAutoria(npcFormID)
+        If laBase IsNot Nothing Then
             dibujoAnterior = If(anterior Is Nothing,
                                 New LooksmenuLoader.LooksmenuPreset(),
                                 LooksmenuLoader.ClonePreset(anterior))
             For Each cat In PresetCategories.AllCategories
                 If Not PresetCategories.HeredaPorTraits(cat, esSse) Then Continue For
                 If Not PresetCategories.AppliesToGame(cat, esSse) Then Continue For
-                PresetCategoryFilter.RevertirLoHeredable(dibujoAnterior, cat, resol.Source, delTerminal, esSse)
+                PresetCategoryFilter.Revert(dibujoAnterior, cat, laBase, anterior, esSse)
             Next
         End If
 
@@ -9712,6 +9736,24 @@ Public Class MainForm
             Return False
         End If
         resol = NpcTemplateMaterializer.CongelarResolucion(probe)
+        ' ⛔⛔ SE CONGELA EL TERMINAL CON SU OVERLAY, no crudo. El aviso del desprendimiento promete
+        ' *"it keeps a copy of what you are seeing now"*, y lo que se ve de un terminal que tiene overlay
+        ' propio en la sesion -- porque el usuario le cargo un preset a EL-- es el terminal CON ese overlay.
+        ' Congelandolo crudo, la siembra de X no coincidia con lo que X mostraba y, al aceptar, la cara de X
+        ' saltaba a la version VIEJA del terminal.
+        ' ⛔ El motor no tiene opinion sobre un overlay que todavia no se guardo, asi que la ley la pone el
+        ' contrato de la app. Y va ACA porque esta es LA sede que congela: `RecordEfectivoParaAutoria` usa
+        ' esta misma resolucion, asi que la siembra y el snapshot no pueden separarse.
+        If resol.Source IsNot Nothing Then
+            Dim delTerminal = NpcRecordOverlay.OverlayDeAutoria(resol.Source.Record.FormID, _appliedPresets)
+            If delTerminal IsNot Nothing Then
+                Dim conOverlay = NpcRecordOverlay.AplicarOverlay(resol.Source, delTerminal,
+                                                                resol.Source.Record.FormID,
+                                                                _pluginManager, AddressOf ResolveLmSkinTemplate,
+                                                                AddressOf _ctx.ParseRaceCanonCached)
+                If conOverlay IsNot Nothing Then resol.Source = conOverlay
+            End If
+        End If
         hayQueGuardarla = True
         Return True
     End Function
@@ -9747,6 +9789,17 @@ Public Class MainForm
         ' parse fresco CON EL BUCKET VACIO: Edit Face sembraba de ahi con `Has*=True` y volvia el borrado
         ' de la cara, un gesto mas tarde. La cache es la que la app DIBUJA y la que la puerta MUTA; es la
         ' unica que puede contestar. `propio` queda como respaldo para cuando la cache no tiene nada.
+        ' ⛔⛔ SI EL ESTADO YA TIENE LA BASE, ES ESA. Re-calcularla aca vuelve a caminar la cadena, y
+        ' un segundo caminante puede elegir otra hoja de una lista nivelada que la que el estado mostro:
+        ' saldria la cara de un NPC sobre el cuerpo de otro. Una resolucion, una base.
+        If _renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing AndAlso
+           _renderHost.LastRenderedState.RootNpcFormID = rootFid AndAlso
+           _renderHost.LastRenderedState.RecordBase IsNot Nothing Then
+            ' ⛔ COPIA: la base del estado es compartida y de solo lectura. El que siembra un editor o
+            ' filtra un preset le escribe encima.
+            Return _renderHost.LastRenderedState.RecordBase.Copia()
+        End If
+
         Dim npc = If(_ctx.GetParsedNpc(rootFid), propio)
         If npc Is Nothing OrElse npc.Record Is Nothing Then Return npc
         If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
@@ -9764,6 +9817,48 @@ Public Class MainForm
         Dim copia = npc.Copia()
         NpcTemplateMaterializer.MakeCategoryOwn(copia, NPC_TemplateCategory.Traits, resol)
         Return copia
+    End Function
+
+    ''' <summary>⛔⛔ EL MISMO AVISO DE LA PUERTA, para el desprendimiento que NO pasa por el overlay.
+    ''' <para>El NPC Editor baja el bit cuando el usuario cambia Race, Voice, OBTS o APPR — no hace falta que
+    ''' destilde `Use Traits`. Eso es desprendimiento IMPLICITO, la clase exacta para la que se decidio H-1.10,
+    ''' y hasta ahora pasaba MUDO: se cambiaba una voz y el NPC dejaba de heredar la cara para siempre.</para>
+    ''' <para>⛔ Destildar `Use-X` a mano NO pasa por aca y esta bien: ese gesto es EXPLICITO y ya tiene su
+    ''' preflight y su cartel. El aviso es para lo implicito.</para>
+    ''' <para>⛔ Reusa el diálogo, el «no volver a avisar» de la sesion y la costura de arnes de la puerta:
+    ''' no nace un segundo dueño del aviso, nace un segundo LLAMADOR.</para></summary>
+    ''' <returns>True si se puede seguir. False = el usuario dijo que no.</returns>
+    Friend Function ConfirmarDesprendimientoDeCategorias(npcFormID As UInteger,
+                                                        cats As IEnumerable(Of NPC_TemplateCategory)) As Boolean
+        If cats Is Nothing Then Return True
+        Dim npc = _ctx.GetParsedNpc(npcFormID)
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return True
+        ' Solo avisa si de verdad hay algo que desprender: una categoria que el NPC ya posee no cambia nada.
+        Dim hayHerencia = cats.Any(Function(c) NpcTemplateHelpers.HasTemplateFlag(
+                                       npc.Record.ConfigurationTemplateFlags, c))
+        If Not hayHerencia Then Return True
+        If _noAvisarDesprendimiento Then Return True
+
+        Dim etiqueta = NpcLabelParaAviso(npc, npcFormID)
+        If ConfirmarDesprendimientoParaArnes IsNot Nothing Then Return ConfirmarDesprendimientoParaArnes(etiqueta)
+        Using dlg As New DetachWarningDialog(etiqueta)
+            Dim siguio = (dlg.ShowDialog(Me) = DialogResult.Yes)
+            If siguio AndAlso dlg.NoVolverAAvisar Then _noAvisarDesprendimiento = True
+            Return siguio
+        End Using
+    End Function
+
+    ''' <summary>⛔ Envoltorio: la ley vive en `NpcRecordOverlay`, que es un modulo y no tiene estado.
+    ''' Aca sólo se le pasan las dependencias que MainForm ya tiene.</summary>
+    Friend Function SombraDelTerminal(terminal As NPC_Data) As NPC_Data
+        Return NpcRecordOverlay.SombraDelTerminal(terminal, _appliedPresets, _pluginManager,
+                                                  AddressOf ResolveLmSkinTemplate,
+                                                  AddressOf _ctx.ParseRaceCanonCached)
+    End Function
+
+    ''' <summary>⛔ Envoltorio. Ver `NpcRecordOverlay.BaseDeDibujo`.</summary>
+    Friend Function BaseDeDibujo(root As NPC_Data, sombraDelTerminal As NPC_Data) As NPC_Data
+        Return NpcRecordOverlay.BaseDeDibujo(root, sombraDelTerminal)
     End Function
 
     ''' <summary>Store (or replace) the NPC's authored record override. An empty override is dropped so it never
@@ -9893,7 +9988,9 @@ Public Class MainForm
         Dim raw = _ctx.GetParsedNpc(modelFormID)
         If raw Is Nothing Then Return Nothing
         ' Capture rendered state — overlay-on-top-of-template, just like the renderer reads it.
-        Dim effective = AplicarOverlayDeAutoria(raw, state.RootNpcFormID)
+        ' ⛔ Y "just like the renderer" es el overlay de DIBUJO: con la autoria pelada, Copy Look sobre un
+        ' heredero copiaba la autoria VACIA de X en vez de la cara que estaba en pantalla.
+        Dim effective = AplicarOverlayDeDibujo(state)
 
         Dim preset As New LooksmenuLoader.LooksmenuPreset With {
             .SourcePath = $"<clipboard from {raw.EditorID}>",
@@ -10007,7 +10104,8 @@ Public Class MainForm
         ' PNAM at Save ESP time. Without this, the clipboard would carry SkinTemplateId but its
         ' headRear swap would only ever exist in the runtime shadow, dropping out of any ESP
         ' the destination NPC writes after a paste.
-        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(preset, state.IsFemale, AddressOf ResolveLmSkinTemplate)
+        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(preset, state.IsFemale, AddressOf ResolveLmSkinTemplate,
+                                                     state.RecordBase)
 
         ' Tints: se saltean las entradas Value=0. El ORDEN importa, porque determina el orden de composicion de
         ' capas en render. El orden natural del record es el del ESP (TETI/TEND), pero el motor in-game reordena
@@ -10452,7 +10550,8 @@ Public Class MainForm
         ' resolved through ApplyRaceFallbacks + overlay) and from the post-overlay NPC_Data
         ' for MRSV.
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(_renderHost.LastRenderedState)
-        Dim effectiveNpc = AplicarOverlayDeAutoria(_ctx.GetParsedNpc(modelNpcFormID), _renderHost.LastRenderedState.RootNpcFormID)
+        ' ⛔ La siembra del editor sale de LO QUE SE VE, igual que el resto: ver `AplicarOverlayDeDibujo`.
+        Dim effectiveNpc = AplicarOverlayDeDibujo(_renderHost.LastRenderedState)
         Dim initial As New EditBody_Form.InitialValues With {
             .Thin = _renderHost.LastRenderedState.WeightThin,
             .Muscular = _renderHost.LastRenderedState.WeightMuscular,

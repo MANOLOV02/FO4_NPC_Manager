@@ -61,9 +61,13 @@ Friend NotInheritable Class NpcSkinLivePreview
     ''' re-pregunta aca: `SkinOverride` es una categoria HEREDABLE, asi que para un heredero la autoria del
     ''' root y el dibujo son presets DISTINTOS, y preguntar por separado hacia que este camino rapido pintara
     ''' una piel y el render completo otra.</param>
-    Private Function RecomputeEffectiveSkinFormID(rootNpcFormID As UInteger, rawNpcFormID As UInteger,
+    ''' <param name="laBase">⛔⛔ EL RECORD CON EL QUE SE DIBUJA, que viene del estado. Antes este
+    ''' camino re-parseaba el record de la PLANTILLA (`FaceAppearanceSourceFormID`) y componia sobre el: era
+    ''' una SEGUNDA derivacion de la herencia, y dos derivaciones pueden elegir hojas distintas de una lista
+    ''' nivelada -- la piel de un NPC sobre el cuerpo de otro. La base ya trae lo que el bit 0 copia.</param>
+    Private Function RecomputeEffectiveSkinFormID(rootNpcFormID As UInteger, laBase As NPC_Data,
                                                   preset As LooksmenuLoader.LooksmenuPreset) As UInteger
-        Dim raw = _ctx.GetParsedNpc(rawNpcFormID)
+        Dim raw = laBase
         If raw Is Nothing Then Return 0UI
         Dim sombra = NpcRecordOverlay.AplicarOverlay(raw, preset, rootNpcFormID, _ctx.PluginManager,
                                                      New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
@@ -72,8 +76,12 @@ Friend NotInheritable Class NpcSkinLivePreview
         ' El root aporta la IDENTIDAD; si no se puede parsear, la sombra sirve de si misma -- el unico campo
         ' que se lee de aca es la piel, que no depende de la identidad.
         Dim root = If(_ctx.GetParsedNpc(rootNpcFormID), sombra)
+        ' ⛔ La base de este camino rapido es `raw`: el record sobre el que el llamador compuso la
+        ' sombra. Se DECLARA en vez de deducirse, que es lo que hacia que este camino pintara una piel y
+        ' el render completo otra.
         Dim proy = NpcStateFactory.ProyectarEstado(sombra, root,
-                                                   NpcStateFactory.CreateOwnInventoryState(sombra), preset)
+                                                   NpcStateFactory.CreateOwnInventoryState(sombra), preset,
+                                                   raw)
         ' La caida a RACE.WNAM es UNA rama de esto, no una ley aparte.
         NpcStateResolver.ApplyRaceFallbacks(proy.Estado, proy.Traits, _ctx.PluginManager)
         Return proy.Estado.SkinFormID
@@ -169,10 +177,9 @@ Friend NotInheritable Class NpcSkinLivePreview
         ' Sync host state's SkinFormID with the overlay BEFORE resolving candidates. The host
         ' state was set up at the previous render; the overlay (where the combo writes) is the
         ' live source of truth. Without this the candidates resolve against the OLD skin.
-        Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(host.LastRenderedState)
         Dim oldSkinFid = host.LastRenderedState.SkinFormID
         host.LastRenderedState.SkinFormID = RecomputeEffectiveSkinFormID(
-            host.LastRenderedState.RootNpcFormID, modelFormID, overlayPreset)
+            host.LastRenderedState.RootNpcFormID, host.LastRenderedState.RecordBase, overlayPreset)
         Dim newSkinFid = host.LastRenderedState.SkinFormID
 
         Dim newCandidates = ResolveBodySkinCandidates(host.LastRenderedState)

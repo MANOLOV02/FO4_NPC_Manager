@@ -797,14 +797,18 @@ Public Module FaceGenBuilder
         ' que toque otro campo, hay que copiarlo aca.
         ' WYSIWYG: si el usuario eligio un SkinTemplate de LooksMenu, el bake tiene que aplicar ese bundle igual
         ' que el render, o el NIF horneado diverge del WNAM que el writer pone en el ESP.
-        ' ⛔ ACA NO SE CAMINA LA CADENA DE PLANTILLAS, Y ESO ES CORRECTO - no "arreglarlo". El CK nunca exporta
-        ' FaceGen para un NPC que hereda "Use Traits" (medido en los dos juegos), asi que sembrar el state desde
-        ' el traits-source fabricaria un artefacto que el CK no produce jamas. El flujo legitimo es el inverso y
-        ' ya existe: NpcTemplateMaterializer.MakeCategoryOwn(Traits). Ver 40-bake-reglas-comunes.
+        ' ⛔⛔ CORREGIDO: aca decia que NO se camina la cadena "y eso es correcto". Ya no es cierto --
+        ' por decision del usuario el horneado arranca de LA MISMA BASE que el dibujo, asi que
+        ' `ResolveOverlaidNpcData` SI la camina. Lo que sigue en pie del parrafo viejo es el motivo por el
+        ' que no se siembra el estado DESDE la plantilla: el CK nunca exporta FaceGen para un NPC que
+        ' hereda "Use Traits" (medido en los dos juegos). La base no es eso: es el record PROPIO del NPC
+        ' con los campos que el bit 0 copia. Ver 40-bake-reglas-comunes.
         ' Arranca RecordResolve: overlay del NPC, mapa de HDPT, BakeState y huesos del actor (ver BakePhase).
         Dim tRec = Stopwatch.GetTimestamp()
+        Dim baseDelHorneado As NPC_Data = Nothing
         Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
-            npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver)
+            npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver,
+            Nothing, baseDelHorneado)
         Dim state As MainForm.NPCVisualState = Nothing
         If npcData IsNot Nothing Then
             ' .SseHairColorRgb = SSE RaceMenu absolute hair tint. Sin esto el bake resolvía el pelo por el
@@ -822,9 +826,14 @@ Public Module FaceGenBuilder
             ' completo" cambiaria BYTES HORNEADOS.
             ' ⛔ Y el bake sigue proyectando desde su record PROPIO, sin caminar la cadena: eso es
             ' correcto y este cambio no lo toca.
+            ' ⛔⛔ LA BASE DEL HORNEADO. Sin esto el estado del bake nacia sin record y los tres
+            ' compositores -interfaz, linea de comandos y horneado masivo- devolvian Nothing: el color de
+            ' piel del material salia del QNAM crudo en vez de la capa de tono, o sea BYTES HORNEADOS
+            ' distintos de lo que el preview mostraba.
             Dim proy = NpcStateFactory.ProyectarEstado(npcData, npcData,
                                                        NpcStateFactory.CreateOwnInventoryState(npcData),
-                                                       presetDeDibujo:=Nothing)
+                                                       presetDeDibujo:=Nothing,
+                                                       recordBase:=If(baseDelHorneado, npcData))
             state = proy.Estado
             ' `ModelSourceFormID` es dato del BAKE, no de la proyeccion: el render lo deja en 0.
             state.ModelSourceFormID = npcFormID

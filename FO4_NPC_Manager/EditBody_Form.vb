@@ -76,6 +76,10 @@ Public Class EditBody_Form
     ' "the way the NPC looked when Edit Body opened", scoped per-tab so the user can throw away
     ' one tab's edits without touching the other.
     Private ReadOnly _initialSeed As InitialValues
+    ' ⛔ La foto de la siembra EN FORMA DE PRESET. `_initialSeed` guarda los valores de los controles;
+    ' esta guarda el overlay tal como quedo despues de sembrarlo, que es contra lo que se compara al
+    ' aceptar para saber que toco el usuario. Ver `ProyectarSobreElOverlay`.
+    Private _seedPreset As LooksmenuLoader.LooksmenuPreset
     Private ReadOnly _initialWnamFormID As UInteger
 
 
@@ -256,6 +260,9 @@ Public Class EditBody_Form
         ' record that never had one. Latent until now because the Edit Body button was unreachable for those
         ' NPCs; making Height always available (BodyEditAvailability.HasHeight) exposes it.
         SeedOverlayFromInitial(p, initial, seedMrsv:=(Not _isSSE) AndAlso hasMrsv)
+        ' ⛔ La foto se toma DESPUES de sembrar: es contra esto que se compara al aceptar
+        ' para saber que toco el usuario. Ver `ProyectarSobreElOverlay`.
+        _seedPreset = LooksmenuLoader.ClonePreset(p)
 
         ' Height rides the NpcRecordOverride, NOT the LooksMenu overlay: NAM6/NAM4 are plain record
         ' subrecords the preset never carries, and the override is applied at Save AFTER the round-trip
@@ -502,7 +509,9 @@ Public Class EditBody_Form
         NpcRecordOverlay.RetractLmTemplateBundleFromPreset(p)
 
         p.SkinTemplateId = _lmTemplateComboIds(idx)
-        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(p, _npcIsFemale, AddressOf _mainForm.ResolveLmSkinTemplate_Friend)
+        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(p, _npcIsFemale,
+                                                     AddressOf _mainForm.ResolveLmSkinTemplate_Friend,
+                                                     _mainForm.RecordEfectivoParaAutoria(_rootNpcFormID))
         Await TriggerSkinChangeReload()
     End Sub
 
@@ -591,6 +600,43 @@ Public Class EditBody_Form
 
     Private Shared Function ClonePreset(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
         Return LooksmenuLoader.ClonePreset(p)
+    End Function
+
+    ''' <summary>⛔⛔ AL ACEPTAR SE PROYECTA SOLO LO QUE EL USUARIO TOCO.
+    ''' <para>La copia de trabajo se siembra ENTERA al abrir —el editor tiene que poder dibujar— y con todos
+    ''' los `Has*` en True. Si eso viajara tal cual al overlay, «abrir y aceptar sin tocar nada» declararia
+    ''' TODO: dispararia el aviso de desprendimiento sobre un gesto vacio y le meteria al ESP valores que el
+    ''' usuario no eligio.</para>
+    ''' <para>⛔ La marca de posesion NO se saca: es la que expresa «lo vacie a proposito». Lo que cambia es
+    ''' QUIEN la pone — antes la siembra, ahora un gesto.</para>
+    ''' <para>⛔ Se compara POR VALOR contra la siembra y no con una lista de «categorias tocadas»: una
+    ''' lista obliga a que cada handler se acuerde de marcarse, que es la clase de defecto que ya obligo a
+    ''' escribir un censo. Y de paso resuelve «lo toque y lo deje igual»: no difiere, no se proyecta.</para></summary>
+    ''' <returns>True si algo del usuario llego al overlay. ⛔ El llamador lo necesita: sin esto,
+    ''' "abrir y aceptar sin tocar nada" ESCRIBIA igual la entrada del diccionario -vacia- y todo el que
+    ''' pregunta por la PRESENCIA de la clave (el menu Reset, el archivo lateral, la marca de cambios sin
+    ''' guardar) veia un NPC con overlay por un gesto que no cambio nada.</returns>
+    Private Function ProyectarSobreElOverlay() As Boolean
+        Dim trabajo = Preset
+        If trabajo Is Nothing OrElse _seedPreset Is Nothing Then Return False
+        Dim proyectado = If(_priorPreset Is Nothing,
+                            New LooksmenuLoader.LooksmenuPreset(),
+                            LooksmenuLoader.ClonePreset(_priorPreset))
+        Dim hubo As Boolean = False
+        For Each cat In PresetCategories.AllCategories
+            If Not PresetCategories.AppliesToGame(cat, _isSSE) Then Continue For
+            If PresetCategoryFilter.PrimerCanalDistinto(_seedPreset, trabajo, cat, _isSSE) Is Nothing Then Continue For
+            hubo = True
+            PresetCategoryFilter.PorCanal(cat, _isSSE,
+                                          Sub(nombre, leerCanal, escribirCanal)
+                                              escribirCanal(proyectado, leerCanal(trabajo))
+                                          End Sub)
+        Next
+        ' ⛔ Si no hubo gesto Y no habia overlay previo, no se crea la entrada. Con overlay previo se
+        ' reescribe igual: el usuario pudo haber apretado Reset, que es un gesto y devuelve la siembra.
+        If Not hubo AndAlso _priorPreset Is Nothing Then Return False
+        _appliedPresets(_rootNpcFormID) = proyectado
+        Return hubo
     End Function
 
     Private ReadOnly Property Preset As LooksmenuLoader.LooksmenuPreset
@@ -1513,15 +1559,30 @@ Public Class EditBody_Form
         Await TriggerSkinChangeReload()
     End Function
 
-    ''' <summary>Wipe all BodySlide sliders to 0 (no PIRT vertex morph applied). Prior behaviour
-    ''' of the (now-renamed) OnResetBodySlide handler.</summary>
+    ''' <summary>⛔⛔ Vuelve los sliders de BodySlide A COMO ESTABAN AL ABRIR, igual que los otros
+    ''' quince `Reset*`.
+    ''' <para>DECIA "Wipe all BodySlide sliders to 0", y era el unico de los dieciseis que vaciaba en vez de
+    ''' volver a la foto: un resto del handler `OnResetBodySlide`, que se renombro adentro de esta familia y
+    ''' se quedo con la semantica vieja. Con el mismo boton significando dos cosas distintas segun la
+    ''' seccion, el usuario no puede saber cual le toca.</para>
+    ''' <para>⛔ Y desde que el editor proyecta al overlay solo lo que difiere de la siembra, vaciar a cero
+    ''' dejaba la categoria distinta de la siembra sin tocar su marca de posesion: se proyectaba como "la
+    ''' vacie a proposito" y los morfos se perdian al guardar. Vaciar sigue siendo expresable -- se arrastran
+    ''' los sliders a cero, que es un gesto y se declara como tal.</para></summary>
     Private Sub ResetBodySlideSection()
         Dim p = Preset
         p.BodyMorphSliders.Clear()
+        If _seedPreset IsNot Nothing AndAlso _seedPreset.BodyMorphSliders IsNot Nothing Then
+            For Each kv In _seedPreset.BodyMorphSliders
+                p.BodyMorphSliders(kv.Key) = kv.Value
+            Next
+        End If
         _suspendEvents = True
         Try
             For Each kv In _bodySlideBars
-                kv.Value.Value = 0R
+                Dim v As Double = 0R
+                If p.BodyMorphSliders.ContainsKey(kv.Key) Then v = CDbl(p.BodyMorphSliders(kv.Key))
+                kv.Value.Value = v
             Next
         Finally
             _suspendEvents = False
@@ -3505,11 +3566,15 @@ Public Class EditBody_Form
     End Sub
 
     Private Sub OnOk(sender As Object, e As EventArgs)
+        ' ⛔ Al overlay va SOLO lo que el usuario toco. Ver `ProyectarSobreElOverlay`.
+        Dim hubo = ProyectarSobreElOverlay()
         ' Height is the one field here that is NOT carried by the live LooksMenu overlay — commit it now,
         ' before the dialog result is set, so a Cancel/X path (which only rolls back the overlay) writes nothing.
         RegisterHeightOverride()
         ' Live edits already applied to the overlay; flag MainForm so it reloads its preview.
-        HasUncommittedChanges = True
+        ' ⛔ Solo si hubo gesto: marcar siempre convertia "abrir y aceptar" en un cambio sin guardar.
+        ' La altura va aparte porque no viaja en el overlay: `RegisterHeightOverride` ya decide sola.
+        HasUncommittedChanges = hubo
         DialogResult = DialogResult.OK
         Close()
     End Sub

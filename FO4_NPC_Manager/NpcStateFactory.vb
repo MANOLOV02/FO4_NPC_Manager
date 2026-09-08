@@ -185,14 +185,32 @@ Friend NotInheritable Class NpcStateFactory
     ''' llamador de variantes) y los dos de `Loadout*` (los escribe solo `MainForm`, sobre un clon).
     ''' El A/B compara los 30 por REFLEXION: si manana aparece un campo 31 y esta funcion no lo
     ''' escribe, el gate lo ve.</para></summary>
+    ''' <param name="traitsSourceFid">⛔⛔ EL TERMINAL DE LA CADENA, dicho por el que ya lo camino.
+    ''' <para>Antes esto se DEDUCIA de `npcData`, y funcionaba por accidente: la sombra ERA el record de la
+    ''' plantilla, asi que preguntarle "de quien sos" daba la plantilla. Desde que la sombra se arma sobre
+    ''' la BASE —el record propio del NPC con los campos del bit 0— preguntarle da el NPC mismo, y el estado
+    ''' perdia de que plantilla hereda.</para>
+    ''' <para>⛔ Importa mas de lo que parece: `FaceAppearanceSourceFormID` sale de aca y decide DE QUIEN
+    ''' se cargan los archivos de FaceGen. Con el bit 0 arriba el juego carga los de la PLANTILLA, asi que
+    ''' un heredero que dijera "yo" cargaria los suyos, que no existen.</para></param>
     Public Shared Function ProyectarEstado(npcData As NPC_Data, root As NPC_Data,
                                            inventory As MainForm.InventoryState,
-                                           presetDeDibujo As LooksmenuLoader.LooksmenuPreset) _
+                                           presetDeDibujo As LooksmenuLoader.LooksmenuPreset,
+                                           recordBase As NPC_Data,
+                                           Optional traitsSourceFid As UInteger = 0UI) _
                                            As (Estado As MainForm.NPCVisualState, Traits As MainForm.TraitsState)
         Dim traits = CreateOwnTraitsState(npcData)
+        If traitsSourceFid <> 0UI Then traits.SourceFormID = traitsSourceFid
 
+        ' ⛔⛔ LA BASE VIAJA DESDE ACA, no desde el resolver. Mientras la asignaba el
+        ' resolver, el HORNEADO -que proyecta por esta misma fabrica- nacia sin ella, y los tres
+        ' compositores del bake devuelven Nothing con un estado sin base: el color de piel del
+        ' material horneado dejaba de salir de la capa de tono y salia del QNAM crudo. Es
+        ' obligatorio y no opcional A PROPOSITO: un `Optional ... = Nothing` habria dejado el mismo
+        ' agujero abierto en silencio para el proximo que proyecte un estado.
         Dim st As New MainForm.NPCVisualState With {
             .FormID = root.FormID,
+            .RecordBase = recordBase,
             .RootNpcFormID = root.FormID,
             .IsFemale = traits.IsFemale,
             .RaceFormID = traits.RaceFormID,
@@ -219,6 +237,18 @@ Friend NotInheritable Class NpcStateFactory
         Return (st, traits)
     End Function
 
+    ''' <summary>⛔⛔ DE QUE NPC SALEN LOS ARCHIVOS DE CARA. Medido en los dos motores, no supuesto:
+    ''' el juego camina la cadena de plantillas hasta el ULTIMO eslabon y usa EL FORMID DE ESE para armar la
+    ''' ruta del FaceGen.
+    ''' <para>Fallout 4: recorre `TESNPC+0x270` en 0x140658E80..0x140658EAA, lee el FormID en 0x140658ECE
+    ''' (`mov ebx, [rbx+0x14]`) y formatea en 0x140658EE4.
+    ''' Skyrim SE: recorre `TESNPC+0x1F0` en 0x1403C2E20..0x1403C2E49, lee el FormID en 0x1403C2E6D y
+    ''' formatea en 0x1403C2E83.</para>
+    ''' <para>⛔ Ese campo de la cadena es de los que el bit 0 ESCRIBE (+0x270 en Fallout, +0x1F0 en
+    ''' Skyrim; los dos estan en el censo de lo que la copia escribe en el destino), o sea que la copia de
+    ''' plantilla es la que lo deja apuntando. Por eso un heredero se dibuja con la cara de su plantilla
+    ''' aunque el resto sea suyo: no es una regla de la app, es el nombre del archivo que el motor abre.</para>
+    ''' <para>⛔ Es el ULTIMO eslabon, no el primero: si X hereda de T1 y T1 de T2, la cara sale de T2.</para></summary>
     Public Shared Function FaceAppearanceSourceFormID(state As MainForm.NPCVisualState) As UInteger
         If state Is Nothing Then Return 0UI
         Return If(state.TraitsSourceFormID <> 0UI, state.TraitsSourceFormID, state.FormID)

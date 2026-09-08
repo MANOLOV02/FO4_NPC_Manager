@@ -136,23 +136,40 @@ Friend NotInheritable Class NpcStateResolver
         ' copia salen del TERMINAL (de su overlay si lo declara, si no de su record), y las que no se heredan
         ' siguen saliendo de X. Con la autoria pelada, un heredero SIN overlay propio se dibujaba con las
         ' categorias VACIAS de X en vez de con las de su plantilla.
-        ' ⛔ Para un NO heredero `OverlayDeDibujo` devuelve la MISMA INSTANCIA que la autoria, no un clon:
+        ' ⛔ Para un NO heredero se devuelve la MISMA INSTANCIA de la autoria, no un clon:
         ' sigue leyendo la bolsa viva, asi que los dos Cancel de editor -- que reemplazan la entrada sin
         ' re-renderizar -- siguen viendose de inmediato.
-        Dim presetDeDibujo = NpcRecordOverlay.OverlayDeDibujo(npc.FormID, traits.SourceFormID, _appliedPresets,
-                                                             Config_App.Current.Game = Config_App.Game_Enum.Skyrim,
-                                                             AddressOf _ctx.GetParsedNpc)
+        ' ⛔ Es la AUTORIA y nada mas: la herencia la resuelve la base. Aca se llamaba a una sobrecarga
+        ' que recibia el terminal, el juego y un lector de records y no usaba ninguno de los tres.
+        Dim presetDeDibujo = NpcRecordOverlay.OverlayDeAutoria(npc.FormID, _appliedPresets)
 
         ' Bajo override de genero NO se estampa el overlay: es identidad del genero ORIGINAL (head
         ' parts, pesos, piel, tinte) y re-inyectaria justo lo que el bloque de abajo limpia.
-        Dim shadow = If(genderOverrideActive, terminal,
-                        NpcRecordOverlay.AplicarOverlay(terminal, presetDeDibujo, npc.FormID,
+        ' ⛔⛔ LA BASE, y de aca sale todo. Antes la sombra se armaba sobre el record ENTERO del terminal,
+        ' y el bit 0 NO copia el record entero: un heredero se dibujaba con las capas de tinte de su plantilla
+        ' en Skyrim y con los morfos de region y su intensidad en Fallout — tres canales que el motor le deja
+        ' PROPIOS. Medido: en SSE el camino del bit 0 no toca +0x260 ni para leer; en FO4 el MRSV vive en
+        ' +0x2D8, se escribe por `sub_14065EC00`, y ninguno de sus 7 llamadores esta en ese camino.
+        ' ⛔ El terminal va con SU overlay (`SombraDelTerminal`): si el usuario le cargo un preset a la
+        ' plantilla, los que heredan de ella tienen que seguirla.
+        Dim laBase = NpcRecordOverlay.BaseDeDibujo(npc, NpcRecordOverlay.SombraDelTerminal(
+                               If(traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID,
+                                  terminal, Nothing),
+                               _appliedPresets, _ctx.PluginManager,
+                               New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(AddressOf ResolverLmSkinTemplate),
+                               AddressOf _ctx.ParseRaceCanonCached))
+        ' ⛔ Bajo override de genero se dibuja la MISMA base, sin overlay -- no el terminal pelado, que
+        ' seria una segunda base para el mismo NPC.
+        Dim shadow = If(genderOverrideActive, laBase,
+                        NpcRecordOverlay.AplicarOverlay(laBase, presetDeDibujo, npc.FormID,
                                                         _ctx.PluginManager,
                                                         New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
                                                             AddressOf ResolverLmSkinTemplate),
                                                         AddressOf _ctx.ParseRaceCanonCached))
 
-        Dim proy = NpcStateFactory.ProyectarEstado(shadow, npc, inventory, presetDeDibujo)
+        ' ⛔ El terminal se lo pasa EL QUE LO CAMINO. Ver el parametro.
+        Dim proy = NpcStateFactory.ProyectarEstado(shadow, npc, inventory, presetDeDibujo,
+                                                   laBase, traits.SourceFormID)
         Dim state = proy.Estado
         ' ⛔ El preset de dibujo VIAJA en el estado, y SOLO cuando el NPC hereda. Asi ningun consumidor
         ' vuelve a derivar herencia por su cuenta -- con nueve derivandola cada uno por su lado, el mismo NPC
@@ -160,9 +177,10 @@ Friend NotInheritable Class NpcStateResolver
         ' ⛔ Para un NO heredero se deja en Nothing A PROPOSITO: el consumidor cae a la bolsa VIVA, y por eso
         ' los dos Cancel de editor -- que reemplazan la entrada del diccionario SIN re-renderizar -- se ven de
         ' inmediato. Un clon guardado aca los dejaria dibujando un preset viejo.
-        If traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID Then
-            state.DibujoHeredado = presetDeDibujo
-        End If
+        ' ⛔ La base viaja SIEMPRE, herede o no: para un no heredero es su propio record, y tenerla
+        ' igualmente evita que el consumidor tenga que preguntarse si hereda -- que es exactamente lo que
+        ' hacia que once de ellos derivaran la herencia por su cuenta.
+        state.RecordBase = laBase
         ' ⛔ `traits` se REASIGNA: el estado salio de la SOMBRA, y todo lo que sigue tiene que ver el
         ' mismo `traits` del que salio, o vuelve la divergencia por dos fuentes.
         traits = proy.Traits
@@ -372,10 +390,23 @@ Friend NotInheritable Class NpcStateResolver
             ' del cuerpo lo lee de ahi. Se clona para que el state de un render no comparta instancia con el
             ' overlay que el editor esta moviendo.
             state.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(overlayPreset.SkinToneOffset)
-            Dim presetSkin = _materialResolver.ResolveNpcBodySkinToneColor(state)
-            If presetSkin.HasValue Then
-                state.HasTextureLighting = True
-                state.TextureLightingColor = presetSkin.Value
+            ' ⛔⛔ MIENTRAS HEREDA NO SE RE-DERIVA: el bit 0 COPIA el QNAM (0x1403BE09A en SSE,
+            ' 0x140651552 en FO4), asi que el tono del cuerpo de un heredero es el de su plantilla y no algo
+            ' que haya que recalcular. Esta era la SEGUNDA sede de esa ley -- la otra vive en
+            ' `NpcRecordOverlay.AplicarOverlay` y ya estaba guardada; esta no, y con dos dueños la guarda de
+            ' uno no sirve de nada.
+            ' ⛔ Sin la guarda el efecto es VISIBLE y al reves de la ley: la base de un heredero de Skyrim ya
+            ' no trae las capas de tinte de la plantilla (el bit 0 no las copia), asi que el compositor no
+            ' encuentra capa de tono y cae al CLFM DEFAULT DE LA RAZA. Un heredero con cualquier overlay
+            ' —hasta uno vacio, que lo instala elegir un atuendo— dibujaba el cuerpo con el tono de la raza
+            ' en vez del de su plantilla, y la cara seguia con el de la plantilla: costura en el cuello.
+            Dim heredaTraits As Boolean = traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID
+            If Not heredaTraits Then
+                Dim presetSkin = _materialResolver.ResolveNpcBodySkinToneColor(state)
+                If presetSkin.HasValue Then
+                    state.HasTextureLighting = True
+                    state.TextureLightingColor = presetSkin.Value
+                End If
             End If
         End If
 
@@ -419,7 +450,7 @@ Friend NotInheritable Class NpcStateResolver
             .InventorySourceFormID = state.InventorySourceFormID,
             .ModelSourceFormID = state.ModelSourceFormID,
             .VariantLabel = state.VariantLabel,
-            .DibujoHeredado = state.DibujoHeredado,
+            .RecordBase = state.RecordBase,
             .IsFemale = state.IsFemale,
             .RaceFormID = state.RaceFormID,
             .SkinFormID = state.SkinFormID,

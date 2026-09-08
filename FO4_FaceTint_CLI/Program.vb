@@ -1509,7 +1509,7 @@ Module Program
             ' Resolver de materiales por-shape = el MISMO que el render (texture-paths/BGSM/tints fieles a CK).
             ' NpcRenderContext solo necesita el PluginManager (sin GL). overlay = identidad (sin presets LM).
             Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, dataPath)
-            Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, st As FO4_NPC_Manager.MainForm.NPCVisualState) raw)
+            Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st As FO4_NPC_Manager.MainForm.NPCVisualState) st.RecordBase)
             Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(
                 npcFormID, pm, presets, Nothing,
                 AddressOf mres.ApplyShapeMaterialOverrides,
@@ -2435,7 +2435,7 @@ Module Program
         Dim okCount = 0, failCount = 0, processed = 0
         Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
         Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
-        Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, st As FO4_NPC_Manager.MainForm.NPCVisualState) raw)
+        Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st As FO4_NPC_Manager.MainForm.NPCVisualState) st.RecordBase)
         Dim savedOut = Console.Out
         ' FALLOS NUNCA SILENCIOSOS: cada fallo registra NPC + ruta + causa (nunca `failCount += 1` a
         ' secas ni un Catch que se traga la excepcion) — sin eso un "fail=2" no dice que NPCs son ni por que.
@@ -2849,7 +2849,7 @@ Module Program
                 ' estado y CORROMPE la geometría de NPCs posteriores (medido: outlier 0x1995C daba 3.46 en batch
                 ' compartido vs 0.033 con resolver fresco). El path --list ya crea uno por NPC — lo replicamos.
                 Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
-                Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, st2 As FO4_NPC_Manager.MainForm.NPCVisualState) raw)
+                Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st2 As FO4_NPC_Manager.MainForm.NPCVisualState) st2.RecordBase)
                 Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
                 Console.SetOut(savedOut)
                 Dim origin = pm.GetOriginatingPluginName(fid)

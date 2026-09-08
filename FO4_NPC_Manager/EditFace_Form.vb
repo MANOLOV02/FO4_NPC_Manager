@@ -646,6 +646,43 @@ Public Class EditFace_Form
     ' Section 2 — overlay accessors and snapshot helpers
     ' =====================================================================
 
+    ''' <summary>⛔⛔ AL ACEPTAR SE PROYECTA SOLO LO QUE EL USUARIO TOCO.
+    ''' <para>La copia de trabajo se siembra ENTERA al abrir —el editor tiene que poder dibujar— y con todos
+    ''' los `Has*` en True. Si eso viajara tal cual al overlay, «abrir y aceptar sin tocar nada» declararia
+    ''' TODO: dispararia el aviso de desprendimiento sobre un gesto vacio y le meteria al ESP valores que el
+    ''' usuario no eligio.</para>
+    ''' <para>⛔ La marca de posesion NO se saca: es la que expresa «lo vacie a proposito». Lo que cambia es
+    ''' QUIEN la pone — antes la siembra, ahora un gesto.</para>
+    ''' <para>⛔ Se compara POR VALOR contra la siembra y no con una lista de «categorias tocadas»: una
+    ''' lista obliga a que cada handler se acuerde de marcarse, que es la clase de defecto que ya obligo a
+    ''' escribir un censo. Y de paso resuelve «lo toque y lo deje igual»: no difiere, no se proyecta.</para></summary>
+    ''' <returns>True si algo del usuario llego al overlay. ⛔ El llamador lo necesita: sin esto,
+    ''' "abrir y aceptar sin tocar nada" ESCRIBIA igual la entrada del diccionario -vacia- y todo el que
+    ''' pregunta por la PRESENCIA de la clave (el menu Reset, el archivo lateral, la marca de cambios sin
+    ''' guardar) veia un NPC con overlay por un gesto que no cambio nada.</returns>
+    Private Function ProyectarSobreElOverlay() As Boolean
+        Dim trabajo = Preset
+        If trabajo Is Nothing OrElse _seedPreset Is Nothing Then Return False
+        Dim proyectado = If(_priorPreset Is Nothing,
+                            New LooksmenuLoader.LooksmenuPreset(),
+                            LooksmenuLoader.ClonePreset(_priorPreset))
+        Dim hubo As Boolean = False
+        For Each cat In PresetCategories.AllCategories
+            If Not PresetCategories.AppliesToGame(cat, _isSSE) Then Continue For
+            If PresetCategoryFilter.PrimerCanalDistinto(_seedPreset, trabajo, cat, _isSSE) Is Nothing Then Continue For
+            hubo = True
+            PresetCategoryFilter.PorCanal(cat, _isSSE,
+                                          Sub(nombre, leerCanal, escribirCanal)
+                                              escribirCanal(proyectado, leerCanal(trabajo))
+                                          End Sub)
+        Next
+        ' ⛔ Si no hubo gesto Y no habia overlay previo, no se crea la entrada. Con overlay previo se
+        ' reescribe igual: el usuario pudo haber apretado Reset, que es un gesto y devuelve la siembra.
+        If Not hubo AndAlso _priorPreset Is Nothing Then Return False
+        _appliedPresets(_rootNpcFormID) = proyectado
+        Return hubo
+    End Function
+
     Private ReadOnly Property Preset As LooksmenuLoader.LooksmenuPreset
         Get
             Dim p = NpcRecordOverlay.OverlayDeAutoria(_rootNpcFormID, _appliedPresets)
@@ -2510,7 +2547,9 @@ Public Class EditFace_Form
             ' de genero que este hunk viene a cerrar.
             ' Es idempotente (NpcRecordOverlay.vb:616-624 guardea, AddHdptIfMissingPreset no duplica y
             ' el marcador es un HashSet) y usa el resolver CIEGO AL GENERO, el mismo que el render.
-            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(p, _isFemale, AddressOf _mainForm.ResolveLmSkinTemplate_Friend)
+            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(p, _isFemale,
+                                                     AddressOf _mainForm.ResolveLmSkinTemplate_Friend,
+                                                     _mainForm.RecordEfectivoParaAutoria(_rootNpcFormID))
             Dim marcadosLm = p.LmTemplateInjectedHdptFormIDs
             Dim ownedParts As New List(Of UInteger)
             Dim lmParts As New List(Of UInteger)
@@ -4929,9 +4968,14 @@ Public Class EditFace_Form
     End Sub
 
     Private Sub OnOk(sender As Object, e As EventArgs)
+        ' ⛔ Al overlay va SOLO lo que el usuario toco: la copia de trabajo esta sembrada ENTERA para
+        ' poder dibujar, pero declarar todo convertiria "abrir y aceptar" en un desprendimiento.
+        ' Ver `ProyectarSobreElOverlay`.
+        Dim hubo = ProyectarSobreElOverlay()
         ' Live overlay edits already mutated _appliedPresets[npc]; flag the MainForm to recompose
         ' its main preview from the now-final overlay state.
-        HasUncommittedChanges = True
+        ' ⛔ Solo si hubo gesto: marcar siempre convertia "abrir y aceptar" en un cambio sin guardar.
+        HasUncommittedChanges = hubo
         DialogResult = DialogResult.OK
         Close()
     End Sub

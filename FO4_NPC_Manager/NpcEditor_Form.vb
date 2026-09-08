@@ -1215,11 +1215,29 @@ Public Class NpcEditor_Form
         ' la volvia a caminar unas lineas mas abajo y el guardado la caminaba una TERCERA vez -- tres
         ' respuestas a la misma pregunta, y las dos ultimas podian diferir de la que el usuario vio si el arbol
         ' cambiaba entre medio. Ahora viaja congelada hasta el ESP, en `ov.MaterializedSources`.
+        ' ⛔⛔ EL AVISO, ANTES DE RESOLVER Y ANTES DE MUTAR NADA. Cambiar Race, Voice, OBTS o APPR baja
+        ' el bit sin que el usuario haya destildado `Use-X`: es desprendimiento IMPLICITO y hasta ahora
+        ' pasaba MUDO. Si dice que no, el editor no toco una sola instancia.
+        ' ⛔ Es la MISMA sede del aviso que usa la puerta del overlay -- mismo diálogo, mismo "no volver a
+        ' avisar" de la sesion, misma costura de arnes.
+        If categoriesToOwn.Count > 0 AndAlso _mainForm IsNot Nothing Then
+            If Not _mainForm.ConfirmarDesprendimientoDeCategorias(_npc.Record.FormID, categoriesToOwn) Then
+                Return
+            End If
+        End If
+
         Dim resoluciones As New Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution)
         For Each category In categoriesToOwn
             Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(_npc, category, _getParsedNpc, lvlnPick)
             ' ⛔ CONGELADA: la fuente viaja clonada. `ProbeCategoryOwn` devuelve la instancia cacheada del
             ' parse, y unas lineas mas abajo este mismo formulario la muta en vivo.
+            ' ⛔⛔ LA MISMA SOMBRA DEL TERMINAL QUE USA EL DIBUJO. Aca se congelaba el record CRUDO, y
+            ' por eso un NPC desprendido desde este editor salia con la cara VIEJA de su plantilla cuando el
+            ' usuario le habia cargado un preset a la plantilla en la misma sesion -- justo lo contrario de
+            ' lo que promete el aviso. `SombraDelTerminal` es UNA funcion con tres lectores.
+            If probe.Source IsNot Nothing AndAlso _mainForm IsNot Nothing Then
+                probe.Source = _mainForm.SombraDelTerminal(probe.Source)
+            End If
             resoluciones(category) = NpcTemplateMaterializer.CongelarResolucion(probe)
             If probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
                probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then

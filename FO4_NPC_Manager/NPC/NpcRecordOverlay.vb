@@ -36,11 +36,52 @@ Public Module NpcRecordOverlay
     Public Function ResolveOverlaidNpcData(npcFormID As UInteger,
                                            pluginManager As PluginManager,
                                            appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                           Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing) As NPC_Data
+                                           Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
+                                           Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing,
+                                           Optional ByRef baseUsada As NPC_Data = Nothing) As NPC_Data
         Dim raw = GetParsedNpc(npcFormID, pluginManager)
         If raw Is Nothing Then Return Nothing
+
+        ' ⛔⛔ LA MISMA BASE QUE EL RENDER. Esta funcion es la entrada del HORNEADO, y hasta aca componia
+        ' sobre el record CRUDO del NPC: dibujar y hornear arrancaban de records DISTINTOS para el mismo
+        ' heredero. Decision del usuario (opcion a): se alinean, asi que el `.dds` de un heredero sale con
+        ' la cara que el juego le va a dar.
+        ' ⛔⛔ LA HOJA DE LA LISTA NIVELADA. Aca decia que caminaba "con `PrimerHojaDeLista` como
+        ' resolvedor" y esa funcion NO EXISTIA: era la cita de un diseno que nunca se escribio. Sin
+        ' resolvedor `ProbeCategoryOwn` no puede elegir hoja, devuelve Unresolvable y la base se quedaba
+        ' en el record CRUDO -- o sea que para un heredero de lista el horneado partia de OTRO record que
+        ' el preview, que si ancla la hoja mostrada.
+        ' ⛔ Ahora el llamador puede pasar EL MISMO resolvedor que usa el render. Sin el -la linea de
+        ' comandos y el horneado masivo, que no tienen pantalla- se clava la PRIMERA hoja, y eso queda
+        ' DECLARADO: es una eleccion de la app para ser determinista, no una ley del motor. Lo que el
+        ' motor hace con una lista nivelada como plantilla sigue SIN MEDIR.
+        Dim baseHeredada = raw
+        If NpcTemplateHelpers.HasTemplateFlag(raw.Record.ConfigurationTemplateFlags,
+                                              NPC_TemplateCategory.Traits) Then
+            Dim leer1 = Function(f As UInteger) GetParsedNpc(f, pluginManager)
+            Dim hoja As Func(Of UInteger, UInteger) = resolveLvlnPick
+            If hoja Is Nothing Then
+                hoja = Function(lvlnFid As UInteger)
+                           Dim hojas = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFid, pluginManager)
+                           Return If(hojas Is Nothing OrElse hojas.Count = 0, 0UI, hojas(0))
+                       End Function
+            End If
+            Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(raw, NPC_TemplateCategory.Traits, leer1, hoja)
+            If probe.Source IsNot Nothing Then
+                Dim sombraT = SombraDelTerminal(probe.Source, appliedPresets, pluginManager,
+                                                lmSkinTemplateResolver, Nothing)
+                baseHeredada = BaseDeDibujo(raw, sombraT)
+            End If
+        End If
+
+        ' ⛔ Se DEVUELVE la base ademas del compuesto: el estado del horneado la necesita, y sin ella sus
+        ' tres compositores devolvian Nothing.
+        ' ⛔ Se llama `baseUsada` y no `baseDeDibujo` porque VB no distingue mayusculas: un parametro
+        ' con el nombre de la funcion `BaseDeDibujo` la TAPA, y la llamada de arriba pasa a leerse como
+        ' un indexado del parametro.
+        baseUsada = baseHeredada
         ' ⛔ La pregunta es de AUTORIA y la clave es el propio NPC: escrito, no implicito.
-        Dim result = AplicarOverlay(raw, OverlayDeAutoria(npcFormID, appliedPresets), npcFormID,
+        Dim result = AplicarOverlay(baseHeredada, OverlayDeAutoria(npcFormID, appliedPresets), npcFormID,
                                     pluginManager, lmSkinTemplateResolver)
         ' Raza efectiva del editor (ver EffectiveRaceResolver). Mutar acá es seguro: `raw` es un parse FRESCO
         ' (GetParsedNpc no cachea) y el shadow del overlay también — nunca es la instancia cacheada del ctx.
@@ -163,78 +204,75 @@ Public Module NpcRecordOverlay
     Friend Function OverlayDeDibujo(state As MainForm.NPCVisualState,
                                     appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)) _
                                     As LooksmenuLoader.LooksmenuPreset
+        ' ⛔⛔ YA NO HAY "OVERLAY DE DIBUJO" DISTINTO DE LA AUTORIA. La herencia la resuelve LA BASE
+        ' (`state.RecordBase`), asi que el preset que se estampa encima es, otra vez, lo que el usuario
+        ' authoreo y nada mas. Antes esta funcion revertia las categorias heredables desde el terminal, y eso
+        ' PISABA la edicion del usuario: como la puerta del desprendimiento vive en el OK, mientras el editor
+        ' estaba abierto el NPC todavia heredaba y el preview no se movia al editar.
+        ' ⛔ Se conserva como SEDE —en vez de que cada consumidor llame a `OverlayDeAutoria`— para que el
+        ' dia que vuelva a haber una asimetria haya UN lugar donde ponerla.
         If state Is Nothing Then Return Nothing
-        If state.DibujoHeredado IsNot Nothing Then Return state.DibujoHeredado
         Return OverlayDeAutoria(state.RootNpcFormID, appliedPresets)
     End Function
 
-    ''' <param name="traitsSourceFid">El terminal de la cadena de Traits. 0, o igual al root, significa que el
-    ''' NPC no hereda.</param>
-    ''' <param name="getParsedNpc">Con qué leer el record del terminal. Sin él no hay de dónde sacar lo que el
-    ''' terminal no declara en su overlay, así que se devuelve la autoría del root tal cual.</param>
-    Public Function OverlayDeDibujo(rootFid As UInteger,
-                                    traitsSourceFid As UInteger,
-                                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                    isSse As Boolean,
-                                    getParsedNpc As Func(Of UInteger, NPC_Data)) As LooksmenuLoader.LooksmenuPreset
-        Dim delRoot = OverlayDeAutoria(rootFid, appliedPresets)
-        If traitsSourceFid = 0UI OrElse traitsSourceFid = rootFid OrElse getParsedNpc Is Nothing Then Return delRoot
-
-        Dim terminalRaw = getParsedNpc(traitsSourceFid)
-        If terminalRaw Is Nothing Then Return delRoot
-        Dim delTerminal = OverlayDeAutoria(traitsSourceFid, appliedPresets)
-
-        ' ⛔⛔ Sin NADIE que haya authoreado -- ni el root ni el terminal -- no hay overlay de dibujo, y no es
-        ' un atajo: es la definicion. "Que se le aplica al dibujarlo" con nadie que haya escrito nada es NADA, y
-        ' el record del terminal ya ES la sombra.
-        ' MEDIDO por que importa: sin esta guarda, `Revert` sacaba los tintes del record del terminal a un
-        ' preset y `AplicarOverlay` los volvia a escribir sobre EL MISMO terminal -- una IDA Y VUELTA que pierde
-        ' un escalon de 255. El A/B vanilla lo mostro en 51 NPC de SSE y 68 de FO4, en `TextureLightingColor`
-        ' (FF5E7174 -> FF5E7274). El motor no da esa vuelta: para un heredero sin preset el estado sale del
-        ' record del terminal, y el valor bueno es el de antes.
-        ' ⛔ NO alcanza con mirar solo el terminal: con overlay en el ROOT y ninguno en el terminal esta
-        ' funcion SI tiene trabajo, porque es la que evita que el overlay de X -- que declara `Has*` en
-        ' categorias que X tiene vacias -- le BORRE a la sombra justo las que hereda.
-        If delRoot Is Nothing AndAlso delTerminal Is Nothing Then Return Nothing
-
-        ' ⛔ Clon SIEMPRE, incluso cuando el root no trae overlay: de acá en adelante se le escriben las
-        ' categorías heredadas, y escribirlas sobre la instancia del diccionario le cambiaría al usuario el
-        ' overlay que él authoreó.
-        Dim p = If(delRoot Is Nothing, New LooksmenuLoader.LooksmenuPreset(), LooksmenuLoader.ClonePreset(delRoot))
-        ' ⛔⛔ LO AUTHOREADO GANA, LO HEREDADO RELLENA. Antes se revertian TODAS las categorias
-        ' heredables, o sea que el terminal PISABA lo que el root authoreo -- y como la puerta del
-        ' desprendimiento vive en el OK del editor, mientras el editor esta abierto X TODAVIA hereda: el
-        ' usuario cambiaba el pelo, un morfo o un tinte y el preview NO SE MOVIA. Lo mismo el preview del
-        ' Load, recorriendo presets con la cara quieta. Un gesto que se vuelve no-op sin decirlo.
-        ' ⛔ NO relaja la ley del motor: en estado COMMITEADO un heredero no puede tener categorias
-        ' heredables authoreadas, porque authorearlas es exactamente lo que lo desprende. Esto arregla el
-        ' TRANSITORIO, y lo deja mostrando lo que el desprendimiento va a producir.
-        ' ⛔ El motivo original para que el terminal pisara al root -- P26.3(a), "el overlay de X declara
-        ' `Has*` en categorias que X tiene vacias"-- YA NO EXISTE: desde `RecordEfectivoParaAutoria` la
-        ' siembra sale del record EFECTIVO, asi que lo que el root declara ya son los valores del terminal.
-        Dim enBlanco As New LooksmenuLoader.LooksmenuPreset()
-        For Each cat In PresetCategories.AllCategories
-            If Not PresetCategories.HeredaPorTraits(cat, isSse) Then Continue For
-            If Not PresetCategories.AppliesToGame(cat, isSse) Then Continue For
-            ' El root authoreo algo en esta categoria ⇒ gana el root y no se hereda nada.
-            If PresetCategoryFilter.PrimerCanalDistinto(enBlanco, p, cat, isSse,
-                                                        soloHeredables:=True) IsNot Nothing Then Continue For
-            ' [X] `RevertirLoHeredable` y no `Revert`: dos categorias mezclan canales que el bucket copia
-            ' con canales que no. En SSE `FaceTints` tiene que traer el QNAM del terminal y dejarle a X sus
-            ' capas; en FO4 `FaceBoneRegions` las regiones y dejarle su FMIN.
-            PresetCategoryFilter.RevertirLoHeredable(p, cat, terminalRaw, delTerminal, isSse)
-        Next
-
-        ' ⛔ ACA se forzaba `HasSseMorphs = True` con un NAM9 de ceros, "porque heredar es autoritativo".
-        ' RE-MEDIDO: atacaba un defecto que NO EXISTE. La premisa era que `MaterializeTraits` no copia
-        ' NAM9/NAMA, y hoy SI los copia -- `d.CopiarSubrecord(s, "NAM9")` y `"NAMA"` -- y `CopiarSubrecord`
-        ' con el origen AUSENTE hace `RemoveSubrecord` sobre el destino, o sea que el caso "el terminal no
-        ' trae ninguno" YA queda bien. Y del lado del DIBUJO la base de la sombra es el TERMINAL, asi que
-        ' "el overlay no escribe" deja el valor del terminal, que es lo correcto.
-        ' ⇒ el forzado no arreglaba nada y ESCRIBIA un NAM9 de ceros donde el terminal no trae ninguno.
-        ' El residuo real de la DECISION 17b era OTRO y esta cerrado en `MaterializeTraits`: NAM7.
-        Return p
+    ''' <summary>⛔⛔ LA SOMBRA DEL TERMINAL: el record de la plantilla con SU PROPIO overlay estampado.
+    ''' <para>UNA funcion con TRES lectores —la base del dibujo, el congelado del desprendimiento y el NPC
+    ''' Editor— porque las tres tienen que ver EL MISMO terminal. Hoy el editor congela el record CRUDO, y por
+    ''' eso un NPC desprendido desde ahi sale con la cara VIEJA de su plantilla cuando el usuario le habia
+    ''' cargado un preset a la plantilla en la misma sesion.</para>
+    ''' <para>⛔ Que la plantilla tenga edicion pendiente no es una duda canonica: el motor no opina sobre un
+    ''' overlay que todavia no se guardo. La ley la pone el contrato de la app, y el aviso del desprendimiento
+    ''' ya la dice: «it keeps a copy of what you are seeing now».</para></summary>
+    Public Function SombraDelTerminal(terminal As NPC_Data,
+                                      appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                      pluginManager As PluginManager,
+                                      resolveLm As ResolveLmSkinTemplateDelegate,
+                                      parseRace As Func(Of PluginRecord, Canon.IRace)) As NPC_Data
+        If terminal Is Nothing OrElse terminal.Record Is Nothing Then Return terminal
+        Dim delTerminal = OverlayDeAutoria(terminal.Record.FormID, appliedPresets)
+        If delTerminal Is Nothing Then Return terminal
+        Dim conOverlay = AplicarOverlay(terminal, delTerminal, terminal.Record.FormID,
+                                        pluginManager, resolveLm, parseRace)
+        Return If(conOverlay, terminal)
     End Function
+
+    ''' <summary>⛔⛔ LA BASE DEL DIBUJO: el record con el que el juego dibuja a este NPC.
+    ''' <para>Es el record PROPIO del heredero con los campos que el bit 0 copia traidos de la plantilla --
+    ''' NO el record entero de la plantilla. El bit 0 no copia el record entero: en Skyrim no toca las capas
+    ''' de tinte y en Fallout no toca los morfos de region. Medido por el censo de lo que la copia escribe
+    ''' en el destino: Fallout escribe 30 desplazamientos y +0x2D8 no esta; Skyrim escribe 23 y +0x260 no
+    ''' esta. Mientras la sombra se armaba sobre la plantilla entera, un heredero se dibujaba con canales
+    ''' que el motor le deja PROPIOS.</para>
+    ''' <para>⛔ Sobre una COPIA, y el bit NO se baja (`soloCopiar`). `root` es la instancia cacheada del
+    ''' render: materializar sobre ella le desprenderia el NPC a alguien que solo queria dibujarlo.</para>
+    ''' <para>⛔ El que NO hereda recibe SU MISMA INSTANCIA, sin copiar: no hay nada que traer, y copiar
+    ''' por las dudas costaria un record por repintado.</para></summary>
+    ''' <param name="sombraDelTerminal">El terminal YA con su propio overlay (ver `SombraDelTerminal`): si
+    ''' el usuario le cargo un preset a la plantilla, los que heredan de ella tienen que seguirla.</param>
+    ''' <summary>⛔ Cuantas veces se armo la base. Lo lee el medidor de costo para exigir la ley de la
+    ''' ola: UNA VEZ POR NPC. Con once consumidores armando cada uno la suya, el mismo NPC se dibujaba
+    ''' distinto segun por que camino se hubiera repintado -- y eso no lo caza ningun gate de valores, solo
+    ''' contar. Se cuenta la ENTRADA, no el camino largo: un llamador que entra y sale por el atajo del no
+    ''' heredero tambien es un llamador.</summary>
+    Friend LlamadasABaseDeDibujo As Long
+
+    Public Function BaseDeDibujo(root As NPC_Data, sombraDelTerminal As NPC_Data) As NPC_Data
+        Threading.Interlocked.Increment(LlamadasABaseDeDibujo)
+        If root Is Nothing OrElse root.Record Is Nothing Then Return root
+        If sombraDelTerminal Is Nothing OrElse sombraDelTerminal.Record Is Nothing Then Return root
+        If Not NpcTemplateHelpers.HasTemplateFlag(root.Record.ConfigurationTemplateFlags,
+                                                  NPC_TemplateCategory.Traits) Then Return root
+        Dim copia = root.Copia()
+        NpcTemplateMaterializer.MakeCategoryOwn(
+            copia, NPC_TemplateCategory.Traits,
+            New NpcTemplateMaterializer.TraitsResolution With {
+                .Outcome = NpcTemplateMaterializer.MaterializeOutcome.Materialized,
+                .Source = sombraDelTerminal},
+            soloCopiar:=True)
+        Return copia
+    End Function
+
+
 
     ''' <summary>⛔ La UNICA función que estampa un preset sobre un record. Es la vieja
     ''' `ApplyPresetOverlayToNpcData` con el LOOKUP SACADO AFUERA: quién pregunta, y con qué clave, es
@@ -250,7 +288,12 @@ Public Module NpcRecordOverlay
                                    Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
                                    Optional estricto As Boolean = False) As NPC_Data
         If raw Is Nothing OrElse raw.Record Is Nothing Then Return raw
-        If preset Is Nothing Then Return raw
+        ' ⛔⛔ COPIA AUNQUE NO HAYA PRESET. Antes devolvia `raw` tal cual, y hay dos llamadores que le
+        ' escriben la raza encima ("mutar es seguro porque `raw` es un parse FRESCO"). Con la base del estado
+        ' como `raw`, esa premisa deja de valer: la base es COMPARTIDA -- `CloneVisualState` la pasa por
+        ' referencia y el horneado despacha en paralelo. Devolver una copia es lo unico ejecutable en VB:
+        ' no se puede congelar un objeto, asi que la regla es "nadie recibe la instancia".
+        If preset Is Nothing Then Return If(raw Is Nothing, Nothing, raw.Copia())
 
         ' Raza EFECTIVA (record override del editor, ver EffectiveRaceResolver): la sombra la lleva desde el
         ' arranque, y TODO lo que esta función deriva de la raza (seed de head-parts, QNAM del skin-tone,
@@ -595,7 +638,25 @@ finDelSkin:
         ' runtime del array de tints del actor. Acá se hace lo mismo a la hora de escribir, así que el record
         ' persistido lleva el color efectivo y no el original, al que las ediciones del usuario nunca llegaron.
         ' Sin capa de SkinTone, el QNAM del record queda sin tocar.
-        If raceIsValid Then
+        ' ⛔⛔ EL QNAM SE RE-DERIVA SOLO SI EL OVERLAY AUTHOREA TINTES O TONO. Sin autoria queda el de la
+        ' BASE, que es el que el bit 0 copio de la plantilla (SSE 0x1403BE09A, FO4 0x140651552).
+        ' Antes se re-derivaba SIEMPRE que hubiera raza, y eso rompia dos cosas:
+        '   - ajustar el tono del cuerpo en una PLANTILLA dejaba de llegarle a los que heredan de ella: la
+        '     base traia el QNAM con el ajuste y la re-derivacion lo pisaba con uno calculado sin offset;
+        '   - y a cualquier NPC con overlay de OTRA categoria (un atuendo, por ejemplo) le movia el QNAM un
+        '     escalon de 255 por la ida y vuelta capa->color->capa. Eso es el residuo de P26.3(a), que
+        '     seguia vivo, y se cierra aca.
+        ' ⛔ Y NO SE RE-DERIVA MIENTRAS EL NPC HEREDA. El bit 0 COPIA el QNAM (SSE 0x1403BE09A, FO4
+        ' 0x140651552), asi que el tono del cuerpo de un heredero ES el de su plantilla, aunque tenga capas
+        ' de tinte propias -- en SSE las capas NO se heredan, o sea que el motor mismo hace que la cara y el
+        ' tono del cuerpo salgan de fuentes distintas. Derivarlo de las capas de X seria inventar un valor
+        ' que el juego no le da.
+        Dim heredaTraits As Boolean = NpcTemplateHelpers.HasTemplateFlag(
+                                          sr.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits)
+        Dim authoreaTono As Boolean = preset IsNot Nothing AndAlso
+                                      (preset.SkinToneOffset IsNot Nothing OrElse
+                                       preset.HasFaceTintLayers OrElse preset.HasSseTints)
+        If raceIsValid AndAlso authoreaTono AndAlso Not heredaTraits Then
             ' El ajuste manual del tono del CUERPO entra ACA (y no dentro de la derivacion compartida): este
             ' es el punto donde el QNAM se materializa como campo del record, que es tono de CUERPO por
             ' definicion. El save y el BAKE salen los dos de esta sombra, asi que con una sola linea quedan
@@ -913,9 +974,19 @@ finDelSkin:
     ''' • Edit Face seed (so the user sees the HDPTs the LM template injected).
     ''' • EditBody combo handler (when the user picks a template from the dropdown).
     ''' No-op when SkinTemplateId is empty or the resolver doesn't find the template.</summary>
+    ''' <param name="baseParaSembrar">⛔⛔ El record del que sacar la lista COMPLETA de head parts si esta
+    ''' inyeccion es la que toma posesion de la categoria.
+    ''' <para>Inyectar dos piezas y prender `Has*` sobre una lista que NO estaba declarada deja al preset
+    ''' diciendo «mis head parts son estas DOS». Antes no se notaba porque el filtro sembraba la lista
+    ''' entera; desde que lo que el usuario no tilda queda SIN declarar, la lista llega vacia y el resultado
+    ''' es un NPC con dos piezas y el resto rellenado con los defaults de la RAZA -- pelo y ojos cambiados
+    ''' por cargar un preset con «Face parts» destildado.</para>
+    ''' <para>⛔ «Inyectar encima de lo que hay» exige que lo que hay este materializado. Nothing = el
+    ''' llamador no tiene de donde sembrar; ahi se conserva la conducta vieja y queda dicho.</para></param>
     Public Sub MaterializeLmTemplateBundleToPreset(preset As LooksmenuLoader.LooksmenuPreset,
                                                     isFemale As Boolean,
-                                                    resolver As ResolveLmSkinTemplateDelegate)
+                                                    resolver As ResolveLmSkinTemplateDelegate,
+                                                    Optional baseParaSembrar As NPC_Data = Nothing)
         If preset Is Nothing Then Return
         If String.IsNullOrEmpty(preset.SkinTemplateId) Then Return
         If resolver Is Nothing Then Return
@@ -943,6 +1014,17 @@ finDelSkin:
         ' Only flip Has* if it wasn't already True. If something else (Edit Face / Paste)
         ' set it before us, preserve that authority — we record our own flag separately.
         If Not preset.HasHeadPartFormIDs Then
+            ' ⛔⛔ SI ESTA INYECCION ES LA QUE TOMA POSESION, primero se siembra la lista desde la base.
+            ' Sin esto el preset queda diciendo "mis head parts son estas DOS" y el resto se rellena con los
+            ' defaults de la raza: pelo y ojos cambiados por cargar un preset con «Face parts» destildado.
+            If baseParaSembrar IsNot Nothing AndAlso baseParaSembrar.Record IsNot Nothing Then
+                Dim delRecord = baseParaSembrar.Record.PartesDeCabeza()
+                If delRecord IsNot Nothing Then
+                    For Each fid In delRecord
+                        AddHdptIfMissingPreset(preset.HeadPartFormIDs, fid)
+                    Next
+                End If
+            End If
             preset.HasHeadPartFormIDs = True
             preset.HasHeadPartFormIDsSetByTemplate = True
         End If

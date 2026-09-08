@@ -412,9 +412,12 @@ Friend Module BakeAllRunner
             ' hornear es authorear. El .dds que sale es del NPC y no de su plantilla, aunque en
             ' pantalla se lo dibuje con la cara del terminal mientras hereda. Es la misma ley que hace
             ' que `FaceGenBuilder` deje `DibujoHeredado` en Nothing, y la mide G10.
-            Dim overlayResolver As Func(Of NPC_Data, MainForm.NPCVisualState, NPC_Data) =
-                Function(raw As NPC_Data, st As MainForm.NPCVisualState) NpcRecordOverlay.AplicarOverlay(
-                    raw, NpcRecordOverlay.OverlayDeAutoria(st.RootNpcFormID, appliedPresets),
+            ' ⛔ El resolver recibe SOLO el estado, y compone sobre `state.RecordBase` -- la MISMA base
+            ' que el render. Es la opcion (a) que decidio el usuario: render y horneado arrancan del mismo
+            ' record, asi que el `.dds` de un heredero sale con la cara que el juego le va a dar.
+            Dim overlayResolver As Func(Of MainForm.NPCVisualState, NPC_Data) =
+                Function(st As MainForm.NPCVisualState) NpcRecordOverlay.AplicarOverlay(
+                    st.RecordBase, NpcRecordOverlay.OverlayDeAutoria(st.RootNpcFormID, appliedPresets),
                     st.RootNpcFormID, pm, resolveLmSkin, AddressOf ctx.ParseRaceCanonCached)
             Dim materialResolver As New NpcMaterialResolver(ctx, overlayResolver, appliedPresets)
 
