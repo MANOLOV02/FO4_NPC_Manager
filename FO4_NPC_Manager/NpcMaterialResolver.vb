@@ -27,11 +27,19 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' are applied as an in-place texture-set slot replacement on the skin shape's material (see
     ''' <see cref="ApplySseSkinOverrideToMaterial"/>). Skyrim only; Nothing/absent on FO4.</summary>
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+    ''' <summary>⛔ Compone la PLANTILLA con su propia autoria. Lo necesita el tono del cuerpo de un
+    ''' heredero: el motor le copia el QNAM de la plantilla, y el QNAM que la plantilla VA A TENER es el de
+    ''' su record compuesto --derivado si la editaste, el guardado si no--. Sin esto habria que leer el
+    ''' record crudo, y una edicion tuya sobre la plantilla no se le veria al heredero hasta guardar.</summary>
+    Private ReadOnly _sombraDelTerminal As Func(Of NPC_Data, NPC_Data)
+
     Friend Sub New(ctx As NpcRenderContext, overlayResolver As Func(Of MainForm.NPCVisualState, NPC_Data),
-                   Optional appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset) = Nothing)
+                   Optional appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset) = Nothing,
+                   Optional sombraDelTerminal As Func(Of NPC_Data, NPC_Data) = Nothing)
         _ctx = ctx
         _overlayResolver = overlayResolver
         _appliedPresets = appliedPresets
+        _sombraDelTerminal = sombraDelTerminal
     End Sub
 
     ''' <summary>Apply a RaceMenu skin override IN PLACE onto a skin shape's material — faithful to skee's
@@ -1140,60 +1148,46 @@ Friend NotInheritable Class NpcMaterialResolver
         Return ResolveNpcSkinToneCore(state, Nothing)
     End Function
 
-    ''' <summary>El mismo tono, pero con el AJUSTE MANUAL del editor de cuerpo ya sumado. Es el tono del CUERPO:
-    ''' lo consumen el seed de <c>state.TextureLightingColor</c> (que alimenta TryApplyBodySkinSoftLight) y el
-    ''' refresh en vivo. La variante SIN ajuste de arriba es la que sigue leyendo la CARA -si las dos fueran la
-    ''' misma, el origen del match se moveria junto con el destino y el ajuste no podria converger nunca.</summary>
-    ''' <summary>⛔⛔ ¿HAY QUE DERIVAR EL TONO DEL CUERPO, O YA LO TRAE COPIADO DE LA PLANTILLA?
-    ''' <para>Mientras el NPC hereda, el bit 0 le COPIA el QNAM (`0x1403BE09A` en Skyrim, `0x140651552` en
-    ''' Fallout): no hay nada que derivar y derivarlo le da el CLFM por defecto de la raza -- costura en el
-    ''' cuello, porque la cara sigue con el de la plantilla.</para>
-    ''' <para>⛔ PERO un editor muestra "como va a quedar al ACEPTAR", no "como esta hoy". Authorear el tono
-    ''' DESPRENDE, asi que despues del OK el tono es el propio y SI hay que derivarlo. Authorear capas de
-    ''' tinte en Skyrim NO desprende (el bit 0 no las copia) y ahi el cuerpo se queda con el de la plantilla.
-    ''' La pregunta es entonces "¿authoreo un canal del tono que DESPRENDE?", y la contesta el MISMO
-    ''' comparador por canal que usa la puerta -- no una tabla nueva.</para>
-    ''' <para>⛔ Y vive en la pregunta del CUERPO, no en el nucleo: el nucleo tambien contesta "¿esta raza
-    ''' puede derivar un tono?", que es lo que decide si el tab de ajuste tiene sentido. Con la guarda alla,
-    ''' el tab quedaba deshabilitado para TODO heredero con un cartel que decia que la raza no tiene capa de
-    ''' tono -- falso, y el usuario no podia ni empezar a ajustar.</para></summary>
-    Private Function HayQueDerivarElTonoDelCuerpo(state As MainForm.NPCVisualState) As Boolean
-        If state Is Nothing Then Return False
-        Dim autoria = NpcRecordOverlay.OverlayDeAutoria(state.RootNpcFormID, _appliedPresets)
-        Dim esSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
-        ' ⛔⛔ EL NO HEREDERO CONTESTA LO MISMO QUE EL GUARDADO. Aca decia `Return True` para todo
-        ' no-heredero, y el guardado deriva solo cuando la autoria TOCA el tono: para un no-heredero con
-        ' un preset que no lo toca --un atuendo, un color de pelo-- o sin preset, el preview derivaba de
-        ' las capas y el archivo conservaba el QNAM crudo. Y el juego lee el QNAM crudo
-        ' (`TESNPC::SetSkinFromTint` `0x1403BFE40` lo lee en `0x1403C0015/1C/23` y lo vuelca al material
-        ' +0xA0; re-derivar desde las capas esta guardado por `formID == 7`, o sea solo el jugador), asi
-        ' que el preview era el unico de los tres que mostraba otra cosa. Medido sembrado: 189 a un
-        ' escalon y 29 con diferencia grande en Skyrim, 47 en Fallout.
-        If state.TraitsSourceFormID = 0UI OrElse state.TraitsSourceFormID = state.RootNpcFormID Then
-            Return PresetCategoryFilter.AutoriaTocaElTono(autoria, esSse)
-        End If
-        If autoria Is Nothing OrElse state.RecordBase Is Nothing Then Return False
-        ' ⛔⛔ CONTRA LA BASE, NO CONTRA UN PRESET EN BLANCO. Comparar contra blanco contesta "¿esta
-        ' DECLARADO?", no "¿DESPRENDE?", y son cosas distintas: el editor de cara SIEMBRA las capas desde la
-        ' base y las declara (`EditFace_Form`), asi que con solo ABRIRLO el predicado daba True y el cuerpo se
-        ' pintaba con el tono derivado mientras el NPC seguia heredando.
-        ' ⛔ La puerta del desprendimiento ya contesta esta pregunta y lo hace contra la base -- su propio
-        ' comentario lo dice: "declarar una categoria con los MISMOS valores que la base no es tomar posesion;
-        ' posesion es declararla DISTINTA". Yo lo escribi ahi y lo contradije aca: dos dueños de la misma
-        ' pregunta con respuestas opuestas. Ahora es el MISMO comparador contra la MISMA linea de base.
-        Return PresetCategoryFilter.AutoreaDistintoDeLaBase(autoria, PresetCategory.FaceTints,
-                                                            state.RecordBase, esSse) IsNot Nothing
-    End Function
-
+    ''' <summary>⛔⛔ EL QNAM ES EL DERIVADO DEL FACE TINT **EFECTIVO** DEL RECORD QUE SE VA A GRABAR.
+    ''' <para>Y «efectivo» para un HEREDERO es el de su PLANTILLA, no sus capas vacias: su cara la dibuja
+    ''' el FaceGen de la plantilla, asi que el tinte que su cara muestra es el de ella. Derivar de las capas
+    ''' propias de un heredero de Skyrim --que no tiene, porque el bit 0 no se las copia-- hace caer al
+    ''' compositor al CLFM DEFAULT DE LA RAZA: el cuerpo con el tono de la raza y la cara con el de la
+    ''' plantilla. Es la COSTURA EN EL CUELLO, ya medida y cerrada una vez; la volvi a abrir sacando esta
+    ''' rama y la cazó el revisor. La reabre cualquier overlay, hasta el vacio que instala elegir un
+    ''' atuendo.</para>
+    ''' <para>⛔ Y esto NO son dos leyes con el escritor: mientras hereda, el escritor NO deriva --el bit 0
+    ''' le copia el QNAM de la plantilla igual (`0x1403BE09A` en SSE, `0x140651552` en FO4), asi que escribir
+    ''' otra cosa seria escribir un byte que el juego pisa--. Los dos caminos dan EL MISMO color: el de la
+    ''' plantilla. Uno lo deriva para dibujarlo, el otro lo deja como esta porque ya es ese.</para>
+    ''' <para>⛔ El ajuste EN VIVO gana sobre el de la plantilla: es el slider que estas moviendo, y al
+    ''' aceptar ese cambio DESPRENDE (el tono es un canal que el bit 0 copia), con lo cual pasa a ser suyo.</para></summary>
     Friend Function ResolveNpcBodySkinToneColor(state As MainForm.NPCVisualState) As Nullable(Of Color)
-        If Not HayQueDerivarElTonoDelCuerpo(state) Then Return Nothing
+        If state IsNot Nothing AndAlso state.TraitsSourceFormID <> 0UI AndAlso
+           state.TraitsSourceFormID <> state.RootNpcFormID Then
+            Dim plantilla = _ctx.GetParsedNpc(state.TraitsSourceFormID)
+            If plantilla IsNot Nothing AndAlso _sombraDelTerminal IsNot Nothing Then
+                plantilla = _sombraDelTerminal(plantilla)
+            End If
+            If plantilla IsNot Nothing AndAlso plantilla.Record IsNot Nothing Then
+                Dim ajuste = state.SkinToneOffset
+                If ajuste Is Nothing OrElse ajuste.IsZero Then
+                    Dim autoriaT = NpcRecordOverlay.OverlayDeAutoria(state.TraitsSourceFormID, _appliedPresets)
+                    If autoriaT IsNot Nothing Then ajuste = autoriaT.SkinToneOffset
+                End If
+                Dim deLaPlantilla = ResolveNpcSkinToneCore(state, ajuste, plantilla)
+                If deLaPlantilla.HasValue Then Return deLaPlantilla
+            End If
+        End If
         Return ResolveNpcSkinToneCore(state, state?.SkinToneOffset)
     End Function
 
-    Private Function ResolveNpcSkinToneCore(state As MainForm.NPCVisualState, offset As SkinToneQnamOffset) As Nullable(Of Color)
+    ' ⛔ `npcDataImpuesto` existe para el CUERPO DE UN HEREDERO: el tono sale de las capas de su
+    ' PLANTILLA, no de las suyas. La raza y el sexo siguen siendo los del NPC que se dibuja.
+    Private Function ResolveNpcSkinToneCore(state As MainForm.NPCVisualState, offset As SkinToneQnamOffset,
+                                            Optional npcDataImpuesto As NPC_Data = Nothing) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
-        Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim npcData = _overlayResolver(state)
+        Dim npcData = If(npcDataImpuesto, _overlayResolver(state))
         If npcData Is Nothing Then Return Nothing
 
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)

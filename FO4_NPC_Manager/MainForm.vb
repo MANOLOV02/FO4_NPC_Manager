@@ -2413,7 +2413,8 @@ Public Class MainForm
         _ctx.RaceIsPowerArmor = AddressOf RaceIsPowerArmor
         _ctx.ArmaDraftResolver = AddressOf _fotosArma.ParaRender
         _ctx.MswpDraftResolver = AddressOf BuildMswpDataFromDraft
-        _materialResolver = New NpcMaterialResolver(_ctx, AddressOf AplicarOverlayDeDibujo, _appliedPresets)
+        _materialResolver = New NpcMaterialResolver(_ctx, AddressOf AplicarOverlayDeDibujo, _appliedPresets,
+                                                    AddressOf SombraDelTerminal)
         _stateResolver = New NpcStateResolver(_ctx, _materialResolver, _appliedPresets, _lvlnDataCache,
                                               Function() CurrentGenderFilter, AddressOf ResolveLmSkinTemplate)
         _morphPoseResolver = New NpcMorphPoseResolver(_ctx, AddressOf AplicarOverlayDeDibujo, Function() _renderHost, _appliedPresets,
@@ -9911,13 +9912,22 @@ Public Class MainForm
         End Using
     End Function
 
-    ''' <summary>⛔ Envoltorio: la ley vive en `NpcRecordOverlay`, que es un modulo y no tiene estado.
-    ''' Aca sólo se le pasan las dependencias que MainForm ya tiene.</summary>
-    ''' <summary>⛔⛔ Costura de arnes: el compositor de tintes DEL RENDER, entrando por su llamador.
-    ''' <para>Existe porque el caso que mide la cara del heredero le pasaba el modelo A MANO, asi que medía
-    ''' el interior de `FaceTintLayerBuilder` y no la ELECCION del modelo -- que fue exactamente el defecto
-    ''' cabecera de esta ola (`state.FormID` en vez de `FaceAppearanceSourceFormID`). Con esta costura, esa
-    ''' regresion vuelve a tener testigo.</para></summary>
+    ''' <summary>⛔ Costura de arnes: EL TONO DEL CUERPO tal como lo resuelve el render.
+    ''' <para>⛔ ACA HABIA TRES `summary` APILADOS sobre esta unica funcion --uno de `SombraDelTerminal`,
+    ''' otro de `TintesDeLaCaraParaArnes` y este--, con lo cual esas dos quedaron SIN doc y esta quedo
+    ''' con dos descripciones ajenas encima. Lo cazó el revisor. Pegar un `summary` arriba del anterior
+    ''' no lo reemplaza: los apila, y el compilador no dice nada.</para>
+    ''' <para>⛔ Y el texto que traia era el de la ley de hace tres vueltas --«toma el color GUARDADO
+    ''' de su plantilla, no una derivacion»-- que es lo contrario de lo que el codigo hace hoy: el
+    ''' heredero DERIVA del tinte de su plantilla.</para></summary>
+    Friend Function TonoDelCuerpoParaArnes(state As NPCVisualState) As Color?
+        Return _materialResolver.ResolveNpcBodySkinToneColor(state)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes: el compositor de tintes DEL RENDER, entrando por su llamador.
+    ''' <para>Existe porque el caso que mide la cara del heredero le pasaba el modelo A MANO, asi que
+    ''' media el interior de `FaceTintLayerBuilder` y no la ELECCION del modelo -- que fue el defecto
+    ''' cabecera de esta ola (`state.FormID` en vez de `FaceAppearanceSourceFormID`).</para></summary>
     Friend Function TintesDeLaCaraParaArnes(state As NPCVisualState) As NPC_Data
         Return _faceTintResolver.BuildFaceTintLayerInputs(state).npcData
     End Function

@@ -403,9 +403,12 @@ Friend NotInheritable Class NpcStateResolver
             ' encuentra capa de tono y cae al CLFM DEFAULT DE LA RAZA. Un heredero con cualquier overlay
             ' —hasta uno vacio, que lo instala elegir un atuendo— dibujaba el cuerpo con el tono de la raza
             ' en vez del de su plantilla, y la cara seguia con el de la plantilla: costura en el cuello.
-            ' ⛔ La guarda de "mientras hereda no se re-deriva" NO se repite aca: vive en
-            ' `ResolveNpcSkinToneCore`, que es el que deriva, y devuelve Nothing para un heredero. Repetirla
-            ' seria un segundo dueño de la misma ley, que es exactamente lo que hubo que arreglar.
+            ' ⛔ La ley de "de que record sale el tono" NO se repite aca: vive en
+            ' `ResolveNpcBodySkinToneColor`, que para un heredero deriva del tinte de su PLANTILLA --que es
+            ' el que su cara muestra-- y para el resto del propio record. Repetirla seria un segundo dueño.
+            ' ⛔ Este comentario decia que el core "devuelve Nothing para un heredero" y era FALSO desde
+            ' que la rama existe: lo cazo el revisor. Un comentario que describe la ley de ayer manda al
+            ' proximo lector a buscar un camino que no esta.
             Dim presetSkin = _materialResolver.ResolveNpcBodySkinToneColor(state)
             If presetSkin.HasValue Then
                 state.HasTextureLighting = True

@@ -727,35 +727,27 @@ finDelSkin:
         ' tickeada) no pasan por LoadPreset en el motor y validarlas las salteaba o les cambiaba el ColorID.
         If preset.HasFaceTintLayers Then EscribirCapasDeTinte(sr, preset.FaceTintLayers)
 
-        ' QNAM derivation (post-Tints): si la sombra ahora lleva una capa de slot-12 (SkinTone), se re-deriva
-        ' el QNAM de ahí para que el plugin guardado tenga el mismo tono de piel que compone el preview.
-        ' LooksMenu no serializa QNAM (CharGenInterface.cpp no emite "TextureLighting") — el motor lo lee en
-        ' runtime del array de tints del actor. Acá se hace lo mismo a la hora de escribir, así que el record
-        ' persistido lleva el color efectivo y no el original, al que las ediciones del usuario nunca llegaron.
-        ' Sin capa de SkinTone, el QNAM del record queda sin tocar.
-        ' ⛔⛔ EL QNAM SE RE-DERIVA SOLO SI EL OVERLAY AUTHOREA TINTES O TONO. Sin autoria queda el de la
-        ' BASE, que es el que el bit 0 copio de la plantilla (SSE 0x1403BE09A, FO4 0x140651552).
-        ' Antes se re-derivaba SIEMPRE que hubiera raza, y eso rompia dos cosas:
-        '   - ajustar el tono del cuerpo en una PLANTILLA dejaba de llegarle a los que heredan de ella: la
-        '     base traia el QNAM con el ajuste y la re-derivacion lo pisaba con uno calculado sin offset;
-        '   - y a cualquier NPC con overlay de OTRA categoria (un atuendo, por ejemplo) le movia el QNAM un
-        '     escalon de 255 por la ida y vuelta capa->color->capa. Eso es el residuo de P26.3(a), que
-        '     seguia vivo, y se cierra aca.
-        ' ⛔ Y NO SE RE-DERIVA MIENTRAS EL NPC HEREDA. El bit 0 COPIA el QNAM (SSE 0x1403BE09A, FO4
-        ' 0x140651552), asi que el tono del cuerpo de un heredero ES el de su plantilla, aunque tenga capas
-        ' de tinte propias -- en SSE las capas NO se heredan, o sea que el motor mismo hace que la cara y el
-        ' tono del cuerpo salgan de fuentes distintas. Derivarlo de las capas de X seria inventar un valor
-        ' que el juego no le da.
-        Dim heredaTraits As Boolean = NpcTemplateHelpers.HasTemplateFlag(
+        ' ⛔⛔ SE DERIVA SIEMPRE QUE SE PUEDA, no solo cuando la autoria toca el tono. Decision del
+        ' usuario (09-sep): el editor al grabar el ESP empareja SIEMPRE el tono del cuerpo con el tinte, asi
+        ' que el archivo y el preview dicen lo mismo por construccion y no por coincidencia. Antes esto
+        ' preguntaba primero si la autoria tocaba el tono (`AutoriaTocaElTono`), y para un no heredero con un
+        ' preset que no lo tocaba --un atuendo, un color de pelo-- el archivo conservaba el QNAM crudo.
+        ' ⛔ TAMBIEN SE LE ESCRIBE AL HEREDERO, y el usuario decidio que asi sea. El bit 0 le COPIA el
+        ' QNAM de su plantilla (SSE 0x1403BE09A, FO4 0x140651552), o sea que el juego IGNORA lo que tenga
+        ' escrito y el valor derivado no puede hacer dano; y si algun dia deja de heredar --el usuario le
+        ' baja el bit-- el campo ya trae el tono que le corresponde en vez de un crudo viejo. Escribirlo es
+        ' lo seguro, no escribirlo deja un campo que solo esta bien por accidente.
+        ' ⛔ Queda `raceIsValid` porque sin raza no hay de donde derivar: no es una eleccion, es que no
+        ' hay dato. Y si la derivacion no puede resolver, mas abajo se preserva el crudo.
+        ' ⛔⛔ MIENTRAS HEREDA NO SE ESCRIBE EL TONO. El bit 0 le COPIA el QNAM de su plantilla
+        ' (`0x1403BE09A` en SSE, `0x140651552` en FO4), asi que el valor que este record tenga lo pisa el
+        ' juego al cargar: derivarle uno propio seria escribir un byte muerto. El render, para un heredero,
+        ' deriva del tinte de la PLANTILLA y llega al MISMO color, asi que los dos caminos coinciden.
+        ' ⛔ Sin esta guarda reaparecia la COSTURA EN EL CUELLO: el heredero de Skyrim no tiene capas
+        ' propias --el bit 0 no las copia-- y la derivacion caia al default de su raza.
+        Dim heredaElTono As Boolean = NpcTemplateHelpers.HasTemplateFlag(
                                           sr.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits)
-        ' ⛔ LA MISMA PREGUNTA QUE EL RENDER, en la misma sede. Aca habia una lista de TRES campos
-        ' escrita a mano --un tercer dueño de "cuales son los canales del tono"-- y el render, para un no
-        ' heredero, contestaba True SIEMPRE: el preview derivaba de las capas y el archivo guardaba el
-        ' QNAM crudo. Ahora la contesta `AutoriaTocaElTono`, derivada de `PorCanal`.
-        Dim authoreaTono As Boolean = PresetCategoryFilter.AutoriaTocaElTono(
-            preset, Config_App.Current IsNot Nothing AndAlso
-                    Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
-        If raceIsValid AndAlso authoreaTono AndAlso Not heredaTraits Then
+        If raceIsValid AndAlso Not heredaElTono Then
             ' El ajuste manual del tono del CUERPO entra ACA (y no dentro de la derivacion compartida): este
             ' es el punto donde el QNAM se materializa como campo del record, que es tono de CUERPO por
             ' definicion. El save y el BAKE salen los dos de esta sombra, asi que con una sola linea quedan
@@ -930,10 +922,20 @@ finDelSkin:
     ''' scaled to 0..255) — same shape MainForm.ResolveNpcSkinToneColor consumes. Single source of
     ''' truth shared by render (preview) and save (NpcRecordOverlay) so the two never drift.
     ''' <para>The Slot enum value is a schema-defined field name,
-    ''' NOT a hardcoded magic number — this is the canonical lookup for "skin tint layer".</para></summary>
+    ''' <summary>⛔ Deriva el tono del cuerpo de las capas de tinte del record que se le pasa.
+    ''' <para>⛔ ACA HABIA UN DOC QUE DESCRIBIA UNA GUARDA QUE NO EXISTE: decia que sin capas propias
+    ''' devolvia Nothing. Puse esa guarda, la saqué --el default de la raza ES el tinte efectivo de un
+    ''' record que no declara capas, y es con el que se compone su cara-- y me olvidé de sacar el texto.
+    ''' Un comentario que promete una guarda inexistente es peor que no tener comentario: el proximo
+    ''' lector la da por vigente. Lo cazó el revisor.</para>
+    ''' <para>Sin capa de tono autoreada NO devuelve Nothing: `MergeTintLayersWithRaceDefaults` (FO4) y
+    ''' `ResolveSkinToneQnam` (SSE) completan con los defaults de la RAZA. Eso es correcto para un
+    ''' record cuya cara se compone de si mismo; NO lo es para un heredero, y por eso el llamador del
+    ''' cuerpo resuelve antes de que record hay que derivar.</para></summary>
     Public Function DeriveSkinToneQnam(npc As NPC_Data, race As Canon.IRace, isFemale As Boolean, pluginManager As PluginManager,
                                        Optional raceFormIDOverride As UInteger = 0UI,
                                        Optional offset As SkinToneQnamOffset = Nothing) As Nullable(Of Color)
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return Nothing
         ' SSE (Skyrim): no slot-12; the skin tone is the RACE tint layer whose TINP mask type == 6, with the
         ' intensity FOLDED into the QNAM colour (SSE QNAM has no alpha). Game-gated so FO4 stays byte-identical.
         ' This single source of truth feeds both the save-overlay QNAM (above) and the render body (via

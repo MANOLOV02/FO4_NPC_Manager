@@ -704,56 +704,14 @@ Public Module PresetCategoryFilter
         Return PrimerCanalDistinto(deLaBase, autoria, cat, isSse, soloHeredables:=True)
     End Function
 
-    ''' <summary>⛔⛔ ¿LA AUTORIA TOCA EL TONO? La pregunta que decide si el tono del cuerpo se DERIVA
-    ''' de las capas o se toma el QNAM del record, en UNA sede.
-    ''' <para>Estaba escrita dos veces con respuestas distintas: el guardado preguntaba por tres campos a
-    ''' mano (`SkinToneOffset`, `HasFaceTintLayers`, `HasSseTints`) y el render, para un NO heredero,
-    ''' contestaba `True` SIEMPRE. Resultado medido: para un no-heredero con un preset que no toca el tono
-    ''' --un atuendo, un color de pelo-- el preview derivaba de las capas y el archivo conservaba el QNAM
-    ''' crudo. Poblacion sembrada: 189 a un escalon y 29 con diferencia grande en Skyrim, 47 en Fallout.</para>
-    ''' <para>⛔ Y el juego lee el QNAM CRUDO: `TESNPC::SetSkinFromTint` (`0x1403BFE40`) lo lee siempre al
-    ''' final (`0x1403C0015`, `0x1403C001C`, `0x1403C0023`) y lo vuelca al material +0xA0 del sombreador;
-    ''' todo sitio que lo RE-DERIVA desde las capas esta guardado por `formID == 7`, o sea SOLO el jugador.
-    ''' Asi que el preview era el unico de los tres que mostraba otra cosa.</para>
-    ''' <para>⛔ Se DERIVA de `PorCanal`, no es una lista: los canales del tono son los de la categoria
-    ''' `FaceTints`, y una lista a mano es un tercer dueño que se desincroniza.</para>
-    ''' <para>⛔ NO mira la base a proposito: la pregunta es "¿declara?", no "¿declara DISTINTO?". La
-    ''' segunda es la de la PUERTA y la contesta `AutoreaDistintoDeLaBase`. Mezclarlas cambiaria bytes del
-    ''' archivo, y esto no cambia ninguno.</para></summary>
-    Friend Function AutoriaTocaElTono(autoria As LooksmenuLoader.LooksmenuPreset, isSse As Boolean) As Boolean
-        ' ⛔⛔ LA TEXTURA DE TINTE NO ALIMENTA LA DERIVACION, asi que declararla no es "tocar el
-        ' tono". Verificado en la sede que deriva: `SseFaceTintComposer.ResolveSkinToneQnam`
-        ' (FO4_Base_Library\SseFaceTintComposer.vb:369) arma su mapa con
-        ' `BuildNpcAuthoredTintMap(Nothing, CapasDeTinteSse(npc.Record))` --los COLORES TINI-- y no lee
-        ' `SseTintTexOverride` en ningun punto.
-        ' ⛔ Contarla tenia consecuencia MEDIBLE: la hidratacion desde el sidecar de RaceMenu
-        ' (`BssliderSidecar.vb:324-326`) deja el override de textura puesto y la marca ABAJO, asi que cada
-        ' re-guardado de ese NPC re-derivaria el QNAM desde las capas CRUDAS -- la ida y vuelta que este
-        ' arbol ya tiene anotada, que pierde un escalon por vuelta. Poblacion hoy: CERO (el `.bssliders`
-        ' de Skyrim trae 1 entrada y 0 texturas de tinte; los dos de Fallout, 0 entradas), pero la clase
-        ' la alcanza cualquiera que use RaceMenu.
-        Return DeclaraLaCategoria(autoria, PresetCategory.FaceTints, isSse, soloHeredables:=False,
-                                  canalesQueNoCuentan:=CANALES_QUE_NO_DERIVAN_EL_TONO)
-    End Function
-
-    ''' <summary>⛔ Canales de `FaceTints` que un preset puede declarar y que NO alimentan la
-    ''' derivacion del tono. Vive como constante con nombre --y no inline-- para que el dia que la
-    ''' derivacion cambie de insumos, el control de abajo lo cace.</summary>
-    Private ReadOnly CANALES_QUE_NO_DERIVAN_EL_TONO As String() = {"SseTintTexOverride"}
-
-    ''' <summary>⛔ El CONTROL de la exclusion de arriba: devuelve el canal declarado que la categoria
-    ''' `FaceTints` ya no tiene. Una exclusion que nombra un canal inexistente es una excusa muerta.</summary>
-    Friend Function ControlarCanalesQueNoDerivan(isSse As Boolean) As String
-        Dim vistos As New List(Of String)
-        PorCanal(PresetCategory.FaceTints, isSse,
-                 Sub(nombre, leerCanal, escribirCanal) vistos.Add(nombre))
-        For Each c In CANALES_QUE_NO_DERIVAN_EL_TONO
-            ' ⛔ En Fallout ese canal no existe: la categoria no lo lista y eso NO es excusa muerta, es
-            ' game-awareness. Solo se reporta si el juego declara la categoria y aun asi no lo trae.
-            If isSse AndAlso Not vistos.Contains(c) Then Return c
-        Next
-        Return Nothing
-    End Function
+    ' ⛔⛔ ACA VIVIA `AutoriaTocaElTono`, con su lista de exclusion y el control de esa lista.
+    ' Se fueron las tres el 09-sep: por decision del usuario el tono del cuerpo se DERIVA SIEMPRE --en el
+    ' render y al grabar el ESP-- del record que corresponde, herede o no, asi que ya no hay nada que
+    ' preguntar. La unica condicion que queda es del MOTOR y vive en `NpcRecordOverlay`: mientras el NPC
+    ' hereda, el bit 0 le copia el QNAM de su plantilla y escribirle uno derivado seria escribir un valor
+    ' que el juego pisa al cargar.
+    ' ⛔ Se BORRARON en vez de dejarlas sin llamador: una funcion viva sin consumidor es la costura que
+    ' el proximo lector toma por ley vigente. Con ellas se fue la ley 12 de G17, que solo las vigilaba.
 
     ''' <summary>⛔ La PRIMERA de las dos preguntas: ¿el overlay declara algo de esta categoria?
     ''' <para>Se distingue de un preset en blanco en algun canal heredable -- de VALOR o de MARCA. La marca
