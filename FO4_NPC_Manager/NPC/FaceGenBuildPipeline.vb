@@ -225,11 +225,25 @@ Public Module FaceGenBuildPipeline
     ''' <summary>Build a BakeState for one NPC. Loads NPC, applies LooksMenu overlay, parses
     ''' RACE, resolves face regions JSON, builds FMRS pose. Returns Nothing if NPC or RACE
     ''' resolution fails.</summary>
+    ''' <param name="npcDataResuelto">⛔⛔ EL RECORD YA RESUELTO por el llamador. Los DOS llamadores
+    ''' acaban de resolverlo con la MISMA ley --`ResolveOverlaidNpcData`, autoria sobre la base heredada--
+    ''' y despues esta funcion lo volvia a caminar: tres caminatas por repintado y dos por horneado, de
+    ''' las cuales el medidor de costo solo ve la primera. Cada caminata re-parsea el record, sondea la
+    ''' cadena, arma la sombra del terminal y COPIA el record.
+    ''' <para>Nothing = el llamador no lo tiene y esta funcion camina, como antes.</para></param>
     Public Function BuildBakeState(npcFormID As UInteger,
                                     pluginManager As PluginManager,
                                     appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                    facialBoneRegions As FacialBoneRegionsFile) As BakeState
-        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets)
+                                    facialBoneRegions As FacialBoneRegionsFile,
+                                    resolveLvlnPick As Func(Of UInteger, UInteger),
+                                    npcDataResuelto As NPC_Data) As BakeState
+        ' ⛔⛔ ESTA es la caminata que alimenta el horneado de cabeza. El resolvedor de hoja se habia
+        ' puesto en otra llamada de `MainForm` que solo aporta raza y genero, asi que el estado del bake
+        ' seguia clavando la primera hoja: en un mismo repintado habia dos terminales distintos.
+        ' ⛔⛔ NO CAMINA: el record llega resuelto. El parametro es OBLIGATORIO a proposito --
+        ' mientras fue opcional, la rama que caminaba no la usaba ningun llamador de produccion: era un
+        ' modo que existia "para no romper", y este arbol tiene la regla de que eso no va.
+        Dim npcData = npcDataResuelto
         If npcData Is Nothing Then Return Nothing
 
         Dim raceRec = pluginManager.GetRecord(npcData.Record.Race)

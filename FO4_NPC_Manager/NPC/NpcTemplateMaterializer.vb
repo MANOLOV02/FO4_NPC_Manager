@@ -147,12 +147,14 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 ClearFlagBit(npc, category)
 
             Case Else   ' Unresolvable
-                ' THE FLAG STAYS SET. This is NOT the leveled-list case (that one gets pinned above) — it is
-                ' the genuinely empty one: an unreadable/foreign source record, a cycle, or a list with no NPC_
-                ' leaves at all. There is nothing to copy, so clearing the bit would drop the NPC to its own
-                ' (usually EMPTY) Traits and the face would collapse to the race default. MEASURED own-record
-                ' head-part count of 0 for FO4 904 / SSE 1294 of the affected population, which is what that
-                ' collapse looks like. Keeping the bit preserves current in-game behaviour exactly.
+                ' THE FLAG STAYS SET. ⛔ La lista de casos que estaba escrita aca quedo RANCIA: «un
+                ' record de origen ilegible o una lista sin hojas» ya NO llegan aca a profundidad >= 1 --
+                ' desde rev-32/rev-40 esos son punteros muertos y la fuente pasa a ser el ultimo eslabon
+                ' resuelto. Lo que llega aca hoy es: el fallo a profundidad CERO (el propio NPC, donde no se
+                ' resolvio nada) y el CICLO. Los dos coinciden con lo que hace el render.
+                ' Es el caso genuinamente vacio: no hay NADA que copiar, asi que bajar el bit tiraria al NPC
+                ' a sus propios Traits (normalmente VACIOS) y la cara colapsaria al default de la raza. Cuenta
+                ' MEDIDA del propio record con cero partes de cabeza: FO4 904 / SSE 1294 de la poblacion
                 ' MEASURED occurrences of THIS branch in both vanilla load orders: 0.
                 Logger.LogLazy(Function() $"[TPLT-MATERIALIZE] NPC 0x{resolution.LogFormID:X8} '{resolution.LogEditorId}': " &
                                           $"Use-{category} could not be resolved ({resolution.LogReason}) => flag LEFT SET; " &
@@ -269,7 +271,23 @@ Friend NotInheritable Class NpcTemplateMaterializer
 
             Dim srcFid = NpcTemplateHelpers.ResolveTemplateSourceFormID(current, category)
             If srcFid = 0UI Then
-                ' Flag set with no TPLT/TPTA behind it: the engine has nothing to copy either.
+                ' ⛔⛔ UN BIT SIN PUNTERO ES UN PUNTERO MUERTO, igual que uno ilegible. A profundidad
+                ' >= 1 la fuente es el ULTIMO ESLABON RESUELTO, no «ninguna»: el motor camina la cadena
+                ' puntero por puntero y se detiene donde el puntero muere (`TESNPC+0x270` en Fallout,
+                ' `0x140658E80`; `+0x1F0` en Skyrim, `0x1403C2E20`), y lo copiado hasta ahi ya esta copiado.
+                ' ⛔ Esto lo destapo el caso sembrado: la primera correccion cubria solo el puntero
+                ' ILEGIBLE y este camino --el bit puesto sin TPLT-- seguia devolviendo «ninguna», con lo
+                ' cual el horneado y el render volvian a contestar distinto para la misma cadena.
+                If Not ReferenceEquals(current, npc) Then
+                    res.Outcome = If(wentThroughLeveledList,
+                                     MaterializeOutcome.MaterializedFromLeveledPick,
+                                     MaterializeOutcome.Materialized)
+                    res.Source = current
+                    res.LogReason = $"el eslabon 0x{current.FormID:X8} tiene el bit sin TPLT/TPTA; se toma " &
+                                    "como ultimo resuelto"
+                    Return res
+                End If
+                ' A profundidad 0: el NPC mismo tiene el bit sin puntero. El motor no tiene NADA que copiar.
                 res.Outcome = MaterializeOutcome.NoSourceToLose
                 res.LogReason = "no TPLT/TPTA"
                 Return res
@@ -288,6 +306,24 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 Dim pick As UInteger = 0UI
                 If resolveLvlnPick IsNot Nothing Then pick = resolveLvlnPick(srcFid)
                 If pick = 0UI Then
+                    ' ⛔⛔ UN SALTO INTERMEDIO QUE FALLA NO BORRA LOS QUE SI RESOLVIERON. Aca se
+                    ' devolvia `Unresolvable` SIEMPRE, y el horneado caia al propio NPC -- mientras el render
+                    ' se quedaba con el ULTIMO ESLABON RESUELTO. Dos respuestas para la misma cadena.
+                    ' ⛔ La correcta es la del render, y no por gusto: el motor camina la cadena
+                    ' PUNTERO POR PUNTERO hasta el ultimo (`TESNPC+0x270` en Fallout, `0x140658E80`-`0x...EAA`;
+                    ' `TESNPC+0x1F0` en Skyrim, `0x1403C2E20`-`0x...E49`) y se detiene donde el puntero muere.
+                    ' Un eslabon que no resuelve ES el puntero muerto: lo copiado hasta ahi ya esta copiado.
+                    ' ⛔ A profundidad 0 sigue siendo `Unresolvable`: ahi no se resolvio NADA, y devolver
+                    ' el propio NPC como su fuente seria decir que se hereda de si mismo.
+                    If Not ReferenceEquals(current, npc) Then
+                        res.Outcome = If(wentThroughLeveledList,
+                                         MaterializeOutcome.MaterializedFromLeveledPick,
+                                         MaterializeOutcome.Materialized)
+                        res.Source = current
+                        res.LogReason = $"el eslabon 0x{srcFid:X8} no resuelve; se toma el ultimo resuelto " &
+                                        $"0x{current.FormID:X8}"
+                        Return res
+                    End If
                     res.Outcome = MaterializeOutcome.Unresolvable
                     res.LogReason = $"source 0x{srcFid:X8} is unreadable or has no NPC_ leaves"
                     Return res
@@ -299,6 +335,22 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 End If
                 Dim picked = getParsedNpc(pick)
                 If picked Is Nothing Then
+                    ' ⛔⛔ EL TERCER HERMANO DEL MISMO PUNTERO MUERTO. La hoja se eligio pero no se
+                    ' puede parsear: para el motor es otra vez un puntero que muere, asi que a profundidad
+                    ' >= 1 la fuente es el ULTIMO ESLABON RESUELTO, igual que el puntero ilegible y que el
+                    ' bit sin TPLT.
+                    ' ⛔ SE CIERRA POR CLASE, NO POR ENUMERACION. Las tres formas las fui arreglando de
+                    ' a una --y las dos primeras solo porque un caso sembrado las destapo--. Una regla que
+                    ' se cierra caso por caso vuelve por el que falta; la clase es "el puntero murio".
+                    If Not ReferenceEquals(current, npc) Then
+                        res.Outcome = If(wentThroughLeveledList,
+                                         MaterializeOutcome.MaterializedFromLeveledPick,
+                                         MaterializeOutcome.Materialized)
+                        res.Source = current
+                        res.LogReason = $"la hoja 0x{pick:X8} no se puede parsear; se toma el ultimo resuelto " &
+                                        $"0x{current.FormID:X8}"
+                        Return res
+                    End If
                     res.Outcome = MaterializeOutcome.Unresolvable
                     res.LogReason = $"leveled-list pick 0x{pick:X8} could not be parsed"
                     Return res

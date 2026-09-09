@@ -5218,8 +5218,13 @@ persist:
             If raceRec Is Nothing Then Continue For
             Dim race = Canon.CanonRecords.Race(raceRec, pm)
             Dim regions = FO4_NPC_Manager.NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(race, r.IsFemale)
-            Dim st = FO4_NPC_Manager.FaceGenBuildPipeline.BuildBakeState(r.SrcFid, pm,
-                                                         New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)(), regions)
+            ' ⛔ El record resuelto lo arma el llamador: `BuildBakeState` ya no camina la cadena. Sin
+            ' resolvedor de hoja --esta es la linea de comandos, no tiene pantalla-- rige la primera hoja,
+            ' que es la regla declarada en la sede.
+            Dim sinPresets = New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)()
+            Dim datosCli = FO4_NPC_Manager.NpcRecordOverlay.ResolveOverlaidNpcData(r.SrcFid, pm, sinPresets)
+            Dim st = FO4_NPC_Manager.FaceGenBuildPipeline.BuildBakeState(r.SrcFid, pm, sinPresets, regions,
+                                                                        Nothing, datosCli)
             If st Is Nothing Then bakeFail += 1 : Continue For
 
             Dim merged = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(r.RaceFid, r.IsFemale, st.NpcData.Record.PartesDeCabeza(), pm)

@@ -402,23 +402,23 @@ Friend Module BakeAllRunner
             '    hair palettes and skin overrides resolve exactly as they do in the app.
             ' ---------------------------------------------------------------------------------
             Dim ctx As New NpcRenderContext(pm)
-            Dim resolveLmSkin As NpcRecordOverlay.ResolveLmSkinTemplateDelegate =
-                Function(templateId As String) As LmSkinTemplate
-                    If String.IsNullOrEmpty(templateId) Then Return Nothing
-                    Return lmTemplates.FirstOrDefault(Function(t) String.Equals(t.Id, templateId, StringComparison.Ordinal))
-                End Function
-            ' ⛔ El resolver lleva el ESTADO, igual que en el render -- pero el BAKE se queda con la
-            ' AUTORIA a proposito, y por eso pregunta `OverlayDeAutoria` en vez de `OverlayDeDibujo`:
-            ' hornear es authorear. El .dds que sale es del NPC y no de su plantilla, aunque en
-            ' pantalla se lo dibuje con la cara del terminal mientras hereda. Es la misma ley que hace
-            ' que `FaceGenBuilder` deje `DibujoHeredado` en Nothing, y la mide G10.
-            ' ⛔ El resolver recibe SOLO el estado, y compone sobre `state.RecordBase` -- la MISMA base
-            ' que el render. Es la opcion (a) que decidio el usuario: render y horneado arrancan del mismo
-            ' record, asi que el `.dds` de un heredero sale con la cara que el juego le va a dar.
+            Dim resolveLmSkin = LmSkinTemplateLoader.Resolvedor(lmTemplates)
+            ' ⛔⛔ POR LA SEDE, no a mano. Aca habia una copia de `ComponerAutoriaSobre` --daba
+            ' identico, pero era el TERCER dueño de la misma composicion-- y este es el horneado masivo
+            ' de la linea de comandos, o sea PRODUCCION.
+            ' ⛔ El parrafo que estaba aca decia tres cosas FALSAS y las tres invitaban a mantener dos
+            ' compositores a proposito: que el bake "pregunta `OverlayDeAutoria` en vez de
+            ' `OverlayDeDibujo`" (son la MISMA funcion: `OverlayDeDibujo` devuelve la autoria del root),
+            ' que `FaceGenBuilder` deja `DibujoHeredado` en Nothing (ese campo no existe) y que "lo mide
+            ' G10" (G10 mide otra cosa).
+            ' ⛔ Lo que SI es cierto y por eso queda: el resolver recibe SOLO el estado y compone sobre
+            ' `state.RecordBase` -- la MISMA base que el render. Es la opcion (a) que decidio el usuario:
+            ' render y horneado arrancan del mismo record, asi que el `.dds` de un heredero sale con la
+            ' cara que el juego le va a dar. Lo que distingue hornear de dibujar es la BASE, no el overlay.
             Dim overlayResolver As Func(Of MainForm.NPCVisualState, NPC_Data) =
-                Function(st As MainForm.NPCVisualState) NpcRecordOverlay.AplicarOverlay(
-                    st.RecordBase, NpcRecordOverlay.OverlayDeAutoria(st.RootNpcFormID, appliedPresets),
-                    st.RootNpcFormID, pm, resolveLmSkin, AddressOf ctx.ParseRaceCanonCached)
+                Function(st As MainForm.NPCVisualState) NpcRecordOverlay.ComponerAutoriaSobre(
+                    st.RecordBase, st.RootNpcFormID, appliedPresets, pm, resolveLmSkin,
+                    AddressOf ctx.ParseRaceCanonCached)
             Dim materialResolver As New NpcMaterialResolver(ctx, overlayResolver, appliedPresets)
 
             ' ---------------------------------------------------------------------------------

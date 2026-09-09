@@ -85,24 +85,19 @@ Public Module PresetCategories
     ''' </list>
     ''' <para>Todo lo demás (Outfit, BodySliders, Overlays, BodyScale, LmSkinTemplate, CustomMorphs, Sculpt,
     ''' IsCharGenPreset) queda FUERA: o es de otro bucket, o no tiene portador en el record, o no hay cita.</para></summary>
-    Public Function HeredaPorTraits(cat As PresetCategory, isSse As Boolean) As Boolean
+    ''' <summary>⛔⛔ EL DEFAULT POR CATEGORIA -- privado, y lo consume SOLO `HeredaElCanal`.
+    ''' <para>Es la mitad de la tabla que no depende del canal. La publica es `HeredaElCanal`, que es la
+    ''' granularidad a la que decide el MOTOR; y `HeredaPorTraits` se DERIVA de ella. Con dos tablas
+    ''' escritas a mano habia dos respuestas para la misma pregunta, y el filtro del guardado uso la
+    ''' gruesa: borro al guardar la intensidad de morfo facial de Fallout y las capas de tinte de Skyrim,
+    ''' que el usuario habia editado y que el bit 0 NO copia.</para></summary>
+    ''' <para>⛔ Los renglones de `FaceTints` y `FaceBoneRegions` SALIERON: `HeredaElCanal` los
+    ''' resuelve por canal antes de caer aca, asi que eran INALCANZABLES -- y un segundo lugar que
+    ''' "sabe" esas dos respuestas es justo la duplicacion que esta ola vino a cerrar.</para></summary>
+    Private Function DefaultDeLaCategoria(cat As PresetCategory, isSse As Boolean) As Boolean
         Select Case cat
-            Case PresetCategory.FaceBoneRegions
-                ' [X] MEDIDO: FO4 copia el contenedor FMRI/FMRS bajo el bit 0. `sub_140651470` (llamada en
-                ' 0x14065847D, adentro del bloque del bit 0) lee [r13+0x2E0] en 0x14065187B y escribe
-                ' [rbp+0x2E0] en 0x140651989, y el handler del NPC_ arma ese mismo contenedor en
-                ' 0x14064FC40-0x14064FC79. Decia False, y con eso un toque de region sobre un heredero no lo
-                ' desprendia: el ESP salia con el bit 0 puesto y el motor le copiaba las del terminal.
-                ' [X] La INTENSIDAD (FMIN) es otro canal y NO hereda -- ver `HeredaElCanal`.
-                ' SSE no tiene FMRI/FMRS en el esquema del NPC_.
-                Return Not isSse
             Case PresetCategory.FaceParts, PresetCategory.HairColor, PresetCategory.SkinOverride,
                  PresetCategory.BodyWeight, PresetCategory.FaceVertexMorphs
-                Return True
-            Case PresetCategory.FaceTints
-                ' [X] True en los DOS juegos porque la categoria lleva DOS canales con respuestas distintas y
-                ' esta funcion contesta "¿hereda ALGUNO?". El detalle por canal vive en `HeredaElCanal`:
-                ' las capas de tinte solo las copia FO4, el QNAM (tono de piel) lo copian los dos.
                 Return True
             Case Else
                 Return False
@@ -151,8 +146,24 @@ Public Module PresetCategories
                    String.Equals(canal, "HasFacialMorphIntensity", StringComparison.Ordinal) Then Return False
                 Return Not isSse
             Case Else
-                Return HeredaPorTraits(cat, isSse)
+                Return DefaultDeLaCategoria(cat, isSse)
         End Select
+    End Function
+
+    ''' <summary>⛔⛔ ¿HEREDA ALGUNO DE LOS CANALES DE ESTA CATEGORIA? Se DERIVA de `HeredaElCanal`,
+    ''' que es la unica tabla. Antes era una segunda tabla escrita a mano y las dos se contradecian: el motor
+    ''' decide por CAMPO y dos categorias de la app mezclan campos con respuestas distintas.
+    ''' <para>Sirve de guarda de bucle -- "¿me interesa mirar esta categoria?" -- y NADA MAS. Para decidir
+    ''' sobre un campo concreto (comparar, revertir, filtrar al guardar) hay que preguntar por CANAL: usar
+    ''' esta ahi fue exactamente el defecto que borro ediciones del usuario al guardar.</para></summary>
+    Public Function HeredaPorTraits(cat As PresetCategory, isSse As Boolean) As Boolean
+        Dim alguno As Boolean = False
+        PresetCategoryFilter.PorCanal(cat, isSse,
+                                      Sub(nombre, leerCanal, escribirCanal)
+                                          If HeredaElCanal(cat, nombre, isSse) Then alguno = True
+                                      End Sub)
+        ' Una categoria sin canales en la tabla no hereda nada: no hay campo que el bit 0 pueda pisar.
+        Return alguno
     End Function
 
     ''' <summary>⛔⛔ ¿Este canal lleva un VALOR que el bit 0 puede pisar? Es la pregunta de LA PUERTA,

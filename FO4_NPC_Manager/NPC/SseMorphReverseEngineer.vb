@@ -149,7 +149,12 @@ Public Module SseMorphReverseEngineer
         zeroPreset.SseCustomMorphs = Nothing
         Dim zeroMap As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset) From {{npcFormID, zeroPreset}}
 
-        Dim state = FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, zeroMap, Nothing)
+        ' ⛔ El record resuelto lo arma ESTA sonda y se lo pasa: `BuildBakeState` ya no camina la
+        ' cadena por su cuenta. Sin resolvedor de hoja --esta herramienta no tiene pantalla-- rige la
+        ' primera hoja, que es la regla declarada en la sede.
+        Dim datosRe = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, zeroMap)
+        Dim state = FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, zeroMap, Nothing,
+                                                        Nothing, datosRe)
         If state Is Nothing OrElse state.NpcData Is Nothing Then
             res.Message = "Could not build the BakeState (NPC or RACE did not resolve)." : Return res
         End If

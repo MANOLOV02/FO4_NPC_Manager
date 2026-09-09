@@ -1438,8 +1438,19 @@ Public Module NpcOverrideSaver
             npcSpec.Record.ConfigurationFlagsIsCharGenFacePreset = False
         End If
 
-        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
+        ' ⛔⛔ POR LA SEDE, NO POR EL DICCIONARIO CRUDO. Aca se leia el preset tal cual y desde el se
+        ' reconstruian las partes de cabeza, asi que la ley "no se escribe lo que el NPC todavia hereda"
+        ' quedaba puesta en `ApplyPresetOverlayParaGuardado` y SALTEADA aca: el ESP salia con el PNAM de la
+        ' plantilla y el bit 0 ARRIBA -- bytes que el usuario no authoreo y que el motor pisa al cargar. Y
+        ' quedaba incoherente dentro de la MISMA categoria: la textura de cara filtrada y las partes no.
+        ' ⛔ Basta un gesto sin nada heredable: abrir Edit Face sobre un heredero y aceptar deja
+        ' `HasHeadPartFormIDs` en True, y el NPC seleccionado se guarda siempre.
+        Dim esSseGuardado As Boolean = (Config_App.Current IsNot Nothing AndAlso
+                                        Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim overlay As LooksmenuLoader.LooksmenuPreset =
+            NpcRecordOverlay.AutoriaParaGuardado(
+                NpcRecordOverlay.OverlayDeAutoria(npcFormID, ctx.AppliedPresets),
+                baseMaterializada, esSseGuardado)
 
         ' ⛔ Aca vivia la "fase 1b", que detectaba una edicion de MWGT en el overlay y escribia los tres
         ' pesos. Era un SEGUNDO ESCRITOR REDUNDANTE, no un lector con ley propia, y se borro entera:

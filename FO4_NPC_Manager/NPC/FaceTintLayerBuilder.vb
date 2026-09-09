@@ -39,8 +39,29 @@ Public Module FaceTintLayerBuilder
         ' tintes de su plantilla) y el BAKE con la AUTORIA (hornear es authorear, y G10 lo mide). Cuando se
         ' derivaba adentro, los dos se llevaban la autoria y el render de un heredero salia con los tintes
         ' VACIOS de X. Que la politica se lea en el llamador es justamente el punto.
+        ' ⛔⛔ LA CARA SALE DE LA PLANTILLA, Y ESO ES CANONICO -- medido, no heredado de la version
+        ' vieja. El juego arma la ruta del FaceGen caminando la cadena hasta el ULTIMO eslabon y usando SU
+        ' FormID: Fallout la recorre en 0x140658E80..0x140658EAA y formatea en 0x140658EE4; Skyrim en
+        ' 0x1403C2E20..0x1403C2E49 y formatea en 0x1403C2E83. O sea que la cara de un heredero es la que
+        ' su plantilla tiene horneada, y componerla desde el record de la plantilla es reproducir eso.
+        ' ⛔ NO cambiar esto por `state.RecordBase`: la base es para el CUERPO y para los campos que el
+        ' bit 0 copia. Si el usuario edita la cara, la puerta desprende y a partir de ahi el NPC ya no
+        ' hereda -- la cara pasa a salir de su propio record por el mismo camino, sin ninguna excepcion.
+        ' ⛔⛔ LA PLANTILLA VA CON SU PROPIO OVERLAY. Aca se componia la autoria del NPC sobre el
+        ' record CRUDO de su plantilla, asi que si el usuario le habia cargado un preset a la PLANTILLA, el
+        ' heredero seguia mostrando la cara vieja de ella -- justo lo contrario de lo que promete el cartel
+        ' del desprendimiento ("keeps a copy of what you are seeing now").
+        ' ⛔ `SombraDelTerminal` es la sede de esa pregunta y ya la usan la base del dibujo y el
+        ' congelado del editor; este era el CUARTO lector del terminal y el unico que no la usaba.
+        ' ⛔ Solo cuando la cara viene de OTRO record: para un no heredero el modelo es el propio NPC, y
+        ' estamparle su autoria dos veces es la ida y vuelta que ya perdio un escalon de 255 una vez.
+        Dim recordDelModelo = NpcRecordOverlay.GetParsedNpc(modelFormID, pluginManager)
+        If modelFormID <> rootFormID Then
+            recordDelModelo = NpcRecordOverlay.SombraDelTerminal(recordDelModelo, appliedPresets,
+                                                                 pluginManager, Nothing, parseRace)
+        End If
         Dim npcData = NpcRecordOverlay.AplicarOverlay(
-            NpcRecordOverlay.GetParsedNpc(modelFormID, pluginManager),
+            recordDelModelo,
             overlayPreset,
             rootFormID, pluginManager, Nothing, parseRace)
         If npcData Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()

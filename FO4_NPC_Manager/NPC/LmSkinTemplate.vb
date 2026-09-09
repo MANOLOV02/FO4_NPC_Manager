@@ -75,6 +75,54 @@ Public Module LmSkinTemplateLoader
         Return result
     End Function
 
+    ''' <summary>⛔ El resolvedor de plantillas de piel para el juego ACTIVO, armado sobre la carpeta
+    ''' Data del juego. Existe para que ningun llamador --y sobre todo ningun gate-- tenga que saber
+    ''' donde viven las plantillas: los seis delegados de guardado pasaban `Nothing` y con eso el camino
+    ''' de la plantilla de piel quedaba sin medir.
+    ''' <para>⛔ Recorre el disco: se arma UNA vez por contexto, no por NPC.</para></summary>
+    Private ReadOnly _memoDelJuego As New Dictionary(Of String, NpcRecordOverlay.ResolveLmSkinTemplateDelegate)(StringComparer.Ordinal)
+    Private _memoDelJuegoPm As PluginManager = Nothing
+
+    Public Function ResolvedorDelJuego(pluginManager As PluginManager) As NpcRecordOverlay.ResolveLmSkinTemplateDelegate
+        Dim data = If(Config_App.Current Is Nothing, "", Config_App.Current.DataPath)
+        ' ⛔ MEMO. `BuildCache` RECORRE EL DISCO --un `skin.json` por plugin cargado mas la carpeta
+        ' suelta-- y los llamadores de gate lo pedian por SUJETO, no por contexto: la doc decia "una vez
+        ' por contexto" y el codigo la desmentia. El memo va ACA y no en cada gate, por lo mismo que la
+        ' busqueda: una linea de cache copiada seis veces son seis caches que se desincronizan.
+        ' ⛔ La clave incluye el gestor de plugins por IDENTIDAD: los gates cambian de juego creando
+        ' uno nuevo, y con la ruta sola el catalogo del juego anterior quedaria pegado.
+        SyncLock _memoDelJuego
+            If Not ReferenceEquals(_memoDelJuegoPm, pluginManager) Then
+                _memoDelJuego.Clear()
+                _memoDelJuegoPm = pluginManager
+            End If
+            Dim hecho As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing
+            If _memoDelJuego.TryGetValue(data, hecho) Then Return hecho
+            hecho = Resolvedor(BuildCache(data, pluginManager))
+            _memoDelJuego(data) = hecho
+            Return hecho
+        End SyncLock
+    End Function
+
+    ''' <summary>⛔ El resolvedor de id -> plantilla que consume el overlay, sobre la lista dada.
+    ''' <para>La busqueda estaba escrita a mano en `MainForm` y otra vez en `BakeAllRunner`, y los seis
+    ''' delegados de guardado de los gates no tenian ninguna: pasaban `Nothing`, con lo cual
+    ''' `MaterializeLmTemplateBundleToPreset` se iba de largo y el camino entero de la plantilla de piel
+    ''' quedaba sin medir, en verde. Con el catalogo se arma aca:
+    ''' `Resolvedor(BuildCache(dataPath, pm))`.</para>
+    ''' <para>Ordinal, como el mapa de cadenas de f4ee.</para></summary>
+    Public Function Resolvedor(lista As IEnumerable(Of LmSkinTemplate)) As NpcRecordOverlay.ResolveLmSkinTemplateDelegate
+        Dim copia As New List(Of LmSkinTemplate)
+        If lista IsNot Nothing Then copia.AddRange(lista)
+        Return Function(templateId As String) As LmSkinTemplate
+                   If String.IsNullOrEmpty(templateId) Then Return Nothing
+                   For Each tpl In copia
+                       If String.Equals(tpl.Id, templateId, StringComparison.Ordinal) Then Return tpl
+                   Next
+                   Return Nothing
+               End Function
+    End Function
+
     ''' <summary>Parse one JSON file and append every successfully-resolved template to <paramref name="sink"/>.
     ''' Templates with the same Id from later files DO NOT replace earlier entries (we keep first-loaded
     ''' to mirror C++ <c>m_skinTemplates.emplace</c> which only inserts when the key is missing —

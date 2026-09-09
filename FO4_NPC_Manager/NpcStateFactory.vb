@@ -193,6 +193,45 @@ Friend NotInheritable Class NpcStateFactory
     ''' <para>⛔ Importa mas de lo que parece: `FaceAppearanceSourceFormID` sale de aca y decide DE QUIEN
     ''' se cargan los archivos de FaceGen. Con el bit 0 arriba el juego carga los de la PLANTILLA, asi que
     ''' un heredero que dijera "yo" cargaria los suyos, que no existen.</para></param>
+    ''' <summary>⛔⛔ EL ESTADO CON EL QUE SE HORNEA, de punta a punta y en UNA sede: resolver el
+    ''' overlay --caminando la cadena-- proyectar sobre la base del horneado con SU terminal, sellar
+    ''' `ModelSourceFormID` y correr los fallbacks de raza.
+    ''' <para>⛔ Existe porque el unico caso que compara la sede del render con la del bake tenia el lado
+    ''' del bake escrito a mano: `ProyectarEstado(npc, npc, ..., npc)`, sin caminar la cadena, con el record
+    ''' propio como base y sin terminal. Es decir que la comparacion no median dos sedes sino una sede y una
+    ''' tercera cosa -- y encima en el campo que esta ola vino a unificar.</para>
+    ''' <para>⛔ `presetDeDibujo:=Nothing` es deliberado y NO se toca desde aca: el estado del horneado no
+    ''' lleva `SkinToneOffset`, y el unico consumidor del offset tiene todos sus llamadores en el render.
+    ''' Pasarle el preset «porque parece mas completo» cambiaria BYTES HORNEADOS.</para>
+    ''' <para>Devuelve los tres, no solo el estado: el horneado necesita tambien el record resuelto (raza,
+    ''' genero, capas de tinte) y el `traits` de ESTA proyeccion, no uno recalculado.</para></summary>
+    Public Shared Function EstadoDelHorneado(npcFormID As UInteger,
+                                             pluginManager As PluginManager,
+                                             appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                             Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
+                                             Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) _
+                                             As (Datos As NPC_Data,
+                                                 Estado As MainForm.NPCVisualState,
+                                                 Traits As MainForm.TraitsState)
+        Dim baseDelHorneado As NPC_Data = Nothing
+        Dim terminalDelHorneado As UInteger = 0UI
+        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets,
+                                                              lmSkinTemplateResolver, resolveLvlnPick,
+                                                              baseDelHorneado, terminalDelHorneado)
+        If npcData Is Nothing Then Return (Nothing, Nothing, Nothing)
+        Dim proy = ProyectarEstado(npcData, npcData,
+                                   CreateOwnInventoryState(npcData),
+                                   presetDeDibujo:=Nothing,
+                                   recordBase:=If(baseDelHorneado, npcData),
+                                   traitsSourceFid:=terminalDelHorneado)
+        ' `ModelSourceFormID` es dato del BAKE, no de la proyeccion: el render lo deja en 0.
+        proy.Estado.ModelSourceFormID = npcFormID
+        ' Fallbacks de raza del motor (WNAM=0 -> RACE.SkinFormID, partes/textura/pelo -> defaults de la
+        ' raza, centinela de MWGT). ⛔ Con el `traits` de LA PROYECCION, no con uno recalculado.
+        NpcStateResolver.ApplyRaceFallbacks(proy.Estado, proy.Traits, pluginManager)
+        Return (npcData, proy.Estado, proy.Traits)
+    End Function
+
     Public Shared Function ProyectarEstado(npcData As NPC_Data, root As NPC_Data,
                                            inventory As MainForm.InventoryState,
                                            presetDeDibujo As LooksmenuLoader.LooksmenuPreset,

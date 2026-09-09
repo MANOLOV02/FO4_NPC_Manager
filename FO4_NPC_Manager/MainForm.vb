@@ -167,6 +167,10 @@ Public Class MainForm
     ''' Mirrors the bundle structure of f4ee/SkinInterface.cpp:490-621 (id+name+gender+sort + per-gender
     ''' face TXST / head HDPT / rear HDPT + skin ARMO). Populated once after plugin load.</summary>
     Private _lmSkinTemplates As New List(Of LmSkinTemplate)()
+    ' ⛔ Nace sobre una lista VACIA, no en Nothing: si alguien resuelve un id antes de que el catalogo
+    ' se cargue, la respuesta correcta es "no esta", no una excepcion.
+    Private _resolverLmSkin As NpcRecordOverlay.ResolveLmSkinTemplateDelegate =
+        LmSkinTemplateLoader.Resolvedor(New List(Of LmSkinTemplate)())
     ''' <summary>Parsed F4SE LooksMenu body-overlay ("tattoo") templates loaded from
     ''' Data\F4SE\Plugins\F4EE\Overlays\&lt;mod&gt;\overlays.json + Overlays\Loose\*.json (the disk
     ''' layout LoadOverlayMods scans — OverlayInterface.cpp:1025-1052). Gender-separated exactly like
@@ -4586,6 +4590,12 @@ Public Class MainForm
     Private Sub BuildLmSkinTemplateCache()
         _lmSkinTemplates.Clear()
         _lmSkinTemplates.AddRange(LmSkinTemplateLoader.BuildCache(_dataPath, _pluginManager))
+        ' ⛔⛔ EL DELEGADO SE ARMA ACA, DESPUES del `AddRange`, y no en cada busqueda: `Resolvedor`
+        ' COPIA la lista al construirse, asi que armarlo antes daria una foto vacia y armarlo por llamada
+        ' copia el catalogo entero cada vez que alguien resuelve un id.
+        ' ⛔ Este es el UNICO lugar que muta `_lmSkinTemplates`, asi que la foto no queda rancia: cada
+        ' recarga del catalogo rearma el delegado.
+        _resolverLmSkin = LmSkinTemplateLoader.Resolvedor(_lmSkinTemplates)
     End Sub
 
     ''' <summary>Build the LM body-overlay ("tattoo") template cache. Mirrors
@@ -8114,13 +8124,56 @@ Public Class MainForm
     ''' <see cref="BuildHeadBakeService"/> (render completo) y <see cref="BuildCompositeMorphResolver"/>
     ''' (los SEIS handlers de toggle) usen exactamente los mismos insumos — si divergieran, un toggle
     ''' cambiaría la firma pero no el estado con el que se hornea, o al revés.</summary>
+    ''' <summary>⛔⛔ Costura de arnes: corre el HORNEADO DE CABEZA del repintado sobre un estado ya
+    ''' resuelto, para que el medidor de costo pueda contar SUS caminatas de la cadena.
+    ''' <para>El corchete del medidor envolvia `ResolveNPCBaseState` y DECLARABA que los lectores quedaban
+    ''' afuera. Con esa declaracion la ley «la base se arma UNA VEZ por NPC» era cierta en el tramo medido y
+    ''' NO SE SABIA en el repintado, que caminaba TRES veces. Cerradas las dos de mas, se puede medir.</para>
+    ''' <para>⛔ El anfitrion va SIN control de vista: esta funcion resuelve insumos, no dibuja. Si algun dia
+    ''' el camino tocara el control, esto reventaria EN EL GATE en vez de mentir -- y el gate lo reporta como
+    ''' NO MEDIDO, nunca como verde.</para>
+    ''' <returns>True si el horneado de cabeza pudo armar sus insumos. False = sujeto sin cara: el caso NO
+    ''' puede contarlo, o pasaria en vacio.</returns></summary>
+    Friend Function HorneadoDeCabezaParaArnes(state As NPCVisualState) As Boolean
+        Dim host As New NpcRenderHost(Nothing)
+        Dim bakeState As FaceGenBuildPipeline.BakeState = Nothing
+        Dim firma As String = ""
+        Dim chargen As Boolean = True
+        If Not TryBuildHeadBakeInputs(state, host, bakeState, firma, chargen) Then Return False
+        Return bakeState IsNot Nothing
+    End Function
+
     Private Function TryBuildHeadBakeInputs(state As NPCVisualState, host As NpcRenderHost,
                                              ByRef bakeState As FaceGenBuildPipeline.BakeState,
                                              ByRef signature As String, ByRef applyChargen As Boolean) As Boolean
         bakeState = Nothing : signature = "" : applyChargen = True
         If state Is Nothing OrElse host Is Nothing Then Return False
         applyChargen = host.Toggles Is Nothing OrElse host.Toggles.ApplyVertexMorphs
-        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(state.FormID, _ctx.PluginManager, _appliedPresets)
+        ' ⛔⛔ CON EL RESOLVEDOR DE HOJA DEL RENDER. Este es el horneado de cabeza DEL PROPIO RENDER:
+        ' tiene pantalla, asi que la hoja de una lista nivelada ya esta elegida y es la que el usuario esta
+        ' viendo. Sin pasarla, esta llamada caminaba la cadena por su cuenta y podia clavar OTRA hoja: dos
+        ' terminales distintos DENTRO DEL MISMO REPINTADO, o sea la cara de un NPC sobre el cuerpo de otro.
+        ' ⛔ CENSO de quien pasa el resolvedor de hoja, porque aca habia una frase que decia "la linea
+        ' de comandos y el masivo no lo pasan" y es FALSA: el masivo de la interfaz SI lo pasa.
+        '   lo pasan (6): `BuildCharGenSingle` x2, `BuildCharGenForSelectionAsync` x2 --el masivo de la
+        '                 interfaz-- y el horneado del guardado x2.
+        '   no lo pasa (1): `BakeAllRunner`, la linea de comandos, que no tiene pantalla: ahi la primera
+        '                 hoja es la regla y esta declarada en la sede.
+        ' ⛔ Y lo que la frase vieja se callaba: en el masivo de la interfaz `ResolveLvlnPick_Friend`
+        ' ancla la hoja MOSTRADA solo para el NPC que esta en pantalla; para los demas del lote cae a la
+        ' primera hoja igual. O sea que "con pantalla" no significa "anclado" para todo el lote.
+        ' ⛔⛔ SIN CAMINAR LA CADENA. Aca se llamaba a `ResolveOverlaidNpcData`, que camina para
+        ' armar la BASE -- y la base YA VIAJA en el estado. Era la segunda de DOS caminatas del mismo
+        ' repintado, con la misma ley, y cada una re-parsea el record, sondea la cadena, arma la sombra
+        ' del terminal y copia el record. Con la base del estado, componer no camina.
+        ' ⛔ Es EL MISMO compuesto que el del dibujo --`OverlayDeDibujo` devuelve la autoria del
+        ' root-- y lo que hace distinto al horneado es la BASE sobre la que se compone, no el overlay.
+        ' El resolvedor de hoja ya no hace falta aca porque no hay cadena que recorrer: la hoja la eligio
+        ' la resolucion del estado, que es la que el usuario esta viendo.
+        Dim npcData = NpcRecordOverlay.ComponerAutoriaSobre(state.RecordBase, state.RootNpcFormID,
+                                                            _appliedPresets, _ctx.PluginManager,
+                                                            AddressOf ResolveLmSkinTemplate,
+                                                            AddressOf _ctx.ParseRaceCanonCached)
         If npcData Is Nothing Then Return False
 
         ' FMRS OFF ⇒ BakeState sin regiones faciales ⇒ FmrsPose = Nothing ⇒ la base sale en bind pose,
@@ -8136,7 +8189,12 @@ Public Class MainForm
             End If
         End If
 
-        bakeState = FaceGenBuildPipeline.BuildBakeState(state.FormID, _ctx.PluginManager, _appliedPresets, regionsFile)
+        ' ⛔ CON la hoja MOSTRADA: este es el horneado de cabeza del propio render.
+        ' ⛔ Y CON EL RECORD QUE YA SE RESOLVIO ARRIBA: eran dos caminatas de la MISMA cadena con la
+        ' MISMA ley dentro de un solo repintado, y cada una re-parsea, sondea y copia el record.
+        bakeState = FaceGenBuildPipeline.BuildBakeState(state.FormID, _ctx.PluginManager, _appliedPresets,
+                                                       regionsFile, AddressOf ResolveLvlnPick_Friend,
+                                                       npcDataResuelto:=npcData)
         If bakeState Is Nothing Then Return False
         ' Body-weight OFF ⇒ sin MWGT/MRSV en el bake, igual que el render deja la pose sin peso.
         ' Mutar acá es seguro: ResolveOverlaidNpcData devuelve un parse FRESCO (GetParsedNpc no cachea).
@@ -9315,10 +9373,6 @@ Public Class MainForm
         Await RenderCurrentStateAsync(requestVersion, host)
     End Function
 
-    ''' <summary>Thin instance wrapper over <see cref="NpcRecordOverlay.ApplyPresetOverlayToNpcData"/>;
-    ''' threads <see cref="_pluginManager"/> + <see cref="_appliedPresets"/> through. Real impl
-    ''' lives in the helper module so offline bake (FaceGenBuilder) can reuse without coupling
-    ''' to MainForm instance state.</summary>
     ''' <summary>El MISMO overlay, pero para GUARDAR: en modo estricto.
     ''' <para>⛔ La diferencia no es cosmética. Si el preset dice «usá la piel de la raza» y la raza no
     ''' resuelve —falta su plugin—, el guardado RECHAZA en vez de elegir por el usuario cuál de las dos
@@ -9326,20 +9380,25 @@ Public Class MainForm
     ''' comparten seis llamadores y uno de ellos corre en el hilo de UI al seleccionar un NPC, sin Try,
     ''' con UnhandledExceptionMode.ThrowException — tirar ahí cierra la aplicación. En render el WNAM
     ''' queda como está y el resolvedor cae al fallback de siempre.</para></summary>
+    ''' <summary>⛔ Seam de arnes: llama a LA MISMA funcion del guardado, no a una copia. Un gate que
+    ''' reimplementa la ley se mide a si mismo.</summary>
+    Friend Function SombraDeGuardadoParaArnes(raw As NPC_Data, fid As UInteger) As NPC_Data
+        Return ApplyPresetOverlayParaGuardado(raw, fid)
+    End Function
+
     Private Function ApplyPresetOverlayParaGuardado(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
-        Return NpcRecordOverlay.AplicarOverlay(raw,
-                                              NpcRecordOverlay.OverlayDeAutoria(selectedNpcFormID, _appliedPresets),
-                                              selectedNpcFormID,
-                                              _pluginManager, AddressOf ResolveLmSkinTemplate,
-                                              AddressOf _ctx.ParseRaceCanonCached,
-                                              estricto:=True)
+        ' ⛔ La ley de "no se escribe lo que todavia hereda" vive en la SEDE, no aca: los gates de
+        ' guardado no tienen MainForm y con la ley en este metodo no la podian ejercitar.
+        Return NpcRecordOverlay.SombraDeGuardado(raw, selectedNpcFormID, _appliedPresets, _pluginManager,
+                                                 AddressOf ResolveLmSkinTemplate,
+                                                 AddressOf _ctx.ParseRaceCanonCached)
     End Function
 
     ''' <summary>El overlay de AUTORIA del NPC dado, estampado sobre `raw`. El nombre dice la
     ''' pregunta: `appliedPresets(fid)` sin herencia.</summary>
     ''' <summary>⛔⛔ Compone sobre <paramref name="raw"/> el overlay DE DIBUJO del estado -- el que ya
     ''' trae resuelta la herencia. Es lo que tienen que usar los caminos de RENDER.
-    ''' <para>Para un NO heredero devuelve exactamente lo mismo que <see cref="AplicarOverlayDeAutoria"/>:
+    ''' <para>Para un NO heredero devuelve exactamente lo mismo que `OverlayDeAutoria` estampado sobre el record:
     ''' `OverlayDeDibujo` cae a la bolsa VIVA de overlays. La diferencia es el heredero, y es la que hacia
     ''' que el tono de piel del cuerpo saliera de los tintes del terminal y la cara compuesta de los del
     ''' root.</para></summary>
@@ -9351,33 +9410,27 @@ Public Class MainForm
         ' ⛔ `FaceAppearanceSourceFormID` sigue vivo, pero para la OTRA pregunta: que archivos de FaceGen
         ' carga el juego. Esa sigue siendo la plantilla mientras el NPC hereda.
         If state Is Nothing OrElse state.RecordBase Is Nothing Then Return Nothing
-        Return NpcRecordOverlay.AplicarOverlay(state.RecordBase,
-                                               NpcRecordOverlay.OverlayDeDibujo(state, _appliedPresets),
-                                               state.RootNpcFormID,
-                                               _pluginManager, AddressOf ResolveLmSkinTemplate,
-                                               AddressOf _ctx.ParseRaceCanonCached)
+        ' ⛔⛔ DELEGA EN LA SEDE. Esto y `ComponerAutoriaSobre` componian EXACTAMENTE lo mismo
+        ' --base + autoria del root, porque `OverlayDeDibujo` devuelve `OverlayDeAutoria(RootNpcFormID)`--
+        ' y aun asi diferian: uno estampaba la raza efectiva sin preset y el otro no. Yo mismo defendi
+        ' que eran distintos ("uno compone el overlay del TERMINAL") y era FALSO: repeti un modelo viejo
+        ' en vez de leer la funcion.
+        Return NpcRecordOverlay.ComponerAutoriaSobre(state.RecordBase, state.RootNpcFormID,
+                                                     _appliedPresets, _pluginManager,
+                                                     AddressOf ResolveLmSkinTemplate,
+                                                     AddressOf _ctx.ParseRaceCanonCached)
     End Function
 
-    ''' <summary>Compone la AUTORIA pelada. La usan el GUARDADO —que estampa el overlay DESPUES de
-    ''' materializar, asi que la herencia ya esta en el record— y el BAKE, donde hornear es authorear.
-    ''' Para render va <see cref="AplicarOverlayDeDibujo"/>.</summary>
-    Private Function AplicarOverlayDeAutoria(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
-        Return NpcRecordOverlay.AplicarOverlay(raw,
-                                              NpcRecordOverlay.OverlayDeAutoria(selectedNpcFormID, _appliedPresets),
-                                              selectedNpcFormID,
-                                              _pluginManager, AddressOf ResolveLmSkinTemplate,
-                                              AddressOf _ctx.ParseRaceCanonCached)
-    End Function
 
     ''' <summary>Resolver passed to the overlay helper so it can map an LM SkinTemplate id to
     ''' its full bundle (skin ARMO + face TXST + head/headRear HDPT). Nothing if the id isn't
     ''' in the loaded template cache — caller treats that as "no override".</summary>
     Private Function ResolveLmSkinTemplate(templateId As String) As LmSkinTemplate
-        If String.IsNullOrEmpty(templateId) Then Return Nothing
-        For Each tpl In _lmSkinTemplates
-            If String.Equals(tpl.Id, templateId, StringComparison.Ordinal) Then Return tpl
-        Next
-        Return Nothing
+        ' ⛔ LA BUSQUEDA VIVE EN `LmSkinTemplateLoader`, no aca. Estaba escrita a mano en este
+        ' metodo, otra vez en `BakeAllRunner` y una tercera en la sede nueva: tres dueños de "¿que
+        ' plantilla es este id?". El catalogo lo sigue teniendo este formulario --es suyo, lo recarga
+        ' con los plugins-- pero la PREGUNTA es una sola.
+        Return _resolverLmSkin(templateId)
     End Function
 
     ''' <summary>Friend wrapper so EditBody / EditFace can invoke
@@ -9589,12 +9642,24 @@ Public Class MainForm
             ' contesta otra pregunta -- "¿el motor escribe esta categoria al cargar un preset?" -- y su
             ' `Case Else` devuelve True, asi que daba por authoreado el `SkinOverride` de un preset vacio.
             ' Usar el comparador que ya existe evita una segunda tabla de "que cuenta como declarar".
-            If PresetCategoryFilter.PrimerCanalDistinto(presetEnBlanco, nuevo, cat, esSse,
-                                                        soloHeredables:=True) Is Nothing Then Continue For
+
             ' ⛔ `soloHeredables`: authorear un canal que el bucket NO copia no desprende a nadie. Sin
             ' este filtro, tocar la intensidad de morfo facial (FMIN) desprendia un NPC entero.
-            Dim canal = PresetCategoryFilter.PrimerCanalDistinto(dibujoAnterior, nuevo, cat, esSse,
-                                                                 soloHeredables:=True)
+            ' ⛔⛔ Y EL PREDICADO ES POR VALOR, NO POR DECLARACION -- lo intente cambiar y estaba MAL.
+            ' Un revisor observo que al tocar en Fallout solo la intensidad de morfo facial la proyeccion
+            ' declara tambien las regiones (con los valores de la base) sin desprender, y yo cambie la puerta
+            ' a "declarar es poseer". Eso desprende SIEMPRE: un overlay sembrado declara categorias desde
+            ' antes de que el usuario toque nada. Lo cazaron en el acto los quince momentos del invariante y
+            ' de la puerta -- "aceptar sin tocar nada" y "el usuario dijo NO" pasaron a desprender.
+            ' Declarar una categoria con los MISMOS valores que la base no es tomar posesion: es cargar lo
+            ' que ya estaba. Posesion es declararla DISTINTA, que es lo que este predicado mide.
+            ' ⛔⛔ LAS DOS PREGUNTAS, EN UNA SEDE. Estaban aca sueltas -- una arriba contra un preset
+            ' en blanco y otra contra la base-- y el predicado del tono se copio SOLO la segunda: re-derivaba
+            ' con cualquier overlay. Ahora las dos viven en `AutoreaDistintoDeLaBase` y las consumen los dos.
+            ' ⛔ Y la primera cuenta la MARCA de un canal heredable: "vaciar a proposito" es la marca
+            ' puesta con la lista vacia, que por VALOR es igual a un preset en blanco. Sin eso, borrar todas
+            ' las partes de cabeza de un heredero no desprendia, no avisaba, y al guardar se perdia.
+            Dim canal = PresetCategoryFilter.AutoreaDistintoDeLaBase(nuevo, cat, laBase, esSse)
             If canal IsNot Nothing Then
                 cambio = $"{cat} ({canal})"
                 Exit For
@@ -9744,15 +9809,13 @@ Public Class MainForm
         ' ⛔ El motor no tiene opinion sobre un overlay que todavia no se guardo, asi que la ley la pone el
         ' contrato de la app. Y va ACA porque esta es LA sede que congela: `RecordEfectivoParaAutoria` usa
         ' esta misma resolucion, asi que la siembra y el snapshot no pueden separarse.
+        ' ⛔⛔ POR LA SEDE. Aca habia una COPIA de `SombraDelTerminal` escrita linea por linea, y el
+        ' doc de la sede decia que tenia tres lectores incluido el congelado -- que en realidad no la
+        ' leia. Lo delato una mutacion: rompi la SEDE y este momento siguio verde; rompiendo ESTA copia se
+        ' puso rojo. Dos dueños de «el terminal con su overlay».
         If resol.Source IsNot Nothing Then
-            Dim delTerminal = NpcRecordOverlay.OverlayDeAutoria(resol.Source.Record.FormID, _appliedPresets)
-            If delTerminal IsNot Nothing Then
-                Dim conOverlay = NpcRecordOverlay.AplicarOverlay(resol.Source, delTerminal,
-                                                                resol.Source.Record.FormID,
-                                                                _pluginManager, AddressOf ResolveLmSkinTemplate,
-                                                                AddressOf _ctx.ParseRaceCanonCached)
-                If conOverlay IsNot Nothing Then resol.Source = conOverlay
-            End If
+            Dim conOverlay = SombraDelTerminal(resol.Source)
+            If conOverlay IsNot Nothing Then resol.Source = conOverlay
         End If
         hayQueGuardarla = True
         Return True
@@ -9850,6 +9913,15 @@ Public Class MainForm
 
     ''' <summary>⛔ Envoltorio: la ley vive en `NpcRecordOverlay`, que es un modulo y no tiene estado.
     ''' Aca sólo se le pasan las dependencias que MainForm ya tiene.</summary>
+    ''' <summary>⛔⛔ Costura de arnes: el compositor de tintes DEL RENDER, entrando por su llamador.
+    ''' <para>Existe porque el caso que mide la cara del heredero le pasaba el modelo A MANO, asi que medía
+    ''' el interior de `FaceTintLayerBuilder` y no la ELECCION del modelo -- que fue exactamente el defecto
+    ''' cabecera de esta ola (`state.FormID` en vez de `FaceAppearanceSourceFormID`). Con esta costura, esa
+    ''' regresion vuelve a tener testigo.</para></summary>
+    Friend Function TintesDeLaCaraParaArnes(state As NPCVisualState) As NPC_Data
+        Return _faceTintResolver.BuildFaceTintLayerInputs(state).npcData
+    End Function
+
     Friend Function SombraDelTerminal(terminal As NPC_Data) As NPC_Data
         Return NpcRecordOverlay.SombraDelTerminal(terminal, _appliedPresets, _pluginManager,
                                                   AddressOf ResolveLmSkinTemplate,
@@ -10885,9 +10957,9 @@ Public Class MainForm
             ' INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake en thread de fondo.
             Dim fidL = npcFormID
             If FaceGenBuilder.WriteGPUSandboxOutput Then
-                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
             Else
-                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend))
             End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
@@ -10980,9 +11052,9 @@ Public Class MainForm
                                 Dim fidL = fid
                                 Dim r As FaceGenBuilder.BuildResult
                                 If FaceGenBuilder.WriteGPUSandboxOutput Then
-                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
                                 Else
-                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend))
                                 End If
                                 If r.Skipped Then
                                     skipped += 1
@@ -12096,11 +12168,11 @@ Public Class MainForm
             If FaceGenBuilder.WriteGPUSandboxOutput Then
                 bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
-                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
             Else
                 bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
-                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend))
             End If
         Catch ex As Exception
             Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}", "")

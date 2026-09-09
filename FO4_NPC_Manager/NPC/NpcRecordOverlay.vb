@@ -38,7 +38,8 @@ Public Module NpcRecordOverlay
                                            appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                            Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
                                            Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing,
-                                           Optional ByRef baseUsada As NPC_Data = Nothing) As NPC_Data
+                                           Optional ByRef baseUsada As NPC_Data = Nothing,
+                                           Optional ByRef terminalUsado As UInteger = 0UI) As NPC_Data
         Dim raw = GetParsedNpc(npcFormID, pluginManager)
         If raw Is Nothing Then Return Nothing
 
@@ -68,6 +69,9 @@ Public Module NpcRecordOverlay
             End If
             Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(raw, NPC_TemplateCategory.Traits, leer1, hoja)
             If probe.Source IsNot Nothing Then
+                ' ⛔ El TERMINAL sale de aca y viaja al estado del horneado. Sin esto el bake se ponia a
+                ' si mismo como fuente de Traits y toda ley cableada sobre ese campo se bifurcaba.
+                terminalUsado = probe.Source.Record.FormID
                 Dim sombraT = SombraDelTerminal(probe.Source, appliedPresets, pluginManager,
                                                 lmSkinTemplateResolver, Nothing)
                 baseHeredada = BaseDeDibujo(raw, sombraT)
@@ -80,19 +84,35 @@ Public Module NpcRecordOverlay
         ' con el nombre de la funcion `BaseDeDibujo` la TAPA, y la llamada de arriba pasa a leerse como
         ' un indexado del parametro.
         baseUsada = baseHeredada
+        Return ComponerAutoriaSobre(baseHeredada, npcFormID, appliedPresets, pluginManager,
+                                    lmSkinTemplateResolver)
+    End Function
+
+    ''' <summary>⛔⛔ LA AUTORIA DEL NPC, COMPUESTA SOBRE UNA BASE QUE YA ESTA ARMADA. Es la cola de
+    ''' `ResolveOverlaidNpcData`, sacada a su propia sede.
+    ''' <para>Existe porque un repintado caminaba la cadena DOS veces con la MISMA ley: una para dibujar y
+    ''' otra para el horneado de cabeza. La segunda no caminaba para COMPONER --componer no camina-- sino
+    ''' para armar la BASE, y la base ya viaja en el estado (`RecordBase`). Con esta sede el llamador que
+    ''' ya la tiene compone sin caminar, y la ley del medidor de costo --la base se arma UNA VEZ por
+    ''' NPC-- pasa a ser cierta para el repintado entero.</para>
+    ''' <para>⛔ ES EL MISMO COMPUESTO QUE EL DEL DIBUJO, y aca decia lo contrario: que el de dibujo era
+    ''' "el del TERMINAL". Falso -- `OverlayDeDibujo` devuelve `OverlayDeAutoria(RootNpcFormID)` y su propio
+    ''' comentario lo dice. Con esa ficcion escrita en tres lugares, el proximo los iba a mantener
+    ''' separados a proposito. `AplicarOverlayDeDibujo` DELEGA aca; hay un solo compositor.</para>
+    ''' <para>⛔ La herencia NO vive en el overlay sino en la BASE: por eso hornear y dibujar comparten
+    ''' compositor y siguen siendo cosas distintas -- lo que cambia es sobre QUE base se compone.</para></summary>
+    Public Function ComponerAutoriaSobre(baseHeredada As NPC_Data,
+                                         npcFormID As UInteger,
+                                         appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                         pluginManager As PluginManager,
+                                         Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
+                                         Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing) As NPC_Data
+        If baseHeredada Is Nothing Then Return Nothing
         ' ⛔ La pregunta es de AUTORIA y la clave es el propio NPC: escrito, no implicito.
-        Dim result = AplicarOverlay(baseHeredada, OverlayDeAutoria(npcFormID, appliedPresets), npcFormID,
-                                    pluginManager, lmSkinTemplateResolver)
-        ' Raza efectiva del editor (ver EffectiveRaceResolver). Mutar acá es seguro: `raw` es un parse FRESCO
-        ' (GetParsedNpc no cachea) y el shadow del overlay también — nunca es la instancia cacheada del ctx.
-        Dim effResolver = EffectiveRaceResolver
-        If result IsNot Nothing AndAlso effResolver IsNot Nothing Then
-            Dim eff = effResolver(npcFormID)
-            If eff <> 0UI AndAlso eff <> result.Record.Race Then
-                result.Record.Race = eff
-            End If
-        End If
-        Return result
+        ' ⛔ La raza EFECTIVA ya no se estampa aca: `AplicarOverlay` la aplica en las DOS ramas. Tenerla
+        ' tambien en esta cola era el tercer dueño de la misma ley.
+        Return AplicarOverlay(baseHeredada, OverlayDeAutoria(npcFormID, appliedPresets), npcFormID,
+                              pluginManager, lmSkinTemplateResolver, parseRace)
     End Function
 
     ''' <summary>Dos listas de identificadores con el mismo contenido y en el mismo orden.</summary>
@@ -280,6 +300,65 @@ Public Module NpcRecordOverlay
     ''' <para>`selectedNpcFormID` sigue siendo parámetro porque adentro se usa más allá del lookup: de
     ''' él sale la RAZA EFECTIVA (`EffectiveRaceResolver`) y el log.</para>
     ''' <para>⛔ El render pasa el ROOT, nunca el terminal: el override de raza es del root.</para></summary>
+    ''' <summary>⛔⛔ LA AUTORIA QUE DE VERDAD VA AL ARCHIVO: se le sacan los canales que el NPC TODAVIA
+    ''' hereda.
+    ''' <para>Como llegan a estar declarados sin ser autoria: el editor proyecta la CATEGORIA ENTERA (si
+    ''' tocas algo, va completa), asi que tocar un canal que el bit 0 NO copia declara tambien sus vecinos,
+    ''' con los valores que la base trajo de la plantilla. Por valor no difieren, asi que no desprenden -- y
+    ''' sin este filtro se escribian al ESP con el bit ARRIBA, donde el motor los pisa al cargar.</para>
+    ''' <para>⛔ POR CANAL, con `HeredaElCanal`, que es la MISMA pregunta que usa la puerta del
+    ''' desprendimiento. Se escribio una vez por CATEGORIA (`HeredaPorTraits`, que contesta "¿hereda
+    ''' ALGUNO?") y eso borraba las dos categorias PARTIDAS enteras: el usuario editaba la intensidad de
+    ''' morfo facial en Fallout -o una capa de tinte en Skyrim-, lo veia en el preview, guardaba y lo
+    ''' perdia. Dos granularidades para la misma pregunta son dos dueños que se contradicen.</para>
+    ''' <para>⛔ Vive ACA y no en el formulario: los cinco gates de guardado no tienen `MainForm`, asi que
+    ''' con la ley alla armaban su propio delegado y borrarla entera los dejaba a los cinco en verde.</para>
+    ''' <para>El bit se lee de <paramref name="raw"/>, que en el guardado ya paso por la materializacion: si
+    ''' el usuario desprendio, el bit esta abajo y la categoria se escribe como corresponde.</para></summary>
+    Public Function AutoriaParaGuardado(autoria As LooksmenuLoader.LooksmenuPreset,
+                                        raw As NPC_Data, esSse As Boolean) As LooksmenuLoader.LooksmenuPreset
+        If autoria Is Nothing OrElse raw Is Nothing OrElse raw.Record Is Nothing Then Return autoria
+        If Not NpcTemplateHelpers.HasTemplateFlag(raw.Record.ConfigurationTemplateFlags,
+                                                 NPC_TemplateCategory.Traits) Then Return autoria
+        Dim enBlanco As New LooksmenuLoader.LooksmenuPreset()
+        Dim limpia = LooksmenuLoader.ClonePreset(autoria)
+        For Each cat In PresetCategories.AllCategories
+            If Not PresetCategories.AppliesToGame(cat, esSse) Then Continue For
+            PresetCategoryFilter.PorCanal(cat, esSse,
+                                          Sub(nombre, leerCanal, escribirCanal)
+                                              If Not PresetCategories.HeredaElCanal(cat, nombre, esSse) Then Return
+                                              escribirCanal(limpia, leerCanal(enBlanco))
+                                          End Sub)
+        Next
+        Return limpia
+    End Function
+
+    ''' <summary>⛔⛔ LA SOMBRA QUE SE GUARDA: el record que de verdad sale al archivo, compuesto
+    ''' UNA sola vez para todos los llamadores.
+    ''' <para>Estaba escrita SIETE veces --produccion y seis delegados de gate-- y las seis copias de
+    ''' gate salieron mas flojas que la de produccion, asi que los gates median un guardado que no
+    ''' existe: sin modo estricto (produccion RECHAZA cuando el preset pide «la piel de la raza» y la
+    ''' raza no resuelve; la copia elegia en silencio) y sin resolvedor de plantillas de piel de
+    ''' LooksMenu (con `Nothing`, `MaterializeLmTemplateBundleToPreset` se va de largo y el camino
+    ''' entero de la plantilla de piel quedaba sin medir, en verde).</para>
+    ''' <para>⛔ El modo estricto NO es un parametro aca: es la diferencia entre guardar y dibujar. El
+    ''' render no puede rechazar --corre en el hilo de UI sin Try, con ThrowException-- y por eso
+    ''' `AplicarOverlay` lo deja como bandera; pero TODO camino de guardado va con la bandera arriba, y
+    ''' esta sede es ese camino.</para></summary>
+    Public Function SombraDeGuardado(raw As NPC_Data,
+                                     selectedNpcFormID As UInteger,
+                                     appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                     pluginManager As PluginManager,
+                                     Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
+                                     Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing) As NPC_Data
+        Dim esSse = (Config_App.Current IsNot Nothing AndAlso
+                     Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Return AplicarOverlay(raw,
+                              AutoriaParaGuardado(OverlayDeAutoria(selectedNpcFormID, appliedPresets), raw, esSse),
+                              selectedNpcFormID, pluginManager, lmSkinTemplateResolver, parseRace,
+                              estricto:=True)
+    End Function
+
     Public Function AplicarOverlay(raw As NPC_Data,
                                    preset As LooksmenuLoader.LooksmenuPreset,
                                    selectedNpcFormID As UInteger,
@@ -293,7 +372,23 @@ Public Module NpcRecordOverlay
         ' como `raw`, esa premisa deja de valer: la base es COMPARTIDA -- `CloneVisualState` la pasa por
         ' referencia y el horneado despacha en paralelo. Devolver una copia es lo unico ejecutable en VB:
         ' no se puede congelar un objeto, asi que la regla es "nadie recibe la instancia".
-        If preset Is Nothing Then Return If(raw Is Nothing, Nothing, raw.Copia())
+        If preset Is Nothing Then
+            ' ⛔⛔ LA RAZA EFECTIVA TAMBIEN VA POR ACA. Se estampaba SOLO en la rama con preset,
+            ' con la excusa de que "el camino sin preset devuelve `raw` intacto y esa instancia puede ser la
+            ' cacheada del ctx". Eso quedo RANCIO en esta misma ola: la linea de abajo devuelve una COPIA
+            ' siempre. Con la excepcion viva habia TRES dueños de "aplicar la raza efectiva" --esta rama, la
+            ' cola de `ComponerAutoriaSobre` y `FaceTintLayerBuilder`-- y el panel de detalle del record
+            ' mostraba la raza CRUDA para un NPC con raza pisada por el editor y sin overlay.
+            Dim sinPreset = If(raw Is Nothing, Nothing, raw.Copia())
+            If sinPreset IsNot Nothing Then
+                Dim rEff = EffectiveRaceResolver
+                If rEff IsNot Nothing Then
+                    Dim ef = rEff(selectedNpcFormID)
+                    If ef <> 0UI AndAlso ef <> sinPreset.Record.Race Then sinPreset.Record.Race = ef
+                End If
+            End If
+            Return sinPreset
+        End If
 
         ' Raza EFECTIVA (record override del editor, ver EffectiveRaceResolver): la sombra la lleva desde el
         ' arranque, y TODO lo que esta función deriva de la raza (seed de head-parts, QNAM del skin-tone,
@@ -653,9 +748,13 @@ finDelSkin:
         ' que el juego no le da.
         Dim heredaTraits As Boolean = NpcTemplateHelpers.HasTemplateFlag(
                                           sr.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits)
-        Dim authoreaTono As Boolean = preset IsNot Nothing AndAlso
-                                      (preset.SkinToneOffset IsNot Nothing OrElse
-                                       preset.HasFaceTintLayers OrElse preset.HasSseTints)
+        ' ⛔ LA MISMA PREGUNTA QUE EL RENDER, en la misma sede. Aca habia una lista de TRES campos
+        ' escrita a mano --un tercer dueño de "cuales son los canales del tono"-- y el render, para un no
+        ' heredero, contestaba True SIEMPRE: el preview derivaba de las capas y el archivo guardaba el
+        ' QNAM crudo. Ahora la contesta `AutoriaTocaElTono`, derivada de `PorCanal`.
+        Dim authoreaTono As Boolean = PresetCategoryFilter.AutoriaTocaElTono(
+            preset, Config_App.Current IsNot Nothing AndAlso
+                    Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         If raceIsValid AndAlso authoreaTono AndAlso Not heredaTraits Then
             ' El ajuste manual del tono del CUERPO entra ACA (y no dentro de la derivacion compartida): este
             ' es el punto donde el QNAM se materializa como campo del record, que es tono de CUERPO por

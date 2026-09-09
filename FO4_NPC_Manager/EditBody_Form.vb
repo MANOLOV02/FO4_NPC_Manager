@@ -3568,13 +3568,22 @@ Public Class EditBody_Form
     Private Sub OnOk(sender As Object, e As EventArgs)
         ' ⛔ Al overlay va SOLO lo que el usuario toco. Ver `ProyectarSobreElOverlay`.
         Dim hubo = ProyectarSobreElOverlay()
+        ' ⛔⛔ SIN GESTO, EL DICCIONARIO VUELVE COMO ESTABA. El constructor mete una entrada para
+        ' poder editar en vivo, y `ProyectarSobreElOverlay` no la toca cuando no hubo gesto -- asi que
+        ' "abrir y aceptar sin tocar nada" dejaba un overlay puesto. Todo lo que pregunta por la
+        ' PRESENCIA de la clave (el menu Reset, el archivo lateral) veia un NPC con overlay por un gesto
+        ' que no cambio nada. Se deshace con la MISMA funcion que usa el cancelar, no con una copia.
+        ' ⛔⛔ LA ALTURA CUENTA COMO GESTO, aunque NO viaje en el overlay. Si se mirara solo `hubo`,
+        ' mover la altura y aceptar dejaba el formulario sin marcar y el MainForm no repintaba ni marcaba el
+        ' NPC como modificado: el usuario movia la altura y la app se comportaba como si no hubiera pasado
+        ' nada. Es el unico canal de este editor que vive fuera del overlay.
+        Dim gesto = hubo OrElse HayAlturaPendiente
+        If Not gesto Then RevertOverlay()
         ' Height is the one field here that is NOT carried by the live LooksMenu overlay — commit it now,
         ' before the dialog result is set, so a Cancel/X path (which only rolls back the overlay) writes nothing.
         RegisterHeightOverride()
         ' Live edits already applied to the overlay; flag MainForm so it reloads its preview.
-        ' ⛔ Solo si hubo gesto: marcar siempre convertia "abrir y aceptar" en un cambio sin guardar.
-        ' La altura va aparte porque no viaja en el overlay: `RegisterHeightOverride` ya decide sola.
-        HasUncommittedChanges = hubo
+        HasUncommittedChanges = gesto
         DialogResult = DialogResult.OK
         Close()
     End Sub

@@ -112,7 +112,13 @@ Public Module PresetCategoryFilter
         For Each cat In AllCategories
             If Not PresetCategories.HeredaPorTraits(cat, isSse) Then Continue For
             If options.Value(cat) Then Continue For
-            If declaradasPorElPrevio.ContainsKey(cat) Then Continue For
+            ' ⛔⛔ `.Available`, NO la presencia de la clave: `Describe` PRE-CARGA las 16 categorias
+            ' (`PresetCategories.vb:273-276`) y les pone `Available=False` a las que el preset no declara.
+            ' Preguntar por la clave daba SIEMPRE verdadero con cualquier previo, asi que este bloque era
+            ' INERTE salvo en la primerisima carga de la sesion -- y el defecto que cierra seguia vivo
+            ' desde el segundo preset.
+            Dim infoPrevia As PresetCategories.CategoryInfo = Nothing
+            If declaradasPorElPrevio.TryGetValue(cat, infoPrevia) AndAlso infoPrevia.Available Then Continue For
             PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
                                      escribirCanal(p, leerCanal(enBlanco))
                                  End Sub)
@@ -674,6 +680,118 @@ Public Module PresetCategoryFilter
         Next
     End Sub
 
+    ''' <summary>⛔⛔ ¿ESTO ES AUTORIA DE LA CATEGORIA **Y** DISTINTA DE LO QUE SE VE? Las DOS preguntas
+    ''' de la puerta, en su orden, en UNA sede.
+    ''' <para>(1) ¿el overlay DECLARA la categoria? Un preset que no la trae (un color de pelo, un atuendo)
+    ''' no authorea nada de ella. (2) ¿difiere de la BASE, o sea de lo que el usuario esta viendo?</para>
+    ''' <para>⛔ Existe porque se contestaron por separado y se contradijeron: el predicado del tono se
+    ''' quedo con la (2) sola y re-derivaba con CUALQUIER overlay -- `Revert` trae las capas de la plantilla
+    ''' con su marca puesta, asi que siempre "difiere". Medido: 27 herederos re-derivaban mientras heredaban
+    ''' (preview distinto del ESP) y 53 dejaban de seguir el ajuste de tono de su plantilla.</para>
+    ''' <para>⛔ La (1) cuenta la MARCA de un canal heredable como declaracion. "Vaciar a proposito" es la
+    ''' marca puesta con la lista vacia, y por VALOR eso es igual a un preset en blanco: sin esta regla,
+    ''' borrar todas las partes de cabeza de un heredero no desprendia, no avisaba, y al guardar la edicion
+    ''' se perdia en silencio.</para></summary>
+    ''' <returns>El nombre del primer canal que difiere, o Nothing si no hay autoria distinta.</returns>
+    Friend Function AutoreaDistintoDeLaBase(autoria As LooksmenuLoader.LooksmenuPreset,
+                                            cat As PresetCategory,
+                                            baseRecord As NPC_Data,
+                                            isSse As Boolean) As String
+        If autoria Is Nothing OrElse baseRecord Is Nothing Then Return Nothing
+        If Not DeclaraLaCategoria(autoria, cat, isSse) Then Return Nothing
+        Dim deLaBase As New LooksmenuLoader.LooksmenuPreset()
+        Revert(deLaBase, cat, baseRecord, Nothing, isSse)
+        Return PrimerCanalDistinto(deLaBase, autoria, cat, isSse, soloHeredables:=True)
+    End Function
+
+    ''' <summary>⛔⛔ ¿LA AUTORIA TOCA EL TONO? La pregunta que decide si el tono del cuerpo se DERIVA
+    ''' de las capas o se toma el QNAM del record, en UNA sede.
+    ''' <para>Estaba escrita dos veces con respuestas distintas: el guardado preguntaba por tres campos a
+    ''' mano (`SkinToneOffset`, `HasFaceTintLayers`, `HasSseTints`) y el render, para un NO heredero,
+    ''' contestaba `True` SIEMPRE. Resultado medido: para un no-heredero con un preset que no toca el tono
+    ''' --un atuendo, un color de pelo-- el preview derivaba de las capas y el archivo conservaba el QNAM
+    ''' crudo. Poblacion sembrada: 189 a un escalon y 29 con diferencia grande en Skyrim, 47 en Fallout.</para>
+    ''' <para>⛔ Y el juego lee el QNAM CRUDO: `TESNPC::SetSkinFromTint` (`0x1403BFE40`) lo lee siempre al
+    ''' final (`0x1403C0015`, `0x1403C001C`, `0x1403C0023`) y lo vuelca al material +0xA0 del sombreador;
+    ''' todo sitio que lo RE-DERIVA desde las capas esta guardado por `formID == 7`, o sea SOLO el jugador.
+    ''' Asi que el preview era el unico de los tres que mostraba otra cosa.</para>
+    ''' <para>⛔ Se DERIVA de `PorCanal`, no es una lista: los canales del tono son los de la categoria
+    ''' `FaceTints`, y una lista a mano es un tercer dueño que se desincroniza.</para>
+    ''' <para>⛔ NO mira la base a proposito: la pregunta es "¿declara?", no "¿declara DISTINTO?". La
+    ''' segunda es la de la PUERTA y la contesta `AutoreaDistintoDeLaBase`. Mezclarlas cambiaria bytes del
+    ''' archivo, y esto no cambia ninguno.</para></summary>
+    Friend Function AutoriaTocaElTono(autoria As LooksmenuLoader.LooksmenuPreset, isSse As Boolean) As Boolean
+        ' ⛔⛔ LA TEXTURA DE TINTE NO ALIMENTA LA DERIVACION, asi que declararla no es "tocar el
+        ' tono". Verificado en la sede que deriva: `SseFaceTintComposer.ResolveSkinToneQnam`
+        ' (FO4_Base_Library\SseFaceTintComposer.vb:369) arma su mapa con
+        ' `BuildNpcAuthoredTintMap(Nothing, CapasDeTinteSse(npc.Record))` --los COLORES TINI-- y no lee
+        ' `SseTintTexOverride` en ningun punto.
+        ' ⛔ Contarla tenia consecuencia MEDIBLE: la hidratacion desde el sidecar de RaceMenu
+        ' (`BssliderSidecar.vb:324-326`) deja el override de textura puesto y la marca ABAJO, asi que cada
+        ' re-guardado de ese NPC re-derivaria el QNAM desde las capas CRUDAS -- la ida y vuelta que este
+        ' arbol ya tiene anotada, que pierde un escalon por vuelta. Poblacion hoy: CERO (el `.bssliders`
+        ' de Skyrim trae 1 entrada y 0 texturas de tinte; los dos de Fallout, 0 entradas), pero la clase
+        ' la alcanza cualquiera que use RaceMenu.
+        Return DeclaraLaCategoria(autoria, PresetCategory.FaceTints, isSse, soloHeredables:=False,
+                                  canalesQueNoCuentan:=CANALES_QUE_NO_DERIVAN_EL_TONO)
+    End Function
+
+    ''' <summary>⛔ Canales de `FaceTints` que un preset puede declarar y que NO alimentan la
+    ''' derivacion del tono. Vive como constante con nombre --y no inline-- para que el dia que la
+    ''' derivacion cambie de insumos, el control de abajo lo cace.</summary>
+    Private ReadOnly CANALES_QUE_NO_DERIVAN_EL_TONO As String() = {"SseTintTexOverride"}
+
+    ''' <summary>⛔ El CONTROL de la exclusion de arriba: devuelve el canal declarado que la categoria
+    ''' `FaceTints` ya no tiene. Una exclusion que nombra un canal inexistente es una excusa muerta.</summary>
+    Friend Function ControlarCanalesQueNoDerivan(isSse As Boolean) As String
+        Dim vistos As New List(Of String)
+        PorCanal(PresetCategory.FaceTints, isSse,
+                 Sub(nombre, leerCanal, escribirCanal) vistos.Add(nombre))
+        For Each c In CANALES_QUE_NO_DERIVAN_EL_TONO
+            ' ⛔ En Fallout ese canal no existe: la categoria no lo lista y eso NO es excusa muerta, es
+            ' game-awareness. Solo se reporta si el juego declara la categoria y aun asi no lo trae.
+            If isSse AndAlso Not vistos.Contains(c) Then Return c
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>⛔ La PRIMERA de las dos preguntas: ¿el overlay declara algo de esta categoria?
+    ''' <para>Se distingue de un preset en blanco en algun canal heredable -- de VALOR o de MARCA. La marca
+    ''' cuenta: es la unica forma de expresar "lo vacie a proposito", y por valor una lista vacia declarada
+    ''' es indistinguible de una no declarada.</para></summary>
+    ''' <param name="soloHeredables">True --lo de la PUERTA-- mira solo los canales que el bit 0 copia:
+    ''' los otros no pueden desprender nada porque el motor no los pisa. False mira TODOS, y es lo que
+    ''' necesita la pregunta del tono: en Skyrim las capas de tinte NO se heredan y aun asi authorearlas
+    ''' es tocar el tono.</param>
+    ''' <param name="canalesQueNoCuentan">Canales que el llamador declara IRRELEVANTES para SU pregunta,
+    ''' con su cita. No es un filtro de conveniencia: la pregunta del tono la contesta lo que ALIMENTA la
+    ''' derivacion, y declarar algo que la derivacion no lee no es authorear el tono.</param>
+    Friend Function DeclaraLaCategoria(autoria As LooksmenuLoader.LooksmenuPreset,
+                                       cat As PresetCategory, isSse As Boolean,
+                                       Optional soloHeredables As Boolean = True,
+                                       Optional canalesQueNoCuentan As String() = Nothing) As Boolean
+        If autoria Is Nothing Then Return False
+        Dim fuera As New HashSet(Of String)(
+            If(canalesQueNoCuentan, New String() {}), StringComparer.Ordinal)
+        Dim enBlanco As New LooksmenuLoader.LooksmenuPreset()
+        ' ⛔⛔ DELEGA, no reimplementa. Escribi este bucle a mano por un rato y se comia el filtro
+        ' `EsCanalDeValor` que `PrimerCanalDistinto` aplica con `soloHeredables` -- o sea que la PUERTA
+        ' habria pasado a contar como declaracion las banderas de contabilidad de la app. Una copia del
+        ' bucle es una segunda ley que empieza igual y termina distinta.
+        If PrimerCanalDistinto(enBlanco, autoria, cat, isSse, soloHeredables,
+                               canalesQueNoCuentan) IsNot Nothing Then Return True
+        Dim marcado As Boolean = False
+        PorCanal(cat, isSse,
+                 Sub(nombre, leerCanal, escribirCanal)
+                     If marcado OrElse fuera.Contains(nombre) Then Return
+                     If Not nombre.StartsWith("Has", StringComparison.Ordinal) Then Return
+                     If soloHeredables AndAlso Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
+                     Dim v = leerCanal(autoria)
+                     If TypeOf v Is Boolean AndAlso CBool(v) Then marcado = True
+                 End Sub)
+        Return marcado
+    End Function
+
     ''' <summary>El NOMBRE del primer canal que difiere, o Nothing. Es la forma que necesita un gate para poder
     ''' decir QUÉ se rompió; un booleano pelado obliga a re-recorrer a mano, y esa segunda pasada es una
     ''' segunda ley.</summary>
@@ -683,11 +801,16 @@ Public Module PresetCategoryFilter
     Friend Function PrimerCanalDistinto(a As LooksmenuLoader.LooksmenuPreset,
                                         b As LooksmenuLoader.LooksmenuPreset,
                                         cat As PresetCategory, isSse As Boolean,
-                                        Optional soloHeredables As Boolean = False) As String
+                                        Optional soloHeredables As Boolean = False,
+                                        Optional canalesQueNoCuentan As String() = Nothing) As String
         If a Is Nothing OrElse b Is Nothing Then Return If(a Is b, Nothing, "(uno de los dos presets es Nothing)")
+        ' ⛔ Canales que el llamador declara irrelevantes PARA SU PREGUNTA, con su cita. Viaja por aca
+        ' y no por una copia del bucle: esta funcion tiene ademas el filtro `EsCanalDeValor`, y una copia
+        ' se lo comeria en silencio.
+        Dim fuera As New HashSet(Of String)(If(canalesQueNoCuentan, New String() {}), StringComparer.Ordinal)
         Dim distinto As String = Nothing
         PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
-                                 If distinto IsNot Nothing Then Return
+                                 If distinto IsNot Nothing OrElse fuera.Contains(nombre) Then Return
                                  If soloHeredables AndAlso
                                     Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
                                  ' ⛔ Y ademas tiene que ser un canal de VALOR: las banderas de

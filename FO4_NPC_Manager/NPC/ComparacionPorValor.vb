@@ -26,6 +26,15 @@ Friend Module ComparacionPorValor
     ''' listas, y una comparación de un nivel da verde con elementos distintos.</para>
     ''' <para>⛔ Un tipo que define SU PROPIA igualdad (override de <c>Equals</c>) manda: es él quien sabe qué
     ''' significa «igual» para sus datos.</para></summary>
+    ''' <summary>⛔ ¿Alguno de los grafos comparados hasta ahora tenia un miembro `Parent`? Lo lee el gate:
+    ''' una exclusion que no excluye nada es una excusa muerta, y una excusa muerta tapa el proximo defecto.
+    ''' Se publica como CONTADOR y no como booleano para que el caso pueda decir cuantos vio.</summary>
+    Friend Function ControlarPunterosAlPadre() As Boolean
+        Return vioPadre
+    End Function
+
+    Private vioPadre As Boolean = False
+
     Friend Function IgualPorValor(a As Object, b As Object) As Boolean
         Return IgualPorValor(a, b, 0, "", New List(Of Tuple(Of Object, Object))())
     End Function
@@ -118,6 +127,21 @@ Friend Module ComparacionPorValor
         Next
         For Each pr In ta.GetProperties(BindingFlags.Public Or BindingFlags.Instance)
             If Not pr.CanRead OrElse pr.GetIndexParameters().Length > 0 Then Continue For
+            ' ⛔⛔ UN PUNTERO HACIA ARRIBA NO ES PARTE DEL VALOR. Un miembro que apunta al
+            ' CONTENEDOR describe donde vive el objeto, no que contiene: seguirlo convierte "comparar este
+            ' nodo" en "comparar el documento entero". Medido: comparando `ObjectTemplateCombinations`
+            ' entre el render y el horneado, el recorrido subia
+            ' `.Node.Parent.Parent.Parent.Parent.Parent.Parent.Parent` hasta la raiz del plugin y volvia a
+            ' bajar por `Children`, y reventaba en 1020 de 4365 NPC de Fallout.
+            ' ⛔ No aparecia antes porque los dos casos que existian comparaban grafos que COMPARTEN
+            ' las instancias --el clon, y el A/B contra si mismo-- y el atajo por identidad cortaba en el
+            ' primer nodo. Con DOS PARSEOS distintos la identidad no cierra y el puntero se recorre.
+            ' ⛔ Es una regla por FORMA, no una lista de tipos: cualquier tipo con `Parent` la hereda.
+            ' Y tiene control: `ControlarPunterosAlPadre` avisa si nada de lo que se compara tiene uno.
+            If String.Equals(pr.Name, "Parent", StringComparison.Ordinal) Then
+                vioPadre = True
+                Continue For
+            End If
             miro = True
             If Not IgualPorValor(pr.GetValue(a, Nothing), pr.GetValue(b, Nothing), nivel + 1, ruta & "." & pr.Name, camino) Then Return False
         Next
@@ -160,15 +184,34 @@ Friend Module ComparacionPorValor
         Return Nothing
     End Function
 
+    ''' <param name="entradasPorIdentidad">True --lo normal-- compara las ENTRADAS con `ReferenceEquals`:
+    ''' es la pregunta del CLON, "¿es la misma instancia?". False las SALTEA, y hace falta cuando los dos
+    ''' estados los construyeron sedes DISTINTAS: cada una arma su base por su lado y no van a compartir
+    ''' instancia nunca, asi que la respuesta estaria escrita antes de mirar.
+    ''' <para>⛔ Esto lo aprendi rompiendolo: el caso que compara render contra horneado salio rojo con
+    ''' 6452 de 6452 y 4365 de 4365 en su primera corrida --todos-- y encima, como esta funcion devuelve el
+    ''' PRIMER campo distinto, `RecordBase` TAPABA todo lo demas: gritaba sin medir.</para>
+    ''' <para>⛔ Con False no se prueba nada sobre la base EN SI; se prueban los campos de VALOR que la
+    ''' base produce. Una base distinta en un campo que se consume aparece; en algo que ningun campo del
+    ''' estado lee, no.</para></param>
     Friend Function PrimerCampoDistinto(a As MainForm.NPCVisualState,
                                         b As MainForm.NPCVisualState,
-                                        excepto As IEnumerable(Of String)) As String
+                                        excepto As IEnumerable(Of String),
+                                        Optional entradasPorIdentidad As Boolean = True) As String
         If a Is Nothing OrElse b Is Nothing Then
             Return If(a Is b, Nothing, "(uno de los dos estados es Nothing)")
         End If
         Dim saltear As New HashSet(Of String)(If(excepto, Enumerable.Empty(Of String)()), StringComparer.Ordinal)
+        ' ⛔⛔ LAS ENTRADAS SE COMPARAN POR IDENTIDAD, NO SE SALTEAN. Saltearlas dejo CIEGO al caso
+        ' del clon justo en el unico campo cuya perdida tiene sintoma escrito: con la base en Nothing, los
+        ' tres compositores del horneado devuelven Nothing. Y no son un valor: son la MISMA instancia o no
+        ' lo son, asi que `ReferenceEquals` es la pregunta correcta y ademas no recorre el grafo.
         For Each nombre In ENTRADAS_NO_VALORES
             saltear.Add(nombre)
+            If Not entradasPorIdentidad Then Continue For
+            Dim fe = GetType(MainForm.NPCVisualState).GetField(nombre)
+            If fe Is Nothing Then Continue For
+            If Not ReferenceEquals(fe.GetValue(a), fe.GetValue(b)) Then Return nombre
         Next
         For Each f In GetType(MainForm.NPCVisualState).GetFields(BindingFlags.Public Or BindingFlags.Instance)
             If saltear.Contains(f.Name) Then Continue For
@@ -184,24 +227,35 @@ Friend Module ComparacionPorValor
         Return Nothing
     End Function
 
-    ''' <summary>Los CINCO campos que DEBEN diferir entre la sede del render y la del bake, y por qué. Vive acá
+    ''' <summary>Los TRES campos que DEBEN diferir entre la sede del render y la del bake, y por qué. Vive acá
     ''' y no en cada gate porque una lista de excepciones copiada es una lista que diverge.
     ''' <list type="bullet">
     ''' <item><c>ModelSourceFormID</c> — el bake se lo asigna DESPUÉS de proyectar; el render lo deja en 0.</item>
     ''' <item><c>DefaultOutfitFormID</c> / <c>SleepOutfitFormID</c> — el render sale de la cadena de Inventory,
     ''' el bake de <c>CreateOwnInventoryState</c>.</item>
-    ''' <item><c>TraitsSourceFormID</c> — render = el terminal, bake = sí mismo.</item>
+    ''' <item>⛔ `TraitsSourceFormID` ESTABA aca y SALIO: que difiriera no era una ley sino el
+    ''' defecto -- un campo con dos significados segun el camino. El horneado ahora lleva el mismo
+    ''' terminal que el render.</item>
     ''' </list>
     ''' <para>⛔ <c>VariantLabel</c> e <c>InventorySourceFormID</c> estaban acá y SALIERON: están declarados y
     ''' NUNCA ASIGNADOS — por ninguna de las dos sedes — así que no es que «deban diferir», es que valen lo
     ''' mismo siempre. Los cazó el control de excepciones muertas del gate, y sacarlos es lo correcto: una
     ''' excepción que no tapa nada hoy tapa algo mañana, el día que alguien asigne uno de los dos en UNA sola
     ''' sede. Compararlos es gratis y cierra esa puerta.</para>
-    ''' <para>Las cuatro que quedan difieren DE VERDAD, con su cuenta medida (sse/fo4):
-    ''' <c>ModelSourceFormID</c> 6452/3231 · <c>TraitsSourceFormID</c> 2457/1429 ·
-    ''' <c>DefaultOutfitFormID</c> 919/84 · <c>SleepOutfitFormID</c> 176/10.</para></summary>
+    ''' <para>Las TRES que quedan difieren DE VERDAD, con su cuenta medida (sse/fo4):
+    ''' <c>ModelSourceFormID</c> 6452/3231 · <c>DefaultOutfitFormID</c> 919/84 ·
+    ''' <c>SleepOutfitFormID</c> 176/10.</para>
+    ''' <para>⛔ La cuenta de `TraitsSourceFormID` --2457/1429-- estaba aca abajo como si el campo
+    ''' siguiera en la lista, o sea que el mismo resumen decia CINCO arriba, CUATRO abajo y el arreglo
+    ''' tenia TRES. Esa cuenta ya no describe una divergencia permitida sino la que la ola CERRO: hoy
+    ''' los dos caminos llevan el mismo terminal y el gate la caza en vez de exigirla.</para></summary>
+    ' ⛔⛔ `TraitsSourceFormID` SALIO DE LA LISTA. Estaba declarado como "tiene que diferir:
+    ' render = el terminal, bake = si mismo", y esa divergencia no era una ley sino EL DEFECTO: un
+    ' campo con dos significados segun el camino. Toda ley cableada sobre el se bifurcaba sin que
+    ' ningun A/B lo viera, y el gate ademas EXIGIA la divergencia en vez de cazarla. Ahora el
+    ' horneado lleva el mismo terminal que el render.
     Friend ReadOnly DebenDiferirEntreRenderYBake As String() = {
-        "ModelSourceFormID", "DefaultOutfitFormID", "SleepOutfitFormID", "TraitsSourceFormID"
+        "ModelSourceFormID", "DefaultOutfitFormID", "SleepOutfitFormID"
     }
 
 End Module

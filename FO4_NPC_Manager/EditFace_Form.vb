@@ -4972,6 +4972,12 @@ Public Class EditFace_Form
         ' poder dibujar, pero declarar todo convertiria "abrir y aceptar" en un desprendimiento.
         ' Ver `ProyectarSobreElOverlay`.
         Dim hubo = ProyectarSobreElOverlay()
+        ' ⛔⛔ SIN GESTO, EL DICCIONARIO VUELVE COMO ESTABA. El constructor mete una entrada para
+        ' poder editar en vivo, y `ProyectarSobreElOverlay` no la toca cuando no hubo gesto -- asi que
+        ' "abrir y aceptar sin tocar nada" dejaba un overlay puesto. Todo lo que pregunta por la
+        ' PRESENCIA de la clave (el menu Reset, el archivo lateral) veia un NPC con overlay por un gesto
+        ' que no cambio nada. Se deshace con la MISMA funcion que usa el cancelar, no con una copia.
+        If Not hubo Then RevertOverlay()
         ' Live overlay edits already mutated _appliedPresets[npc]; flag the MainForm to recompose
         ' its main preview from the now-final overlay state.
         ' ⛔ Solo si hubo gesto: marcar siempre convertia "abrir y aceptar" en un cambio sin guardar.

@@ -1144,7 +1144,49 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' lo consumen el seed de <c>state.TextureLightingColor</c> (que alimenta TryApplyBodySkinSoftLight) y el
     ''' refresh en vivo. La variante SIN ajuste de arriba es la que sigue leyendo la CARA -si las dos fueran la
     ''' misma, el origen del match se moveria junto con el destino y el ajuste no podria converger nunca.</summary>
+    ''' <summary>⛔⛔ ¿HAY QUE DERIVAR EL TONO DEL CUERPO, O YA LO TRAE COPIADO DE LA PLANTILLA?
+    ''' <para>Mientras el NPC hereda, el bit 0 le COPIA el QNAM (`0x1403BE09A` en Skyrim, `0x140651552` en
+    ''' Fallout): no hay nada que derivar y derivarlo le da el CLFM por defecto de la raza -- costura en el
+    ''' cuello, porque la cara sigue con el de la plantilla.</para>
+    ''' <para>⛔ PERO un editor muestra "como va a quedar al ACEPTAR", no "como esta hoy". Authorear el tono
+    ''' DESPRENDE, asi que despues del OK el tono es el propio y SI hay que derivarlo. Authorear capas de
+    ''' tinte en Skyrim NO desprende (el bit 0 no las copia) y ahi el cuerpo se queda con el de la plantilla.
+    ''' La pregunta es entonces "¿authoreo un canal del tono que DESPRENDE?", y la contesta el MISMO
+    ''' comparador por canal que usa la puerta -- no una tabla nueva.</para>
+    ''' <para>⛔ Y vive en la pregunta del CUERPO, no en el nucleo: el nucleo tambien contesta "¿esta raza
+    ''' puede derivar un tono?", que es lo que decide si el tab de ajuste tiene sentido. Con la guarda alla,
+    ''' el tab quedaba deshabilitado para TODO heredero con un cartel que decia que la raza no tiene capa de
+    ''' tono -- falso, y el usuario no podia ni empezar a ajustar.</para></summary>
+    Private Function HayQueDerivarElTonoDelCuerpo(state As MainForm.NPCVisualState) As Boolean
+        If state Is Nothing Then Return False
+        Dim autoria = NpcRecordOverlay.OverlayDeAutoria(state.RootNpcFormID, _appliedPresets)
+        Dim esSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        ' ⛔⛔ EL NO HEREDERO CONTESTA LO MISMO QUE EL GUARDADO. Aca decia `Return True` para todo
+        ' no-heredero, y el guardado deriva solo cuando la autoria TOCA el tono: para un no-heredero con
+        ' un preset que no lo toca --un atuendo, un color de pelo-- o sin preset, el preview derivaba de
+        ' las capas y el archivo conservaba el QNAM crudo. Y el juego lee el QNAM crudo
+        ' (`TESNPC::SetSkinFromTint` `0x1403BFE40` lo lee en `0x1403C0015/1C/23` y lo vuelca al material
+        ' +0xA0; re-derivar desde las capas esta guardado por `formID == 7`, o sea solo el jugador), asi
+        ' que el preview era el unico de los tres que mostraba otra cosa. Medido sembrado: 189 a un
+        ' escalon y 29 con diferencia grande en Skyrim, 47 en Fallout.
+        If state.TraitsSourceFormID = 0UI OrElse state.TraitsSourceFormID = state.RootNpcFormID Then
+            Return PresetCategoryFilter.AutoriaTocaElTono(autoria, esSse)
+        End If
+        If autoria Is Nothing OrElse state.RecordBase Is Nothing Then Return False
+        ' ⛔⛔ CONTRA LA BASE, NO CONTRA UN PRESET EN BLANCO. Comparar contra blanco contesta "¿esta
+        ' DECLARADO?", no "¿DESPRENDE?", y son cosas distintas: el editor de cara SIEMBRA las capas desde la
+        ' base y las declara (`EditFace_Form`), asi que con solo ABRIRLO el predicado daba True y el cuerpo se
+        ' pintaba con el tono derivado mientras el NPC seguia heredando.
+        ' ⛔ La puerta del desprendimiento ya contesta esta pregunta y lo hace contra la base -- su propio
+        ' comentario lo dice: "declarar una categoria con los MISMOS valores que la base no es tomar posesion;
+        ' posesion es declararla DISTINTA". Yo lo escribi ahi y lo contradije aca: dos dueños de la misma
+        ' pregunta con respuestas opuestas. Ahora es el MISMO comparador contra la MISMA linea de base.
+        Return PresetCategoryFilter.AutoreaDistintoDeLaBase(autoria, PresetCategory.FaceTints,
+                                                            state.RecordBase, esSse) IsNot Nothing
+    End Function
+
     Friend Function ResolveNpcBodySkinToneColor(state As MainForm.NPCVisualState) As Nullable(Of Color)
+        If Not HayQueDerivarElTonoDelCuerpo(state) Then Return Nothing
         Return ResolveNpcSkinToneCore(state, state?.SkinToneOffset)
     End Function
 

@@ -87,8 +87,24 @@ Friend NotInheritable Class NpcTemplateHelpers
     End Function
 
     Public Shared Function HasTemplateFlag(flags As UShort, category As NPC_TemplateCategory) As Boolean
-        Dim mask = CUShort(1 << CInt(category))
-        Return (flags And mask) <> 0US
+        Return (flags And MascaraDePlantilla(category)) <> 0US
+    End Function
+
+    ''' <summary>⛔⛔ LA MASCARA DEL BIT, EN UN SOLO LUGAR: `1 << categoria`.
+    ''' <para>Existe porque escribir la mascara a mano ya produjo un verde FALSO: un caso sembraba el bit con
+    ''' `flags Or CUInt(NPC_TemplateCategory.Traits)` y, como `Traits = 0`, eso es `Or 0` -- no encendia NADA.
+    ''' El caso pasaba igual (en un juego por casualidad, en el otro con la ley revertida). El lector ya tenia
+    ''' la mascara; le faltaba el hermano que la ESCRIBE.</para></summary>
+    Public Shared Function MascaraDePlantilla(category As NPC_TemplateCategory) As UShort
+        Return CUShort(1 << CInt(category))
+    End Function
+
+    ''' <summary>⛔ Prende o apaga el bit de una categoria. Devuelve las banderas nuevas -- no muta: quien
+    ''' tenga el record decide si se lo escribe.</summary>
+    Public Shared Function PonerBanderaDePlantilla(flags As UShort, category As NPC_TemplateCategory,
+                                                  encendido As Boolean) As UShort
+        Dim m = MascaraDePlantilla(category)
+        Return If(encendido, CUShort(flags Or m), CUShort(flags And Not m))
     End Function
 
     Public Shared Function ResolveTemplateSourceFormID(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger

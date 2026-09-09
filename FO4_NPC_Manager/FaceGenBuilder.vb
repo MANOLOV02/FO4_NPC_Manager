@@ -763,7 +763,8 @@ Public Module FaceGenBuilder
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                  willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
-                                 Optional lutDataPath As String = Nothing) As BuildResult
+                                 Optional lutDataPath As String = Nothing,
+                                 Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As BuildResult
 
         ' GATE SIMD, UNA VEZ POR PROCESO Y ANTES DE HORNEAR NADA.
         ' POR QUE ACA Y NO EN PhaseReport: los self-tests vivian SOLO adentro de PhaseReport(), y a
@@ -805,45 +806,18 @@ Public Module FaceGenBuilder
         ' con los campos que el bit 0 copia. Ver 40-bake-reglas-comunes.
         ' Arranca RecordResolve: overlay del NPC, mapa de HDPT, BakeState y huesos del actor (ver BakePhase).
         Dim tRec = Stopwatch.GetTimestamp()
-        Dim baseDelHorneado As NPC_Data = Nothing
-        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
-            npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver,
-            Nothing, baseDelHorneado)
-        Dim state As MainForm.NPCVisualState = Nothing
-        If npcData IsNot Nothing Then
-            ' .SseHairColorRgb = SSE RaceMenu absolute hair tint. Sin esto el bake resolvía el pelo por el
-            ' CLFM mientras el preview mostraba el RGB del preset ⇒ RENDER ≠ BAKE. Lo consume el MISMO
-            ' ApplyMaterialPaletteHairColor que corre el render (vía applyMaterialOverrides).
-            ' Nothing fuera de Skyrim: el overlay solo lo puebla en SSE.
-            ' (El comentario vive ACÁ y no entre los miembros: VB no admite comentarios dentro de un
-            '  inicializador With { } — rompe el parser con BC30985.)
-            ' ⛔⛔ LA SEDE UNICA: el bake proyecta con la MISMA funcion que el render
-            ' (`NpcStateFactory.ProyectarEstado`). Antes esta ley estaba escrita dos veces y las dos
-            ' ya divergian por ORDEN — de ahi salian el MWGT parcial y las re-sustituciones de raza.
-            ' ⛔ `presetDeDibujo:=Nothing` NO es un descuido: hoy el estado del bake nunca lleva
-            ' `SkinToneOffset` (el `With {}` de arriba no lo asignaba) y el unico consumidor del
-            ' offset tiene TODOS sus llamadores en el render. Pasarle el preset "porque parece mas
-            ' completo" cambiaria BYTES HORNEADOS.
-            ' ⛔ Y el bake sigue proyectando desde su record PROPIO, sin caminar la cadena: eso es
-            ' correcto y este cambio no lo toca.
-            ' ⛔⛔ LA BASE DEL HORNEADO. Sin esto el estado del bake nacia sin record y los tres
-            ' compositores -interfaz, linea de comandos y horneado masivo- devolvian Nothing: el color de
-            ' piel del material salia del QNAM crudo en vez de la capa de tono, o sea BYTES HORNEADOS
-            ' distintos de lo que el preview mostraba.
-            Dim proy = NpcStateFactory.ProyectarEstado(npcData, npcData,
-                                                       NpcStateFactory.CreateOwnInventoryState(npcData),
-                                                       presetDeDibujo:=Nothing,
-                                                       recordBase:=If(baseDelHorneado, npcData))
-            state = proy.Estado
-            ' `ModelSourceFormID` es dato del BAKE, no de la proyeccion: el render lo deja en 0.
-            state.ModelSourceFormID = npcFormID
-            ' Engine race fallbacks: NPC.WNAM=0 -> RACE.SkinFormID, head parts/texture/hair -> RACE
-            ' defaults, sustitucion del centinela de MWGT. El mismo camino que usa el render; sin el,
-            ' `ResolveActorSkinTextureSet` devuelve Nothing para los NPC que dejan WNAM=0 y el bake cae
-            ' a HDPT.TNAM, que para ChildHeadRear esta cableado a SkinBodyChildMale.
-            ' ⛔ Con el `traits` de la PROYECCION, no con uno recalculado: una sola vez y una sola ley.
-            NpcStateResolver.ApplyRaceFallbacks(state, proy.Traits, pluginManager)
-        End If
+        ' ⛔⛔ LA SECUENCIA ENTERA VIVE EN `NpcStateFactory.EstadoDelHorneado`: resolver el
+        ' overlay caminando la cadena, proyectar sobre la base del horneado CON su terminal, sellar
+        ' `ModelSourceFormID` y correr los fallbacks de raza. Estaba escrita aca, y el unico caso que
+        ' compara esta sede con la del render tenia el lado del bake escrito A MANO y distinto --sin
+        ' caminar la cadena, con el record propio como base y sin terminal--, o sea que comparaba una
+        ' sede contra una tercera cosa, justo en el campo que esta ola vino a unificar.
+        ' ⛔ Con `npcData` en Nothing, `state` queda en Nothing y la funcion SIGUE: hay camino aguas
+        ' abajo que contempla los dos casos, y cortar aca cambiaria el mensaje que ve el usuario.
+        Dim horneado = NpcStateFactory.EstadoDelHorneado(npcFormID, pluginManager, appliedPresets,
+                                                        lmSkinTemplateResolver, resolveLvlnPick)
+        Dim npcData = horneado.Datos
+        Dim state As MainForm.NPCVisualState = horneado.Estado
         Dim result As New BuildResult()
 
         Dim originPlugin = pluginManager.GetOriginatingPluginName(npcFormID)
@@ -988,8 +962,11 @@ Public Module FaceGenBuilder
                 regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(raceProbe, probeNpcRaw.Record.ConfigurationFlagsFemale)
             End If
         End If
+        ' ⛔ CON EL RECORD QUE YA SE RESOLVIO ARRIBA. Sin esto el horneado caminaba la cadena DOS
+        ' veces --`EstadoDelHorneado` y esta-- y cada caminata re-parsea, sondea y copia el record.
         Dim bakeState As FaceGenBuildPipeline.BakeState =
-            FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, appliedPresets, regionsFile)
+            FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, appliedPresets, regionsFile,
+                                                resolveLvlnPick, npcDataResuelto:=npcData)
         ' Names of every bone the actor's face + body skeletons expose. Used below
         ' to drop source shapes whose skin references a bone outside this set
         ' (CK-equivalent filter — see the call site for the rationale).
@@ -1467,7 +1444,7 @@ Public Module FaceGenBuilder
                                                          hdpt, effectiveHeadPartType, applyMaterialOverrides,
                                                          npcFormID, originPlugin,
                                                          pluginManager, appliedPresets, host,
-                                                         state, willBePacked, result,
+                                                         state, npcData, willBePacked, result,
                                                          lmSkinTemplateResolver, lutDataPath)
                                     Finally
                                         DeleteStaleFaceCustomizationArtifacts(npcFormID, originPlugin,
@@ -3590,6 +3567,10 @@ Public Module FaceGenBuilder
         If String.IsNullOrEmpty(result.TextureFailureDetail) Then result.TextureFailureDetail = detail
     End Sub
 
+    ''' <param name="npcDataResuelto">⛔⛔ EL RECORD YA RESUELTO por `BuildCharGen`. Antes esta
+    ''' rutina lo resolvia OTRA VEZ y sin el resolvedor de hoja: un segundo caminante de la cadena
+    ''' dentro del mismo horneado y con otra ley de hoja que el estado, asi que el `.dds` se componia
+    ''' con el catalogo de tintes de otra raza o de otro genero.</param>
     Private Sub BakeFaceTextures(nif As Nifcontent_Class_Manolo,
                                  cloned As INiShape,
                                  srcNif As Nifcontent_Class_Manolo,
@@ -3603,6 +3584,7 @@ Public Module FaceGenBuilder
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
                                  state As MainForm.NPCVisualState,
+                                 npcDataResuelto As NPC_Data,
                                  willBePacked As Boolean,
                                  result As BuildResult,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
@@ -3662,8 +3644,9 @@ Public Module FaceGenBuilder
         ' Forward the LM SkinTemplate resolver so face TXST overrides from the bundle land here
         ' (template.face[gender] → npcData.HeadTextureFormID), keeping the bake's tint inputs
         ' aligned with what the live render shows.
-        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
-            npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver)
+        ' ⛔ Sin segunda caminata: el record es el que `BuildCharGen` ya resolvio con la hoja
+        ' correcta. Una resolucion por horneado, igual que una por repintado.
+        Dim npcData = npcDataResuelto
         If npcData Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: npcData is Nothing (npcFormID=0x{npcFormID:X8})")
             ' F1: era MUDO. El NIF se escribe igual y las 3 DDS son REQUERIDAS por el packer => el save decia OK
@@ -3678,10 +3661,19 @@ Public Module FaceGenBuilder
         ' PANTALLA y en un batch le daba a todo el lote el LUT del NPC seleccionado. Con el origen en el
         ' RACE el peligro desaparece de raíz: no hay malla que recorrer ni host del que leer, y GUI, batch
         ' y CLI comparten literalmente el mismo código.
-        ' ⛔ BAKE ==> `overlayPreset` es la AUTORIA. Hornear es authorear: el .dds que sale es del
-        ' NPC y no de su plantilla, y por eso este camino deja `DibujoHeredado` en Nothing (lo mide G10).
+        ' ⛔ BAKE ==> `overlayPreset` es la AUTORIA: la clave de quien authoreo sigue siendo el NPC.
+        ' ⛔⛔ PERO LA CARA SE COMPONE DESDE DONDE EL JUEGO LA LEE, igual que el render. Aca se
+        ' componia desde el record CRUDO del NPC mientras el dibujo la compone desde la plantilla, asi que para
+        ' un heredero el `.dds` horneado no era el que se estaba viendo: RENDER != BAKE en la cara.
+        ' La ley esta MEDIDA: el juego arma la ruta del FaceGen caminando la cadena hasta el ULTIMO eslabon y
+        ' usando SU FormID (Fallout 0x140658E80..0x140658EAA, formatea en 0x140658EE4; Skyrim
+        ' 0x1403C2E20..0x1403C2E49, formatea en 0x1403C2E83). `FaceAppearanceSourceFormID` es esa misma
+        ' pregunta y es la que usa el render.
+        ' ⛔ El comentario anterior decia "el .dds que sale es del NPC y no de su plantilla, y por eso
+        ' este camino deja `DibujoHeredado` en Nothing (lo mide G10)": `DibujoHeredado` ya no existe y G10 mide
+        ' otra cosa. Era una cita rancia sosteniendo la eleccion equivocada.
         Dim built = FaceTintLayerBuilder.Build(
-            modelFormID:=npcFormID,
+            modelFormID:=NpcStateFactory.FaceAppearanceSourceFormID(state),
             rootFormID:=npcFormID,
             raceFormID:=npcData.Record.Race,
             isFemale:=npcData.Record.ConfigurationFlagsFemale,

@@ -214,8 +214,11 @@ Friend NotInheritable Class NpcStateResolver
             traits.WeightFat = Nothing
         End If
 
+        ' ⛔⛔ La limpieza de la lista de partes (sacar los ceros y los repetidos) ESTABA ACA, o sea
+        ' FUERA de la sede, y por eso solo la hacia el render: el horneado y el preview de piel llaman a
+        ' `ApplyRaceFallbacks` directo y se quedaban con la lista sucia. Medido por G16-d: 147 NPC de
+        ' Skyrim horneaban con una parte de cabeza REPETIDA. Ahora vive adentro.
         ApplyRaceFallbacks(state, traits, _ctx.PluginManager, AddressOf _ctx.ParseRaceCanonCached)
-        state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
         ' Apply per-NPC LooksMenu overlay (if any) AFTER the template chain + race fallbacks ran.
         ' This is what makes the preset visible in the preview: HeadParts / HairColor / Weight in
@@ -400,13 +403,13 @@ Friend NotInheritable Class NpcStateResolver
             ' encuentra capa de tono y cae al CLFM DEFAULT DE LA RAZA. Un heredero con cualquier overlay
             ' —hasta uno vacio, que lo instala elegir un atuendo— dibujaba el cuerpo con el tono de la raza
             ' en vez del de su plantilla, y la cara seguia con el de la plantilla: costura en el cuello.
-            Dim heredaTraits As Boolean = traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID
-            If Not heredaTraits Then
-                Dim presetSkin = _materialResolver.ResolveNpcBodySkinToneColor(state)
-                If presetSkin.HasValue Then
-                    state.HasTextureLighting = True
-                    state.TextureLightingColor = presetSkin.Value
-                End If
+            ' ⛔ La guarda de "mientras hereda no se re-deriva" NO se repite aca: vive en
+            ' `ResolveNpcSkinToneCore`, que es el que deriva, y devuelve Nothing para un heredero. Repetirla
+            ' seria un segundo dueño de la misma ley, que es exactamente lo que hubo que arreglar.
+            Dim presetSkin = _materialResolver.ResolveNpcBodySkinToneColor(state)
+            If presetSkin.HasValue Then
+                state.HasTextureLighting = True
+                state.TextureLightingColor = presetSkin.Value
             End If
         End If
 
@@ -485,6 +488,21 @@ Friend NotInheritable Class NpcStateResolver
     ''' direct <c>Canon.CanonRecords.Race</c> when Nothing — keeps the offline bake path pure.</param>
     Friend Shared Sub ApplyRaceFallbacks(state As MainForm.NPCVisualState, traits As MainForm.TraitsState, pluginManager As PluginManager,
                                          Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing)
+        AplicarFallbacksDeRazaCore(state, traits, pluginManager, parseRace)
+        ' ⛔⛔ LA LIMPIEZA DE LA LISTA DE PARTES, ADENTRO DE LA SEDE. Estaba escrita en el RENDER,
+        ' una linea despues de la llamada, asi que los otros tres llamadores --el horneado, el preview de
+        ' piel y la sonda-- se quedaban con la lista sucia. Medido por G16-d en su primera corrida valida:
+        ' 147 NPC de Skyrim horneaban con una parte de cabeza REPETIDA que el preview no mostraba.
+        ' ⛔ Va en un envoltorio y no al final del cuerpo porque el cuerpo tiene salidas tempranas: puesta
+        ' adentro, tres caminos se la saltearian y el defecto volveria por la puerta de al lado.
+        If state IsNot Nothing AndAlso state.HeadPartFormIDs IsNot Nothing Then
+            state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
+        End If
+    End Sub
+
+    Private Shared Sub AplicarFallbacksDeRazaCore(state As MainForm.NPCVisualState, traits As MainForm.TraitsState,
+                                                  pluginManager As PluginManager,
+                                                  parseRace As Func(Of PluginRecord, Canon.IRace))
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
 
         Dim raceRec = pluginManager.GetRecord(state.RaceFormID)
