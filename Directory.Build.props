@@ -11,7 +11,7 @@
        en el AssemblyRef de quien compile contra esto), FileVersion y InformationalVersion. -->
 
   <PropertyGroup>
-    <Version>2.1.2</Version>
+    <Version>2.1.6</Version>
     <Company>MANOLOV02</Company>
     <Copyright>Copyright (c) 2026 MANOLOV02</Copyright>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
