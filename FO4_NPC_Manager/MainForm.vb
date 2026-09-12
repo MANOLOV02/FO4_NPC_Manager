@@ -5412,6 +5412,25 @@ Public Class MainForm
     End Class
 
     Private _currentOutfitEntries As New List(Of OutfitComboEntry)
+
+    ''' <summary>⛔⛔ LA REALIZACION DE RESPALDO, Y ES UNA SOLA. La usa <see cref="PrendasParaRender"/> cuando
+    ''' no hay entrada del combo. Sin esto volvia a SORTEAR en cada render: el mismo estado del mismo NPC daba
+    ''' 4 prendas y enseguida 7 --MEDIDO con `EstadoAbGate --ropa`--, o sea que el NPC se cambiaba de ropa solo,
+    ''' sin que el usuario tocara Reroll. Eso contradice lo que promete <see cref="OutfitComboEntry"/>: la
+    ''' realizacion se cachea y solo Reroll vuelve a sortear.
+    ''' <para>Clave: el OTFT. VIVE LO QUE VIVE UN JUEGO DE ENTRADAS: se olvida exactamente en los cuatro
+    ''' sitios donde se instalan entradas nuevas, que es cuando el sorteo puede cambiar con razon. Por eso no
+    ''' hace falta un caso aparte para Reroll: re-sortear reconstruye e instala entradas.</para>
+    ''' <para>Con SyncLock porque los renders corren en `Task.Run` y dos pueden entrar juntos; sin el, cada
+    ''' uno sortearia el suyo y volveriamos al defecto por otro camino.</para></summary>
+    Private ReadOnly _respaldoDeRealizacion As New Dictionary(Of UInteger, OutfitComboEntry)
+
+    ''' <summary>Se llama donde se instalan entradas nuevas: ahi muere la realizacion de respaldo.</summary>
+    Private Sub OlvidarRespaldoDeRealizacion()
+        SyncLock _respaldoDeRealizacion
+            _respaldoDeRealizacion.Clear()
+        End SyncLock
+    End Sub
     Private _suppressOutfitComboEvent As Boolean = False
 
     ''' <summary>Estilo de una fila: la MISMA ley de colores y fuentes de siempre —gris si el NPC sólo
@@ -5952,6 +5971,7 @@ Public Class MainForm
 
             _renderHost.CurrentBaseState = baseState
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+            OlvidarRespaldoDeRealizacion()
 
             ' Now that an NPC is selected and resolved, the editor actions can target it.
             ' Paste enable is recomputed against the new state — only stays enabled if the
@@ -6050,6 +6070,7 @@ Public Class MainForm
 
             _renderHost.CurrentBaseState = baseState
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+            OlvidarRespaldoDeRealizacion()
 
             ' Now that an NPC is selected and resolved, the editor actions can target it.
             ' Paste enable is recomputed against the new state — only stays enabled if the
@@ -6270,15 +6291,6 @@ Public Class MainForm
         _suppressOutfitComboEvent = False
     End Sub
 
-    Private Function GetSelectedOutfitArmorIDs(host As NpcRenderHost) As List(Of UInteger)
-        Dim entry = SelectedOutfitEntryForHost(host)
-        Return If(entry Is Nothing, New List(Of UInteger), entry.SampledArmorFormIDs)
-    End Function
-
-    Private Function GetSelectedOutfitContextKeywords(host As NpcRenderHost) As Dictionary(Of UInteger, List(Of UInteger))
-        Dim entry = SelectedOutfitEntryForHost(host)
-        Return If(entry Is Nothing, New Dictionary(Of UInteger, List(Of UInteger)), entry.SampledArmorContextKeywords)
-    End Function
 
     ''' <summary>The outfit entry to render for a host. The MAIN host reads the entry selected in
     ''' <c>ComboBoxOutfit</c> (backed by <c>_currentOutfitEntries</c>). Editor / outfit-picker hosts read
@@ -6297,6 +6309,53 @@ Public Class MainForm
         Return entries(0)
     End Function
 
+    ''' <summary>⛔⛔ LA SEDE UNICA de "que prendas lleva puestas". Devuelve la realizacion sampleada de la
+    ''' entrada que le corresponde a este host y, cuando NO hay ninguna, resuelve el atuendo del estado con
+    ''' LA MISMA LEY (<see cref="BuildOutfitComboEntries"/>: el borrador si lo hay, si no el sorteo de la
+    ''' OTFT con su contexto de keywords).
+    ''' <para>⛔⛔ Esta pregunta tenia DOS dueños. Aca se leia la entrada seleccionada del combo y, si en ese
+    ''' instante no habia ninguna --el combo todavia no se repoblo, o la seleccion quedo en -1 entre dos
+    ''' renders--, la lista salia vacia y <c>NpcMeshCollector</c> aplicaba su PROPIA ley: leer la OTFT CRUDA
+    ''' y mandar sus prendas como si fueran ARMO. Esa segunda ley NO expande listas por nivel, asi que un
+    ''' atuendo hecho de LVLI --el caso vanilla de los raiders-- dibujaba CERO piezas: el NPC aparecia
+    ''' DESNUDO en el render principal mientras el picker, con su propia resolucion, lo mostraba vestido.
+    ''' Reportado en vivo y NO reproducible a voluntad, justamente porque dependia del instante del
+    ''' repoblado. Ahora el colector no resuelve atuendos: consume lo que el estado trae de aca.</para>
+    ''' <para>⛔⛔ El host MANDA cuando tiene entrada: el preview de una sola pieza del picker es una entrada
+    ''' de una prenda y esta funcion no la toca. La rama de abajo es solo para "no hay entrada".</para></summary>
+    Friend Function PrendasParaRender(state As NPCVisualState, host As NpcRenderHost) _
+            As (Armos As List(Of UInteger), Keywords As Dictionary(Of UInteger, List(Of UInteger)))
+        Dim entry As OutfitComboEntry = Nothing
+        If host IsNot Nothing Then entry = SelectedOutfitEntryForHost(host)
+        If entry IsNot Nothing Then Return (entry.SampledArmorFormIDs, entry.SampledArmorContextKeywords)
+        Dim vacio = (New List(Of UInteger), New Dictionary(Of UInteger, List(Of UInteger)))
+        If state Is Nothing Then Return vacio
+        ' ⛔⛔ UNA SOLA REALIZACION, Y ESTABLE. Resolver aca vuelve a SORTEAR la OTFT con listas por nivel, asi
+        ' que hacerlo en cada render cambiaba las prendas solo. Se sortea UNA vez por atuendo y se reusa hasta
+        ' que se instalen entradas nuevas (ahi `OlvidarRespaldoDeRealizacion` la da de baja).
+        Dim clave = If(state.DefaultOutfitFormID <> 0UI, state.DefaultOutfitFormID, state.SleepOutfitFormID)
+        If clave = 0UI Then Return vacio
+        Dim guardada As OutfitComboEntry = Nothing
+        SyncLock _respaldoDeRealizacion
+            If _respaldoDeRealizacion.TryGetValue(clave, guardada) AndAlso guardada IsNot Nothing Then
+                Return (guardada.SampledArmorFormIDs, guardada.SampledArmorContextKeywords)
+            End If
+        End SyncLock
+        Dim entradas = BuildOutfitComboEntries(state)
+        Dim elegida = entradas.FirstOrDefault(Function(e) e.SlotKind = OutfitSlotKind.DefaultOutfit)
+        If elegida Is Nothing Then elegida = entradas.FirstOrDefault()
+        If elegida Is Nothing Then Return vacio
+        SyncLock _respaldoDeRealizacion
+            ' Si otro render llego primero, gana el suyo: los dos tienen que dibujar LO MISMO.
+            If _respaldoDeRealizacion.TryGetValue(clave, guardada) AndAlso guardada IsNot Nothing Then
+                elegida = guardada
+            Else
+                _respaldoDeRealizacion(clave) = elegida
+            End If
+        End SyncLock
+        Return (elegida.SampledArmorFormIDs, elegida.SampledArmorContextKeywords)
+    End Function
+
     Private Async Function RenderCurrentStateAsync(requestVersion As Integer, Optional host As NpcRenderHost = Nothing) As Task
         If host Is Nothing Then host = _renderHost
         If host.CurrentBaseState Is Nothing Then Return
@@ -6310,8 +6369,11 @@ Public Class MainForm
 
         ' Build final state with selected outfit
         Dim state = _stateResolver.CloneVisualState(host.CurrentBaseState)
-        state.LoadoutArmorFormIDs.AddRange(GetSelectedOutfitArmorIDs(host))
-        For Each kvCtx In GetSelectedOutfitContextKeywords(host)
+        ' ⛔⛔ UNA sola resolucion del atuendo, la de `PrendasParaRender`. Ver su doc: leer solo la entrada
+        ' seleccionada dejaba al NPC desnudo cuando en ese instante no habia ninguna.
+        Dim prendasDelRender = PrendasParaRender(state, host)
+        state.LoadoutArmorFormIDs.AddRange(prendasDelRender.Armos)
+        For Each kvCtx In prendasDelRender.Keywords
             state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
         Next
 
@@ -9361,6 +9423,7 @@ Public Class MainForm
         ' from the main viewer's state (the user's "no live preview en el render principal" rule).
         If host Is _renderHost Then
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+            OlvidarRespaldoDeRealizacion()
 
             ' Recompute Paste enable now that the target NPC may have changed race/gender.
             UpdatePasteLookEnabled()
@@ -9380,6 +9443,7 @@ Public Class MainForm
             PopulateOutfitCombo()
         Else
             host.OutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+            OlvidarRespaldoDeRealizacion()
         End If
 
         Await RenderCurrentStateAsync(requestVersion, host)

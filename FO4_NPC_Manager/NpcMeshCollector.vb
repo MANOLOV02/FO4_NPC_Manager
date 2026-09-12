@@ -321,22 +321,15 @@ Friend NotInheritable Class NpcMeshCollector
         If Not onlyFaceCollect Then
             ' Use pre-resolved LoadoutArmorFormIDs (already expanded from LVLI).
             ' These are the final ARMO FormIDs for this specific variant.
-            If state.LoadoutArmorFormIDs.Count > 0 Then
-                For Each armoFormID In state.LoadoutArmorFormIDs
-                    CollectArmoCandidates(armoFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
-                Next
-            ElseIf state.DefaultOutfitFormID <> 0UI Then
-                ' Fallback: read OTFT directly (for NPCs without leveled expansion)
-                Dim outfitRec = _ctx.PluginManager.GetRecord(state.DefaultOutfitFormID)
-                If outfitRec Is Nothing OrElse outfitRec.Header.Signature <> "OTFT" Then
-                    warnings.Add($"Default outfit {state.DefaultOutfitFormID:X8} is missing or not OTFT")
-                Else
-                    Dim outfit = Canon.CanonRecords.Otft(outfitRec, _ctx.PluginManager)
-                    For Each itemFormID In outfit.Prendas()
-                        CollectArmoCandidates(itemFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
-                    Next
-                End If
-            End If
+            ' ⛔⛔ EL COLECTOR NO RESUELVE ATUENDOS: consume la realizacion que trae el estado, que arma
+            ' `MainForm.PrendasParaRender` (borrador o sorteo de la OTFT, con su contexto de keywords).
+            ' Aca vivia la SEGUNDA ley de la misma pregunta: leer la OTFT CRUDA y mandar sus prendas como si
+            ' fueran ARMO. No expande listas por nivel, asi que con un atuendo de LVLI dibujaba CERO piezas
+            ' --NPC desnudo-- y solo se notaba cuando la primera resolucion no tenia entrada. Una pregunta,
+            ' una sede: si manana falta algo, falta en UN lugar y se arregla ahi.
+            For Each armoFormID In state.LoadoutArmorFormIDs
+                CollectArmoCandidates(armoFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
+            Next
         End If
 
         ' HeadParts: Full + OnlyFace; OnlyOutfit (single-piece preview) drops them.

@@ -211,15 +211,32 @@ Friend NotInheritable Class RecordDetailsTree
         If npc.Record.Plantilla() = 0UI AndAlso npc.Record.ActoresDePlantilla().Count = 0 Then Return
 
         Dim tplNode = Agregar(Nothing, $"Template Configuration  (flags: {npc.Record.ConfigurationTemplateFlags:X4})")
+        ' ⛔⛔ "(disabled)" = el puntero SIGUE en el record pero su bit Use-X esta ABAJO, asi que el motor no
+        ' lo lee. Desprender una categoria baja el bit y DEJA el TPLT/TPTA --es lo que hace el motor--, de
+        ' modo que sin esta marca el panel mostraba una plantilla que ya no gobierna nada.
+        ' La ley de que puntero usa cada categoria no se re-escribe aca: es la de
+        ' `NpcTemplateHelpers.ResolveTemplateSourceFormID` (TPTA[cat] si no es 0, si no el TPLT), y por eso
+        ' el TPLT figura en uso mientras QUEDE una categoria encendida que caiga en el.
+        Dim tpltEnUso As Boolean = False
+        For Each c As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
+            If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, c) AndAlso
+               npc.Record.ActorDePlantilla(c) = 0UI Then
+                tpltEnUso = True
+                Exit For
+            End If
+        Next
         If npc.Record.Plantilla() <> 0UI Then
-            Agregar(tplNode, $"Base Template (TPLT): {DescribirFormID(npc.Record.Plantilla())}", npc.Record.Plantilla())
+            Agregar(tplNode, $"Base Template (TPLT): {DescribirFormID(npc.Record.Plantilla())}" &
+                             If(tpltEnUso, "", "  (disabled)"), npc.Record.Plantilla())
         End If
         If Not isSse Then
             ' TPTA y el par de plantilla legendaria son subrecords sólo de Fallout.
             For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
                 Dim actor = npc.Record.ActorDePlantilla(cat)
                 If actor = 0UI Then Continue For
-                Agregar(tplNode, $"TPTA[{cat}] ({NpcManagerFormat.GetTemplateCategoryLabel(cat)}): {DescribirFormID(actor)}", actor)
+                Dim catActiva = NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat)
+                Agregar(tplNode, $"TPTA[{cat}] ({NpcManagerFormat.GetTemplateCategoryLabel(cat)}): {DescribirFormID(actor)}" &
+                                 If(catActiva, "", "  (disabled)"), actor)
             Next
             Dim npcFo4 = TryCast(npc.Record, Canon.NpcFO4)
             If npcFo4 IsNot Nothing Then
