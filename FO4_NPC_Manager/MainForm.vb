@@ -994,6 +994,9 @@ Public Class MainForm
     End Class
 
     Friend Class InventoryState
+        ''' <summary>⛔ El NPC del que salio este inventario: el terminal de la cadena de Inventory, o el propio.
+        ''' Es lo que ancla la hoja de LVLN entre resoluciones, igual que `TraitsState.SourceFormID`.</summary>
+        Public SourceFormID As UInteger
         Public DefaultOutfitFormID As UInteger
         Public SleepOutfitFormID As UInteger
     End Class
@@ -7972,6 +7975,13 @@ Public Class MainForm
         Return entries
     End Function
 
+    ''' <summary>⛔ Costura de arnes: las entradas del combo son la PRIMERA de las dos resoluciones del
+    ''' atuendo (la que samplea las listas niveladas). El render principal se viste con la seleccionada; sin
+    ''' esto, un gate solo puede medir la SEGUNDA (el respaldo por DOFT crudo del colector) y no ve el hueco.</summary>
+    Friend Function EntradasDeAtuendoParaArnes(state As NPCVisualState) As List(Of OutfitComboEntry)
+        Return BuildOutfitComboEntries(state)
+    End Function
+
     ''' <summary>Envoltura de <see cref="AddOutfitEntryIfPresent"/> que aísla el fallo a UNA entrada.
     ''' <para>⛔ El aviso va con CAUSA y tipo: un catch que se traga la excepción es lo que esta tanda
     ''' vino a terminar. Lo que se decide acá es el ALCANCE del daño, no si se reporta.</para></summary>
@@ -9319,7 +9329,8 @@ Public Class MainForm
         ' El ancla se calcula ACA y no dentro del resolver porque un host de EDITOR nace con
         ' LastRenderedState = Nothing y hay que caer al del MainForm — que es lo que el usuario tenia en
         ' pantalla al apretar Edit.
-        Dim pin As New NpcStateResolver.LeveledLeafPin(ResolveShownTraitsLeaf(npc.FormID, host))
+        Dim pin As New NpcStateResolver.LeveledLeafPin(ResolveShownTraitsLeaf(npc.FormID, host),
+                                                       ResolveShownInventoryLeaf(npc.FormID, host))
         Await Task.Run(Sub()
                            baseState = _stateResolver.ResolveNPCBaseState(npc, host, pin)
                            outfitEntries = BuildOutfitComboEntries(baseState)
@@ -9473,6 +9484,23 @@ Public Class MainForm
         Return st.TraitsSourceFormID
     End Function
 
+    ''' <summary>⛔ La hoja de la cadena de INVENTORY que esta en pantalla. Gemela de
+    ''' <see cref="ResolveShownTraitsLeaf"/> y NO la misma: Traits e Inventory pueden terminar en hojas
+    ''' distintas, y reusar la de Traits anclaba el atuendo a un NPC que no es su fuente.</summary>
+    Friend Function ResolveShownInventoryLeaf(rootNpcFormID As UInteger, host As NpcRenderHost) As UInteger
+        If rootNpcFormID = 0UI Then Return 0UI
+        Dim hoja = HojaInventoryMostradaEn(host, rootNpcFormID)
+        If hoja = 0UI Then hoja = HojaInventoryMostradaEn(_renderHost, rootNpcFormID)
+        Return hoja
+    End Function
+
+    Private Shared Function HojaInventoryMostradaEn(h As NpcRenderHost, rootNpcFormID As UInteger) As UInteger
+        If h Is Nothing OrElse h.IsDisposed Then Return 0UI
+        Dim st = h.LastRenderedState
+        If st Is Nothing OrElse st.RootNpcFormID <> rootNpcFormID Then Return 0UI
+        Return st.InventorySourceFormID
+    End Function
+
     Friend Function ResolveLvlnPick_Friend(lvlnFormID As UInteger) As UInteger
         If lvlnFormID = 0UI Then Return 0UI
 
@@ -9486,6 +9514,11 @@ Public Class MainForm
         If shown <> 0UI AndAlso leaves.Contains(shown) Then
             Return shown
         End If
+        ' ⛔ La hoja de INVENTORY en pantalla, con la MISMA prueba de pertenencia: solo se devuelve si es
+        ' entrada de ESTA lista, asi que no es "una hoja global indistinta". Sin esto, desprender Inventory de
+        ' un NPC cuya cadena pasa por su propia lista materializaba `leaves(0)`, no el atuendo que se veia.
+        Dim shownInv = ResolveShownInventoryLeaf(raiz, _renderHost)
+        If shownInv <> 0UI AndAlso leaves.Contains(shownInv) Then Return shownInv
 
         ' ⛔ SEGUNDA MITAD DEL ANCLA — MUEVE BYTES DEL ESP (aplicada por decision expresa del usuario,
         ' 25-ago-2026). La hoja en pantalla puede NO ser entrada directa de esta lista
@@ -9580,8 +9613,15 @@ Public Class MainForm
 
         Dim npc = _ctx.GetParsedNpc(npcFormID)
         If npc Is Nothing OrElse npc.Record Is Nothing Then Return Nothing
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
-                                                  NPC_TemplateCategory.Traits) Then Return Nothing
+        ' ⛔⛔ DOS BUCKETS PASAN POR ESTA PUERTA, no uno. El overlay tambien lleva los ATUENDOS, y el
+        ' motor los copia bajo Inventory (SSE 0x1403C2022/0x1403C2030, FO4 0x14065819B/0x1406581A9), no bajo
+        ' Traits. La puerta solo miraba Traits, asi que Load, Paste y Edit Outfit dejaban un atuendo escrito
+        ' sobre un heredero de Inventory y el motor se lo pisaba al cargar. Una confirmacion, una foto y un
+        ' deshacer para las dos categorias: el mismo rollback, no uno por puerta.
+        Dim heredaTraits = NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
+                                                              NPC_TemplateCategory.Traits)
+        Dim cambioInventory = CambioDeAtuendoSobreLaBase(npc, nuevo)
+        If Not heredaTraits AndAlso cambioInventory Is Nothing Then Return Nothing
 
         ' ⛔ SIN AUTORIA NO HAY NADA QUE PROTEGER. Quitarle el overlay a un heredero lo devuelve a
         ' mostrar lo del terminal, que es exactamente lo que el motor hace con el bit arriba: no hay
@@ -9596,8 +9636,11 @@ Public Class MainForm
         Dim resol As NpcTemplateMaterializer.TraitsResolution = Nothing
         Dim guardarResol As Boolean = False
         Dim motivo As String = Nothing
-        Dim resolvio As Boolean = ResolverParaDesprendimiento(npcFormID, NPC_TemplateCategory.Traits,
-                                                             resol, guardarResol, motivo)
+        Dim resolvio As Boolean = True
+        If heredaTraits Then
+            resolvio = ResolverParaDesprendimiento(npcFormID, NPC_TemplateCategory.Traits,
+                                                   resol, guardarResol, motivo)
+        End If
 
         ' ⛔⛔ CONTRA QUE SE COMPARA: contra LO QUE SE VEIA, no contra la autoria de antes.
         ' `PrimerCanalDistinto` con un lado `Nothing` contesta "distinto" sin mirar un valor, y TODO
@@ -9632,6 +9675,7 @@ Public Class MainForm
         For Each cat In PresetCategories.AllCategories
             If Not PresetCategories.HeredaPorTraits(cat, esSse) Then Continue For
             If Not PresetCategories.AppliesToGame(cat, esSse) Then Continue For
+            If Not heredaTraits Then Exit For
             ' ⛔⛔ UNA CATEGORIA EN LA QUE `nuevo` NO SE DISTINGUE DE UN PRESET EN BLANCO NO ES UNA
             ' AUTORIA. `AplicarOverlay` la PRESERVA,
             ' y para un heredero preservar es quedarse con la del terminal -- o sea, con lo que ya se ve.
@@ -9668,13 +9712,24 @@ Public Class MainForm
         Next
         ' ⛔ `cambioExtra` es el canal heredable que NO viaja en el overlay -- hoy, la ALTURA. Entra por
         ' la misma puerta en vez de tener la suya: ver el parametro.
-        If cambio Is Nothing Then cambio = cambioExtra
-        If cambio Is Nothing Then Return Nothing
+        If cambio Is Nothing AndAlso heredaTraits Then cambio = cambioExtra
+        If cambio Is Nothing AndAlso cambioInventory Is Nothing Then Return Nothing
 
         ' ⛔ Recien ACA la cadena tiene que haber resuelto. Antes de saber que algo cambio, no.
-        If Not resolvio Then
+        If cambio IsNot Nothing AndAlso Not resolvio Then
             RestaurarOverlay(npcFormID, anterior)
             Return motivo
+        End If
+        ' ⛔ Inventory: su PROPIA cadena, resuelta UNA vez y congelada, igual que la de Traits.
+        Dim resolInv As NpcTemplateMaterializer.TraitsResolution = Nothing
+        Dim guardarInv As Boolean = False
+        If cambioInventory IsNot Nothing Then
+            Dim motivoInv As String = Nothing
+            If Not ResolverParaDesprendimiento(npcFormID, NPC_TemplateCategory.Inventory,
+                                               resolInv, guardarInv, motivoInv) Then
+                RestaurarOverlay(npcFormID, anterior)
+                Return motivoInv
+            End If
         End If
 
         ' H-1.10 — el aviso va ACA, en el COMMIT: al abrir todavía no se sabe si el usuario va a cambiar algo,
@@ -9717,15 +9772,28 @@ Public Class MainForm
         Dim habiaResolAntes As Boolean =
             overrideAnterior IsNot Nothing AndAlso
             overrideAnterior.MaterializedSources.TryGetValue(NPC_TemplateCategory.Traits, resolAntes)
+        Dim inventoryChangedAntes As Boolean =
+            overrideAnterior IsNot Nothing AndAlso overrideAnterior.InventoryChanged
+        Dim resolInvAntes As NpcTemplateMaterializer.TraitsResolution = Nothing
+        Dim habiaResolInvAntes As Boolean =
+            overrideAnterior IsNot Nothing AndAlso
+            overrideAnterior.MaterializedSources.TryGetValue(NPC_TemplateCategory.Inventory, resolInvAntes)
 
         ' Se materializa sobre la caché VIVA para que el preview refleje el desprendimiento de inmediato, y con
         ' la MISMA resolución que se congela: una sola respuesta para la cadena.
-        NpcTemplateMaterializer.MakeCategoryOwn(npc, NPC_TemplateCategory.Traits, resol)
+        If cambio IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npc, NPC_TemplateCategory.Traits, resol)
+        If cambioInventory IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npc, NPC_TemplateCategory.Inventory, resolInv)
 
         Dim ov = TryGetNpcRecordOverride(npcFormID)
         If ov Is Nothing Then ov = New NpcRecordOverride()
-        ov.TraitsChanged = True
-        If guardarResol Then ov.MaterializedSources(NPC_TemplateCategory.Traits) = resol
+        If cambio IsNot Nothing Then
+            ov.TraitsChanged = True
+            If guardarResol Then ov.MaterializedSources(NPC_TemplateCategory.Traits) = resol
+        End If
+        If cambioInventory IsNot Nothing Then
+            ov.InventoryChanged = True
+            If guardarInv Then ov.MaterializedSources(NPC_TemplateCategory.Inventory) = resolInv
+        End If
         SetNpcRecordOverride(npcFormID, ov)
         desprendio = True
         ' El deshacer COMPLETO: record + bit (los dos vienen en la foto), override y overlay. Se lo lleva el
@@ -9741,12 +9809,40 @@ Public Class MainForm
                            Else
                                overrideAnterior.MaterializedSources.Remove(NPC_TemplateCategory.Traits)
                            End If
+                           overrideAnterior.InventoryChanged = inventoryChangedAntes
+                           If habiaResolInvAntes Then
+                               overrideAnterior.MaterializedSources(NPC_TemplateCategory.Inventory) = resolInvAntes
+                           Else
+                               overrideAnterior.MaterializedSources.Remove(NPC_TemplateCategory.Inventory)
+                           End If
                        End If
                        ' `SetNpcRecordOverride(fid, Nothing)` YA borra la entrada, y con un override que quedó
                        ' vacío la borra también — que es justo lo que hace falta cuando la puerta lo creó.
                        SetNpcRecordOverride(npcFormID, overrideAnterior)
                        RestaurarOverlay(npcFormID, anterior)
                    End Sub
+        Return Nothing
+    End Function
+
+    ''' <summary>⛔⛔ Si el overlay authorea un ATUENDO distinto del que el bucket Inventory ya le da al NPC.
+    ''' <para>Es la pregunta de la puerta para Inventory, y compara contra la BASE --el terminal de la cadena
+    ''' de Inventory-- igual que Traits compara contra la suya: repetir el atuendo que ya se ve no es authorear.
+    ''' Un override en 0 significa "sin atuendo" y cuenta como valor (una base sin DOFT tambien vale 0).</para>
+    ''' <para>Devuelve Nothing si el NPC no hereda Inventory o si no hay cambio; si no, el canal para el log.</para></summary>
+    Private Function CambioDeAtuendoSobreLaBase(npc As NPC_Data, nuevo As LooksmenuLoader.LooksmenuPreset) As String
+        If nuevo Is Nothing OrElse npc Is Nothing OrElse npc.Record Is Nothing Then Return Nothing
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
+                                                  NPC_TemplateCategory.Inventory) Then Return Nothing
+        If Not nuevo.DefaultOutfitFormIDOverride.HasValue AndAlso
+           Not nuevo.SleepOutfitFormIDOverride.HasValue Then Return Nothing
+        Dim base = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(npc, NPC_TemplateCategory.Inventory,
+                                                                          AddressOf _ctx.GetParsedNpc,
+                                                                          AddressOf ResolveLvlnPick_Friend)
+        If base Is Nothing OrElse base.Record Is Nothing Then base = npc
+        If nuevo.DefaultOutfitFormIDOverride.HasValue AndAlso
+           nuevo.DefaultOutfitFormIDOverride.Value <> base.Record.DefaultOutfit Then Return "Outfit (DOFT)"
+        If nuevo.SleepOutfitFormIDOverride.HasValue AndAlso
+           nuevo.SleepOutfitFormIDOverride.Value <> base.Record.SleepingOutfit Then Return "Outfit (SOFT)"
         Return Nothing
     End Function
 
@@ -9957,10 +10053,12 @@ Public Class MainForm
     ''' FormIDs — the LooksMenu overlay override when one is set (e.g. a prior Edit Outfit pick), else the raw
     ''' record value the caller passes in. Outfit edits live in the same overlay as the Edit Outfit picker, so
     ''' the editor must show the overlaid value, not the stale raw DOFT/SOFT. Out params default to the raws.</summary>
-    Friend Sub GetEffectiveNpcOutfitsForEditor(npcFormID As UInteger, rawDefault As UInteger, rawSleep As UInteger,
+    ''' <para>⛔ `baseDefault`/`baseSleep` son los atuendos del BUCKET Inventory ya resuelto --el terminal de la
+    ''' cadena--, no los del record crudo: para un heredero el atuendo propio es letra muerta que el motor pisa.</para>
+    Friend Sub GetEffectiveNpcOutfitsForEditor(npcFormID As UInteger, baseDefault As UInteger, baseSleep As UInteger,
                                                ByRef effectiveDefault As UInteger, ByRef effectiveSleep As UInteger)
-        effectiveDefault = rawDefault
-        effectiveSleep = rawSleep
+        effectiveDefault = baseDefault
+        effectiveSleep = baseSleep
         Dim p = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
         If p IsNot Nothing Then
             If p.DefaultOutfitFormIDOverride.HasValue Then effectiveDefault = p.DefaultOutfitFormIDOverride.Value
@@ -10502,6 +10600,17 @@ Public Class MainForm
         Dim npc As NPC_Data = Nothing
         If Not _ctx.NpcCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then Return
 
+        ' ⛔⛔ LA FOTO DEL COMMIT, antes de abrir. El editor muta EN VIVO al aceptar -- record, bit, override y
+        ' el overlay de los atuendos -- y un re-render que falla despues dejaba al NPC a medio camino: con la
+        ' edicion aplicada en memoria y un cartel que no decia nada de eso. Es el invariante que ya cumplian la
+        ' puerta del overlay y Edit Outfit: fallar deja al NPC COMO ESTABA.
+        Dim fotoDelRecord = npc.Record.Copia()
+        Dim overrideAntes = TryGetNpcRecordOverride(npcFormID)
+        Dim fotoDelOverride = If(overrideAntes Is Nothing, Nothing, overrideAntes.ClonarParaDeshacer())
+        Dim presetAntes = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
+        Dim doftAntes As UInteger? = If(presetAntes Is Nothing, Nothing, presetAntes.DefaultOutfitFormIDOverride)
+        Dim softAntes As UInteger? = If(presetAntes Is Nothing, Nothing, presetAntes.SleepOutfitFormIDOverride)
+
         Using dlg As New NpcEditor_Form(Me, npc, npcFormID, st.RaceFormID, st.IsFemale, AddressOf _ctx.GetParsedNpc)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse Not dlg.HasChanges Then Return
             ' OK with real changes: the live NPC_Data was mutated in place — re-render + mark dirty.
@@ -10531,7 +10640,18 @@ Public Class MainForm
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
                 MarkNpcDirty(npcFormID)
             Catch ex As Exception
-                MessageBox.Show($"Failed to render NPC edit: {ex.Message}", "NPC Editor",
+                npc.Record = fotoDelRecord
+                SetNpcRecordOverride(npcFormID, fotoDelOverride)
+                If presetAntes Is Nothing Then
+                    ' El editor pudo haber creado un overlay solo para los atuendos.
+                    _appliedPresets.Remove(npcFormID)
+                Else
+                    presetAntes.DefaultOutfitFormIDOverride = doftAntes
+                    presetAntes.SleepOutfitFormIDOverride = softAntes
+                    _appliedPresets(npcFormID) = presetAntes
+                End If
+                RefrescarCachesDerivados(npc)
+                MessageBox.Show($"Failed to render NPC edit: {ex.Message}{vbCrLf}The edit was reverted.", "NPC Editor",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
             End Try
         End Using
@@ -10763,50 +10883,56 @@ Public Class MainForm
         Dim npc As NPC_Data = Nothing
         If Not _ctx.NpcCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then Return
 
-        ' Raw record DOFT drives the "(record default)" pinned entry → Nothing semantic.
-        Dim modelFormID = If(st.ModelSourceFormID <> 0UI, st.ModelSourceFormID, npcFormID)
-        Dim rawNpc = _ctx.GetParsedNpc(modelFormID)
-        Dim rawOutfit As UInteger = If(rawNpc IsNot Nothing, rawNpc.Record.DefaultOutfit, 0UI)
+        ' ⛔⛔ LA BASE DEL PICKER ES EL BUCKET INVENTORY, no el modelo. Aca se leia el DOFT del record de
+        ' `ModelSourceFormID`, que es una fuente VISUAL (de quien salen cara y cuerpo) y puede no ser el
+        ' terminal de Inventory. El "(record default)" del picker es lo que el motor le deja al NPC sin override.
+        Dim inventoryBase = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(
+            npc, NPC_TemplateCategory.Inventory, AddressOf _ctx.GetParsedNpc, AddressOf ResolveLvlnPick_Friend)
+        Dim baseOutfit As UInteger = If(inventoryBase Is Nothing OrElse inventoryBase.Record Is Nothing,
+                                        npc.Record.DefaultOutfit, inventoryBase.Record.DefaultOutfit)
 
         Dim raceRec = If(st.RaceFormID <> 0UI, _pluginManager.GetRecord(st.RaceFormID), Nothing)
         Dim raceEditorID = If(raceRec IsNot Nothing, raceRec.EditorID, "?")
 
-        Using dlg As New OutfitPicker_Form(Me, npcFormID, _appliedPresets, st, raceEditorID, st.DefaultOutfitFormID, rawOutfit)
+        Using dlg As New OutfitPicker_Form(Me, npcFormID, _appliedPresets, st, raceEditorID, st.DefaultOutfitFormID, baseOutfit)
             ' Cancel: the picker rendered only into its own host; the main preview + overlay were never
             ' touched, so there is nothing to undo.
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
 
-            ' OK: reload the MAIN preview to reflect whatever changed in the picker, then mark the NPC
-            ' dirty ONLY when its effective outfit actually changed.
             Dim result As UInteger? = dlg.SelectedOutfitOverride
             Dim previousOverlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
-            Dim hadOverlay = previousOverlay IsNot Nothing
-            Dim priorOutfitOverride As UInteger? = If(hadOverlay, previousOverlay.DefaultOutfitFormIDOverride, Nothing)
+            Dim priorOutfitOverride As UInteger? = If(previousOverlay IsNot Nothing,
+                                                      previousOverlay.DefaultOutfitFormIDOverride, Nothing)
 
-            ' The NPC_ record only stores the DOFT FormID, so "did the NPC change?" = "did the effective outfit
-            ' change?". Effective outfit = override value when set, else the raw record DOFT — so Nothing↔Some(
-            ' rawOutfit) counts as no change. The picker's "Edit armor…" authors ARMA/ARMO DRAFTS without changing
-            ' which outfit is worn; those drafts persist via their own IsDirty, so an unchanged pick must NOT mark
-            ' the NPC dirty (it would write a no-op NPC_ override on Save) — but it DOES still need a re-render,
-            ' because the drafts are read live and a draft edit changes how the SAME outfit looks. So the dirty
-            ' mark is gated on outfitChanged while the re-render below is unconditional.
-            Dim effectiveBefore As UInteger = If(priorOutfitOverride.HasValue, priorOutfitOverride.Value, rawOutfit)
-            Dim effectiveAfter As UInteger = If(result.HasValue, result.Value, rawOutfit)
+            ' "Did the NPC change?" = "did the effective outfit change?". The picker's "Edit armor..." authors
+            ' ARMA/ARMO DRAFTS without changing which outfit is worn; those drafts persist via their own IsDirty,
+            ' so an unchanged pick must NOT mark the NPC dirty -- but it still re-renders, because drafts are
+            ' read live and a draft edit changes how the SAME outfit looks.
+            Dim effectiveBefore As UInteger = If(priorOutfitOverride.HasValue, priorOutfitOverride.Value, baseOutfit)
+            Dim effectiveAfter As UInteger = If(result.HasValue, result.Value, baseOutfit)
             Dim outfitChanged As Boolean = (effectiveBefore <> effectiveAfter)
 
-            ' Commit the outfit override to the overlay only when it actually changed, so an unchanged pick
-            ' doesn't leave a spurious empty overlay behind (which would flag the NPC as changed via
-            ' _appliedPresets.ContainsKey). When unchanged, any pre-existing overlay is left exactly as-is and the
-            ' re-render below re-resolves its (possibly edited) draft outfit live.
-            Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
+            ' ⛔⛔ POR LA PUERTA, como Load y Paste. Aca se escribia el override directo sobre el overlay: un
+            ' heredero de Inventory quedaba con el bit arriba y el motor le pisaba el atuendo al cargar. La
+            ' puerta pregunta, resuelve la cadena una vez, materializa, congela la foto y devuelve el deshacer.
+            ' Se trabaja sobre un CLON del overlay: el anterior queda intacto para que el rollback lo reponga.
+            Dim deshacer As Action = Nothing
             If outfitChanged Then
-                If hadOverlay Then
-                    p = previousOverlay
-                Else
-                    p = New LooksmenuLoader.LooksmenuPreset()
-                    _appliedPresets(npcFormID) = p
+                Dim nuevoOverlay = If(previousOverlay Is Nothing, New LooksmenuLoader.LooksmenuPreset(),
+                                      LooksmenuLoader.ClonePreset(previousOverlay))
+                nuevoOverlay.DefaultOutfitFormIDOverride = result
+                Dim desprendio As Boolean = False
+                Dim fallo = AutorearOverlay(npcFormID, nuevoOverlay, previousOverlay, desprendio, deshacer)
+                If fallo IsNot Nothing Then
+                    ' La puerta ya repuso el overlay en sus dos salidas de fallo; se repinta lo de antes.
+                    MessageBox.Show(Me, fallo, "Outfit not applied", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    Try
+                        Dim restoreVersion = Interlocked.Increment(_previewRequestVersion)
+                        Await LoadNPCOnDemandAsyncFromExisting(npc, restoreVersion)
+                    Catch
+                    End Try
+                    Return
                 End If
-                p.DefaultOutfitFormIDOverride = result
             End If
 
             Try
@@ -10814,11 +10940,12 @@ Public Class MainForm
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
                 If outfitChanged Then MarkNpcDirty(npcFormID)
             Catch ex As Exception
-                ' Revert just the outfit field; don't clobber other overlay edits. Only meaningful when we
-                ' committed a change above (p is Nothing on the unchanged path).
-                If p IsNot Nothing Then
-                    p.DefaultOutfitFormIDOverride = priorOutfitOverride
-                    If Not hadOverlay Then _appliedPresets.Remove(npcFormID)
+                ' ⛔⛔ El rollback COMPLETO: si la puerta desprendio, `deshacer` repone record, bit, override y
+                ' overlay juntos. Reponer solo el overlay dejaba al NPC desprendido y sin su atuendo.
+                If deshacer IsNot Nothing Then
+                    deshacer()
+                ElseIf outfitChanged Then
+                    RestaurarOverlay(npcFormID, previousOverlay)
                 End If
                 MessageBox.Show($"Failed to render outfit: {ex.Message}{vbCrLf}Outfit reverted.",
                                 "Edit Outfit", MessageBoxButtons.OK, MessageBoxIcon.Error)

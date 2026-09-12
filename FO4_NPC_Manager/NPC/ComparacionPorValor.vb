@@ -255,7 +255,11 @@ Friend Module ComparacionPorValor
     ' ningun A/B lo viera, y el gate ademas EXIGIA la divergencia en vez de cazarla. Ahora el
     ' horneado lleva el mismo terminal que el render.
     Friend ReadOnly DebenDiferirEntreRenderYBake As String() = {
-        "ModelSourceFormID", "DefaultOutfitFormID", "SleepOutfitFormID"
+        "ModelSourceFormID", "DefaultOutfitFormID", "SleepOutfitFormID",
+        "InventorySourceFormID"
     }
+    ' ⛔ `InventorySourceFormID` VOLVIO, y esta vez con divergencia REAL: desde que se asigna, el render lo
+    ' saca de la cadena de Inventory y el bake de `CreateOwnInventoryState` (el record propio) -- la MISMA
+    ' razon, y los mismos sujetos, que `DefaultOutfitFormID`/`SleepOutfitFormID` una linea arriba.
 
 End Module

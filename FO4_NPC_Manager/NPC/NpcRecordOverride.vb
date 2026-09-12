@@ -42,6 +42,15 @@ Public Class NpcRecordOverride
     ''' Fallout 4 es un bloque de estadísticas calculadas que la app no edita (lo recalcula el motor), así
     ''' que no hay contraparte.</summary>
     Public Property SsePlayerSkills As Canon.NpcSSE = Nothing
+    ' ⛔⛔ QUE PORCION DEL DNAM ES AUTORIA. `SsePlayerSkills` es el contenedor con los valores editados,
+    ' NO la orden de reemplazar el DNAM entero: el DNAM de Skyrim tiene CUATRO dueños (habilidades -> Stats,
+    ' Health/Magicka/Stamina -> ninguno, distancia lejana -> Traits, armas listas -> Inventory; ver
+    ' `NpcTemplateMaterializer.CopiarHabilidadesDelDnam`). Copiarlo entero desde el override escribia las
+    ' porciones de otros buckets. Las cuatro banderas no existen sin el contenedor.
+    Public Property SseSkillArraysChanged As Boolean = False
+    Public Property SseDerivedStatsChanged As Boolean = False
+    Public Property SseFarModelChanged As Boolean = False
+    Public Property SseGearedWeaponsChanged As Boolean = False
 
     ''' <summary>La RESOLUCION congelada de cada categoria que este NPC volvio propia, tomada UNA vez
     ''' en el instante del desprendimiento: el desenlace MÁS la fuente cruda.
@@ -90,6 +99,10 @@ Public Class NpcRecordOverride
     Public Property TraitsChanged As Boolean = False
     Public Property BaseDataChanged As Boolean = False
     Public Property StatsChanged As Boolean = False
+    ''' <summary>⛔ True cuando se authored CUALQUIER campo del bucket Inventory: CNTO, los atuendos DOFT/SOFT
+    ''' o las armas listas. No alcanza con `Inventory IsNot Nothing`: cambiar solo el atuendo no toca CNTO,
+    ''' y el atuendo viaja en el overlay, que se estampa despues de materializar.</summary>
+    Public Property InventoryChanged As Boolean = False
     ''' <summary>El Combat Style (<c>ZNAM</c>) lo gobierna <b>Use AI Data</b>, no Traits. Sin este latch
     ''' el guardado escribia el ZNAM y no bajaba el bit 4, asi que el motor se lo pisaba al cargar y la
     ''' edicion desaparecia en el juego. Se latchea igual que los otros tres: una sesion posterior, cuyo
@@ -99,6 +112,16 @@ Public Class NpcRecordOverride
     ''' <summary>True when this override carries at least one edited field — used to decide whether to store it.
     ''' <para>⛔ Mira TAMBIEN <see cref="MaterializedSources"/>: un override que solo lleve el snapshot
     ''' del desprendimiento se descartaria en silencio en `SetNpcRecordOverride`.</para></summary>
+    ''' <summary>⛔ La foto del override para DESHACER un commit entero: un clon superficial con el
+    ''' diccionario de snapshots copiado. Alcanza porque los editores REEMPLAZAN listas y contenedores
+    ''' (`ov.Keywords = New List(...)`, `ov.SsePlayerSkills = ...Copia()`) en vez de mutarlos, y lo unico que
+    ''' se muta en el lugar es `MaterializedSources`.</summary>
+    Friend Function ClonarParaDeshacer() As NpcRecordOverride
+        Dim c = DirectCast(MemberwiseClone(), NpcRecordOverride)
+        c.MaterializedSources = New Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution)(MaterializedSources)
+        Return c
+    End Function
+
     Public ReadOnly Property IsEmpty As Boolean
         Get
             Return MaterializedSources.Count = 0 AndAlso FullName Is Nothing AndAlso ShortName Is Nothing AndAlso Not AcbsFlags.HasValue AndAlso
@@ -111,7 +134,8 @@ Public Class NpcRecordOverride
                    Keywords Is Nothing AndAlso AttachParentSlots Is Nothing AndAlso
                    Factions Is Nothing AndAlso Inventory Is Nothing AndAlso Perks Is Nothing AndAlso
                    ActorEffects Is Nothing AndAlso Properties Is Nothing AndAlso ObjectTemplateCombinations Is Nothing AndAlso
-                   Not TraitsChanged AndAlso Not BaseDataChanged AndAlso Not StatsChanged AndAlso Not AiDataChanged
+                   Not TraitsChanged AndAlso Not BaseDataChanged AndAlso Not StatsChanged AndAlso
+                   Not InventoryChanged AndAlso Not AiDataChanged
         End Get
     End Property
 

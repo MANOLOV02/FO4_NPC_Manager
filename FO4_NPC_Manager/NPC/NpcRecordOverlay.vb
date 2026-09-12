@@ -739,6 +739,9 @@ finDelSkin:
         ' lo seguro, no escribirlo deja un campo que solo esta bien por accidente.
         ' ⛔ Queda `raceIsValid` porque sin raza no hay de donde derivar: no es una eleccion, es que no
         ' hay dato. Y si la derivacion no puede resolver, mas abajo se preserva el crudo.
+        ' ⛔⛔⛔ NO VALIDADO: ver el aviso largo en `NpcMaterialResolver.ResolveNpcBodySkinToneColor`.
+        ' La justificacion de esta guarda comparte premisa con esa rama --que cara y cuerpo del heredero
+        ' salen de fuentes distintas-- y esa premisa esta EN DUDA por objecion del usuario.
         ' ⛔⛔ MIENTRAS HEREDA NO SE ESCRIBE EL TONO. El bit 0 le COPIA el QNAM de su plantilla
         ' (`0x1403BE09A` en SSE, `0x140651552` en FO4), asi que el valor que este record tenga lo pisa el
         ' juego al cargar: derivarle uno propio seria escribir un byte muerto. El render, para un heredero,

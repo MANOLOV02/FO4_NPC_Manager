@@ -840,7 +840,9 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' Inventory del DESTINO, que ese bucket no gobierna. Por eso ninguna de las tres partes lo
     ''' hace: sacar el subrecord entero es una operacion que no le pertenece a ningun bucket.</para>
     ''' </remarks>
-    Private Shared Sub CopiarHabilidadesDelDnam(destino As Canon.INpc, origen As Canon.INpc)
+    ' ⛔ Friend y no Private: el NPC Editor y el applier escriben el DNAM POR PORCION con estas MISMAS
+    ' tres funciones. Reescribirlas alla serian dos leyes de "que tramo es de quien".
+    Friend Shared Sub CopiarHabilidadesDelDnam(destino As Canon.INpc, origen As Canon.INpc)
         ' Solo SSE: FO4 no tiene habilidades en el DNAM (sus skills viajan como actor values del
         ' PropertySheet). Citas de la copia: 0x1403C23CA (16 B) / 0x1403C23D8 / 0x1403C23E6 (16 B) /
         ' 0x1403C23F4, todas dentro del bloque del bit 1.
@@ -867,7 +869,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' <para>⚠️ No es el mismo tipo en los dos: en SSE el archivo trae un `Single` y el parser lo
     ''' convierte a u16 con saturacion (`sub_1403BB6E0`, `minss` 65535 + `cvttss2si`); en FO4 ya es
     ''' u16. Por eso hay una rama por juego y no un camino unico.</para></summary>
-    Private Shared Sub CopiarDistanciaDeModeloLejano(destino As Canon.INpc, origen As Canon.INpc)
+    Friend Shared Sub CopiarDistanciaDeModeloLejano(destino As Canon.INpc, origen As Canon.INpc)
         Dim sf4 = TryCast(origen, Canon.NpcFO4), df4 = TryCast(destino, Canon.NpcFO4)
         If sf4 IsNot Nothing AndAlso df4 IsNot Nothing Then
             If sf4.FarAwayModelDistancePresente Then df4.FarAwayModelDistance = sf4.FarAwayModelDistance
@@ -883,7 +885,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' <summary>El byte de *geared up weapons* viaja en INVENTORY. SSE `0x1403C2045` (+0x241),
     ''' FO4 `0x1406581BE` (+0x23E). Es un campo del `DNAM` que no viaja con el resto del `DNAM`:
     ''' el mismo error de forma que tenia `CNAM`.</summary>
-    Private Shared Sub CopiarArmasListas(destino As Canon.INpc, origen As Canon.INpc)
+    Friend Shared Sub CopiarArmasListas(destino As Canon.INpc, origen As Canon.INpc)
         Dim sf4 = TryCast(origen, Canon.NpcFO4), df4 = TryCast(destino, Canon.NpcFO4)
         If sf4 IsNot Nothing AndAlso df4 IsNot Nothing Then
             If sf4.GearedUpWeaponsPresente Then df4.GearedUpWeapons = sf4.GearedUpWeapons

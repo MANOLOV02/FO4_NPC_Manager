@@ -157,6 +157,7 @@ Friend NotInheritable Class NpcStateFactory
 
     Public Shared Function CreateOwnInventoryState(npc As NPC_Data) As MainForm.InventoryState
         Return New MainForm.InventoryState With {
+            .SourceFormID = npc.FormID,
             .DefaultOutfitFormID = npc.Record.DefaultOutfit,
             .SleepOutfitFormID = npc.Record.SleepingOutfit
         }
@@ -181,7 +182,7 @@ Friend NotInheritable Class NpcStateFactory
     ''' <para>Escribe 21 de los 30 campos de `NPCVisualState`. Los otros NUEVE quedan sin escribir A
     ''' PROPOSITO y estan nombrados abajo: `ModelSourceFormID` (el render lo deja en 0),
     ''' `ExplicitHeadTextureFormID` y los tres pesos (los pone `ApplyRaceFallbacks`, que corre
-    ''' despues), `InventorySourceFormID` (declarado y nunca asignado), `VariantLabel` (lo pone el
+    ''' despues), `VariantLabel` (lo pone el
     ''' llamador de variantes) y los dos de `Loadout*` (los escribe solo `MainForm`, sobre un clon).
     ''' El A/B compara los 30 por REFLEXION: si manana aparece un campo 31 y esta funcion no lo
     ''' escribe, el gate lo ve.</para></summary>
@@ -261,6 +262,7 @@ Friend NotInheritable Class NpcStateFactory
             .TextureLightingColor = traits.TextureLightingColor,
             .SseHairColorRgb = npcData.SseHairColorRgb,
             .TraitsSourceFormID = traits.SourceFormID,
+            .InventorySourceFormID = inventory.SourceFormID,
             .DefaultOutfitFormID = inventory.DefaultOutfitFormID,
             .SleepOutfitFormID = inventory.SleepOutfitFormID,
             .HeadDiffuseAlphaTest = (root.Game = Config_App.Game_Enum.Fallout4) AndAlso

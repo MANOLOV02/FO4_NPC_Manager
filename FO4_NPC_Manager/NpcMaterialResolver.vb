@@ -1162,6 +1162,21 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' plantilla. Uno lo deriva para dibujarlo, el otro lo deja como esta porque ya es ese.</para>
     ''' <para>⛔ El ajuste EN VIVO gana sobre el de la plantilla: es el slider que estas moviendo, y al
     ''' aceptar ese cambio DESPRENDE (el tono es un canal que el bit 0 copia), con lo cual pasa a ser suyo.</para></summary>
+    ''' <summary>⛔⛔⛔ ESTA RAMA NO ESTA VALIDADA — leer antes de tocarla o de confiar en ella.
+    ''' <para>Lo que SI esta medido: la copia del bit 0 de Skyrim escribe hasta +0x258 y las capas de
+    ''' tinte estan por encima, o sea que NO se copian.</para>
+    ''' <para>⛔ Lo que NO esta validado es la CONSECUENCIA con la que se justifico esta rama: que la
+    ''' cara del heredero se componga de SUS capas mientras el cuerpo toma el tono de la plantilla, y
+    ''' que por eso queden de colores distintos («costura en el cuello»). El usuario lo objeto con un
+    ''' argumento fuerte: Bethesda no enviaria un motor que pinta la cabeza de un color y el cuerpo de
+    ''' otro.</para>
+    ''' <para>⛔ Donde esta probablemente el error: la cara NO se compone de las capas del record, se
+    ''' dibuja del ARCHIVO DE FACEGEN, y esa ley ya esta medida — el juego camina la cadena hasta el
+    ''' ULTIMO eslabon y usa SU FormID (`TESNPC+0x1F0`, `0x1403C2E20`). Si el heredero dibuja el FaceGen
+    ''' de su PLANTILLA, esa textura ya trae el tono de la plantilla horneado y entonces cara y cuerpo
+    ''' COINCIDEN sin necesidad de esta rama: las capas propias del heredero serian inertes.</para>
+    ''' <para>⛔ Falta medir: de que archivo de FaceGen sale la cabeza de un heredero de Skyrim y con
+    ''' que tono. Hasta entonces esta rama es una HIPOTESIS aplicada, no una ley verificada.</para></summary>
     Friend Function ResolveNpcBodySkinToneColor(state As MainForm.NPCVisualState) As Nullable(Of Color)
         If state IsNot Nothing AndAlso state.TraitsSourceFormID <> 0UI AndAlso
            state.TraitsSourceFormID <> state.RootNpcFormID Then

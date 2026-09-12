@@ -92,7 +92,8 @@ Public Class NpcEditor_Form
     Private _snapAppr As New List(Of UInteger)
     ' Outfits (DOFT/SOFT) — raw record value (for the "reverted to record default → clear override" decision)
     ' and the effective (overlay-aware) value shown at open (the snapshot baseline for change detection).
-    Private _rawDefaultOutfit As UInteger, _rawSleepOutfit As UInteger
+    ' ⛔ Los atuendos del BUCKET Inventory resuelto (antes del overlay), no los del record crudo.
+    Private _baseDefaultOutfit As UInteger, _baseSleepOutfit As UInteger
     Private _snapDefaultOutfit As UInteger, _snapSleepOutfit As UInteger
     Private _snapActorEffects As New List(Of UInteger)
     Private _snapCombosSig As String = ""
@@ -359,6 +360,32 @@ Public Class NpcEditor_Form
     ' NPC → panels
     ' =====================================================================
 
+    ' =====================================================================
+    ' Costuras de arnes
+    ' =====================================================================
+    ' ⛔ Existen para que los testigos de la tanda post-2.0.9 entren por el editor REAL: su siembra (fuente
+    ' efectiva por bucket), su deteccion por porcion del DNAM, su registro del override y su aplicacion en vivo.
+    ' Un gate que reimplementara OnOk mediria una copia. El formulario se construye sin mostrarse --la carga
+    ' corre en el ctor-- y la confirmacion del desprendimiento pasa por la costura de MainForm, sin modal.
+
+    Friend ReadOnly Property BorradorParaArnes As Canon.INpc
+        Get
+            Return _borrador
+        End Get
+    End Property
+
+    Friend ReadOnly Property BaseDeAtuendosParaArnes As (Defecto As UInteger, Dormir As UInteger)
+        Get
+            Return (_baseDefaultOutfit, _baseSleepOutfit)
+        End Get
+    End Property
+
+    ''' <summary>El mismo OK que el boton. ⛔ Si la cadena no resuelve, OnOk muestra un MessageBox modal:
+    ''' el gate tiene que elegir sujetos resolubles.</summary>
+    Friend Sub AceptarParaArnes()
+        OnOk(Nothing, EventArgs.Empty)
+    End Sub
+
     Private Sub LoadNpcIntoPanels(fallbackRaceFormID As UInteger)
         _loading = True
         Try
@@ -429,7 +456,7 @@ Public Class NpcEditor_Form
             NumSpeedMult.Value = ClampDec(CDec(If(statsSse Is Nothing, 0US, statsSse.ConfigurationSpeedMultiplier)), NumSpeedMult)
 
             ' Stats — DNAM Player Skills (SSE). The tab is removed on FO4, so this is a no-op there.
-            LoadPlayerSkills(statsNpc)
+            LoadPlayerSkills(statsNpc, traitsNpc, inventoryNpc)
 
             ' Object Template — se edita sobre una COPIA del record que trae las combinaciones, así el
             ' sub-editor y el reordenamiento no tocan el original.
@@ -456,17 +483,25 @@ Public Class NpcEditor_Form
             _borrador.PonerInventario(inventoryNpc.Record.Items)
             RefreshInventoryGrid()
 
-            ' Outfits (DOFT/SOFT). Seed with the EFFECTIVE (overlay-aware) values: a prior Edit Outfit pick
-            ' lives in the LooksMenu overlay, not on _npc, so show the overlaid value. Keep the raw record value
-            ' too so OnOk can map "reverted to the record's own outfit" back to a cleared override.
-            _rawDefaultOutfit = _npc.Record.DefaultOutfit
-            _rawSleepOutfit = _npc.Record.SleepingOutfit
-            Dim effDefaultOutfit = _rawDefaultOutfit, effSleepOutfit = _rawSleepOutfit
-            _mainForm.GetEffectiveNpcOutfitsForEditor(_npcFormID, _rawDefaultOutfit, _rawSleepOutfit, effDefaultOutfit, effSleepOutfit)
+            ' Outfits (DOFT/SOFT). Se siembran con el valor EFECTIVO: el bucket Inventory resuelto y encima el
+            ' overlay (un pick previo de Edit Outfit vive ahi, no en _npc).
+            ' ⛔⛔ LA BASE ES EL TERMINAL DE INVENTORY, no el record crudo. Los atuendos viajan en ese
+            ' bucket (SSE 0x1403C2022/0x1403C2030, FO4 0x14065819B/0x1406581A9): en un heredero el atuendo
+            ' propio es letra muerta que el motor pisa. Sembrado del crudo, el editor mostraba un atuendo que
+            ' el juego no usa, y OnOk mapeaba "volver al propio" a un override vacio que dejaba el heredado.
+            _baseDefaultOutfit = inventoryNpc.Record.DefaultOutfit
+            _baseSleepOutfit = inventoryNpc.Record.SleepingOutfit
+            Dim effDefaultOutfit = _baseDefaultOutfit, effSleepOutfit = _baseSleepOutfit
+            _mainForm.GetEffectiveNpcOutfitsForEditor(_npcFormID, _baseDefaultOutfit, _baseSleepOutfit, effDefaultOutfit, effSleepOutfit)
             SetFidText(TextBoxDefaultOutfit, effDefaultOutfit)
             SetFidText(TextBoxSleepOutfit, effSleepOutfit)
 
-            ' Perks — sin categoría de plantilla: siempre las propias del record.
+            ' Perks — viajan en el bucket SpellList (SSE 0x1403C24C3, FO4 0x14065875A), no son "propios".
+            ' ⛔⛔ El borrador tiene que arrancar en el valor EFECTIVO: las operaciones del grid reemplazan
+            ' la lista ENTERA. Sembrado desde el hijo, al aceptar la materializacion copiaba los perks del
+            ' terminal y enseguida `PonerVentajas(_borrador.Perks)` los reemplazaba por los del hijo mas la
+            ' edicion: se perdian los heredados. Agregar D sobre un terminal [B,C] guardaba [A,D].
+            _borrador.PonerVentajas(spellsNpc.Record.Perks)
             RefreshPerksGrid()
 
             ' Actor Effects (SPLO).
@@ -474,7 +509,10 @@ Public Class NpcEditor_Form
             _actorEffects.AddRange(spellsNpc.Record.EfectosDeActor())
             RefreshSpellList()
 
-            ' Properties (PRPS) — sin categoría de plantilla, igual que las ventajas.
+            ' Properties (PRPS) — viajan en el bucket Stats, SOLO FO4 (0x140658644 sobre TESNPC+0x1A0).
+            ' ⛔ Mismo caso que los perks: se siembran del terminal de Stats antes del snapshot de apertura.
+            Dim propsSource = TryCast(statsNpc.Record, Canon.NpcFO4)
+            If propsSource IsNot Nothing Then _borrador.PonerPropiedades(propsSource.Properties2)
             RefreshPropsGrid()
         Finally
             _loading = False
@@ -549,10 +587,22 @@ Public Class NpcEditor_Form
     ''' bloque viaja como subrecord entero: los campos que ningún control muestra —los dos tramos de relleno
     ''' sin usar incluidos— quedan tal cual y el record re-emite byte a byte. Un NPC de Skyrim con un DNAM
     ''' demasiado corto para modelar arranca en cero y no se escribe nada salvo que el usuario edite.</summary>
-    Private Sub LoadPlayerSkills(sourceNpc As NPC_Data)
+    ''' <para>⛔⛔ EL DNAM TIENE CUATRO DUEÑOS y cada spinner se siembra del SUYO: habilidades del terminal
+    ''' de Stats, distancia lejana del de Traits, armas listas del de Inventory, y Health/Magicka/Stamina del
+    ''' record PROPIO (ningun bucket los copia: el motor los deriva). Antes se copiaba el DNAM entero desde
+    ''' Stats y el editor mostraba la distancia y las armas de un NPC que no las gobierna.</para>
+    Private Sub LoadPlayerSkills(statsNpc As NPC_Data, traitsNpc As NPC_Data, inventoryNpc As NPC_Data)
         Dim ns = BorradorSse()
         If ns Is Nothing Then Return
-        If Not ReferenceEquals(sourceNpc.Record, _npc.Record) Then _borrador.CopiarSubrecord(sourceNpc.Record, "DNAM")
+        If Not ReferenceEquals(statsNpc.Record, _npc.Record) Then
+            NpcTemplateMaterializer.CopiarHabilidadesDelDnam(_borrador, statsNpc.Record)
+        End If
+        If Not ReferenceEquals(traitsNpc.Record, _npc.Record) Then
+            NpcTemplateMaterializer.CopiarDistanciaDeModeloLejano(_borrador, traitsNpc.Record)
+        End If
+        If Not ReferenceEquals(inventoryNpc.Record, _npc.Record) Then
+            NpcTemplateMaterializer.CopiarArmasListas(_borrador, inventoryNpc.Record)
+        End If
 
         For i = 0 To Math.Min(ns.SkillValues.Count, ns.SkillOffsets.Count) - 1
             If i >= _skillVals.Length Then Exit For
@@ -589,8 +639,10 @@ Public Class NpcEditor_Form
         If NumFarModel.Value <> _snapFarModelDec Then ns.PlayerSkillsFarAwayModelDistance = CSng(NumFarModel.Value)
     End Sub
 
-    ''' <summary>True when any Stats-tab value differs from the open-time snapshot.</summary>
-    Private Function PlayerSkillsChanged() As Boolean
+    ' ⛔⛔ CUATRO PREGUNTAS Y NO UNA. `PlayerSkillsChanged` las mezclaba y todo iba a Stats: mover la
+    ' distancia lejana desprendia Stats en vez de Traits, mover las armas listas desprendia Stats en vez de
+    ' Inventory, y Health/Magicka/Stamina --que no son de ningun bucket-- desprendian Stats sin razon.
+    Private Function SseSkillArraysChanged() As Boolean
         Dim ns = LineaBaseSse()
         If ns Is Nothing Then Return False
         For i = 0 To Math.Min(ns.SkillValues.Count, ns.SkillOffsets.Count) - 1
@@ -598,11 +650,26 @@ Public Class NpcEditor_Form
             If CByte(_skillVals(i).Value) <> ns.SkillValues(i).Skill Then Return True
             If CByte(_skillOffs(i).Value) <> ns.SkillOffsets(i).Skill Then Return True
         Next
+        Return False
+    End Function
+
+    Private Function SseDerivedStatsChanged() As Boolean
+        Dim ns = LineaBaseSse()
+        If ns Is Nothing Then Return False
         Return CUShort(NumHealth.Value) <> ns.PlayerSkillsHealth OrElse
                CUShort(NumMagicka.Value) <> ns.PlayerSkillsMagicka OrElse
-               CUShort(NumStamina.Value) <> ns.PlayerSkillsStamina OrElse
-               CByte(NumGeared.Value) <> ns.PlayerSkillsGearedUpWeapons OrElse
-               NumFarModel.Value <> _snapFarModelDec
+               CUShort(NumStamina.Value) <> ns.PlayerSkillsStamina
+    End Function
+
+    Private Function SseGearedWeaponsChanged() As Boolean
+        Dim ns = LineaBaseSse()
+        If ns Is Nothing Then Return False
+        Return CByte(NumGeared.Value) <> ns.PlayerSkillsGearedUpWeapons
+    End Function
+
+    Private Function SseFarModelChanged() As Boolean
+        If LineaBaseSse() Is Nothing Then Return False
+        Return NumFarModel.Value <> _snapFarModelDec
     End Function
 
     ''' <summary>True when any SSE-only ACBS offset differs from the open-time snapshot (always False on FO4,
@@ -1172,14 +1239,18 @@ Public Class NpcEditor_Form
         ' ENTERO al ESP y el NPC dejaba de heredar su cara — un cambio de bytes desproporcionado para
         ' un campo que el motor ni siquiera hereda.
         Dim dispositionChanged = CShort(NumDisp.Value) <> _snapDisp
-        Dim skillsChanged = PlayerSkillsChanged()
+        Dim skillArraysChanged = SseSkillArraysChanged()
+        Dim derivedStatsChanged = SseDerivedStatsChanged()
+        Dim gearedWeaponsChanged = SseGearedWeaponsChanged()
+        Dim farModelChanged = SseFarModelChanged()
+        Dim anyDnamChanged = skillArraysChanged OrElse derivedStatsChanged OrElse gearedWeaponsChanged OrElse farModelChanged
         ' El DNAM del borrador se compone ACA, antes de registrar el override y antes de aplicar: los dos
-        ' salen del mismo bloque.
-        If skillsChanged Then ComposePlayerSkills()
+        ' salen del mismo bloque. Componerlo entero es inocuo: lo que se ESCRIBE despues va por porcion.
+        If anyDnamChanged Then ComposePlayerSkills()
         Dim statsChanged = (GetFid(TextBoxClass) <> _snapClass) OrElse
                            (changedFlagBits And (NpcTemplateHelpers.StatsAcbsFlagsMaskPlana Or NpcTemplateHelpers.AcbsBitAutoCalc)) <> 0UI OrElse CurrentLevelRaw() <> _snapLevel OrElse
                            CShort(NumXp.Value) <> _snapXp OrElse CUShort(NumCalcMin.Value) <> _snapCalcMin OrElse
-                           CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse skillsChanged OrElse SseAcbsOffsetsChanged()
+                           CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse skillArraysChanged OrElse SseAcbsOffsetsChanged()
         Dim keywordsChanged = Not SequenceEqualU(_keywords, _snapKeywords)
         Dim factionsChanged = Not FactionsEqual(_borrador.Factions, _snapRecord.Factions)
         Dim inventoryChanged = Not InventoryEqual(_borrador.Items, _snapRecord.Items)
@@ -1191,13 +1262,19 @@ Public Class NpcEditor_Form
 
         Dim lvlnPick As Func(Of UInteger, UInteger) = AddressOf _mainForm.ResolveLvlnPick_Friend
         Dim categoriesToOwn As New List(Of NPC_TemplateCategory)
-        If traitsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Traits)
+        ' ⛔ La distancia lejana es del bucket Traits (SSE 0x1403C217A), no de Stats.
+        If traitsChanged OrElse farModelChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Traits)
         If baseDataChanged Then categoriesToOwn.Add(NPC_TemplateCategory.BaseData)
         If statsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Stats)
         If aiDataChanged Then categoriesToOwn.Add(NPC_TemplateCategory.AIData)
         If keywordsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Keywords)
         If factionsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Factions)
-        If inventoryChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Inventory)
+        ' ⛔ Inventory no es solo CNTO: el motor copia tambien los atuendos (SSE 0x1403C2022/0x1403C2030,
+        ' FO4 0x14065819B/0x1406581A9) y las armas listas (SSE 0x1403C2045). Cambiar SOLO el atuendo dejaba
+        ' el bit 8 arriba y el motor pisaba el atuendo al cargar.
+        If inventoryChanged OrElse defaultOutfitChanged OrElse sleepOutfitChanged OrElse gearedWeaponsChanged Then
+            categoriesToOwn.Add(NPC_TemplateCategory.Inventory)
+        End If
         ' ⛔⛔ Los perks viajan en el bucket 3 JUNTO con los hechizos -- SSE 0x1403C24C3
         ' `call sub_1401DB120` sobre +0x138, FO4 0x14065875A -- asi que editarlos desprende lo MISMO que
         ' editar los actor effects. Antes `perksChanged` no entraba en ninguna categoria: el ESP salia con
@@ -1269,30 +1346,33 @@ Public Class NpcEditor_Form
         RegisterRecordOverride(newFlags, flagsChanged, baseDataChanged, traitsChanged, statsChanged,
                                keywordsChanged, apprChanged, factionsChanged, inventoryChanged, combosChanged,
                                perksChanged, actorEffectsChanged, propertiesChanged,
-                               aiDataChanged, dispositionChanged, resoluciones)
+                               aiDataChanged, dispositionChanged,
+                               skillArraysChanged, derivedStatsChanged, farModelChanged, gearedWeaponsChanged,
+                               defaultOutfitChanged, sleepOutfitChanged, resoluciones)
 
-        ApplyToNpc(newFlags, changedFlagBits, baseDataChanged, traitsChanged, statsChanged, skillsChanged,
+        ApplyToNpc(newFlags, changedFlagBits, baseDataChanged, traitsChanged, statsChanged,
+                   skillArraysChanged, derivedStatsChanged, farModelChanged, gearedWeaponsChanged,
                    keywordsChanged, factionsChanged, inventoryChanged, perksChanged,
                    actorEffectsChanged, propertiesChanged, aiDataChanged, dispositionChanged)
 
         ' Outfits (DOFT/SOFT) are committed to the LooksMenu overlay — the SAME path the Edit Outfit picker uses —
         ' so the preview, the outfit combo (rebuilt by the caller's re-render) and Save all resolve them once.
         ' Only touch a field the user actually changed, so an untouched outfit never clobbers a prior pick. A value
-        ' equal to the raw record outfit clears the override (preserve raw); any other value stores the override
+        ' equal to the BASE outfit (the resolved Inventory bucket) clears the override; any other value stores the override
         ' (0 = no outfit). ApplyToNpc does NOT write DOFT/SOFT onto _npc — the overlay owns them at render/save.
         If defaultOutfitChanged Then
             Dim v = GetFid(TextBoxDefaultOutfit)
-            _mainForm.SetNpcDefaultOutfitOverrideFromEditor(_npcFormID, If(v = _rawDefaultOutfit, CType(Nothing, UInteger?), v))
+            _mainForm.SetNpcDefaultOutfitOverrideFromEditor(_npcFormID, If(v = _baseDefaultOutfit, CType(Nothing, UInteger?), v))
         End If
         If sleepOutfitChanged Then
             Dim v = GetFid(TextBoxSleepOutfit)
-            _mainForm.SetNpcSleepOutfitOverrideFromEditor(_npcFormID, If(v = _rawSleepOutfit, CType(Nothing, UInteger?), v))
+            _mainForm.SetNpcSleepOutfitOverrideFromEditor(_npcFormID, If(v = _baseSleepOutfit, CType(Nothing, UInteger?), v))
         End If
 
         _hasChanges = flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse aiDataChanged OrElse dispositionChanged OrElse
                       keywordsChanged OrElse apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse
                       perksChanged OrElse actorEffectsChanged OrElse propertiesChanged OrElse
-                      defaultOutfitChanged OrElse sleepOutfitChanged
+                      defaultOutfitChanged OrElse sleepOutfitChanged OrElse anyDnamChanged
 
         DialogResult = DialogResult.OK
         Close()
@@ -1307,6 +1387,9 @@ Public Class NpcEditor_Form
                                        factionsChanged As Boolean, inventoryChanged As Boolean, combosChanged As Boolean,
                                        perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean,
                                        aiDataChanged As Boolean, dispositionChanged As Boolean,
+                                       skillArraysChanged As Boolean, derivedStatsChanged As Boolean,
+                                       farModelChanged As Boolean, gearedWeaponsChanged As Boolean,
+                                       defaultOutfitChanged As Boolean, sleepOutfitChanged As Boolean,
                                        resoluciones As Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution))
         ' ⛔ `aiDataChanged` y `dispositionChanged` van EN LA GUARDA. Sin ellos, editar SOLO el Combat
         ' Style o SOLO la disposicion salia por este `Return` y el override no se creaba nunca: la UI
@@ -1316,7 +1399,9 @@ Public Class NpcEditor_Form
         If Not (flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse keywordsChanged OrElse
                 aiDataChanged OrElse dispositionChanged OrElse
                 apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse perksChanged OrElse
-                actorEffectsChanged OrElse propertiesChanged) Then Return
+                actorEffectsChanged OrElse propertiesChanged OrElse
+                skillArraysChanged OrElse derivedStatsChanged OrElse farModelChanged OrElse gearedWeaponsChanged OrElse
+                defaultOutfitChanged OrElse sleepOutfitChanged) Then Return
         Dim ov = _mainForm.TryGetNpcRecordOverride(_npcFormID)
         If ov Is Nothing Then ov = New NpcRecordOverride()
 
@@ -1337,7 +1422,15 @@ Public Class NpcEditor_Form
         If CUShort(NumSpeedMult.Value) <> _snapSpeedMult Then ov.SpeedMultiplier = CUShort(NumSpeedMult.Value)
         ' El DNAM ya está compuesto en el borrador (OnOk lo hace antes de llegar acá); el override se lleva
         ' un clon para no compartir nodos con lo que el editor deja vivo.
-        If PlayerSkillsChanged() Then ov.SsePlayerSkills = TryCast(_borrador.Copia(), Canon.NpcSSE)
+        ' ⛔ Las banderas dicen QUE PORCION es autoria; el contenedor solo lleva los valores. Se ACUMULAN:
+        ' dos ediciones de porciones distintas antes de guardar tienen que llegar las dos.
+        If skillArraysChanged OrElse derivedStatsChanged OrElse farModelChanged OrElse gearedWeaponsChanged Then
+            ov.SsePlayerSkills = TryCast(_borrador.Copia(), Canon.NpcSSE)
+            ov.SseSkillArraysChanged = ov.SseSkillArraysChanged OrElse skillArraysChanged
+            ov.SseDerivedStatsChanged = ov.SseDerivedStatsChanged OrElse derivedStatsChanged
+            ov.SseFarModelChanged = ov.SseFarModelChanged OrElse farModelChanged
+            ov.SseGearedWeaponsChanged = ov.SseGearedWeaponsChanged OrElse gearedWeaponsChanged
+        End If
         If GetFid(TextBoxRace) <> _snapRace Then ov.RaceFormID = GetFid(TextBoxRace)
         If GetFid(TextBoxVoice) <> _snapVoice Then ov.VoiceFormID = GetFid(TextBoxVoice)
         If GetFid(TextBoxClass) <> _snapClass Then ov.ClassFormID = GetFid(TextBoxClass)
@@ -1358,9 +1451,11 @@ Public Class NpcEditor_Form
         End If
         If actorEffectsChanged Then ov.ActorEffects = New List(Of UInteger)(_actorEffects)
         If combosChanged Then ov.ObjectTemplateCombinations = CombosParaElOverride()
-        ov.TraitsChanged = ov.TraitsChanged OrElse traitsChanged
+        ov.TraitsChanged = ov.TraitsChanged OrElse traitsChanged OrElse farModelChanged
         ov.BaseDataChanged = ov.BaseDataChanged OrElse baseDataChanged
         ov.StatsChanged = ov.StatsChanged OrElse statsChanged
+        ov.InventoryChanged = ov.InventoryChanged OrElse inventoryChanged OrElse
+                              defaultOutfitChanged OrElse sleepOutfitChanged OrElse gearedWeaponsChanged
         ' ⛔ El ZNAM lo gobierna Use AI Data: sin este latch el guardado escribe el valor y no baja el
         ' bit 4, asi que el motor se lo pisa al cargar. La disposicion NO necesita latch: el motor no la
         ' hereda, asi que no hay bucket que materializar — alcanza con que `ov.DispositionBase` viaje.
@@ -1371,6 +1466,13 @@ Public Class NpcEditor_Form
         ' re-derive mas tarde. Se ACUMULA -- una categoria que se desprendio en una pasada anterior conserva
         ' la suya aunque esta edicion no la toque.
         For Each par In resoluciones
+            ' ⛔⛔ `NotInheriting` NO PISA UNA FOTO. Sobre el record VIVO significa casi siempre que una
+            ' sesion anterior ya materializo el bucket y bajo el bit; el crudo que compone el guardado sigue
+            ' con el bit ARRIBA y necesita la foto de aquella sesion para bajarlo. Pisarla dejaba al guardado
+            ' con un `NotInheriting` sobre un bit puesto: `MakeCategoryOwn` caia en su rama de irresoluble,
+            ' el bit quedaba arriba EN SILENCIO y el motor le pisaba la segunda edicion al cargar.
+            ' Caso: cambiar Race -> OK -> sin guardar, cambiar Voice -> OK -> Save.
+            If par.Value.Outcome = NpcTemplateMaterializer.MaterializeOutcome.NotInheriting Then Continue For
             ov.MaterializedSources(par.Key) = par.Value
         Next
 
@@ -1390,7 +1492,9 @@ Public Class NpcEditor_Form
 
     ''' <summary>Write the panel state into <see cref="_npc"/> (in place — the caller's live cache instance).</summary>
     Private Sub ApplyToNpc(newFlags As UInteger, changedFlagBits As UInteger,
-                           baseDataChanged As Boolean, traitsChanged As Boolean, statsChanged As Boolean, skillsChanged As Boolean,
+                           baseDataChanged As Boolean, traitsChanged As Boolean, statsChanged As Boolean,
+                           skillArraysChanged As Boolean, derivedStatsChanged As Boolean,
+                           farModelChanged As Boolean, gearedWeaponsChanged As Boolean,
                            keywordsChanged As Boolean, factionsChanged As Boolean, inventoryChanged As Boolean,
                            perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean,
                            aiDataChanged As Boolean, dispositionChanged As Boolean)
@@ -1440,11 +1544,24 @@ Public Class NpcEditor_Form
                 ns4.ConfigurationStaminaOffset = CShort(NumStaminaOff.Value)
                 ns4.ConfigurationHealthOffset = CShort(NumHealthOff.Value)
                 ns4.ConfigurationSpeedMultiplier = CUShort(NumSpeedMult.Value)
-                ' DNAM: solo con una edicion real, para que un NPC cuyo DNAM no se pudo modelar conserve el
-                ' bloque tal cual en vez de que lo reemplace uno bien formado lleno de ceros. Viaja como
-                ' subrecord entero, asi que lo que ningun control muestra pasa sin tocarse.
-                If skillsChanged Then _npc.Record.CopiarSubrecord(_borrador, "DNAM")
             End If
+        End If
+
+        ' ⛔ DNAM de Skyrim POR PORCION, y FUERA de `statsChanged`: la distancia lejana, las armas listas y
+        ' Health/Magicka/Stamina no son de Stats. Solo con edicion real, asi un DNAM que no se pudo modelar
+        ' conserva sus bytes; y cada porcion escribe solo su tramo.
+        If _isSkyrim Then
+            If skillArraysChanged Then NpcTemplateMaterializer.CopiarHabilidadesDelDnam(_npc.Record, _borrador)
+            If derivedStatsChanged Then
+                Dim dst = TryCast(_npc.Record, Canon.NpcSSE), src = TryCast(_borrador, Canon.NpcSSE)
+                If dst IsNot Nothing AndAlso src IsNot Nothing Then
+                    dst.PlayerSkillsHealth = src.PlayerSkillsHealth
+                    dst.PlayerSkillsMagicka = src.PlayerSkillsMagicka
+                    dst.PlayerSkillsStamina = src.PlayerSkillsStamina
+                End If
+            End If
+            If farModelChanged Then NpcTemplateMaterializer.CopiarDistanciaDeModeloLejano(_npc.Record, _borrador)
+            If gearedWeaponsChanged Then NpcTemplateMaterializer.CopiarArmasListas(_npc.Record, _borrador)
         End If
 
         If keywordsChanged Then _npc.Record.PonerPalabrasClave(_keywords)

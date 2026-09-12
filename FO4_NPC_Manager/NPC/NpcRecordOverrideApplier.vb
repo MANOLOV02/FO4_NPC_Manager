@@ -70,7 +70,10 @@ Public Module NpcRecordOverrideApplier
                npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Factions) Then
             MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Factions, strict, fallo)
         End If
-        If ov.Inventory IsNot Nothing AndAlso NpcTemplateHelpers.HasTemplateFlag(
+        ' ⛔ `InventoryChanged` entra aca: un cambio SOLO de atuendo (DOFT/SOFT) o de armas listas no trae
+        ' CNTO, y sin el latch el bit 8 quedaba arriba y el motor pisaba el atuendo al cargar. Citas del
+        ' bucket: SSE 0x1403C2022 (DOFT) / 0x1403C2030 (SOFT) / 0x1403C203E; FO4 0x14065819B / 0x1406581A9.
+        If (ov.InventoryChanged OrElse ov.Inventory IsNot Nothing) AndAlso NpcTemplateHelpers.HasTemplateFlag(
                npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Inventory) Then
             MaterializarUna(npcSpec, npcFormID, ov, NPC_TemplateCategory.Inventory, strict, fallo)
         End If
@@ -193,9 +196,30 @@ Public Module NpcRecordOverrideApplier
             If ov.HealthOffset.HasValue Then ovSse.ConfigurationHealthOffset = ov.HealthOffset.Value
         End If
 
-        ' --- DNAM de Skyrim. El override lleva el record cuyo DNAM es la edicion; se copia el subrecord
-        ' entero, asi que los campos que nadie toco -relleno sin usar incluido- llegan tal cual. ---
-        If ov.SsePlayerSkills IsNot Nothing Then npcSpec.Record.CopiarSubrecord(ov.SsePlayerSkills, "DNAM")
+        ' --- DNAM de Skyrim, POR PORCION. ⛔ Aca se copiaba el subrecord ENTERO, y el DNAM tiene cuatro
+        ' dueños: editar una habilidad escribia tambien la distancia lejana (Traits) y las armas listas
+        ' (Inventory) que ese bucket no gobierna. Cada porcion va con la MISMA funcion que la materializa,
+        ' y los tramos que nadie authored conservan los bytes del destino. ---
+        If ov.SsePlayerSkills IsNot Nothing Then
+            If ov.SseSkillArraysChanged Then
+                NpcTemplateMaterializer.CopiarHabilidadesDelDnam(npcSpec.Record, ov.SsePlayerSkills)
+            End If
+            If ov.SseDerivedStatsChanged Then
+                ' Health/Magicka/Stamina no son de ningun bucket: el motor los DERIVA. Van campo por campo.
+                Dim dst = TryCast(npcSpec.Record, Canon.NpcSSE)
+                If dst IsNot Nothing Then
+                    dst.PlayerSkillsHealth = ov.SsePlayerSkills.PlayerSkillsHealth
+                    dst.PlayerSkillsMagicka = ov.SsePlayerSkills.PlayerSkillsMagicka
+                    dst.PlayerSkillsStamina = ov.SsePlayerSkills.PlayerSkillsStamina
+                End If
+            End If
+            If ov.SseFarModelChanged Then
+                NpcTemplateMaterializer.CopiarDistanciaDeModeloLejano(npcSpec.Record, ov.SsePlayerSkills)
+            End If
+            If ov.SseGearedWeaponsChanged Then
+                NpcTemplateMaterializer.CopiarArmasListas(npcSpec.Record, ov.SsePlayerSkills)
+            End If
+        End If
 
         ' --- Listas. ---
         If ov.Keywords IsNot Nothing Then npcSpec.Record.PonerPalabrasClave(ov.Keywords)
@@ -252,6 +276,19 @@ Public Module NpcRecordOverrideApplier
                                        ByRef fallo As String)
         ' ⛔ La cadena YA viene resuelta: aca no se camina ni se pinnea una LVLN. Por eso desaparecieron
         ' `resolver` y `resolveLvlnPick`, y con ellos la segunda respuesta que nadie eligio.
+        ' ⛔⛔ FALLA CERRADO ante una foto CONTRADICTORIA: el crudo hereda la categoria y la foto dice que
+        ' no. `MakeCategoryOwn` tomaba ese `NotInheriting` por respuesta valida, dejaba el bit arriba y
+        ' volvia sin error: un ESP incorrecto y mudo. El editor ya no guarda esa foto (ver
+        ' `NpcEditor_Form.RegisterRecordOverride`); esto ataja una entrada vieja o fabricada.
+        If NpcTemplateHelpers.HasTemplateFlag(npcSpec.Record.ConfigurationTemplateFlags, category) AndAlso
+           resol.Outcome = NpcTemplateMaterializer.MaterializeOutcome.NotInheriting Then
+            Dim contradictorio = $"NPC 0x{npcSpec.FormID:X8}: the frozen chain snapshot for " &
+                                 $"{NpcManagerFormat.GetTemplateCategoryLabel(category)} says it does not inherit, " &
+                                 "but the record still inherits it. Re-open the editor on this NPC and confirm the change."
+            If strict Then Throw New InvalidOperationException(contradictorio)
+            If fallo Is Nothing Then fallo = contradictorio
+            Return
+        End If
         Dim outcome = NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, category, resol)
         If outcome <> NpcTemplateMaterializer.MaterializeOutcome.Unresolvable AndAlso
            outcome <> NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then Return

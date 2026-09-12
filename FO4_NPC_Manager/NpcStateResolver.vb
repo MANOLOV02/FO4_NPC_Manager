@@ -46,14 +46,21 @@ Friend NotInheritable Class NpcStateResolver
     ''' <b><see cref="Reroll"/></b> (hoja en 0) = RE-SORTEAR · instancia con hoja = anclar.
     ''' Se modela con una CLASE y no con <c>UInteger?</c> a proposito: el ternario sobre Nullable
     ''' colapsa Nothing con 0, y 0 es un valor VALIDO ("no hay hoja") distinto de "no vino ancla".
-    ''' Ver 00-reglas-vb-trampas-que-me-comi.</para></summary>
+    ''' Ver 00-reglas-vb-trampas-que-me-comi.</para>
+    ''' <para>⛔⛔ DOS HOJAS, UNA POR CADENA. Traits e Inventory se resuelven POR BUCKET y pueden pasar por
+    ''' listas niveladas distintas, asi que anclar una sola dejaba la otra sorteando: medido, 181 NPC de FO4 y
+    ''' 281 de SSE cambiaban de ATUENDO entre dos resoluciones del mismo NPC. Sin sobrecarga de un argumento
+    ''' a proposito: un llamador que se olvide de la hoja de Inventory tiene que decirlo con un 0 explicito,
+    ''' no heredarlo en silencio.</para></summary>
     Friend NotInheritable Class LeveledLeafPin
         Public ReadOnly TraitsLeaf As UInteger
-        Public Sub New(traitsLeaf As UInteger)
+        Public ReadOnly InventoryLeaf As UInteger
+        Public Sub New(traitsLeaf As UInteger, inventoryLeaf As UInteger)
             Me.TraitsLeaf = traitsLeaf
+            Me.InventoryLeaf = inventoryLeaf
         End Sub
-        ''' <summary>El gesto de azar: la cadena vuelve a sortear.</summary>
-        Public Shared ReadOnly Reroll As New LeveledLeafPin(0UI)
+        ''' <summary>El gesto de azar: las dos cadenas vuelven a sortear.</summary>
+        Public Shared ReadOnly Reroll As New LeveledLeafPin(0UI, 0UI)
     End Class
 
     Public Sub New(ctx As NpcRenderContext, materialResolver As NpcMaterialResolver,
@@ -102,20 +109,23 @@ Friend NotInheritable Class NpcStateResolver
         ' Se lee de `host.LastRenderedState`, que es el estado del ULTIMO render terminado de ESTE host:
         ' no es una cache nueva, es el mismo dato que ya alimenta ResolveLvlnPick_Friend.
         Dim pinnedTraitsLeaf As UInteger = 0UI
+        Dim pinnedInventoryLeaf As UInteger = 0UI
         If pin IsNot Nothing Then
             pinnedTraitsLeaf = pin.TraitsLeaf
+            pinnedInventoryLeaf = pin.InventoryLeaf
         Else
             ' If/Else explicito, NO ternario: ver el doc de LeveledLeafPin.
             Dim mostrado As MainForm.NPCVisualState = Nothing
             If host IsNot Nothing Then mostrado = host.LastRenderedState
             If mostrado IsNot Nothing AndAlso mostrado.RootNpcFormID = npc.FormID Then
                 pinnedTraitsLeaf = mostrado.TraitsSourceFormID
+                pinnedInventoryLeaf = mostrado.InventorySourceFormID
             End If
         End If
 
         Dim warnings As New List(Of String)
         Dim traits = ResolveTraitsStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings, pinnedTraitsLeaf)
-        Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
+        Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings, pinnedInventoryLeaf)
 
         If traits Is Nothing Then traits = NpcStateFactory.CreateOwnTraitsState(npc)
         If inventory Is Nothing Then inventory = NpcStateFactory.CreateOwnInventoryState(npc)
@@ -635,7 +645,8 @@ Friend NotInheritable Class NpcStateResolver
         Return own
     End Function
 
-    Private Function ResolveInventoryStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.InventoryState
+    Private Function ResolveInventoryStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
+                                                  Optional pinnedInventoryLeaf As UInteger = 0UI) As MainForm.InventoryState
         Dim npc = _ctx.GetParsedNpc(formID)
         If npc Is Nothing Then Return Nothing
 
@@ -645,7 +656,7 @@ Friend NotInheritable Class NpcStateResolver
 
         visited.Add(formID)
         Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Inventory)
-        Dim resolved = ResolveInventoryStateFromTemplateSource(sourceFormID, visited, warnings)
+        Dim resolved = ResolveInventoryStateFromTemplateSource(sourceFormID, visited, warnings, pinnedInventoryLeaf)
         visited.Remove(formID)
 
         If resolved IsNot Nothing Then Return resolved
@@ -667,13 +678,14 @@ Friend NotInheritable Class NpcStateResolver
         Return ResolveTraitsStateFromNPC(sourceRecord.Header.FormID, visited, warnings, pinnedTraitsLeaf)
     End Function
 
-    Private Function ResolveInventoryStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.InventoryState
-        ' 0UI a proposito: el ancla es de la cadena de Traits. La de Inventory sigue sorteando (frente
-        ' declarado y NO arreglado: 181 NPC de FO4 y 281 de SSE cambian de outfit entre resoluciones,
-        ' porque `NPCVisualState.InventorySourceFormID` esta declarado y nunca se asigna).
-        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Inventory", visited, warnings, 0UI)
+    Private Function ResolveInventoryStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
+                                                             pinnedInventoryLeaf As UInteger) As MainForm.InventoryState
+        ' ⛔ Aca decia `0UI` a proposito, con el frente declarado: la cadena de Inventory sorteaba en cada
+        ' resolucion (181 NPC de FO4 y 281 de SSE cambiaban de atuendo) porque `InventorySourceFormID` nunca
+        ' se asignaba. Ahora viaja su PROPIA hoja, independiente de la de Traits.
+        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Inventory", visited, warnings, pinnedInventoryLeaf)
         If sourceRecord Is Nothing Then Return Nothing
-        Return ResolveInventoryStateFromNPC(sourceRecord.Header.FormID, visited, warnings)
+        Return ResolveInventoryStateFromNPC(sourceRecord.Header.FormID, visited, warnings, pinnedInventoryLeaf)
     End Function
 
     ''' <param name="pinnedLeaf">Ancla de la categoria que se esta caminando (0 = sortear). Ver
@@ -857,11 +869,25 @@ Friend NotInheritable Class NpcStateResolver
                         ' LVLN (hops max = 1 en los dos juegos).
                         ' Se devuelve la hoja B y NO el terminal C: el terminal iria al `_lvlnPickCache` y
                         ' la cadena de Inventory que comparta la lista se llevaria el actor equivocado.
-                        ' SOLO para Traits: `TerminalDeTraits` camina el bit Traits, y aplicarlo a
-                        ' Inventory buscaria en la cadena equivocada.
+                        ' ⛔ POR CATEGORIA: el terminal se camina por el bit de ESA cadena. Aca decia "SOLO
+                        ' para Traits", y era correcto mientras Inventory no tenia ancla; desde que la tiene,
+                        ' sin esta rama su hoja se degradaba al sorteo exactamente en el mismo caso. Caminar el
+                        ' bit de Traits para Inventory SI seria buscar en la cadena equivocada.
+                        ' ⛔ El "es EXACTO porque hops max = 1" de arriba esta MEDIDO para Traits y NO para
+                        ' Inventory. Igual es seguro: `TerminalDe` se RINDE (0) al cruzar una lista o un ciclo,
+                        ' asi que nunca elige mal -- a lo sumo no encuentra y cae al sorteo.
+                        Dim cat As NPC_TemplateCategory
+                        Dim conTerminal = True
                         If categoryName = "Traits" Then
+                            cat = NPC_TemplateCategory.Traits
+                        ElseIf categoryName = "Inventory" Then
+                            cat = NPC_TemplateCategory.Inventory
+                        Else
+                            conTerminal = False
+                        End If
+                        If conTerminal Then
                             For Each hoja In hojas
-                                If TerminalDeTraits(hoja) = pinnedLeaf Then Return hoja
+                                If TerminalDe(hoja, cat) = pinnedLeaf Then Return hoja
                             Next
                         End If
                     End If
@@ -884,14 +910,20 @@ Friend NotInheritable Class NpcStateResolver
     ''' <see cref="ResolveSingleLeveledTemplate"/>. Corre con el lock de lectura YA TOMADO — por eso usa
     ''' <c>GetRecordNoLock</c>, igual que el resto del walk.</summary>
     Private Function TerminalDeTraits(formID As UInteger) As UInteger
+        Return TerminalDe(formID, NPC_TemplateCategory.Traits)
+    End Function
+
+    ''' <summary>Final de la cadena de <paramref name="category"/> SIN pasar por ninguna LVLN. Una sola ley para
+    ''' las dos cadenas que tienen ancla; `TerminalDeTraits` queda como su caso Traits.</summary>
+    Private Function TerminalDe(formID As UInteger, category As NPC_TemplateCategory) As UInteger
         Dim actual = formID
         Dim vistos As New HashSet(Of UInteger)()
         For paso = 0 To 31
             If Not vistos.Add(actual) Then Return 0UI
             Dim npc = _ctx.GetParsedNpc(actual)
             If npc Is Nothing Then Return 0UI
-            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then Return actual
-            Dim siguiente = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Traits)
+            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return actual
+            Dim siguiente = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, category)
             If siguiente = 0UI Then Return actual
             Dim rec = _ctx.PluginManager.GetRecordNoLock(siguiente)
             If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Return 0UI
