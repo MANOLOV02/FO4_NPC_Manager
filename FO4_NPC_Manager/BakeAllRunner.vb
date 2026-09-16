@@ -994,7 +994,8 @@ Friend Module BakeAllRunner
                         Dim r As FaceGenBuilder.BuildResult = Nothing
                         Dim buildErr As Exception = Nothing
                         Try
-                            r = FaceGenBuilder.BuildCharGen(t.Fid, pm, appliedPresets,
+                            ' ⛔ RONDA 20b: sin sesion -- la lectura de SU orden de carga (defaults de `LecturaDeCadena`).
+                            r = FaceGenBuilder.BuildCharGen(t.Fid, pm, New LecturaDeCadena With {.PluginManager = pm}, appliedPresets,
                                                             host:=glHost,
                                                             applyMaterialOverrides:=AddressOf materialResolver.ApplyShapeMaterialOverrides,
                                                             willBePacked:=False,

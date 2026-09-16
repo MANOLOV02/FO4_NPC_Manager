@@ -106,6 +106,17 @@ Public Class NpcEditor_Form
     End Property
     Private _hasChanges As Boolean
 
+    ''' <summary>⛔⛔ RONDA 6 (rev-22): el deshacer que devolvio la sede del traslado de TINI
+    ''' (<c>MainForm.LlevarTintesVistosAlOverlay</c>) en el ultimo OK, o Nothing si no traslado nada. El editor NO lo
+    ''' tira: el commit de MainForm (<c>FotoParaDeshacerElEditorDeNpc</c>) lo corre si el re-render falla, para que fallar
+    ''' deje el overlay (<c>HasSseTints</c>/<c>SseTintLayers</c>) COMO ESTABA. Una sola sede de deshacer por canal.</summary>
+    Friend ReadOnly Property DeshacerTintesDelOverlay As Action
+        Get
+            Return _deshacerTintesDelOverlay
+        End Get
+    End Property
+    Private _deshacerTintesDelOverlay As Action = Nothing
+
     ''' <param name="mainForm">Owner — supplies the PluginManager for the FormID pickers + display names.</param>
     ''' <param name="npc">The live NPC_Data (render cache). Read at open; mutated only on OK.</param>
     ''' <param name="npcFormID">The NPC's global FormID.</param>
@@ -386,21 +397,29 @@ Public Class NpcEditor_Form
         OnOk(Nothing, EventArgs.Empty)
     End Sub
 
+    ''' <summary>⛔ LA COSTURA DEL RECHAZO de una bandera ACBS derivada (R6, ronda 2), mismo patron que
+    ''' <c>MainForm.ConfirmarDesprendimientoParaArnes</c>: se sustituye la VENTANA, no la ley. Con la costura puesta,
+    ''' <see cref="OnOk"/> la llama con el texto del aviso en vez de abrir el MessageBox modal, y hace el MISMO
+    ''' `Return` que en produccion. Sin ella un gate no podia ejercitar el rechazo del 0x100 (el modal colgaba el arnes).
+    ''' <para>Nothing = el MessageBox real. Es el default y el unico valor que usa la app.</para></summary>
+    Friend AvisarRechazoDeBanderaParaArnes As Action(Of String) = Nothing
+
     Private Sub LoadNpcIntoPanels(fallbackRaceFormID As UInteger)
         _loading = True
         Try
-            Dim lvlnPick As Func(Of UInteger, UInteger) = AddressOf _mainForm.ResolveLvlnPick_Friend
-            Dim baseNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc, lvlnPick)
-            Dim traitsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Traits, _getParsedNpc, lvlnPick)
-            Dim statsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Stats, _getParsedNpc, lvlnPick)
-            Dim keywordsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc, lvlnPick)
-            Dim factionsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Factions, _getParsedNpc, lvlnPick)
-            Dim inventoryNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, lvlnPick)
-            Dim spellsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, lvlnPick)
+            Dim lvlnPick As Func(Of UInteger, UInteger) = _mainForm.HojaDeListaPara(_npc.FormID)
+            Dim firma = NpcTemplateHelpers.FirmaDeRecord(_mainForm.PluginManagerForEditor)
+            Dim baseNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc, lvlnPick, firma)
+            Dim traitsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Traits, _getParsedNpc, lvlnPick, firma)
+            Dim statsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Stats, _getParsedNpc, lvlnPick, firma)
+            Dim keywordsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc, lvlnPick, firma)
+            Dim factionsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Factions, _getParsedNpc, lvlnPick, firma)
+            Dim inventoryNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, lvlnPick, firma)
+            Dim spellsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, lvlnPick, firma)
             ' ⛔ AI Data tiene su propio terminal: el Combat Style sale de ACA, no del de Traits. En
             ' FO4 la diferencia es real — el origen se resuelve POR BUCKET (`sub_140664FC0`), asi que
             ' cada categoria puede tener un terminal distinto.
-            Dim aiNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.AIData, _getParsedNpc, lvlnPick)
+            Dim aiNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.AIData, _getParsedNpc, lvlnPick, firma)
             ' General.
             TextBoxFull.Text = If(baseNpc.Record.Name, "")
             TextBoxShort.Text = If(baseNpc.Record.ShortName, "")
@@ -1205,16 +1224,33 @@ Public Class NpcEditor_Form
         Dim newFlags = ComposeFlags()
         Dim changedFlagBits = newFlags Xor _snapFlags
         Dim flagsChanged = changedFlagBits <> 0UI
+        ' ⛔⛔ PUNTO 14 (DECISIONES 14-sep): con plantilla se rechazaba editar TODO bit fuera de las mascaras
+        ' clasificadas, con el motivo «their engine template category has not been measured». Ya esta MEDIDO: las
+        ' mascaras de `NpcTemplateHelpers` salen del censo COMPLETO de toda operacion sobre `[TESActorBaseData+8]`
+        ' dentro de la funcion de copia (Traits SSE 0x1403C20DB/0x1403C20F7, FO4 0x1406582B4/0x1406582D1; Stats
+        ' SSE 0x1403C236E/0x1403C243F, FO4 0x1406585DC/0x14065867C; Base Data SSE 0x1403C208F, FO4 0x140658235;
+        ' 0x10 por la regla SSE 0x1403C23FB-0x1403C242A, FO4 0x140658651-0x14065866F). Un bit fuera de todas NO lo copia ningun bucket: es PROPIO y
+        ' la edicion sobrevive A LA COPIA DE BUCKETS.
+        ' ⛔ RONDA 11 (aud-03): NO siempre sobrevive a la CARGA. En SSE, si la cadena de plantillas colapsa en una LVLN
+        ' (punto 7), el motor APAGA Unique 0x20 al cargar (`0x1403C1FC8`..`0x1403C1FF5`: `shr eax,5 / test al,1` ->
+        ' `0x1401DD260` -> `0x1401DD2C0(this,0x20,0,1)`): el byte que se escribe no tiene efecto en el juego. Se deja
+        ' editable igual por DECISION DEL USUARIO (DECISIONES punto 14, aud-03); no cambia la conducta del editor.
+        ' ⛔ La unica excepcion es el 0x100 (sonidos propios): tampoco esta en ninguna mascara, pero lo DERIVA la
+        ' materializacion del canal de sonidos (`AcbsBitsDerivadosPorMaterializacion`; SSE 0x1403C6288, FO4
+        ' 0x14065FC3F / 0x14065FBD7), asi que un valor elegido a mano se contradice con el grupo de sonidos.
         Dim unsupportedChangedFlagBits = changedFlagBits And
-                                         (_managedFlagMask And Not NpcTemplateHelpers.ClassifiedAcbsFlagsMask(_isSkyrim))
+                                         (_managedFlagMask And NpcTemplateHelpers.AcbsBitsDerivadosPorMaterializacion)
         If unsupportedChangedFlagBits <> 0UI AndAlso _npc.Record.ConfigurationTemplateFlags <> 0US Then
             Dim flagNames = String.Join(", ", _flagChecks.
                                         Where(Function(fc) (unsupportedChangedFlagBits And fc.Mask) <> 0UI).
                                         Select(Function(fc) fc.Chk.Text))
-            MessageBox.Show(Me,
-                            $"Cannot safely change {flagNames} (0x{unsupportedChangedFlagBits:X8}) while this NPC inherits template categories." &
-                            Environment.NewLine & "Revert those checkboxes to continue. Their engine template category has not been measured, so saving them could silently discard the edit.",
-                            "Unsupported templated flag edit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Dim avisoRechazo = $"Cannot change {flagNames} (0x{unsupportedChangedFlagBits:X8}) while this NPC inherits template categories." &
+                               Environment.NewLine & "Revert those checkboxes to continue. That bit is derived from whether the NPC ends up with its own sounds, so a hand-picked value would contradict the sound data."
+            If AvisarRechazoDeBanderaParaArnes IsNot Nothing Then
+                AvisarRechazoDeBanderaParaArnes(avisoRechazo)
+            Else
+                MessageBox.Show(Me, avisoRechazo, "Unsupported templated flag edit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            End If
             Return
         End If
         Dim baseDataChanged = (changedFlagBits And NpcTemplateHelpers.BaseDataAcbsFlagsMask(_isSkyrim)) <> 0UI OrElse
@@ -1260,7 +1296,8 @@ Public Class NpcEditor_Form
         Dim defaultOutfitChanged = GetFid(TextBoxDefaultOutfit) <> _snapDefaultOutfit
         Dim sleepOutfitChanged = GetFid(TextBoxSleepOutfit) <> _snapSleepOutfit
 
-        Dim lvlnPick As Func(Of UInteger, UInteger) = AddressOf _mainForm.ResolveLvlnPick_Friend
+        Dim lvlnPick As Func(Of UInteger, UInteger) = _mainForm.HojaDeListaPara(_npc.FormID)
+        Dim firma = NpcTemplateHelpers.FirmaDeRecord(_mainForm.PluginManagerForEditor)
         Dim categoriesToOwn As New List(Of NPC_TemplateCategory)
         ' ⛔ La distancia lejana es del bucket Traits (SSE 0x1403C217A), no de Stats.
         If traitsChanged OrElse farModelChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Traits)
@@ -1305,7 +1342,7 @@ Public Class NpcEditor_Form
 
         Dim resoluciones As New Dictionary(Of NPC_TemplateCategory, NpcTemplateMaterializer.TraitsResolution)
         For Each category In categoriesToOwn
-            Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(_npc, category, _getParsedNpc, lvlnPick)
+            Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(_npc, category, _getParsedNpc, lvlnPick, firma)
             ' ⛔ CONGELADA: la fuente viaja clonada. `ProbeCategoryOwn` devuelve la instancia cacheada del
             ' parse, y unas lineas mas abajo este mismo formulario la muta en vivo.
             ' ⛔⛔ LA MISMA SOMBRA DEL TERMINAL QUE USA EL DIBUJO. Aca se congelaba el record CRUDO, y
@@ -1338,6 +1375,18 @@ Public Class NpcEditor_Form
         ' overlay de solo CUERPO hacia saltear TODA la cara.
         ' ⛔ Se recorre `categoriesToOwn`, la MISMA lista que valido el preflight, en vez de repetir las ocho
         ' banderas: una novena categoria agregada arriba y olvidada aca se materializaba sin avisar.
+        ' ⛔⛔ RONDA 5 (DECISIONES 1c, rev-17): bajar el bit 0 desde ESTE editor (Race, Voice, OBTS, APPR, distancia lejana)
+        ' es desprendimiento de Traits igual que el de la puerta del overlay, y en SSE la cara que se veia era el FaceGen
+        ' del terminal (0x1403C2E20, 0x1403BFCA0) con SUS TINI. La ley del traslado vive en UNA sede,
+        ' `MainForm.LlevarTintesVistosAlOverlay`; se llama ANTES de materializar porque mira el bit 0 que la
+        ' materializacion baja. Tras el preflight no queda camino de fallo en este OK, pero SI despues: el re-render del
+        ' commit (`MainForm.PublicarEdicionDelEditorDeNpcAsync`) puede tirar. ⛔ RONDA 6 (rev-22): el deshacer se EXPONE
+        ' (`DeshacerTintesDelOverlay`) y lo corre el deshacer del commit; antes se tiraba y el overlay previo quedaba con las
+        ' TINI del terminal.
+        _deshacerTintesDelOverlay = Nothing
+        If categoriesToOwn.Contains(NPC_TemplateCategory.Traits) AndAlso _mainForm IsNot Nothing Then
+            _deshacerTintesDelOverlay = _mainForm.LlevarTintesVistosAlOverlay(_npcFormID, resoluciones(NPC_TemplateCategory.Traits))
+        End If
         For Each category In categoriesToOwn
             NpcTemplateMaterializer.MakeCategoryOwn(_npc, category, resoluciones(category))
         Next

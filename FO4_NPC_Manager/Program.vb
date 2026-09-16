@@ -667,6 +667,7 @@ Module Program
             Dim emptyPresets As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)()
             Dim result = FaceGenBuilder.BuildCharGen(npcFormID,
                                                      pm,
+                                                     New LecturaDeCadena With {.PluginManager = pm},
                                                      emptyPresets,
                                                      host:=Nothing,
                                                      applyMaterialOverrides:=Nothing,

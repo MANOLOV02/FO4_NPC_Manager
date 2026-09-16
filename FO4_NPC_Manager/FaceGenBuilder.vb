@@ -756,15 +756,19 @@ Public Module FaceGenBuilder
     '''           the actual on-disk path (&lt;id&gt;_d_2.dds) or the standalone loose NIF references a
     '''           texture that does not exist under that name.
     ''' In release (DebugMode=Off) Suffix == CanonSuffix, so this flag is a no-op.</param>
+    ''' <param name="lectura">⛔⛔ RONDA 20b (D2): la lectura de la cadena con la que se hornea (records del NPC y de sus
+    ''' plantillas, y la hoja de lista). OBLIGATORIA: la app pasa una lectura CONGELADA de la sesion armada en el hilo de UI
+    ''' (`MainForm.LecturaDeHorneado`); Bake All y la CLI, el parse de su orden de carga. Reemplaza al `resolveLvlnPick`
+    ''' suelto, que ahora viaja adentro (`HojaPara`).</param>
     Friend Function BuildCharGen(npcFormID As UInteger,
                                  pluginManager As PluginManager,
+                                 lectura As LecturaDeCadena,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                  willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
-                                 Optional lutDataPath As String = Nothing,
-                                 Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As BuildResult
+                                 Optional lutDataPath As String = Nothing) As BuildResult
 
         ' GATE SIMD, UNA VEZ POR PROCESO Y ANTES DE HORNEAR NADA.
         ' POR QUE ACA Y NO EN PhaseReport: los self-tests vivian SOLO adentro de PhaseReport(), y a
@@ -814,8 +818,8 @@ Public Module FaceGenBuilder
         ' sede contra una tercera cosa, justo en el campo que esta ola vino a unificar.
         ' ⛔ Con `npcData` en Nothing, `state` queda en Nothing y la funcion SIGUE: hay camino aguas
         ' abajo que contempla los dos casos, y cortar aca cambiaria el mensaje que ve el usuario.
-        Dim horneado = NpcStateFactory.EstadoDelHorneado(npcFormID, pluginManager, appliedPresets,
-                                                        lmSkinTemplateResolver, resolveLvlnPick)
+        Dim horneado = NpcStateFactory.EstadoDelHorneado(npcFormID, pluginManager, lectura, appliedPresets,
+                                                        lmSkinTemplateResolver)
         Dim npcData = horneado.Datos
         Dim state As MainForm.NPCVisualState = horneado.Estado
         Dim result As New BuildResult()
@@ -944,7 +948,8 @@ Public Module FaceGenBuilder
         ' FMRS pose). Single source of truth, consumed by FaceGenBuildPipeline.BakeShape per
         ' HDPT to produce v_baked = inv(Mtot_orig) × v_world.
         Dim regionsFile As FacialBoneRegionsFile = Nothing
-        Dim probeNpcRaw = NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager)
+        ' ⛔ RONDA 20b (D2): de LA LECTURA del horneado, no un parse del plugin (el sexo de las regiones sale de aca).
+        Dim probeNpcRaw = lectura.Resuelta(npcFormID).Leer(npcFormID)
         ' Raza EFECTIVA para las FacialBoneRegions: preferir el npcData overlaid (ya stampado con el
         ' override de raza del editor); probeNpcRaw es el parse crudo y tras un cambio de raza apuntaría
         ' a las regiones de la raza vieja.
@@ -966,7 +971,7 @@ Public Module FaceGenBuilder
         ' veces --`EstadoDelHorneado` y esta-- y cada caminata re-parsea, sondea y copia el record.
         Dim bakeState As FaceGenBuildPipeline.BakeState =
             FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, appliedPresets, regionsFile,
-                                                resolveLvlnPick, npcDataResuelto:=npcData)
+                                                Nothing, npcDataResuelto:=npcData)
         ' Names of every bone the actor's face + body skeletons expose. Used below
         ' to drop source shapes whose skin references a bone outside this set
         ' (CK-equivalent filter — see the call site for the rationale).
@@ -1443,7 +1448,7 @@ Public Module FaceGenBuilder
                                         BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                                          hdpt, effectiveHeadPartType, applyMaterialOverrides,
                                                          npcFormID, originPlugin,
-                                                         pluginManager, appliedPresets, host,
+                                                         pluginManager, lectura, appliedPresets, host,
                                                          state, npcData, willBePacked, result,
                                                          lmSkinTemplateResolver, lutDataPath)
                                     Finally
@@ -3581,6 +3586,7 @@ Public Module FaceGenBuilder
                                  npcFormID As UInteger,
                                  originPlugin As String,
                                  pluginManager As PluginManager,
+                                 lectura As LecturaDeCadena,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
                                  state As MainForm.NPCVisualState,
@@ -3678,6 +3684,7 @@ Public Module FaceGenBuilder
             raceFormID:=npcData.Record.Race,
             isFemale:=npcData.Record.ConfigurationFlagsFemale,
             pluginManager:=pluginManager,
+            lectura:=lectura,
             appliedPresets:=appliedPresets,
             overlayPreset:=NpcRecordOverlay.OverlayDeAutoria(npcFormID, appliedPresets),
             tintBytesCache:=Nothing,

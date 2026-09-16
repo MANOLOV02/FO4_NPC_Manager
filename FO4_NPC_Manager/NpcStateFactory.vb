@@ -206,18 +206,20 @@ Friend NotInheritable Class NpcStateFactory
     ''' Pasarle el preset «porque parece mas completo» cambiaria BYTES HORNEADOS.</para>
     ''' <para>Devuelve los tres, no solo el estado: el horneado necesita tambien el record resuelto (raza,
     ''' genero, capas de tinte) y el `traits` de ESTA proyeccion, no uno recalculado.</para></summary>
+    ''' <param name="lectura">⛔⛔ RONDA 20b (D2): la lectura de la cadena (records y hoja). OBLIGATORIA; ver
+    ''' <see cref="NpcRecordOverlay.ResolveOverlaidNpcData"/>.</param>
     Public Shared Function EstadoDelHorneado(npcFormID As UInteger,
                                              pluginManager As PluginManager,
+                                             lectura As LecturaDeCadena,
                                              appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                             Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
-                                             Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) _
+                                             Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) _
                                              As (Datos As NPC_Data,
                                                  Estado As MainForm.NPCVisualState,
                                                  Traits As MainForm.TraitsState)
         Dim baseDelHorneado As NPC_Data = Nothing
         Dim terminalDelHorneado As UInteger = 0UI
-        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets,
-                                                              lmSkinTemplateResolver, resolveLvlnPick,
+        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, lectura, appliedPresets,
+                                                              lmSkinTemplateResolver,
                                                               baseDelHorneado, terminalDelHorneado)
         If npcData Is Nothing Then Return (Nothing, Nothing, Nothing)
         Dim proy = ProyectarEstado(npcData, npcData,

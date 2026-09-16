@@ -226,7 +226,7 @@ Public Class MainForm
         If n Is Nothing Then Return ""
         Dim k As String = Nothing
         If _npcSortKeyCache.TryGetValue(n.FormID, k) Then Return k
-        Return n.ToString()
+        Return TextoDeNpc(n)
     End Function
 
     ''' <summary>QUE es la clave de orden. Un solo sitio: el plan contempla —y por ahora
@@ -235,7 +235,8 @@ Public Class MainForm
     ''' distintas sin ningún aviso.</summary>
     Private Sub SembrarClaveDeOrden(npc As NPC_Data)
         If npc Is Nothing Then Return
-        _npcSortKeyCache(npc.FormID) = npc.ToString()
+        ' ⛔ Con el nombre EFECTIVO (punto 12): el heredado ya no se le escribe al record.
+        _npcSortKeyCache(npc.FormID) = TextoDeNpc(npc)
         ' Va JUNTO con la clave, no aparte: los dos salen del record y el filtro los pide en la misma
         ' pasada. Sembrarlos en sitios distintos es la forma de que uno quede fresco y el otro no.
         _npcHeredaAparienciaCache(npc.FormID) = NpcTemplateHelpers.NpcInheritsVisualAppearance(npc)
@@ -282,11 +283,17 @@ Public Class MainForm
     ''' <para>El identificador sale SIEMPRE de `npc.FormID`: recibirlo aparte permitia que la etiqueta y
     ''' el texto buscable cayeran en una entrada y la clave de orden en OTRA, y entonces la lista se
     ''' ordenaria con una clave que no es la de ese NPC.</para>
-    Private Sub RefrescarCachesDerivados(npc As NPC_Data, Optional ordenarAhora As Boolean = True)
+    ''' <para>⛔ RONDA 6 (rev-20 resto): <paramref name="resembrarClaveDeOrden"/> = False rehace SOLO el texto buscable y
+    ''' la etiqueta, sin tocar la clave de orden ni ordenar. Lo usa el refresco del nombre heredado al publicar
+    ''' (<see cref="RefrescarNombreHeredadoDe"/>), que no repuebla el arbol: resembrar la clave ahi dejaba `_allNPCs` en un
+    ''' orden y el arbol en otro. Antes ese llamador copiaba a mano las dos lineas de esta sede.</para>
+    Private Sub RefrescarCachesDerivados(npc As NPC_Data, Optional ordenarAhora As Boolean = True,
+                                         Optional resembrarClaveDeOrden As Boolean = True)
         If npc Is Nothing Then Return
         Dim fid = npc.FormID
-        _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
-        _npcDisplayLabelCache(fid) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
+        _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreEfectivo(npc))
+        _npcDisplayLabelCache(fid) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreEfectivo(npc))
+        If Not resembrarClaveDeOrden Then Return
         SembrarClaveDeOrden(npc)
         If ordenarAhora Then OrdenarNpcs()   ' la clave de este NPC acaba de cambiar
     End Sub
@@ -2378,7 +2385,10 @@ Public Class MainForm
         ' El armador del panel de detalle. Vive afuera de MainForm porque es el único lugar de la app
         ' que enumera el record NPC_ entero, y así lo puede construir un arnés contra el corpus para
         ' afirmar su cobertura — ver RecordDetailsTree.Cobertura y Tools/DetalleDelRecordGate.
-        _detailsTree = New RecordDetailsTree(pluginManager, _ctx)
+        ' ⛔ Con el MISMO resolvedor de hoja que el resto de la app (punto 11): la hoja en pantalla solo para
+        ' el NPC en pantalla. `AddressOf` es perezoso: no toca `_renderHost` hasta que se construye un arbol.
+        ' ⛔ R7 (ronda 2): y con la MISMA sombra del terminal que la base del dibujo.
+        _detailsTree = New RecordDetailsTree(pluginManager, _ctx, AddressOf HojaDeListaParaElPanel, AddressOf SombraDelTerminal)
         ' Draft-aware resolution: let the parse path (GetParsedArmo/GetParsedArma) "see" unsaved in-memory
         ' ARMO/ARMA drafts so the preview renders them and the candidate lists can resolve their ARMA children.
         ' Same injection contract as the OutfitResolver leveled-list resolver — the resolver returns Nothing for
@@ -2461,7 +2471,7 @@ Public Class MainForm
     ''' are persisted on disk — a sidecar row, and with it the BodyGen .ini row and (overlays/skin/
     ''' transforms) the VMAD apply-script in the saved plugin. Seeded in the ctor from the sidecar
     ''' hydration; updated by <see cref="ApplyPostSaveReadback"/> when a Save writes or prunes rows.
-    ''' Consumer: <see cref="MenuItemResetOverlay_Click"/> — a reset NPC in this set stays dirty so the
+    ''' Consumer: <see cref="DescartarCambiosEnMemoriaAsync"/> (Reset) — a reset NPC in this set stays dirty so the
     ''' next Save propagates the revert to disk/game instead of stranding it in the preview.</summary>
     Private ReadOnly _sidecarBackedNpcs As New HashSet(Of UInteger)
 
@@ -2688,13 +2698,10 @@ Public Class MainForm
                 c.ApplyHavokPhysicsSettings()
                 Config_App.SaveConfig()
 
-                ' Tirar el estado vivo: al cambiar de modo la próxima pasada RESIEMBRA desde la piel posada
-                ' y corre los `SettleSteps` (10, el `uNumSimSettleSteps` del motor). Sin esto el combo
+                ' Tirar el estado vivo: al cambiar de modo la próxima pasada RESIEMBRA las partículas desde
+                ' `simClothPoses[0]` (`0x1418ED09B`) y reinicia el reloj de la tela. Sin esto el combo
                 ' mostraría la tela a medio caer del modo anterior, que no es el A/B que se quiere ver.
-                ' ⛔ Debug-only, como el motor.
-#If DEBUG Then
                 FO4_Base_Library.Havok.Physics.ClothCanonico.ResetAll()
-#End If
 
                 ' POSE dirty: el paso de física vive en la rama `needsPoseUpdate` del pipeline (Render.vb).
                 ' Con Morphs o Textures dirty el combo no movería NADA — medido al escribir esto.
@@ -2952,12 +2959,14 @@ Public Class MainForm
         Dim parseMs = sw.ElapsedMilliseconds
         sw.Restart()
         ' Resolve inherited FullName for NPCs that inherit BaseData from a template
+        ' ⛔ RONDA 12 (rev-32): la cache se siembra con `_allNPCs` ACA, en la carga, y en ningun otro lado.
+        SembrarCacheConLaCarga()
         ResolveInheritedFullNames()
         Dim resolveMs = sw.ElapsedMilliseconds
         sw.Restart()
         ' La clave se calcula UNA vez por NPC. Tiene que ser DESPUES de ResolveInheritedFullNames,
-        ' que le ESCRIBE el nombre heredado al record: con la clave tomada antes, todo NPC que hereda
-        ' el nombre de su plantilla ordenaria por su EditorID en vez de por el nombre.
+        ' que llena `_nombresHeredados` (ya no le escribe el nombre al record): con la clave tomada antes,
+        ' todo NPC que hereda el nombre de su plantilla ordenaria por su EditorID en vez de por el nombre.
         _npcSortKeyCache.Clear()
         _npcHeredaAparienciaCache.Clear()
         For Each npc In _allNPCs
@@ -2988,65 +2997,136 @@ Public Class MainForm
     ''' medir es lo que se muestra.</summary>
     Private _msUltimoRepoblado As Long = 0
 
-    ''' <summary>For NPCs with no FullName that inherit BaseData from a template, resolve the name from the chain.</summary>
-    Private Sub ResolveInheritedFullNames()
-        ' Un ANCESTRO se parsea UNA vez. Sin esto, cada eslabon de cada cadena de plantillas volvia a
-        ' construir el arbol canonico entero del record —y a traducir todas sus referencias— cada vez
-        ' que alguien pasaba por el, y en un orden de carga real hay miles de NPC colgando de un
-        ' punado de plantillas.
-        '
-        ' ⛔ La cache es de PARSEOS, no de nombres resueltos, y guarda instancias PROPIAS: no se
-        ' reusan las de `_allNPCs`. Este mismo Sub le ESCRIBE el nombre heredado a las de `_allNPCs`,
-        ' asi que leer de ahi haria que un eslabon devolviera un nombre que otra vuelta del bucle
-        ' acababa de asignarle, en vez del que trae el record. Con instancias propias se lee siempre
-        ' lo que dice el archivo, que es lo que hacia el re-parseo.
-        Dim parseados As New Dictionary(Of UInteger, NPC_Data)()
-        For Each npc In _allNPCs
-            If npc.Record.Name <> "" Then Continue For
-            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then Continue For
+    ''' <summary>⛔⛔ EL NOMBRE HEREDADO (FULL por Base Data), por FormID del heredero. Lo llena
+    ''' <see cref="ResolveInheritedFullNames"/> y lo leen la etiqueta, el texto buscable y la clave de orden
+    ''' (<see cref="NombreEfectivo"/>).
+    ''' <para>⛔ Existe porque ese Sub le ESCRIBIA el nombre heredado al record CACHEADO
+    ''' (`npc.Record.Name = resolved`): la instancia que el editor, el panel y el guardado leen como "lo que
+    ''' dice el archivo" quedaba con un FULL que el archivo no trae (DECISIONES 14-sep, punto 12).</para></summary>
+    Private ReadOnly _nombresHeredados As New Dictionary(Of UInteger, String)()
 
-            Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.BaseData)
-            Dim resolved = ResolveInheritedFullName(sourceFormID, New HashSet(Of UInteger)(), parseados)
-            If resolved <> "" Then npc.Record.Name = resolved
+    ''' <summary>El nombre que el motor le deja a este NPC: el FULL de la fuente de Base Data si hereda ese
+    ''' bucket (`MaterializeBaseData`: si la fuente no trae FULL, el heredero tampoco), si no el propio.
+    ''' ⛔ Mira el bit VIVO: un NPC desprendido en la sesion vuelve a mostrar su propio nombre.</summary>
+    Friend Function NombreEfectivo(npc As NPC_Data) As String
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return ""
+        If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then
+            Dim heredado As String = Nothing
+            If _nombresHeredados.TryGetValue(npc.FormID, heredado) Then Return heredado
+        End If
+        Return If(npc.Record.Name, "")
+    End Function
+
+    ''' <summary>El texto de `NPC_Data.ToString()` ("nombre [EditorID]" o el EditorID), con el nombre EFECTIVO.
+    ''' `ToString` vive en la libreria y lee el FULL crudo; la lista lo usaba como clave de orden.</summary>
+    Private Function TextoDeNpc(npc As NPC_Data) As String
+        If npc Is Nothing Then Return ""
+        Dim nombre = NombreEfectivo(npc)
+        If nombre <> "" Then Return $"{nombre} [{npc.EditorID}]"
+        Return npc.EditorID
+    End Function
+
+    ''' <summary>For NPCs that inherit BaseData from a template, resolve the name from the chain.
+    ''' <para>⛔⛔ POR LA SEDE UNICA (`NpcTemplateMaterializer.ResolverCadena`, puntos 11 y 12). El caminante
+    ''' que habia aca cortaba MAL por dos lados: salteaba al NPC que ya tenia FULL propio aunque heredara Base
+    ''' Data (el motor se lo pisa con el de la fuente: `NpcTemplateMaterializer.MaterializeBaseData`), y se
+    ''' detenia en el primer eslabon CON nombre aunque ese eslabon tambien heredara. Ante una lista tomaba la
+    ''' primera entrada con nombre. Sin hoja en pantalla la sede corta la lista como la corta el motor en carga
+    ''' (FO4: bucket anterior; SSE: ultimo eslabon resuelto).</para>
+    ''' <para>⛔ Y YA NO MUTA LA CACHE: el resultado va a <see cref="_nombresHeredados"/>.</para></summary>
+    Private Sub ResolveInheritedFullNames()
+        _nombresHeredados.Clear()
+        ' ⛔ RONDA 12 (rev-32): LEE la cache tal cual, NO la siembra. La siembra es de la carga (`SembrarCacheConLaCarga`):
+        ' esto corre tambien desde el refresco de la sesion (commit del NPC Editor, Reset), y sembrar ahi re-insertaba en la
+        ' cache la instancia MUTADA que Reset acababa de sacar.
+        Dim leer = LectorDeLaSesion()
+        Dim firma = NpcTemplateHelpers.FirmaDeRecord(_pluginManager)
+        For Each npc In _allNPCs
+            ResolverNombreHeredado(npc, leer, firma)
         Next
     End Sub
 
-    Private Function ResolveInheritedFullName(formID As UInteger, visited As HashSet(Of UInteger),
-                                              parseados As Dictionary(Of UInteger, NPC_Data)) As String
-        If formID = 0UI OrElse visited.Contains(formID) Then Return ""
-        visited.Add(formID)
+    ''' <summary>⛔⛔ RONDA 12 (rev-32): la SIEMBRA de la cache de la sesion con las instancias de `_allNPCs`. SOLO la carga
+    ''' (`ParseAllNPCs`, y sus costuras de arnes): corre ANTES de `RebuildTreeModelCache`, con la cache recien vaciada,
+    ''' para que la cadena de nombres heredados lea ESAS instancias (las que despues publica `RebuildTreeModelCache`) y
+    ''' no copias parseadas aparte.
+    ''' <para>⛔ NUNCA desde un refresco de la sesion: `_allNPCs` puede traer una instancia que la cache ya descarto
+    ''' (Reset la saca porque el NPC Editor la muto), y `TryAdd` la volvia a instalar.</para></summary>
+    Private Sub SembrarCacheConLaCarga()
+        For Each n In _allNPCs
+            If n IsNot Nothing Then _ctx.NpcCache.TryAdd(n.FormID, n)
+        Next
+    End Sub
 
-        Dim rec = _pluginManager.GetRecord(formID)
-        If rec Is Nothing Then Return ""
-
-        Select Case rec.Header.Signature
-            Case "NPC_"
-                Dim npc As NPC_Data = Nothing
-                If Not parseados.TryGetValue(formID, npc) Then
-                    npc = RecordParsers.ParseNPC(rec, _pluginManager)
-                    parseados(formID) = npc
-                End If
-                If npc Is Nothing Then Return ""
-                If npc.Record.Name <> "" Then Return npc.Record.Name
-                ' Follow BaseData chain if this NPC also inherits
-                If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then
-                    Return ResolveInheritedFullName(NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.BaseData), visited, parseados)
-                End If
-            Case "LVLN"
-                ' Pick first NPC entry from the LVLN to get a representative name
-                ' Tolerante: este camino corre ANTES de que exista _lvlnDataCache, asi que un LVLN roto
-                ' tumbaba la carga entera. Ver NpcTemplateHelpers.TryAbrirLvlnTolerante.
-                Dim lvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(rec, _pluginManager)
-                If lvln Is Nothing Then Return ""
-                For Each entry In lvln.LeveledListEntries
-                    If entry.LeveledListEntryNPC = 0UI Then Continue For
-                    Dim resolved = ResolveInheritedFullName(entry.LeveledListEntryNPC, visited, parseados)
-                    If resolved <> "" Then Return resolved
-                Next
-        End Select
-
-        Return ""
+    ''' <summary>⛔⛔ RONDA 12 (rev-32): LA SEDE del refresco de la sesion tras un cambio de records en memoria (commit del
+    ''' NPC Editor y su deshacer, Reset). Una sola direccion: la CACHE manda y `_allNPCs` la sigue.
+    ''' <list type="number">
+    ''' <item>Los nombres heredados de todos por la sede de la carga (`ResolveInheritedFullNames`), leyendo la cache tal
+    ''' cual (`_ctx.GetParsedNpc`: la instancia de la cache si esta; si Reset la saco, un parse LIMPIO del record, que queda
+    ''' en la cache).</item>
+    ''' <item>Cada entrada de `_allNPCs` pasa a ser la instancia de la cache (misma lectura). Asi la lista no retiene una
+    ''' instancia descartada. Va DESPUES de los nombres a proposito: la lista nunca es fuente de la cache, y si alguien
+    ''' vuelve a sembrar la cache con la lista dentro de la resolucion de nombres, la instancia descartada vuelve a los
+    ''' nombres y el testigo (EstadoAbGate --g18, R12-rev32) lo ve.</item>
+    ''' <item>Los caches derivados (`RefrescarCachesDerivados`, sin ordenar) de los que cambiaron de instancia o de nombre
+    ''' heredado, salvo <paramref name="excluido"/> (el llamador lo refresca por su cuenta).</item>
+    ''' </list>
+    ''' Devuelve si refresco alguno: el llamador ordena una vez.</summary>
+    Private Function RefrescarSesionTrasCambioDeRecords(excluido As NPC_Data) As Boolean
+        Dim nombresAntes As New Dictionary(Of UInteger, String)(_nombresHeredados)
+        ResolveInheritedFullNames()
+        Dim cambiados As New HashSet(Of UInteger)()
+        Dim leer = LectorDeLaSesion()
+        Dim firma = NpcTemplateHelpers.FirmaDeRecord(_pluginManager)
+        For i = 0 To _allNPCs.Count - 1
+            Dim n = _allNPCs(i)
+            If n Is Nothing Then Continue For
+            Dim deLaCache = _ctx.GetParsedNpc(n.FormID)
+            If deLaCache IsNot Nothing AndAlso deLaCache IsNot n Then
+                _allNPCs(i) = deLaCache
+                cambiados.Add(n.FormID)
+                ' Su PROPIA entrada se calculo arriba con las banderas de la instancia descartada: se rehace con la nueva
+                ' por la sede de una entrada.
+                ResolverNombreHeredado(deLaCache, leer, firma)
+            End If
+        Next
+        Dim alguno = False
+        For Each otro In _allNPCs
+            If otro Is Nothing OrElse otro Is excluido Then Continue For
+            Dim nA As String = Nothing, nD As String = Nothing
+            Dim hayA = nombresAntes.TryGetValue(otro.FormID, nA)
+            Dim hayD = _nombresHeredados.TryGetValue(otro.FormID, nD)
+            If cambiados.Contains(otro.FormID) OrElse hayA <> hayD OrElse Not String.Equals(nA, nD, StringComparison.Ordinal) Then
+                RefrescarCachesDerivados(otro, ordenarAhora:=False)
+                alguno = True
+            End If
+        Next
+        Return alguno
     End Function
+
+    ''' <summary>⛔⛔ RONDA 11 (aud-02): el nombre heredado lee la CACHE DE LA SESION (`_ctx.GetParsedNpc`), la MISMA fuente
+    ''' que el panel y su titulo (`RecordDetailsTree`). Antes leia un lector propio que re-parseaba el plugin: un FULL
+    ''' editado en la sesion (NPC Editor) se veia en el panel del heredero y NO en su fila del arbol ni en el buscador.
+    ''' La razon vieja de no leer la cache (le escribiamos el nombre heredado al record cacheado) no existe desde el punto 12:
+    ''' `ResolverNombreHeredado` escribe en <see cref="_nombresHeredados"/>, nunca en `Record.Name`.</summary>
+    Private Function LectorDeLaSesion() As Func(Of UInteger, NPC_Data)
+        Return AddressOf _ctx.GetParsedNpc
+    End Function
+
+    ''' <summary>⛔ RONDA 4 (rev-16): la entrada de UN NPC en <see cref="_nombresHeredados"/>. La usan la carga
+    ''' (`ResolveInheritedFullNames`) y la publicacion del estado mostrado (`PublicarEstadoMostrado`): la politica de hoja
+    ''' (`HojaDeListaPara`) depende de lo que esta en pantalla, asi que la entrada de la raiz que entra y la que sale se
+    ''' rehacen ahi. Una sede para las dos, no dos copias del bucle.</summary>
+    Private Sub ResolverNombreHeredado(npc As NPC_Data, leer As Func(Of UInteger, NPC_Data), firma As Func(Of UInteger, String))
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return
+        _nombresHeredados.Remove(npc.FormID)
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then Return
+        ' ⛔ R2 (ronda 2): la MISMA politica de hoja que el panel y el titulo (`HojaDeListaPara`), no "sin hoja".
+        Dim r = NpcTemplateMaterializer.ResolverCadena(npc, NPC_TemplateCategory.BaseData, leer,
+                                                       HojaDeListaPara(npc.FormID), firma)
+        If r.Source Is Nothing OrElse r.Source.Record Is Nothing Then Return
+        _nombresHeredados(npc.FormID) = If(r.Source.Record.NamePresente, If(r.Source.Record.Name, ""), "")
+    End Sub
 
     Private Sub RebuildTreeModelCache()
         _ctx.NpcCache = New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, NPC_Data)(
@@ -3073,8 +3153,8 @@ Public Class MainForm
         LmHairColorLutLoader.Invalidate()
         LmHairColorLutLoader.EnsureLoaded(_pluginManager)
         For Each npc In _ctx.NpcCache.Values
-            _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
-            _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
+            _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreEfectivo(npc))
+            _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreEfectivo(npc))
             SembrarClaveDeOrden(npc)
         Next
 
@@ -3276,8 +3356,9 @@ Public Class MainForm
         Dim warnings As New List(Of String)
         ' Lo llama EditFace_Form para pre-seleccionar el combo de color. Sin el ancla hacia su PROPIO
         ' sorteo de la LVLN y el swatch mostraba el pelo de una hoja distinta a la del preview.
-        Dim traits = _stateResolver.ResolveTraitsStateFromNPC(npcFormID, New HashSet(Of UInteger)(), warnings,
-                                                              ResolveShownTraitsLeaf(npcFormID, Nothing))
+        Dim traits = _stateResolver.ResolveTraitsStateFromNPC(npcFormID, warnings,
+                                                              ResolveShownTraitsLeaf(npcFormID, Nothing),
+                                                              ResolveShownInventoryLeaf(npcFormID, Nothing))
         If traits Is Nothing Then Return 0UI
         If traits.HairColorFormID <> 0UI Then Return traits.HairColorFormID
 
@@ -4592,8 +4673,12 @@ Public Class MainForm
     ''' Form identifiers in the JSON ("PluginFile|FORMID") are resolved against the plugin manager
     ''' so unresolved templates are skipped silently (LM does the same).</summary>
     Private Sub BuildLmSkinTemplateCache()
+        InstalarCatalogoDePlantillasDePiel(LmSkinTemplateLoader.BuildCache(_dataPath, _pluginManager))
+    End Sub
+
+    Private Sub InstalarCatalogoDePlantillasDePiel(lista As IEnumerable(Of LmSkinTemplate))
         _lmSkinTemplates.Clear()
-        _lmSkinTemplates.AddRange(LmSkinTemplateLoader.BuildCache(_dataPath, _pluginManager))
+        _lmSkinTemplates.AddRange(lista)
         ' ⛔⛔ EL DELEGADO SE ARMA ACA, DESPUES del `AddRange`, y no en cada busqueda: `Resolvedor`
         ' COPIA la lista al construirse, asi que armarlo antes daria una foto vacia y armarlo por llamada
         ' copia el catalogo entero cada vez que alguien resuelve un id.
@@ -4601,6 +4686,18 @@ Public Class MainForm
         ' recarga del catalogo rearma el delegado.
         _resolverLmSkin = LmSkinTemplateLoader.Resolvedor(_lmSkinTemplates)
     End Sub
+
+    ''' <summary>⛔ Costura de arnes (RONDA 14, rev-35): instala un catalogo de plantillas de piel LM por la MISMA sede que
+    ''' la carga (<see cref="InstalarCatalogoDePlantillasDePiel"/>). El Data del corpus FO4 no trae ninguna plantilla
+    ''' (`F4SE\Plugins\F4EE\Skin` sin `skin.json`, medido 15-sep), asi que el testigo de Paste la siembra.</summary>
+    Friend Sub InstalarPlantillasDePielParaArnes(lista As IEnumerable(Of LmSkinTemplate))
+        InstalarCatalogoDePlantillasDePiel(lista)
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (RONDA 14, rev-35): el snapshot de Copy Look (`BuildPresetFromState`) de un estado.</summary>
+    Friend Function CopiarLookParaArnes(state As NPCVisualState) As LooksmenuLoader.LooksmenuPreset
+        Return BuildPresetFromState(state)
+    End Function
 
     ''' <summary>Build the LM body-overlay ("tattoo") template cache. Mirrors
     ''' <see cref="BuildLmSkinTemplateCache"/> structurally, but the on-disk layout is
@@ -5158,7 +5255,7 @@ Public Class MainForm
     Private Function EtiquetaDeNpc(npc As NPC_Data) As String
         Dim etiqueta As String = Nothing
         If _npcDisplayLabelCache.TryGetValue(npc.FormID, etiqueta) Then Return etiqueta
-        etiqueta = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
+        etiqueta = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreEfectivo(npc))
         _npcDisplayLabelCache(npc.FormID) = etiqueta
         Return etiqueta
     End Function
@@ -5355,7 +5452,7 @@ Public Class MainForm
             If cached.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         Else
             ' Fallback para NPCs no incluidos en el cache (raro — debería estar todo)
-            Dim fallback = NpcDisplayHelpers.BuildNpcSearchableText(npc)
+            Dim fallback = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreEfectivo(npc))
             If fallback.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         End If
         ' Categorías del template dependency edge no entran al cache (depende del contexto del
@@ -5763,7 +5860,12 @@ Public Class MainForm
                            "Reset NPC", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
             Return
         End If
+        Await DescartarCambiosEnMemoriaAsync(targets)
+    End Sub
 
+    ''' <summary>El cuerpo de Reset tras la confirmacion (extraido en la RONDA 12 para que un arnes corra EL MISMO camino
+    ''' sin el MessageBox). <paramref name="targets"/> = los NPC con algo que descartar.</summary>
+    Friend Async Function DescartarCambiosEnMemoriaAsync(targets As List(Of UInteger)) As Task
         Dim shownFormID As UInteger = If(_renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing,
                                          _renderHost.LastRenderedState.RootNpcFormID, 0UI)
         Dim mustReRender As Boolean = False
@@ -5774,7 +5876,7 @@ Public Class MainForm
             _npcRecordOverrides.Remove(fid)
             ' NpcEditor_Form applies its edit by mutating the LIVE parse-cache instance for immediate preview, so
             ' clearing the override bag alone would NOT undo the visible edit. Drop the mutated instance from the
-            ' cache; the re-render below re-parses the base record fresh (GetParsedNpc), giving the pristine NPC.
+            ' cache; the session refresh below re-parses the base record fresh (GetParsedNpc) into the cache AND the list.
             Dim discardedNpc As NPC_Data = Nothing
             _ctx.NpcCache.TryRemove(fid, discardedNpc)
             ' WYSIWYG routing: when this NPC has F4SE data already persisted
@@ -5792,7 +5894,18 @@ Public Class MainForm
             End If
             If fid = shownFormID Then mustReRender = True
         Next
-        RefreshTreeAfterDirtyChange()
+        ' ⛔⛔ RONDA 12 (rev-32): sacar la instancia de la cache NO alcanzaba. `_allNPCs` seguia con la instancia MUTADA
+        ' (la lista y la cache comparten instancias) y el siguiente commit del NPC Editor la re-sembraba en la cache: la
+        ' edicion descartada volvia (preview, herederos, sexo efectivo del guardado). Y los nombres HEREDADOS quedaban con
+        ' el FULL descartado. La sede del refresco de la sesion reemplaza en `_allNPCs` la instancia de cada NPC reseteado
+        ' por el parse limpio que `GetParsedNpc` deja en la cache, rehace los nombres heredados de todos y los caches
+        ' derivados de los afectados. Es la MISMA sede que corre tras el NPC Editor.
+        If RefrescarSesionTrasCambioDeRecords(Nothing) Then OrdenarNpcs()
+        ' El record de los reseteados volvio al del archivo: raza, head parts, atuendo... lo que el filtro avanzado cachea.
+        _filterIndex?.InvalidateNpcState()
+        ' Y se REPUEBLA: las filas copian el texto al construirse y apuntan a la instancia vieja (`FilaDeArbol.Npc`); un
+        ' `Invalidate` redibujaba el nombre descartado. Cubre tambien lo de `RefreshTreeAfterDirtyChange` ("solo cambiados").
+        PopulateNPCTree(_pendingTreeFilter)
 
         ' Re-render from the baseline only if the currently-shown NPC was among those reset. GetParsedNpc re-parses
         ' on the miss we just created above, so the preview shows the pristine record, not the mutated cache instance.
@@ -5808,7 +5921,7 @@ Public Class MainForm
                 End Try
             End If
         End If
-    End Sub
+    End Function
 
     ''' <summary>Limpia el viewport inmediatamente al cambiar de selección.
     ''' El pipeline en Render.vb trata Shapes vacío como reset: Clean(False) + CleanTextures()
@@ -5952,12 +6065,12 @@ Public Class MainForm
                                            Optional rerollLeveled As Boolean = False)
         Try
             Dim _swL As System.Diagnostics.Stopwatch = If(Logger.Enabled, System.Diagnostics.Stopwatch.StartNew(), Nothing)
-            SetStatus($"Loading assets for {npc}...")
+            SetStatus($"Loading assets for {TextoDeNpc(npc)}...")
             Await EnsureAssetDictionaryAsync()
             Logger.LogLazy(Function() $"[PERF-L] EnsureAssetDictionary @ {_swL.ElapsedMilliseconds}ms")
             If requestVersion <> _previewRequestVersion Then Return
 
-            SetStatus($"Resolving {npc}...")
+            SetStatus($"Resolving {TextoDeNpc(npc)}...")
             Dim baseState As NPCVisualState = Nothing
             Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             ' Nothing = el resolver deduce el ancla del propio host. `Reroll` sólo en los dos gestos de azar.
@@ -6055,7 +6168,7 @@ Public Class MainForm
 
             PopulateRecordDetails(npc)
 
-            SetStatus($"Resolving {npc} (from {lvlnData.EditorID})...")
+            SetStatus($"Resolving {TextoDeNpc(npc)} (from {lvlnData.EditorID})...")
             Dim baseState As NPCVisualState = Nothing
             Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             Await Task.Run(Sub()
@@ -6482,7 +6595,7 @@ Public Class MainForm
         ' resolution pipeline. See CheckBoxApplyBoneMorphs_CheckedChanged /
         ' CheckBoxApplyVertexMorphs_CheckedChanged below — they follow the WM granular
         ' Intent.MarkDirty(Pose)/MarkDirty(Morphs) pattern, not a full reload.
-        host.LastRenderedState = state
+        PublicarEstadoMostrado(host, state)
         host.LastRenderData = renderData
         host.LastSkeletonInstance = inst
         host.LastHeadSkeletonInstance = headInst
@@ -8266,7 +8379,7 @@ Public Class MainForm
         ' ⛔ Y CON EL RECORD QUE YA SE RESOLVIO ARRIBA: eran dos caminatas de la MISMA cadena con la
         ' MISMA ley dentro de un solo repintado, y cada una re-parsea, sondea y copia el record.
         bakeState = FaceGenBuildPipeline.BuildBakeState(state.FormID, _ctx.PluginManager, _appliedPresets,
-                                                       regionsFile, AddressOf ResolveLvlnPick_Friend,
+                                                       regionsFile, HojaDeListaPara(state.RootNpcFormID),
                                                        npcDataResuelto:=npcData)
         If bakeState Is Nothing Then Return False
         ' Body-weight OFF ⇒ sin MWGT/MRSV en el bake, igual que el render deja la pose sin peso.
@@ -8744,9 +8857,277 @@ Public Class MainForm
                                                   If _ctx IsNot Nothing AndAlso _ctx.NpcCache IsNot Nothing AndAlso
                                                      _ctx.NpcCache.TryGetValue(fid, npc) Then Return npc
                                                   Return Nothing
-                                              End Function)
+                                              End Function,
+                                              AddressOf HojaDeListaPara)
         End If
         Return _filterIndex
+    End Function
+
+    ''' <summary>⛔ RONDA 3 (T3): el UNICO punto donde el render publica el estado mostrado de un host. Si el host es el
+    ''' del preview principal (el que lee `ResolveLvlnPick_Friend`), la hoja en pantalla cambia para la raiz que SALE y
+    ''' la que ENTRA: el filtro tira sus respuestas de esas dos raices (`NpcFilterIndex.InvalidarRaiz`). Sin esto la
+    ''' cache del filtro congelaba la hoja del render anterior y contestaba distinto que el panel.</summary>
+    Private Sub PublicarEstadoMostrado(host As NpcRenderHost, state As NPCVisualState)
+        Dim anterior = host.LastRenderedState
+        host.LastRenderedState = state
+        If host IsNot _renderHost Then Return
+        If _filterIndex IsNot Nothing Then
+            If anterior IsNot Nothing Then _filterIndex.InvalidarRaiz(anterior.RootNpcFormID)
+            If state IsNot Nothing Then _filterIndex.InvalidarRaiz(state.RootNpcFormID)
+        End If
+        ' ⛔ RONDA 4 (rev-16): lo DEMAS que consulto la politica de hoja antes de esta publicacion, en la MISMA sede.
+        ' (2) el nombre heredado de la raiz que sale y la que entra (y su etiqueta del arbol si cambio).
+        If anterior IsNot Nothing Then RefrescarNombreHeredadoDe(anterior.RootNpcFormID)
+        If state IsNot Nothing AndAlso (anterior Is Nothing OrElse anterior.RootNpcFormID <> state.RootNpcFormID) Then
+            RefrescarNombreHeredadoDe(state.RootNpcFormID)
+        End If
+        ' (1) el panel de detalle: `LoadNPCOnDemandAsyncFromExisting` lo arma ANTES de `RenderCurrentStateAsync`, o sea con
+        ' la hoja del estado ANTERIOR. Se re-arma aca SOLO si alguna hoja que el panel EFECTIVAMENTE uso (lo que devolvio la
+        ' politica durante el armado) hoy da otra. ⛔ RONDA 5 (rev-20): antes se comparaba el estado crudo de la pantalla, y
+        ' un NPC sin listas en su cadena --que no consulta la politica-- se re-armaba en cada publicacion.
+        ' ⛔ RONDA 9 (15-sep): la comprobacion y el re-armado que dispara corren en UN ambito de armado, con la hoja ya
+        ' publicada: la (raiz, lista) que `PanelUsoOtraHoja` consulta no se vuelve a consultar en el re-armado.
+        If _panelNpc IsNot Nothing Then
+            Dim abrio = AbrirAmbitoDeArmado()
+            Try
+                If PanelUsoOtraHoja() Then PopulateRecordDetails(_panelNpc, _panelTraitsYaResuelto)
+            Finally
+                CerrarAmbitoDeArmado(abrio)
+            End Try
+        End If
+    End Sub
+
+    ''' <summary>⛔ RONDA 5 (rev-20): True si alguna (raiz, lista) que la politica de hoja contesto durante el ultimo armado
+    ''' del panel hoy contesta otra hoja. Un panel que no pidio ninguna hoja (NPC sin listas en su cadena) nunca.</summary>
+    Private Function PanelUsoOtraHoja() As Boolean
+        For Each kv In _panelHojasUsadas
+            If HojaDelArmado(kv.Key.Raiz, kv.Key.Lista) <> kv.Value Then Return True
+        Next
+        Return False
+    End Function
+
+    ''' <summary>El resolvedor de hoja que recibe el panel: la MISMA politica (`ResolveLvlnPick_Friend`), anotando cada
+    ''' respuesta mientras se arma el panel (`_grabandoHojasDelPanel`).</summary>
+    Private Function HojaDeListaParaElPanel(raizPedida As UInteger) As Func(Of UInteger, UInteger)
+        Return Function(lista As UInteger) As UInteger
+                   Dim hoja = HojaDelArmado(raizPedida, lista)
+                   If _grabandoHojasDelPanel Then _panelHojasUsadas((raizPedida, lista)) = hoja
+                   Return hoja
+               End Function
+    End Function
+
+    ''' <summary>⛔⛔ RONDA 9 (decision del usuario, 15-sep): LA MEMORIA de la politica de hoja durante UN armado del panel.
+    ''' <para>Sede unica de la consulta del panel (`HojaDeListaParaElPanel` y `PanelUsoOtraHoja`): dentro de un ambito de
+    ''' armado, la primera consulta de (raiz, lista) va a <see cref="ResolveLvlnPick_Friend"/> y las siguientes devuelven esa
+    ''' misma respuesta. Fuera de un ambito, la politica directa, como antes.</para>
+    ''' <para>Exacta por el ALCANCE, no por una clave mas ancha: lo unico que la politica lee y que cambia en la sesion es el
+    ''' estado publicado (`PublicarEstadoMostrado`) y las ediciones de records, y ninguna de las dos puede ocurrir dentro de un
+    ''' ambito: el armado corre de un tiron en el hilo de la UI (`PopulateRecordDetails` se re-invoca ahi) y el ambito de la
+    ''' publicacion se abre DESPUES de asignar `LastRenderedState`. Por eso la memoria se descarta al cerrar el ambito: una
+    ''' que sobreviviera contestaria la hoja de un estado ya reemplazado (testigo `EstadoAbGate --memoria-hoja` (c)).</para>
+    ''' <para>No cambia que hoja se elige: es la misma funcion con los mismos argumentos, llamada una vez en vez de N.</para></summary>
+    Private Function HojaDelArmado(raiz As UInteger, lista As UInteger) As UInteger
+        If _profundidadDeArmado = 0 OrElse _memoriaDeHojaDelArmado Is Nothing OrElse MemoriaDeHojaApagadaParaArnes Then
+            ContarConsultaDelPanelParaArnes(raiz, lista)
+            Return ResolveLvlnPick_Friend(raiz, lista)
+        End If
+        Dim hoja As UInteger
+        If _memoriaDeHojaDelArmado.TryGetValue((raiz, lista), hoja) Then Return hoja
+        ContarConsultaDelPanelParaArnes(raiz, lista)
+        hoja = ResolveLvlnPick_Friend(raiz, lista)
+        _memoriaDeHojaDelArmado((raiz, lista)) = hoja
+        Return hoja
+    End Function
+
+    ''' <summary>RONDA 9: abre un ambito de armado. Solo el mas externo crea la memoria (un re-armado dentro de la
+    ''' publicacion comparte la de la publicacion). Devuelve True si este llamado es el mas externo.</summary>
+    Private Function AbrirAmbitoDeArmado() As Boolean
+        _profundidadDeArmado += 1
+        If _profundidadDeArmado > 1 Then Return False
+        If _memoriaDeHojaDelArmado Is Nothing Then _memoriaDeHojaDelArmado = New Dictionary(Of (Raiz As UInteger, Lista As UInteger), UInteger)()
+        AmbitoDeArmadoParaArnes?.Invoke(True)
+        Return True
+    End Function
+
+    ''' <summary>RONDA 9: cierra el ambito; el mas externo DESCARTA la memoria.</summary>
+    Private Sub CerrarAmbitoDeArmado(abrio As Boolean)
+        _profundidadDeArmado -= 1
+        If Not abrio Then Return
+        AmbitoDeArmadoParaArnes?.Invoke(False)
+        _memoriaDeHojaDelArmado = Nothing
+    End Sub
+
+    ''' <summary>Costura de arnes (rev-29): cuenta, por (raiz, lista), las consultas del PANEL que llegan a la politica (las
+    ''' que la memoria no contesta). Nothing en produccion: la app no la asigna ni la lee.</summary>
+    Friend ConsultasDelPanelALaPoliticaParaArnes As Dictionary(Of (Raiz As UInteger, Lista As UInteger), Integer) = Nothing
+
+    Private Sub ContarConsultaDelPanelParaArnes(raiz As UInteger, lista As UInteger)
+        Dim d = ConsultasDelPanelALaPoliticaParaArnes
+        If d Is Nothing Then Return
+        Dim n As Integer
+        d.TryGetValue((raiz, lista), n)
+        d((raiz, lista)) = n + 1
+    End Sub
+
+    Private _memoriaDeHojaDelArmado As Dictionary(Of (Raiz As UInteger, Lista As UInteger), UInteger) = Nothing
+    Private _profundidadDeArmado As Integer = 0
+    ''' <summary>⛔ Costura de arnes (RONDA 9): True = el armado consulta la politica directa en cada pedido (la app de la
+    ''' ronda 8). Solo la prende un arnes (`EstadoAbGate --memoria-hoja` / `--costo-panel`) para comparar; la app no.</summary>
+    Friend MemoriaDeHojaApagadaParaArnes As Boolean = False
+    ''' <summary>⛔ Costura de arnes (RONDA 9): se invoca al abrir (True) y al cerrar (False) el ambito de armado MAS EXTERNO.
+    ''' Solo la engancha un arnes para contar consultas por ambito; la app la deja en Nothing.</summary>
+    Friend AmbitoDeArmadoParaArnes As Action(Of Boolean) = Nothing
+
+    ''' <summary>⛔ Costura de arnes (RONDA 9): lo que el CONTROL del panel muestra, aplanado en preorden (profundidad, Tag
+    ''' y texto de cada nodo), con el titulo del panel como primera linea.</summary>
+    Friend Function PanelMostradoAplanadoParaArnes() As List(Of String)
+        Dim filas As New List(Of String) From {"TITULO " & LabelRecordTitle.Text}
+        Dim pila As New Stack(Of (Nodo As TreeNode, Nivel As Integer))()
+        For k = TreeViewRecordDetails.Nodes.Count - 1 To 0 Step -1
+            pila.Push((TreeViewRecordDetails.Nodes(k), 0))
+        Next
+        While pila.Count > 0
+            Dim e = pila.Pop()
+            Dim tag = If(e.Nodo.Tag Is Nothing, "-", CUInt(e.Nodo.Tag).ToString("X8"))
+            filas.Add($"{e.Nivel}|{tag}|{e.Nodo.Text}")
+            For k = e.Nodo.Nodes.Count - 1 To 0 Step -1
+                pila.Push((e.Nodo.Nodes(k), e.Nivel + 1))
+            Next
+        End While
+        Return filas
+    End Function
+
+    ''' <summary>El NPC y el modo con los que se armo el panel por ultima vez, y las hojas que la politica le devolvio.</summary>
+    Private _panelNpc As NPC_Data = Nothing
+    Private _panelTraitsYaResuelto As Boolean = False
+    Private ReadOnly _panelHojasUsadas As New Dictionary(Of (Raiz As UInteger, Lista As UInteger), UInteger)
+    Private _grabandoHojasDelPanel As Boolean = False
+    ''' <summary>⛔ Costura de arnes (RONDA 5, rev-20): cuantas veces se armo el panel (lo cuenta `PopulateRecordDetails`).</summary>
+    Friend ReadOnly Property ArmadosDelPanelParaArnes As Integer
+        Get
+            Return _armadosDelPanel
+        End Get
+    End Property
+    Private _armadosDelPanel As Integer = 0
+
+    ''' <summary>⛔ RONDA 4 (rev-16): rehace la entrada de <see cref="_nombresHeredados"/> de la raiz y, si el nombre
+    ''' efectivo cambio, los caches derivados y la etiqueta de sus filas del arbol.</summary>
+    Private Sub RefrescarNombreHeredadoDe(raiz As UInteger)
+        If raiz = 0UI OrElse _allNPCs Is Nothing Then Return
+        Dim npc As NPC_Data = Nothing
+        If _ctx Is Nothing OrElse _ctx.NpcCache Is Nothing OrElse Not _ctx.NpcCache.TryGetValue(raiz, npc) Then
+            npc = _allNPCs.FirstOrDefault(Function(n) n IsNot Nothing AndAlso n.FormID = raiz)
+        End If
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return
+        Dim antes = NombreEfectivo(npc)
+        ResolverNombreHeredado(npc, LectorDeLaSesion(), NpcTemplateHelpers.FirmaDeRecord(_pluginManager))
+        If String.Equals(antes, NombreEfectivo(npc), StringComparison.Ordinal) Then Return
+        ' ⛔ RONDA 5 (rev-20): el refresco NO REORDENA. `RefrescarCachesDerivados` resiembra la clave de orden y ordena
+        ' `_allNPCs`, y aca nadie repuebla el arbol: la lista quedaba en un orden y el arbol en otro. Se rehacen solo el
+        ' texto buscable y la etiqueta; la clave de orden (y con ella el orden de `_allNPCs` y del arbol) queda la de la
+        ' carga, en sincronia, hasta el proximo repoblado completo.
+        ' ⛔ RONDA 6 (rev-20 resto): por la SEDE (`RefrescarCachesDerivados` sin resembrar la clave), no con sus lineas copiadas.
+        RefrescarCachesDerivados(npc, ordenarAhora:=False, resembrarClaveDeOrden:=False)
+        Dim etiqueta = EtiquetaDeNpc(npc)
+        Dim modelo = If(TreeViewNPCs Is Nothing, Nothing, TreeViewNPCs.Modelo)
+        If modelo Is Nothing Then Return
+        Dim clave = $"NPC_{raiz:X8}"
+        Dim pila As New Stack(Of FilaDeArbol)(modelo.Raices)
+        While pila.Count > 0
+            Dim f = pila.Pop()
+            If String.Equals(f.Clave, clave, StringComparison.Ordinal) Then f.Texto = etiqueta
+            For Each h In f.Hijos
+                pila.Push(h)
+            Next
+        End While
+        TreeViewNPCs.Invalidate()
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (rev-16): el panel por la MISMA `PopulateRecordDetails` de la app.</summary>
+    Friend Sub PoblarPanelParaArnes(npc As NPC_Data)
+        PopulateRecordDetails(npc)
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (rev-16): lo que el CONTROL del panel muestra — el FormID que nombra el encabezado
+    ''' de la seccion (Tag del nodo; 0 = propia), por el prefijo de su texto. -1 si la seccion no esta.</summary>
+    Friend Function FuenteEnElPanelMostradoParaArnes(prefijo As String) As Long
+        For Each tn As TreeNode In TreeViewRecordDetails.Nodes
+            If tn.Text.StartsWith(prefijo, StringComparison.Ordinal) Then
+                Return If(tn.Tag Is Nothing, 0L, CLng(CUInt(tn.Tag)))
+            End If
+        Next
+        Return -1L
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (RONDA 6, rev-20 resto): los pasos de la CARGA sobre <paramref name="npcs"/> que dejan
+    ''' la lista y el arbol en sincronia: nombres heredados (`ResolveInheritedFullNames`), los caches derivados de cada uno
+    ''' por su sede (`RefrescarCachesDerivados`, sin ordenar de a uno), UN `OrdenarNpcs` y las filas del arbol en el orden
+    ''' de `_allNPCs` (lo que hace `PopulateNPCTree` dentro de un grupo: `GroupBy` conserva el orden de la fuente).</summary>
+    Friend Sub SembrarCargaParaArnes(npcs As IEnumerable(Of NPC_Data))
+        _allNPCs = New List(Of NPC_Data)(npcs)
+        SembrarCacheConLaCarga()
+        ResolveInheritedFullNames()
+        For Each n In _allNPCs
+            RefrescarCachesDerivados(n, ordenarAhora:=False)
+        Next
+        OrdenarNpcs()
+        Dim modelo = TreeViewNPCs.Modelo
+        modelo.Limpiar()
+        For Each n In _allNPCs
+            modelo.AgregarRaiz(New FilaDeArbol(TipoDeFila.Npc, $"NPC_{n.FormID:X8}", EtiquetaDeNpc(n), 1, n))
+        Next
+        modelo.Aplanar()
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (RONDA 6): los FormID de `_allNPCs` en su orden, y los de las filas NPC del arbol en el suyo.</summary>
+    Friend Function OrdenDeListaYArbolParaArnes() As (Lista As List(Of UInteger), Arbol As List(Of UInteger))
+        Dim lista = _allNPCs.Where(Function(n) n IsNot Nothing).Select(Function(n) n.FormID).ToList()
+        Dim arbol As New List(Of UInteger)
+        Dim modelo = If(TreeViewNPCs Is Nothing, Nothing, TreeViewNPCs.Modelo)
+        If modelo IsNot Nothing Then
+            For Each f In modelo.Raices
+                Dim n = TryCast(f.Tag, NPC_Data)
+                If n IsNot Nothing Then arbol.Add(n.FormID)
+            Next
+        End If
+        Return (lista, arbol)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (rev-16): la etiqueta de la fila del NPC en el modelo del arbol (Nothing si no hay).</summary>
+    Friend Function EtiquetaEnElArbolParaArnes(fid As UInteger) As String
+        Dim modelo = If(TreeViewNPCs Is Nothing, Nothing, TreeViewNPCs.Modelo)
+        Dim f = If(modelo Is Nothing, Nothing, modelo.PorClave($"NPC_{fid:X8}"))
+        Return If(f Is Nothing, Nothing, f.Texto)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (RONDA 11, aud-02): lo que contesta el BUSCADOR del arbol para este NPC y este texto, por
+    ''' la MISMA funcion del repoblado (`MatchesNpcFilter`, sin arista de dependencias).</summary>
+    Friend Function CoincideConElBuscadorParaArnes(npc As NPC_Data, texto As String) As Boolean
+        Return MatchesNpcFilter(npc, Nothing, texto)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (T3): publica un estado mostrado en el preview principal por la MISMA
+    ''' <see cref="PublicarEstadoMostrado"/> del render. Un MainForm de arnes no tiene preview: se le arma un host sin
+    ''' control (el ctor de `NpcRenderHost` solo guarda la referencia).</summary>
+    Friend Sub PublicarEstadoMostradoParaArnes(state As NPCVisualState)
+        If _renderHost Is Nothing Then _renderHost = New NpcRenderHost(Nothing)
+        PublicarEstadoMostrado(_renderHost, state)
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (T3): deja el MainForm de arnes como estaba (sin preview).</summary>
+    Friend Sub QuitarPreviewDeArnes()
+        _renderHost = Nothing
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (T2/T3): la fuente de la categoria que contesta el FILTRO avanzado, por el mismo
+    ''' `EnsureFilterIndex` de la app.</summary>
+    Friend Function FuenteDelFiltroParaArnes(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
+        Return EnsureFilterIndex().FuenteParaArnes(npc, category)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (T2/T3): la fuente de la seccion que muestra el PANEL de detalle.</summary>
+    Friend Function FuenteDelPanelParaArnes(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
+        Return _detailsTree.ResolverFuenteDeSeccion(npc, category).FormID
     End Function
 
     ''' <summary>Open the advanced editor on whatever is in the box, and write back what it composes.
@@ -8799,9 +9180,9 @@ Public Class MainForm
     ''' Repuebla el árbol de detalle con el NPC seleccionado. La LEY de qué se muestra vive en
     ''' <see cref="RecordDetailsTree"/>; acá quedan el encabezado del panel y el volcado a controles.
     ''' </summary>
-    Private Sub PopulateRecordDetails(npc As NPC_Data)
+    Private Sub PopulateRecordDetails(npc As NPC_Data, Optional traitsYaResuelto As Boolean = False)
         If InvokeRequired Then
-            Invoke(Sub() PopulateRecordDetails(npc))
+            Invoke(Sub() PopulateRecordDetails(npc, traitsYaResuelto))
             Return
         End If
 
@@ -8813,12 +9194,85 @@ Public Class MainForm
             ' y dejarla muda es una franja oscura sin explicación.
             LabelRecordTitle.Text = "  Record Details"
             RecordDetailsTree.Volcar(TreeViewRecordDetails, Nothing)
+            _panelNpc = Nothing
             Return
         End If
 
-        LabelRecordTitle.Text = $"  {npc} [{npc.PluginName}] FormID:{npc.FormID:X8}"
-        RecordDetailsTree.Volcar(TreeViewRecordDetails, _detailsTree.Construir(npc))
+        ' ⛔ RONDA 4 (rev-16): se anota con que hoja en pantalla se armo, ANTES de armar. `PublicarEstadoMostrado` lo
+        ' compara con la publicada y re-arma si difiere (sede unica del refresco).
+        _panelNpc = npc
+        _panelTraitsYaResuelto = traitsYaResuelto
+        ' ⛔ RONDA 5 (rev-20): se graban las hojas que la politica devuelve DURANTE el armado, no el estado de la pantalla.
+        _armadosDelPanel += 1
+        _panelHojasUsadas.Clear()
+        Dim detalle As (Nodos As List(Of DetalleNodo), Titulo As String)
+        _grabandoHojasDelPanel = True
+        ' ⛔ RONDA 9: el armado es UN ambito: la memoria de la politica de hoja nace aca y se descarta al terminar
+        ' (`HojaDelArmado`). Dentro del ambito de una publicacion se usa el de afuera.
+        Dim abrio = AbrirAmbitoDeArmado()
+        Try
+            detalle = ArmarDetalle(npc, traitsYaResuelto)
+        Finally
+            CerrarAmbitoDeArmado(abrio)
+            _grabandoHojasDelPanel = False
+        End Try
+        LabelRecordTitle.Text = detalle.Titulo
+        RecordDetailsTree.Volcar(TreeViewRecordDetails, detalle.Nodos)
     End Sub
+
+    ''' <summary>⛔ R2 (ronda 2): el arbol del panel Y su titulo, en UN paso. El titulo usaba `TextoDeNpc`, o sea el
+    ''' nombre heredado calculado AL CARGAR, mientras el renglon «Full Name» sale del record efectivo que el panel arma
+    ''' con la hoja de ESTE momento: podian decir dos nombres distintos para el mismo NPC. Ahora el titulo lee el
+    ''' mismo FULL que el renglon (`RecordDetailsTree.NombreDelEfectivo`).</summary>
+    Private Function ArmarDetalle(npc As NPC_Data, traitsYaResuelto As Boolean) As (Nodos As List(Of DetalleNodo), Titulo As String)
+        Dim nodos = _detailsTree.Construir(npc, traitsYaResuelto)
+        Dim nombre = _detailsTree.NombreDelEfectivo
+        Dim texto = If(nombre <> "", $"{nombre} [{npc.EditorID}]", npc.EditorID)
+        Return (nodos, $"  {texto} [{npc.PluginName}] FormID:{npc.FormID:X8}")
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (R2): el detalle y el titulo EXACTOS de `PopulateRecordDetails`, sin controles.</summary>
+    Friend Function DetalleYTituloParaArnes(npc As NPC_Data) As (Nodos As List(Of DetalleNodo), Titulo As String)
+        Return ArmarDetalle(npc, False)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (R2): corre `ResolveInheritedFullNames` -- la MISMA funcion de la carga-- sobre
+    ''' los NPC dados. Un MainForm de arnes no pasa por `ParseAllNPCs`, asi que sin esto el nombre del arbol no existe.</summary>
+    Friend Sub ResolverNombresHeredadosParaArnes(npcs As IEnumerable(Of NPC_Data))
+        _allNPCs = New List(Of NPC_Data)(npcs)
+        SembrarCacheConLaCarga()
+        ResolveInheritedFullNames()
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (RONDA 12, rev-32): la instancia que `_allNPCs` tiene para un FormID (Nothing = no esta).</summary>
+    Friend Function InstanciaDeLaListaParaArnes(fid As UInteger) As NPC_Data
+        Return _allNPCs.FirstOrDefault(Function(n) n IsNot Nothing AndAlso n.FormID = fid)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (RONDA 12, rev-32): la marca de "cambiado" de un NPC (lo que Reset lee y escribe).</summary>
+    Friend Function EstaSucioParaArnes(fid As UInteger) As Boolean
+        Return _dirtyNpcs.Contains(fid)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (RONDA 12, rev-33): la CARGA de NPC de la app (`ParseAllNPCs`, entera) y el desglose que
+    ''' deja para el texto de estado (`_tiemposDeCarga`, el de "names … ms").</summary>
+    Friend Function CargarNpcsComoLaAppParaArnes() As String
+        ParseAllNPCs()
+        Return _tiemposDeCarga
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (RONDA 12, rev-33): cronometra UNA corrida de la sede del refresco de la sesion
+    ''' (`RefrescarSesionTrasCambioDeRecords`, lo que se agrego por OK del editor) y UNA del refresco completo del commit del
+    ''' NPC Editor (`RefrescarArbolTrasEditarNpc`: sede + derivados + repoblado + foco), sobre el NPC dado. En ms.</summary>
+    Friend Function CronometrarRefrescoDelEditorParaArnes(npc As NPC_Data) As (SedeMs As Double, CommitMs As Double)
+        Dim sw = System.Diagnostics.Stopwatch.StartNew()
+        RefrescarSesionTrasCambioDeRecords(npc)
+        Dim sede = sw.Elapsed.TotalMilliseconds
+        sw.Restart()
+        RefrescarArbolTrasEditarNpc(npc, npc.FormID)
+        Dim commit = sw.Elapsed.TotalMilliseconds
+        Return (sede, commit)
+    End Function
 
     ''' <summary>Doble click en un renglón del detalle: si nombra un NPC_ o una LVLN, el árbol de la
     ''' izquierda salta a esa fila.
@@ -8854,11 +9308,8 @@ Public Class MainForm
         SetStatus($"{NpcManagerFormat.DescribeRecord(rec)} is not in the tree right now — clear the search filter or untick 'Only changed'.")
     End Sub
 
-    ''' <summary>El NPC que provee una categoría de plantilla. Envoltorio del armador del detalle: la
-    ''' ley de la cadena TPLT/TPTA vive ahí, y el editor de cuerpo la consume para sembrar la altura.</summary>
-    Private Function ResolveSectionSource(npc As NPC_Data, category As NPC_TemplateCategory) As NPC_Data
-        Return _detailsTree.ResolverFuenteDeSeccion(npc, category)
-    End Function
+    ' ⛔ Aca vivia `ResolveSectionSource`, el envoltorio del caminante del panel que usaba el editor de cuerpo para
+    ' sembrar la altura. Su unico llamador paso a leer la base del estado dibujado (punto 16).
 
     ''' <summary>Nombre legible de un record por FormID. Mismo envoltorio: lo consume EditFace_Form.</summary>
     Private Function DescribeFormID(formID As UInteger) As String
@@ -9288,38 +9739,25 @@ Public Class MainForm
             Dim toApply = PresetCategoryFilter.BuildFiltered(preset, RecordEfectivoParaAutoria(npcFormID, npc),
                                                             baseline, options, isSseGame,
                                                             ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
-            ' WYSIWYG: if the loaded JSON references an LM SkinTemplate, materialize its head/
-            ' headRear HDPT swaps into preset.HeadPartFormIDs so Save ESP / Edit Face / Copy see
-            ' the same picture the live render shows via ApplyPresetOverlayToNpcData. The template
-            ' bundle is otherwise applied only to the runtime shadow; without this call the JSON
-            ' could be loaded, the preview would render the template HDPTs, but exporting to ESP
-            ' would emit raw NPC PNAM (no headRear swap).
-            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, npc.Record.ConfigurationFlagsFemale,
-                                                     AddressOf ResolveLmSkinTemplate,
-                                                     RecordEfectivoParaAutoria(npcFormID, npc))
-            ' El ColorID de cada capa de paleta NO se re-deriva del Color: el motor lo VALIDA contra la raza
-            ' (f4ee CharGenInterface.cpp:512-527 — índice sin plantilla ⇒ capa salteada; ColorID sin match ⇒ el
-            ' primer color de la plantilla). La ley vive en NpcRecordOverlay.ValidarCapasDeTinteContraLaRaza y se
-            ' aplica ACÁ, una sola vez, al preset que queda en _appliedPresets: el overlay, Edit Face, el informe
-            ' de compatibilidad y Copy ven el estado del motor y no el JSON crudo. SÓLO cuando las capas vienen
-            ' del ARCHIVO (misma condición con la que BuildFiltered las toma del source): con la categoría sin
-            ' tickear o con el bloque Tints que lanzó, BuildFiltered las sembró del baseline (ya validado al
-            ' cargarse) o del record, y las del record no pasan por LoadPreset en el motor — validarlas las
-            ' salteaba o les pisaba el ColorID.
-            ' Raza EFECTIVA: `npc` es el raw cacheado del ctx (raza vieja tras un cambio de raza en el editor);
-            ' el catálogo de tints correcto es el de la raza pisada por el NpcRecordOverride, igual que el render.
-            If Not isSseGame AndAlso options.FaceTints AndAlso
-               PresetCategoryFilter.MotorEscribe(preset, PresetCategory.FaceTints, isSseGame) Then
-                Dim ovForTints = TryGetNpcRecordOverride(npcFormID)
-                Dim raceFidForTints As UInteger = If(ovForTints IsNot Nothing AndAlso ovForTints.RaceFormID.HasValue AndAlso ovForTints.RaceFormID.Value <> 0UI,
-                                                     ovForTints.RaceFormID.Value, npc.Record.Race)
-                Dim raceForTints As Canon.IRace = Nothing
-                Dim raceRecForTints = _pluginManager.GetRecord(raceFidForTints)
-                If raceRecForTints IsNot Nothing AndAlso raceRecForTints.Header.Signature = "RACE" Then
-                    raceForTints = _ctx.ParseRaceCanonCached(raceRecForTints)
-                End If
-                NpcRecordOverlay.ValidarTintsDelArchivo(toApply, raceForTints, npc.Record.ConfigurationFlagsFemale, _pluginManager, npcFormID)
-            End If
+            ' ⛔⛔ PUNTO 15 (D7): EL SEXO EFECTIVO, no el bit crudo de `npc`. El bundle de la plantilla de piel
+            ' elige cara/cabeza por sexo (SkinInterface.cpp:292-320) y la validacion de tintes elige la plantilla
+            ' de tintes de la raza por sexo (CharGenInterface.cpp:512-527), y los dos preguntan por el sexo del
+            ' ACTOR -- el de la base viva, que para un heredero trae el 0x1 FUSIONADO de la plantilla (SSE
+            ' 0x1403C20E3, FO4 0x1406582C5).
+            ' ⛔ RONDA 11 (aud-07): UNA sede del sexo efectivo para el Load y el guardado (`SexoEfectivoDeLaSesion` =
+            ' `NpcOverrideSaver.SexoEfectivoParaGuardado` con el contexto de guardado de la app). Antes el Load lo leia
+            ' de `RecordEfectivoParaAutoria(...).Record` y el guardado de `NpcTemplateMaterializer.SexoEfectivo`: dos
+            ' caminos que podian contestar distinto para el mismo NPC.
+            ' ⛔ RONDA 14 (rev-35, DECISIONES 15b): el bundle y la validacion viven en `AjustarPresetAlSexoDelDestino`,
+            ' la MISMA sede que usa Paste Look (`ArmarPresetDePegado`).
+            ' ⛔ RONDA 15 (DECISIONES 15b refinado, 15-sep): el Load SIGUE validando las capas de tinte -- es el
+            ' LoadPreset del motor (f4ee CharGenInterface.cpp:512-527). El que dejo de validar es el PASTE.
+            ' ⛔⛔ RONDA 19 (rev-55, rev-61): UN SOLO contexto por Load, armado aca, para el sexo Y para la raza efectiva
+            ' con la que se validan los tintes. Dos contextos serian dos lecturas de la sesion para la misma pregunta.
+            Dim ctxDeCarga = NuevoContextoDeGuardado()
+            AjustarPresetAlSexoDelDestino(npcFormID, npc, preset, toApply, options, isSseGame,
+                                          SexoEfectivoDeLaSesion(npc, ctxDeCarga), ctxDeCarga, retirarInyeccionDeOtroSexo:=False,
+                                          validarTintes:=True)
 
             ' Record which raw Misc (hairlines) this preset orphans by REPLACING a main-type parent
             ' (e.g. a hair swap): compute it HERE, at the apply point, so Save drops them the same way
@@ -9438,7 +9876,7 @@ Public Class MainForm
             ' pelada, en el transitorio (editor abierto, preview de un Load) el panel decia una cosa y el
             ' render mostraba otra.
             Dim effective = AplicarOverlayDeDibujo(baseState)
-            PopulateRecordDetails(If(effective, npc))
+            PopulateRecordDetails(If(effective, npc), traitsYaResuelto:=effective IsNot Nothing)
 
             PopulateOutfitCombo()
         Else
@@ -9457,17 +9895,43 @@ Public Class MainForm
     ''' con UnhandledExceptionMode.ThrowException — tirar ahí cierra la aplicación. En render el WNAM
     ''' queda como está y el resolvedor cae al fallback de siempre.</para></summary>
     ''' <summary>⛔ Seam de arnes: llama a LA MISMA funcion del guardado, no a una copia. Un gate que
-    ''' reimplementa la ley se mide a si mismo.</summary>
-    Friend Function SombraDeGuardadoParaArnes(raw As NPC_Data, fid As UInteger) As NPC_Data
-        Return ApplyPresetOverlayParaGuardado(raw, fid)
+    ''' reimplementa la ley se mide a si mismo.
+    ''' <para>⛔ RONDA 16 (DECISIONES 21): <paramref name="ctx"/> es el contexto del guardado en curso, como en
+    ''' produccion. Nothing = el arnes no tiene uno a mano y se arma el de la sesion — eso es lo que hacia
+    ''' produccion POR NPC hasta la ronda 15, y sigue disponible porque tambien es el camino del Load/Paste.</para>
+    ''' <para>⛔⛔⛔ RONDA 18 (DECISIONES 22, rev-49): EL `If(ctx, ...)` VIVE ACA, EN EL SEAM, y en ningun otro lado. Desde
+    ''' que `NpcRecordOverlay.SombraDeGuardado` resuelve el sexo ADENTRO con el `SaveContext` que recibe, el contexto
+    ''' dejo de ser opcional aguas abajo: el delegado del guardado (<see cref="ApplyPresetOverlayParaGuardado"/>) lo
+    ''' exige y la sede no tiene fallback. El unico que puede llegar sin contexto es un llamador que NO esta dentro de
+    ''' un guardado, y ese es justamente este seam — asi que el de la sesion se arma una sola vez, aca.</para></summary>
+    Friend Function SombraDeGuardadoParaArnes(raw As NPC_Data, fid As UInteger,
+                                              Optional ctx As NpcOverrideSaver.SaveContext = Nothing) As NPC_Data
+        Return ApplyPresetOverlayParaGuardado(raw, fid, If(ctx, NuevoContextoDeGuardado()))
     End Function
 
-    Private Function ApplyPresetOverlayParaGuardado(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
+    Private Function ApplyPresetOverlayParaGuardado(raw As NPC_Data, selectedNpcFormID As UInteger,
+                                                    ctx As NpcOverrideSaver.SaveContext) As NPC_Data
         ' ⛔ La ley de "no se escribe lo que todavia hereda" vive en la SEDE, no aca: los gates de
         ' guardado no tienen MainForm y con la ley en este metodo no la podian ejercitar.
-        Return NpcRecordOverlay.SombraDeGuardado(raw, selectedNpcFormID, _appliedPresets, _pluginManager,
-                                                 AddressOf ResolveLmSkinTemplate,
-                                                 AddressOf _ctx.ParseRaceCanonCached)
+        ' ⛔⛔ RONDA 15: el SEXO con el que el overlay elige el bundle de la plantilla de piel LM (face TXST y
+        ' head/headRear HDPT) es el EFECTIVO, por LA MISMA sede que el Load, el apply-script y la fila de BodyGen
+        ' (`NpcOverrideSaver.SexoEfectivoParaGuardado`). Aca `raw` es el record CRUDO del heredero
+        ' --`ComposeSaveShadow` parte de el y `MaterializarCategorias` es no-op sin edicion del editor-- asi que su bit
+        ' propio NO es el efectivo y el guardado emitia PNAM/FTST del sexo equivocado, distinto de lo que el render
+        ' mostraba (el render compone sobre `BaseDeDibujo`, que ya trae el 0x1 FUSIONADO).
+        ' ⛔⛔ RONDA 16 (DECISIONES 21, rev-42): EL CONTEXTO SE REUSA, NO SE ARMA ACA. Este metodo es el delegado
+        ' `SaveContext.ApplyPresetOverlayToNpcData` y el orquestador lo llama UNA VEZ POR NPC GUARDADO; armar un
+        ' `SaveContext` adentro copiaba las SEIS listas de borradores por cada NPC, y encima leyendolas desde el hilo
+        ' del guardado. Ahora llega el contexto del guardado EN CURSO.
+        ' ⛔⛔⛔ RONDA 18 (DECISIONES 22, rev-49): Y ESTE DELEGADO YA NO DECIDE EL SEXO. Le pasa el contexto a
+        ' `SombraDeGuardado`, que es la SEDE UNICA donde se llama a `SexoEfectivoParaGuardado` — antes esa llamada
+        ' estaba escrita nueve veces (aca y en ocho arneses) y cada copia era un lugar donde podia aparecer otra
+        ' politica de hoja. `ctx` es OBLIGATORIO: el `If(ctx, NuevoContextoDeGuardado())` esta en el seam de arnes
+        ' (`SombraDeGuardadoParaArnes`), que es el unico llamador que puede no estar dentro de un guardado.
+        Return NpcRecordOverlay.SombraDeGuardado(raw, selectedNpcFormID, _appliedPresets,
+                                                 ctx:=ctx,
+                                                 lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate,
+                                                 parseRace:=AddressOf _ctx.ParseRaceCanonCached)
     End Function
 
     ''' <summary>El overlay de AUTORIA del NPC dado, estampado sobre `raw`. El nombre dice la
@@ -9565,16 +10029,76 @@ Public Class MainForm
         Return st.InventorySourceFormID
     End Function
 
-    Friend Function ResolveLvlnPick_Friend(lvlnFormID As UInteger) As UInteger
+    ''' <summary>El resolvedor de hoja de lista nivelada para la cadena de <paramref name="raizPedida"/>: la forma
+    ''' que piden los caminantes (`Func(lista) -> hoja`), con la raiz ya atada. Ver
+    ''' <see cref="ResolveLvlnPick_Friend"/>.</summary>
+    Friend Function HojaDeListaPara(raizPedida As UInteger) As Func(Of UInteger, UInteger)
+        Return Function(lista As UInteger) ResolveLvlnPick_Friend(raizPedida, lista)
+    End Function
+
+    ''' <summary>⛔ Contador de arnes (RONDA 20b, D2): copias congeladas que armo <see cref="LecturaDeHorneado"/>. Lo lee y lo
+    ''' pone en cero un arnes (`EstadoAbGate --g18`): tiene que sumar EXACTAMENTE los NPC con edicion en la sesion por
+    ''' lectura (congelar la cache entera no cambia la salida y costaria una copia por NPC cargado). La app no lo consulta.</summary>
+    Friend CopiasDeLecturaDeHorneadoParaArnes As Long = 0L
+
+    ''' <summary>⛔⛔⛔ RONDA 20b (D2): LA LECTURA CON LA QUE HORNEA LA APP. Los tres horneados de la GUI (Build CharGen de uno,
+    ''' de la seleccion y el del guardado) y la reconstruccion de morfos de SSE resuelven el NPC y su cadena con ESTO, asi que
+    ''' ven las ediciones de la sesion igual que el render -- antes re-parseaban del plugin y el `.nif`/`.dds` salian con la
+    ''' raza y la cara VIEJAS de una plantilla editada.
+    ''' <para>⛔ SE ARMA EN EL HILO DE UI, ANTES del `Task.Run`: el horneado corre en otro hilo y el NPC Editor muta la
+    ''' instancia cacheada en el de UI. Por eso para cada NPC con edicion en la sesion (`_npcRecordOverrides`) la lectura
+    ''' lleva una COPIA CONGELADA de la instancia de la cache, nunca la instancia viva; para cualquier otro FormID, el parse
+    ''' puro del plugin (`NpcRecordOverlay.GetParsedNpc`), que no toca la cache desde otro hilo.</para>
+    ''' <para>La hoja de lista es la de la app (`HojaDeListaPara`), la misma que se pasaba suelta.</para></summary>
+    Friend Function LecturaDeHorneado() As LecturaDeCadena
+        Dim congeladas As New Dictionary(Of UInteger, NPC_Data)
+        For Each fid In _npcRecordOverrides.Keys
+            Dim copia = _ctx.GetParsedNpc(fid)?.Copia()
+            If copia Is Nothing Then Continue For
+            congeladas(fid) = copia
+            Threading.Interlocked.Increment(CopiasDeLecturaDeHorneadoParaArnes)
+        Next
+        Dim pm = _pluginManager
+        Return New LecturaDeCadena With {
+            .PluginManager = pm,
+            .Leer = Function(f As UInteger) As NPC_Data
+                        Dim c As NPC_Data = Nothing
+                        If congeladas.TryGetValue(f, c) Then Return c
+                        Return NpcRecordOverlay.GetParsedNpc(f, pm)
+                    End Function,
+            .HojaPara = AddressOf HojaDeListaPara}
+    End Function
+
+    ''' <summary>⛔ Contador de arnes (RONDA 8, rev-26): llamadas a <see cref="ResolveLvlnPick_Friend"/>. Solo lo lee y
+    ''' lo pone en cero un arnes (`EstadoAbGate --costo-panel`); la app no lo consulta.</summary>
+    Friend LlamadasResolveLvlnPickParaArnes As Long = 0L
+
+    ''' <param name="raizPedida">⛔⛔ EL NPC CUYA CADENA SE ESTA CAMINANDO (punto 10, DECISIONES 14-sep). Antes esta
+    ''' funcion no lo recibia y tomaba la raiz del PREVIEW PRINCIPAL para cualquier pedido: el horneado por lote,
+    ''' el guardado de otros NPC o el editor de un NPC distinto del que esta en pantalla recibian la hoja que se
+    ''' mostraba para OTRO actor si casualmente era entrada de la misma lista. La hoja en pantalla vale solo para
+    ''' el NPC en pantalla; los demas, su camino de siempre (`leaves(0)`).</param>
+    Friend Function ResolveLvlnPick_Friend(raizPedida As UInteger, lvlnFormID As UInteger) As UInteger
+        LlamadasResolveLvlnPickParaArnes += 1
         If lvlnFormID = 0UI Then Return 0UI
 
         Dim leaves = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFormID, _pluginManager)
         If leaves Is Nothing OrElse leaves.Count = 0 Then Return 0UI
         If leaves.Count = 1 Then Return leaves(0)
 
-        Dim raiz As UInteger = 0UI
-        If _renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing Then raiz = _renderHost.LastRenderedState.RootNpcFormID
+        ' ⛔ `ResolveShownTraitsLeaf` exige `LastRenderedState.RootNpcFormID = raiz`: con la raiz PEDIDA, un NPC
+        ' que no es el de la pantalla recibe 0 y cae a `leaves(0)`.
+        Dim raiz As UInteger = raizPedida
         Dim shown = ResolveShownTraitsLeaf(raiz, _renderHost)
+        ' ⛔⛔ RONDA 5 (rev-19): primero el ancla CONJUNTA, la MISMA sede que usa el render
+        ' (`NpcStateResolver.HojaQueReproduce`): la hoja de esta lista que reproduce lo publicado en Traits Y en Inventory.
+        ' Probar Traits y despues Inventory elegia otra hoja cuando la publicada hereda Traits de otra entrada de la lista.
+        ' ⛔ RONDA 6 (rev-24): la sede prueba la hoja sobre la cadena de ESTA raiz y solo en las cadenas que pasan por la lista.
+        Dim shownInvConjunta = ResolveShownInventoryLeaf(raiz, _renderHost)
+        If shown <> 0UI AndAlso shownInvConjunta <> 0UI AndAlso _stateResolver IsNot Nothing Then
+            Dim conjunta = _stateResolver.HojaQueReproducePublico(raiz, lvlnFormID, shown, shownInvConjunta)
+            If conjunta <> 0UI Then Return conjunta
+        End If
         If shown <> 0UI AndAlso leaves.Contains(shown) Then
             Return shown
         End If
@@ -9640,7 +10164,7 @@ Public Class MainForm
     ''' caché viva, baja el bit y registra el snapshot congelado de la cadena.
     '''
     ''' <para>⛔ La puerta se define por PROPIEDAD, no por enumeración: «cualquier escritura que CAMBIE una
-    ''' categoría de <c>HeredaPorTraits</c> en el overlay del root de un heredero». Un censo por enumeración ya
+    ''' categoría de <c>DesprendePorTraits</c> en el overlay del root de un heredero». Un censo por enumeración ya
     ''' se comió una puerta entera —el Load de LooksMenu/RaceMenu— porque preguntó «¿quién latchea?» en vez de
     ''' «¿quién escribe una categoría heredable?». Por eso la detección vive acá adentro y usa el predicado de
     ''' la tabla de canales, no una lista de sitios.</para>
@@ -9736,8 +10260,14 @@ Public Class MainForm
 
         Dim presetEnBlanco As New LooksmenuLoader.LooksmenuPreset()
         Dim cambio As String = Nothing
+        ' ⛔⛔ PUNTO 1: LA PREGUNTA ES «¿SE PIERDE LA EDICION?», NO «¿LA COPIA EL BUCKET?». Con el bit 0 arriba
+        ' un canal se pierde si el motor lo pisa (`HeredaElCanal`) O si el juego no lo lee porque solo viaja en
+        ' el FaceGen horneado, y el FaceGen que se abre es el del ultimo eslabon (SSE 0x1403C2E20, 0x1403BFCA0).
+        ' La sede es `PresetCategories.DesprendeElCanal`.
+        ' ⛔⛔ SIN excepcion por ACBS 0x04 (DECISIONES 1d): con 0x04 la cara tambien sale del FaceGen (SSE 0x1404335ED,
+        ' 0x140433B7C). Aca se leia un `cargaLaCaraEnRuntime` del overlay/record que sacaba las capas de la puerta.
         For Each cat In PresetCategories.AllCategories
-            If Not PresetCategories.HeredaPorTraits(cat, esSse) Then Continue For
+            If Not PresetCategories.DesprendePorTraits(cat, esSse) Then Continue For
             If Not PresetCategories.AppliesToGame(cat, esSse) Then Continue For
             If Not heredaTraits Then Exit For
             ' ⛔⛔ UNA CATEGORIA EN LA QUE `nuevo` NO SE DISTINGUE DE UN PRESET EN BLANCO NO ES UNA
@@ -9752,8 +10282,9 @@ Public Class MainForm
             ' `Case Else` devuelve True, asi que daba por authoreado el `SkinOverride` de un preset vacio.
             ' Usar el comparador que ya existe evita una segunda tabla de "que cuenta como declarar".
 
-            ' ⛔ `soloHeredables`: authorear un canal que el bucket NO copia no desprende a nadie. Sin
-            ' este filtro, tocar la intensidad de morfo facial (FMIN) desprendia un NPC entero.
+            ' ⛔ `soloHeredables`: authorear un canal cuya edicion el juego VE con el bit arriba no desprende
+            ' a nadie (FMIN y MRSV de FO4 se aplican en runtime desde X, QueuedHead 0x140652420). Sin este
+            ' filtro, tocar la intensidad de morfo facial (FMIN) desprendia un NPC entero.
             ' ⛔⛔ Y EL PREDICADO ES POR VALOR, NO POR DECLARACION -- lo intente cambiar y estaba MAL.
             ' Un revisor observo que al tocar en Fallout solo la intensidad de morfo facial la proyeccion
             ' declara tambien las regiones (con los valores de la base) sin desprender, y yo cambie la puerta
@@ -9843,6 +10374,24 @@ Public Class MainForm
             overrideAnterior IsNot Nothing AndAlso
             overrideAnterior.MaterializedSources.TryGetValue(NPC_TemplateCategory.Inventory, resolInvAntes)
 
+        ' ⛔⛔ R10 (DECISIONES 1b, rev-11): DESPRENDER UN HEREDERO SSE POR SCULPT O CUSTOM MORPHS NO PUEDE CAMBIARLE LA
+        ' CARA. Con el bit 0 arriba la cara que se ve es el FaceGen del ULTIMO eslabon (SSE 0x1403C2E20, 0x1403BFCA0),
+        ' horneado con las TINI del TERMINAL; el bit 0 NO copia las TINI (+0x260 no esta entre lo que escribe la copia),
+        ' asi que al desprender el record se queda con las PROPIAS del heredero y el horneado con su FormID saldria con
+        ' otros tintes. Si el overlay no declara FaceTints, se instalan en el overlay las capas que se veian: las del
+        ' terminal CON su overlay (`resol.Source` ya es `SombraDelTerminal`, la misma sombra sobre la que compone
+        ' `FaceTintLayerBuilder`). Si el overlay SI declara tintes, mandan los del usuario.
+        ' ⛔ Antes de materializar, y sobre la MISMA instancia instalada (identidad del overlay). El deshacer la repone.
+        ' ⛔⛔ DECISIONES 1c (rev-17): vale para TODA causa de desprendimiento de Traits, no solo sculpt/custom. La razon
+        ' de arriba no depende de QUE canal desprendio: sea partes de cabeza, color de pelo, QNAM, NAM9, altura o lo que
+        ' sea, con el bit arriba la cara era la del FaceGen del terminal y al bajarlo el record se queda con sus TINI.
+        ' ⛔ Si la causa es un canal que no viaja en el overlay (la altura, `cambioExtra`) y no hay overlay, se instala uno
+        ' que solo lleva las capas; el deshacer lo saca (`RestaurarOverlay(anterior)`).
+        ' ⛔⛔ RONDA 5 (rev-17): la ley vive en `LlevarTintesVistosAlOverlay`, que tambien consume la otra puerta que baja
+        ' el bit 0 (el NPC Editor). Aca solo se la llama. `nuevo` ya esta instalado en `_appliedPresets` (arriba).
+        Dim deshacerTintes As Action = Nothing
+        If cambio IsNot Nothing Then deshacerTintes = LlevarTintesVistosAlOverlay(npcFormID, resol)
+
         ' Se materializa sobre la caché VIVA para que el preview refleje el desprendimiento de inmediato, y con
         ' la MISMA resolución que se congela: una sola respuesta para la cadena.
         If cambio IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npc, NPC_TemplateCategory.Traits, resol)
@@ -9864,6 +10413,7 @@ Public Class MainForm
         ' llamador que tenga un camino de fallo con intencion de dejar al NPC como estaba.
         deshacer = Sub()
                        npc.Record = fotoDelRecord
+                       If deshacerTintes IsNot Nothing Then deshacerTintes()
                        If overrideAnterior IsNot Nothing Then
                            ' Se DESHACE lo que la puerta escribió sobre la instancia, no se re-instala la
                            ' referencia: es el mismo objeto y volver a ponerlo no revierte nada.
@@ -9888,6 +10438,49 @@ Public Class MainForm
         Return Nothing
     End Function
 
+    ''' <summary>⛔⛔ LA SEDE UNICA del traslado de las TINI vistas (DECISIONES 1b/1c, rev-11/rev-17). La consumen LAS DOS
+    ''' puertas que bajan el bit 0 de un heredero: <see cref="AutorearOverlay"/> y el NPC Editor (<c>NpcEditor_Form.OnOk</c>).
+    ''' <para>Ley: con el bit 0 arriba la cara que se ve en SSE es el FaceGen del ULTIMO eslabon (0x1403C2E20, 0x1403BFCA0),
+    ''' horneado con las TINI del terminal; la copia del bit 0 NO escribe las TINI (+0x260), asi que al bajar el bit el
+    ''' record se queda con las PROPIAS. Si el overlay del NPC no declara capas (<c>SkinToneOffset</c> no cuenta: es el
+    ''' ajuste del QNAM, que el bit 0 SI copia, SSE 0x1403BE09A), se instalan en el overlay las del terminal CON su overlay
+    ''' (<paramref name="resol"/>.Source ya es <c>SombraDelTerminal</c>). Si no hay overlay se instala uno.</para>
+    ''' <para>⛔ Se llama ANTES de materializar: mira el bit 0 sobre la cache, que la materializacion baja. FO4: no-op (el
+    ''' bit 0 copia TETI).</para></summary>
+    ''' <returns>El deshacer (repone las dos propiedades o saca el overlay instalado), o Nothing si no hizo nada.</returns>
+    Friend Function LlevarTintesVistosAlOverlay(npcFormID As UInteger,
+                                                resol As NpcTemplateMaterializer.TraitsResolution) As Action
+        Dim esSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        If Not esSse Then Return Nothing
+        If resol.Source Is Nothing OrElse resol.Source.Record Is Nothing Then Return Nothing
+        Dim npc = _ctx.GetParsedNpc(npcFormID)
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return Nothing
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then Return Nothing
+        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        _appliedPresets.TryGetValue(npcFormID, overlay)
+        If PresetCategoryFilter.DeclaraLaCategoria(overlay, PresetCategory.FaceTints, esSse, soloHeredables:=False,
+                                                   canalesQueNoCuentan:={"SkinToneOffset"}) Then Return Nothing
+        Dim instalado = (overlay Is Nothing)
+        If instalado Then
+            overlay = New LooksmenuLoader.LooksmenuPreset()
+            _appliedPresets(npcFormID) = overlay
+        End If
+        Dim hasAntes = overlay.HasSseTints
+        Dim capasAntes = overlay.SseTintLayers
+        overlay.SseTintLayers = LooksmenuLoader.CapasDeTinteSseDelRecord(resol.Source.Record)
+        overlay.HasSseTints = True
+        Dim inst = overlay
+        Return Sub()
+                   If instalado Then
+                       Dim actual As LooksmenuLoader.LooksmenuPreset = Nothing
+                       If _appliedPresets.TryGetValue(npcFormID, actual) AndAlso actual Is inst Then _appliedPresets.Remove(npcFormID)
+                   Else
+                       inst.HasSseTints = hasAntes
+                       inst.SseTintLayers = capasAntes
+                   End If
+               End Sub
+    End Function
+
     ''' <summary>⛔⛔ Si el overlay authorea un ATUENDO distinto del que el bucket Inventory ya le da al NPC.
     ''' <para>Es la pregunta de la puerta para Inventory, y compara contra la BASE --el terminal de la cadena
     ''' de Inventory-- igual que Traits compara contra la suya: repetir el atuendo que ya se ve no es authorear.
@@ -9901,7 +10494,7 @@ Public Class MainForm
            Not nuevo.SleepOutfitFormIDOverride.HasValue Then Return Nothing
         Dim base = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(npc, NPC_TemplateCategory.Inventory,
                                                                           AddressOf _ctx.GetParsedNpc,
-                                                                          AddressOf ResolveLvlnPick_Friend)
+                                                                          HojaDeListaPara(npc.FormID), NpcTemplateHelpers.FirmaDeRecord(_pluginManager))
         If base Is Nothing OrElse base.Record Is Nothing Then base = npc
         If nuevo.DefaultOutfitFormIDOverride.HasValue AndAlso
            nuevo.DefaultOutfitFormIDOverride.Value <> base.Record.DefaultOutfit Then Return "Outfit (DOFT)"
@@ -9923,7 +10516,7 @@ Public Class MainForm
     End Sub
 
     Private Function NpcLabelParaAviso(npc As NPC_Data, npcFormID As UInteger) As String
-        Dim nombre = If(npc IsNot Nothing AndAlso npc.Record IsNot Nothing, npc.Record.Name, "")
+        Dim nombre = If(npc IsNot Nothing AndAlso npc.Record IsNot Nothing, NombreEfectivo(npc), "")
         If String.IsNullOrEmpty(nombre) AndAlso npc IsNot Nothing Then nombre = npc.EditorID
         Return If(String.IsNullOrEmpty(nombre), $"0x{npcFormID:X8}", $"{nombre} (0x{npcFormID:X8})")
     End Function
@@ -9954,7 +10547,7 @@ Public Class MainForm
         If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then Return True
 
         Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(npc, cat, AddressOf _ctx.GetParsedNpc,
-                                                             AddressOf ResolveLvlnPick_Friend)
+                                                             HojaDeListaPara(npcFormID), NpcTemplateHelpers.FirmaDeRecord(_pluginManager))
         If probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
            probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then
             motivo = $"Cannot make {NpcManagerFormat.GetTemplateCategoryLabel(cat)} editable because its " &
@@ -10348,6 +10941,9 @@ Public Class MainForm
         ' PNAM at Save ESP time. Without this, the clipboard would carry SkinTemplateId but its
         ' headRear swap would only ever exist in the runtime shadow, dropping out of any ESP
         ' the destination NPC writes after a paste.
+        ' ⛔ RONDA 14 (rev-35, DECISIONES 15b): esto es el snapshot del ORIGEN (lo que tambien guarda Save LooksMenu), con
+        ' el sexo del origen. Al PEGAR, el bundle y los tintes se re-resuelven con el sexo efectivo del DESTINO en
+        ' `ArmarPresetDePegado` (retira lo inyectado aca para otro sexo y materializa el del destino).
         NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(preset, state.IsFemale, AddressOf ResolveLmSkinTemplate,
                                                      state.RecordBase)
 
@@ -10668,57 +11264,113 @@ Public Class MainForm
         ' el overlay de los atuendos -- y un re-render que falla despues dejaba al NPC a medio camino: con la
         ' edicion aplicada en memoria y un cartel que no decia nada de eso. Es el invariante que ya cumplian la
         ' puerta del overlay y Edit Outfit: fallar deja al NPC COMO ESTABA.
+        Dim deshacer = FotoParaDeshacerElEditorDeNpc(npc, npcFormID)
+
+        Using dlg As New NpcEditor_Form(Me, npc, npcFormID, st.RaceFormID, st.IsFemale, AddressOf _ctx.GetParsedNpc)
+            If dlg.ShowDialog(Me) <> DialogResult.OK OrElse Not dlg.HasChanges Then Return
+            Dim fallo = Await PublicarEdicionDelEditorDeNpcAsync(npc, npcFormID, dlg, deshacer)
+            If fallo IsNot Nothing Then
+                MessageBox.Show($"Failed to render NPC edit: {fallo.Message}{vbCrLf}The edit was reverted.", "NPC Editor",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End If
+        End Using
+    End Sub
+
+    ''' <summary>⛔⛔ LA FOTO del NPC Editor, tomada ANTES de abrirlo, y su deshacer. El deshacer repone record (con el bit),
+    ''' override y atuendos del overlay desde la foto, y los TINTES del overlay por el deshacer de su SEDE
+    ''' (<see cref="LlevarTintesVistosAlOverlay"/>), que el editor expone en <c>NpcEditor_Form.DeshacerTintesDelOverlay</c>.
+    ''' <para>⛔ RONDA 6 (rev-22): antes el editor tiraba ese deshacer y este camino no reponia <c>HasSseTints</c> ni
+    ''' <c>SseTintLayers</c> de un overlay PREVIO que no declaraba capas: el re-render fallaba, el record volvia a heredar
+    ''' (bit 0 arriba) y el overlay se quedaba con las TINI del terminal, o sea el NPC NO quedaba como estaba.</para></summary>
+    Friend Function FotoParaDeshacerElEditorDeNpc(npc As NPC_Data, npcFormID As UInteger) As Action(Of NpcEditor_Form)
         Dim fotoDelRecord = npc.Record.Copia()
         Dim overrideAntes = TryGetNpcRecordOverride(npcFormID)
         Dim fotoDelOverride = If(overrideAntes Is Nothing, Nothing, overrideAntes.ClonarParaDeshacer())
         Dim presetAntes = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
         Dim doftAntes As UInteger? = If(presetAntes Is Nothing, Nothing, presetAntes.DefaultOutfitFormIDOverride)
         Dim softAntes As UInteger? = If(presetAntes Is Nothing, Nothing, presetAntes.SleepOutfitFormIDOverride)
+        Return Sub(dlg As NpcEditor_Form)
+                   ' Primero los tintes: el deshacer de la sede repone las dos propiedades sobre la MISMA instancia (o saca
+                   ' el overlay que instalo); despues la foto repone lo demas.
+                   Dim deshacerTintes As Action = If(dlg Is Nothing, Nothing, dlg.DeshacerTintesDelOverlay)
+                   If deshacerTintes IsNot Nothing Then deshacerTintes()
+                   npc.Record = fotoDelRecord
+                   SetNpcRecordOverride(npcFormID, fotoDelOverride)
+                   If presetAntes Is Nothing Then
+                       ' El editor pudo haber creado un overlay solo para los atuendos.
+                       _appliedPresets.Remove(npcFormID)
+                   Else
+                       presetAntes.DefaultOutfitFormIDOverride = doftAntes
+                       presetAntes.SleepOutfitFormIDOverride = softAntes
+                       _appliedPresets(npcFormID) = presetAntes
+                   End If
+                   ' ⛔ RONDA 8 (rev-28): sin `RefrescarCachesDerivados` aca. El UNICO llamador de este deshacer es el
+                   ' `Catch` de `PublicarEdicionDelEditorDeNpcAsync`, que a continuacion corre `RefrescarArbolTrasEditarNpc`
+                   ' (la sede: caches derivados, filtro, repoblado y foco) con la foto ya repuesta.
+               End Sub
+    End Function
 
-        Using dlg As New NpcEditor_Form(Me, npc, npcFormID, st.RaceFormID, st.IsFemale, AddressOf _ctx.GetParsedNpc)
-            If dlg.ShowDialog(Me) <> DialogResult.OK OrElse Not dlg.HasChanges Then Return
-            ' OK with real changes: the live NPC_Data was mutated in place — re-render + mark dirty.
-            ' Y con ella, los TRES caches derivados del record: el editor le puede haber cambiado el
-            ' nombre visible, y de ese nombre salen la etiqueta del nodo, el texto que busca el
-            ' filtro y la CLAVE CON LA QUE SE ORDENA LA LISTA. Sin esto, renombrar "Aaa" a "Zzz"
-            ' repinta el árbol con el nodo todavía en la posición de "Aaa". Es el mismo refresco por
-            ' FormID que hace el readback del Save.
-            RefrescarCachesDerivados(npc)
-            ' El editor puede haber cambiado RNAM/head parts/outfit, o sea todo lo que el filtro
-            ' avanzado cachea por NPC. El readback del Save ya lo tiraba; este camino no, y ahora que
-            ' repuebla consumiria el cache sucio: con `race:ghoul` activo, un NPC que acaba de pasar a
-            ' ghoul no aparecería.
-            _filterIndex?.InvalidateNpcState()
-            ' ⛔ Y SE REPUEBLA EL ARBOL. Refrescar los caches NO alcanza: `FilaDeArbol.Texto` es un
-            ' String que `PopulateNPCTree` COPIÓ al construir la fila, no algo que se derive del `Tag`
-            ' al dibujar, así que un `Invalidate` redibuja el MISMO texto viejo. Y además el renombre
-            ' cambia la clave de orden ⇒ la fila tiene que MOVERSE de lugar, cosa que reescribir el
-            ' texto tampoco haría. Este camino no tenía NINGÚN disparador de repoblado: el usuario
-            ' editaba el nombre, aceptaba, y el árbol seguía mostrando el viejo.
-            PopulateNPCTree(_pendingTreeFilter)
-            ' Y se vuelve a enfocar el NPC editado: repoblar lo saca de la vista si su grupo quedo
-            ' cerrado, y el usuario perderia de vista justamente lo que acaba de editar.
-            TreeViewNPCs.EnfocarClave($"NPC_{npcFormID:X8}")
-            Try
+    ''' <summary>⛔ Costura de arnes (RONDA 6, rev-22): reemplaza el re-render del commit del NPC Editor (Nothing = el real,
+    ''' <c>LoadNPCOnDemandAsyncFromExisting</c>). Un arnes la usa para FORZAR la excepcion y medir el deshacer.</summary>
+    Friend ReRenderDelEditorDeNpcParaArnes As Func(Of NPC_Data, Task) = Nothing
+
+    ''' <summary>El COMMIT del NPC Editor tras un OK con cambios: caches derivados, filtro, arbol y re-render. Si el
+    ''' re-render tira, corre <paramref name="deshacer"/> (la foto de <see cref="FotoParaDeshacerElEditorDeNpc"/>) y
+    ''' devuelve la excepcion; Nothing = publicado.</summary>
+    Friend Async Function PublicarEdicionDelEditorDeNpcAsync(npc As NPC_Data, npcFormID As UInteger, dlg As NpcEditor_Form,
+                                                             deshacer As Action(Of NpcEditor_Form)) As Task(Of Exception)
+        ' OK with real changes: the live NPC_Data was mutated in place — re-render + mark dirty.
+        RefrescarArbolTrasEditarNpc(npc, npcFormID)
+        Try
+            If ReRenderDelEditorDeNpcParaArnes IsNot Nothing Then
+                Await ReRenderDelEditorDeNpcParaArnes(npc)
+            Else
                 Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
-                MarkNpcDirty(npcFormID)
-            Catch ex As Exception
-                npc.Record = fotoDelRecord
-                SetNpcRecordOverride(npcFormID, fotoDelOverride)
-                If presetAntes Is Nothing Then
-                    ' El editor pudo haber creado un overlay solo para los atuendos.
-                    _appliedPresets.Remove(npcFormID)
-                Else
-                    presetAntes.DefaultOutfitFormIDOverride = doftAntes
-                    presetAntes.SleepOutfitFormIDOverride = softAntes
-                    _appliedPresets(npcFormID) = presetAntes
-                End If
-                RefrescarCachesDerivados(npc)
-                MessageBox.Show($"Failed to render NPC edit: {ex.Message}{vbCrLf}The edit was reverted.", "NPC Editor",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error)
-            End Try
-        End Using
+            End If
+            MarkNpcDirty(npcFormID)
+            Return Nothing
+        Catch ex As Exception
+            ' ⛔ UNA sede de deshacer: la foto, con los tintes por la sede del traslado.
+            deshacer(dlg)
+            ' ⛔ RONDA 7 (rev-27): y el ARBOL como estaba. El refresco de arriba ya repoblo con el nombre EDITADO (etiqueta
+            ' y posicion); la foto repone el record pero no el arbol, que es texto COPIADO al repoblar. La MISMA sede.
+            RefrescarArbolTrasEditarNpc(npc, npcFormID)
+            Return ex
+        End Try
+    End Function
+
+    ''' <summary>La sede UNICA del refresco del arbol tras el NPC Editor: caches derivados, filtro, repoblado y foco. La
+    ''' llaman el commit (con la edicion) y su deshacer (con la foto repuesta).</summary>
+    Private Sub RefrescarArbolTrasEditarNpc(npc As NPC_Data, npcFormID As UInteger)
+        ' Los TRES caches derivados del record: el editor le puede haber cambiado el
+        ' nombre visible, y de ese nombre salen la etiqueta del nodo, el texto que busca el
+        ' filtro y la CLAVE CON LA QUE SE ORDENA LA LISTA. Sin esto, renombrar "Aaa" a "Zzz"
+        ' repinta el árbol con el nodo todavía en la posición de "Aaa". Es el mismo refresco por
+        ' FormID que hace el readback del Save.
+        ' ⛔ RONDA 11 (aud-02): y los nombres HEREDADOS de todos. El FULL editado puede ser el que otro NPC hereda por Base
+        ' Data (o dejar de heredarlo, si el editor le bajo el bit): su fila y su texto buscable salen de
+        ' `_nombresHeredados`, que ahora lee la cache de la sesion. Se rehace por la sede de la carga y se refrescan los
+        ' caches derivados de los que cambiaron (sin ordenar de a uno; ordena el refresco del editado, al final).
+        ' ⛔ RONDA 12 (rev-32): por LA SEDE del refresco de la sesion, que lee la cache tal cual (no la siembra: eso
+        ' re-instalaba la instancia mutada que Reset habia descartado).
+        RefrescarSesionTrasCambioDeRecords(npc)
+        RefrescarCachesDerivados(npc)
+        ' El editor puede haber cambiado RNAM/head parts/outfit, o sea todo lo que el filtro
+        ' avanzado cachea por NPC. El readback del Save ya lo tiraba; este camino no, y ahora que
+        ' repuebla consumiria el cache sucio: con `race:ghoul` activo, un NPC que acaba de pasar a
+        ' ghoul no aparecería.
+        _filterIndex?.InvalidateNpcState()
+        ' ⛔ Y SE REPUEBLA EL ARBOL. Refrescar los caches NO alcanza: `FilaDeArbol.Texto` es un
+        ' String que `PopulateNPCTree` COPIÓ al construir la fila, no algo que se derive del `Tag`
+        ' al dibujar, así que un `Invalidate` redibuja el MISMO texto viejo. Y además el renombre
+        ' cambia la clave de orden ⇒ la fila tiene que MOVERSE de lugar, cosa que reescribir el
+        ' texto tampoco haría. Este camino no tenía NINGÚN disparador de repoblado: el usuario
+        ' editaba el nombre, aceptaba, y el árbol seguía mostrando el viejo.
+        PopulateNPCTree(_pendingTreeFilter)
+        ' Y se vuelve a enfocar el NPC editado: repoblar lo saca de la vista si su grupo quedo
+        ' cerrado, y el usuario perderia de vista justamente lo que acaba de editar.
+        TreeViewNPCs.EnfocarClave($"NPC_{npcFormID:X8}")
     End Sub
 
     ''' <summary>Que puede ofrecer el editor de cuerpo para este NPC, segun el RACE y las shapes de cuerpo
@@ -10835,23 +11487,24 @@ Public Class MainForm
         If effectiveNpc IsNot Nothing AndAlso effectiveNpc.Record.TienePesoDeSkyrim() Then
             initial.SseWeight = effectiveNpc.Record.PesoDeSkyrim()
         End If
-        ' Height (NAM6 / NAM4). Seed from the effective TRAITS source — the same resolution the record
-        ' tree uses — so an inheriting NPC opens at the height it actually shows instead of its own empty
-        ' slot. Absent subrecord ⇒ 1.0 (engine default). Then let an already-authored override win, so
-        ' reopening the editor shows the pending edit instead of re-seeding the stale record value.
+        ' Height (NAM6 / NAM4). Absent subrecord ⇒ 1.0 (engine default). Then let an already-authored override
+        ' win, so reopening the editor shows the pending edit instead of re-seeding the stale record value.
+        ' ⛔⛔ PUNTO 16 (D6): la altura sale de LA BASE DEL MISMO ESTADO QUE SE ESTA DIBUJANDO
+        ' (`LastRenderedState.RecordBase` = el record propio con el bucket 0 copiado del terminal que eligio ESTE
+        ' render, hoja de lista incluida). NAM6/NAM4 viajan por el bit 0 (`MaterializeTraits`: `PonerAltura` /
+        ' `PonerAlturaMaxima`). Antes se sembraba desde el caminante del PANEL DE DETALLE, que elegia su propia hoja
+        ' de lista (la primera entrada): un heredero de lista abria el editor con la altura de OTRO actor que el del
+        ' preview.
         Dim rootFidForHeight = _renderHost.LastRenderedState.RootNpcFormID
-        Dim rootNpcForHeight = _ctx.GetParsedNpc(rootFidForHeight)
-        If rootNpcForHeight IsNot Nothing Then
-            Dim traitsSrc = ResolveSectionSource(rootNpcForHeight, NPC_TemplateCategory.Traits)
-            If traitsSrc IsNot Nothing Then
-                If traitsSrc.Record.TieneAltura() Then
-                    initial.HeightMin = traitsSrc.Record.Altura()
-                    initial.HasHeightMin = True
-                End If
-                If traitsSrc.Record.TieneAlturaMaxima() Then
-                    initial.HeightMax = traitsSrc.Record.AlturaMaxima()
-                    initial.HasHeightMax = True
-                End If
+        Dim baseForHeight = _renderHost.LastRenderedState.RecordBase
+        If baseForHeight IsNot Nothing AndAlso baseForHeight.Record IsNot Nothing Then
+            If baseForHeight.Record.TieneAltura() Then
+                initial.HeightMin = baseForHeight.Record.Altura()
+                initial.HasHeightMin = True
+            End If
+            If baseForHeight.Record.TieneAlturaMaxima() Then
+                initial.HeightMax = baseForHeight.Record.AlturaMaxima()
+                initial.HasHeightMax = True
             End If
         End If
         Dim ovForHeight = TryGetNpcRecordOverride(rootFidForHeight)
@@ -10951,7 +11604,7 @@ Public Class MainForm
         ' `ModelSourceFormID`, que es una fuente VISUAL (de quien salen cara y cuerpo) y puede no ser el
         ' terminal de Inventory. El "(record default)" del picker es lo que el motor le deja al NPC sin override.
         Dim inventoryBase = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(
-            npc, NPC_TemplateCategory.Inventory, AddressOf _ctx.GetParsedNpc, AddressOf ResolveLvlnPick_Friend)
+            npc, NPC_TemplateCategory.Inventory, AddressOf _ctx.GetParsedNpc, HojaDeListaPara(npc.FormID), NpcTemplateHelpers.FirmaDeRecord(_pluginManager))
         Dim baseOutfit As UInteger = If(inventoryBase Is Nothing OrElse inventoryBase.Record Is Nothing,
                                         npc.Record.DefaultOutfit, inventoryBase.Record.DefaultOutfit)
 
@@ -11157,10 +11810,12 @@ Public Class MainForm
             ' WriteGPUSandboxOutput corre el GL (para el _2b) -> sync en el hilo UI (contexto GL),
             ' INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake en thread de fondo.
             Dim fidL = npcFormID
+            ' ⛔ RONDA 20b (D2): la lectura se arma ACA, en el hilo de UI, antes del Task.Run.
+            Dim lecturaL = LecturaDeHorneado()
             If FaceGenBuilder.WriteGPUSandboxOutput Then
-                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
+                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
             Else
-                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend))
+                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
             End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
@@ -11241,7 +11896,7 @@ Public Class MainForm
                             If p.Cancelled Then Exit For
                             Dim fid = formIDs(i)
                             Dim npc As NPC_Data = Nothing
-                            Dim name = If(_ctx.NpcCache.TryGetValue(fid, npc) AndAlso npc IsNot Nothing, npc.ToString(), fid.ToString("X8"))
+                            Dim name = If(_ctx.NpcCache.TryGetValue(fid, npc) AndAlso npc IsNot Nothing, TextoDeNpc(npc), fid.ToString("X8"))
                             p.SetProgress(i, total, $"Building {i + 1}/{total}: {name}")
                             Await Task.Delay(1)   ' idle window so the bar/button repaint + Cancel processes
                             If p.Cancelled Then Exit For
@@ -11251,11 +11906,13 @@ Public Class MainForm
                                 ' en thread de fondo (Await Task.Run): la UI repinta y Cancel responde DURANTE el
                                 ' bake. Secuencial (await uno a la vez) -> sin race.
                                 Dim fidL = fid
+                                ' ⛔ RONDA 20b (D2): la lectura se arma ACA, en el hilo de UI, antes del Task.Run.
+                                Dim lecturaL = LecturaDeHorneado()
                                 Dim r As FaceGenBuilder.BuildResult
                                 If FaceGenBuilder.WriteGPUSandboxOutput Then
-                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
+                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
                                 Else
-                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend))
+                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
                                 End If
                                 If r.Skipped Then
                                     skipped += 1
@@ -11380,11 +12037,7 @@ Public Class MainForm
         ' (what the NPC shows RIGHT NOW, editor work included, falling back to the raw record where the
         ' overlay has nothing), and as the rollback value if the render throws.
         Dim previousOverlay = NpcRecordOverlay.OverlayDeAutoria(npcFormID, _appliedPresets)
-        ' ⛔ Mismo motivo que el Load: `targetRaw` EFECTIVO. Ver `RecordEfectivoParaAutoria`.
-        Dim filtered = PresetCategoryFilter.BuildFiltered(_clipboardPreset,
-                                                          RecordEfectivoParaAutoria(npcFormID, npc),
-                                                          previousOverlay, options, isSseGame,
-                                                          ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
+        Dim filtered = ArmarPresetDePegado(npcFormID, npc, _clipboardPreset, previousOverlay, options, isSseGame)
         ' ⛔ Misma puerta que el Load: pegar una categoria heredable sobre un heredero lo desprende.
         Dim deshacerPegar As Action = Nothing
         Dim desprendioPegar As Boolean = False
@@ -11414,6 +12067,104 @@ Public Class MainForm
             MessageBox.Show($"Failed to render pasted look: {ex.Message}{vbCrLf}Overlay reverted.",
                             "Paste Look", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
+    End Sub
+
+    ''' <summary>⛔⛔ RONDA 14 (rev-35, DECISIONES 15b): el preset que Paste Look autorea sobre el NPC DESTINO. El
+    ''' portapapeles lo armo Copy (`BuildPresetFromState`) con el sexo del ORIGEN: su bundle de plantilla de piel LM trae la
+    ''' cabeza/headRear de ESE sexo. Al pegar, la plantilla de piel se resuelve con el sexo EFECTIVO del DESTINO por la
+    ''' MISMA sede que el Load (<see cref="AjustarPresetAlSexoDelDestino"/>, sexo de <see cref="SexoEfectivoDeLaSesion"/>).
+    ''' Friend: el testigo (EstadoAbGate G18 R14-rev35) llama esta misma funcion, que es la que usa el click.
+    ''' <para>⛔⛔ RONDA 15 (DECISIONES 15b REFINADO, 15-sep): el Paste NO VALIDA LAS CAPAS DE TINTE. La validacion por
+    ''' raza/sexo es el `LoadPreset` del motor (f4ee CharGenInterface.cpp:512-527) y corre cuando entra un ARCHIVO; el
+    ''' Paste es una copia INTERNA entre dos NPC de la sesion, cuyas capas ya pasaron por esa puerta al entrar. Del
+    ''' destino sale SOLO el sexo, y solo para la plantilla de piel LM (head/headRear). MEDIDO en la ronda 14: validar al
+    ''' pegar cambiaba las capas tambien entre NPC del MISMO sexo -- el portapapeles trae `TemplateColorIndex=-1` en las
+    ''' de paleta y la validacion las dejaba con el primer color de la plantilla (TETI/TEND distintos al guardar).</para></summary>
+    Friend Function ArmarPresetDePegado(npcFormID As UInteger, npc As NPC_Data,
+                                        portapapeles As LooksmenuLoader.LooksmenuPreset,
+                                        previousOverlay As LooksmenuLoader.LooksmenuPreset,
+                                        options As PresetCategories.PresetCategoryOptions,
+                                        isSseGame As Boolean) As LooksmenuLoader.LooksmenuPreset
+        ' ⛔ Mismo motivo que el Load: `targetRaw` EFECTIVO. Ver `RecordEfectivoParaAutoria`.
+        Dim filtered = PresetCategoryFilter.BuildFiltered(portapapeles,
+                                                          RecordEfectivoParaAutoria(npcFormID, npc),
+                                                          previousOverlay, options, isSseGame,
+                                                          ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
+        ' Con el portapapeles, la inyeccion rastreada del bundle es la que hizo Copy con el sexo del origen: la de OTRO
+        ' sexo que el destino se retira antes de materializar la del destino.
+        ' ⛔ RONDA 15: `validarTintes:=False` -- ver el resumen de arriba. Las capas del portapapeles viajan TAL CUAL.
+        ' ⛔ RONDA 19: la firma pide el contexto (la raza efectiva de la validacion). El pegado no valida, pero el contexto
+        ' es el MISMO que ya armaba para el sexo: uno por click, como antes.
+        Dim ctxDePegado = NuevoContextoDeGuardado()
+        AjustarPresetAlSexoDelDestino(npcFormID, npc, portapapeles, filtered, options, isSseGame,
+                                      SexoEfectivoDeLaSesion(npc, ctxDePegado), ctxDePegado, retirarInyeccionDeOtroSexo:=True,
+                                      validarTintes:=False)
+        Return filtered
+    End Function
+
+    ''' <summary>⛔⛔ UNA sede para Load LooksMenu y Paste Look (RONDA 14, rev-35): con el sexo EFECTIVO del NPC destino
+    ''' <paramref name="sexoEfectivoFemale"/> (el llamador lo saca de <see cref="SexoEfectivoDeLaSesion"/>),
+    ''' <list type="bullet">
+    ''' <item>materializa la cabeza/headRear de la plantilla de piel LM en <c>HeadPartFormIDs</c>
+    ''' (<see cref="NpcRecordOverlay.MaterializeLmTemplateBundleToPreset"/>). El bundle elige cara/cabeza por sexo
+    ''' (SkinInterface.cpp:292-320) y pregunta por el sexo del ACTOR — la base viva, que para un heredero trae el 0x1
+    ''' FUSIONADO de la plantilla (FO4 0x1406582C5);</item>
+    ''' <item>con <paramref name="validarTintes"/>, valida las capas de tinte contra la plantilla de tintes de la raza
+    ''' por sexo (CharGenInterface.cpp:512-527, <see cref="NpcRecordOverlay.ValidarTintsDelArchivo"/>), solo cuando la
+    ''' categoria Tints viene de <paramref name="source"/>.</item>
+    ''' </list>
+    ''' <paramref name="retirarInyeccionDeOtroSexo"/>: solo Paste (la inyeccion rastreada del portapapeles es la de Copy
+    ''' con el sexo del origen). El Load no la retira: las head parts del archivo son del archivo.
+    ''' <para><paramref name="validarTintes"/>: solo el Load (RONDA 15, DECISIONES 15b REFINADO). La validacion es el
+    ''' `LoadPreset` del motor y corre cuando entra un ARCHIVO; el Paste copia estado interno que ya paso por esa puerta.</para></summary>
+    Private Sub AjustarPresetAlSexoDelDestino(npcFormID As UInteger, npc As NPC_Data,
+                                              source As LooksmenuLoader.LooksmenuPreset,
+                                              toApply As LooksmenuLoader.LooksmenuPreset,
+                                              options As PresetCategories.PresetCategoryOptions,
+                                              isSseGame As Boolean,
+                                              sexoEfectivoFemale As Boolean,
+                                              ctx As NpcOverrideSaver.SaveContext,
+                                              retirarInyeccionDeOtroSexo As Boolean,
+                                              validarTintes As Boolean)
+        If retirarInyeccionDeOtroSexo Then
+            NpcRecordOverlay.RetirarInyeccionLmDeOtroSexo(toApply, sexoEfectivoFemale, AddressOf ResolveLmSkinTemplate)
+        End If
+        ' WYSIWYG: if the preset references an LM SkinTemplate, materialize its head/
+        ' headRear HDPT swaps into preset.HeadPartFormIDs so Save ESP / Edit Face / Copy see
+        ' the same picture the live render shows via ApplyPresetOverlayToNpcData. The template
+        ' bundle is otherwise applied only to the runtime shadow; without this call the JSON
+        ' could be loaded, the preview would render the template HDPTs, but exporting to ESP
+        ' would emit raw NPC PNAM (no headRear swap).
+        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, sexoEfectivoFemale,
+                                                 AddressOf ResolveLmSkinTemplate,
+                                                 RecordEfectivoParaAutoria(npcFormID, npc))
+        ' El ColorID de cada capa de paleta NO se re-deriva del Color: el motor lo VALIDA contra la raza
+        ' (f4ee CharGenInterface.cpp:512-527 — índice sin plantilla ⇒ capa salteada; ColorID sin match ⇒ el
+        ' primer color de la plantilla). La ley vive en NpcRecordOverlay.ValidarCapasDeTinteContraLaRaza y se
+        ' aplica ACÁ, una sola vez, al preset que queda en _appliedPresets: el overlay, Edit Face, el informe
+        ' de compatibilidad y Copy ven el estado del motor y no el JSON crudo. SÓLO cuando las capas vienen
+        ' del SOURCE (misma condición con la que BuildFiltered las toma del source): con la categoría sin
+        ' tickear o con el bloque Tints que lanzó, BuildFiltered las sembró del baseline (ya validado al
+        ' cargarse) o del record, y las del record no pasan por LoadPreset en el motor — validarlas las
+        ' salteaba o les pisaba el ColorID.
+        ' ⛔⛔ RONDA 19 (rev-55, DECISION del usuario: cambia bytes): la raza es la EFECTIVA de la base viva, por la sede del
+        ' guardado (`NpcOverrideSaver.RazaEfectivaParaGuardado`, proyeccion de la fuente de Traits con `ctx`). Aca decia que
+        ' `npc` es el raw cacheado «con la raza vieja tras un cambio de raza en el editor» y por eso leia el override: FALSO.
+        ' El editor escribe la raza nueva sobre la instancia CACHEADA y el override a la vez (NpcEditor_Form :1483/:1567) y
+        ' editar la raza desprende Traits (:1261/:1303), asi que la cache ya trae la raza nueva — testigo EstadoAbGate --g18
+        ' R19-C4. Lo que SI estaba mal es el heredero: su raza CRUDA no es la que el bit 0 le deja, y la plantilla de tintes
+        ' salia de la raza equivocada (FO4: 187 herederos con plantilla distinta). Sin `??` con el override.
+        ' ⛔ RONDA 15: y SOLO en el Load (`validarTintes`). Ver el parametro.
+        If validarTintes AndAlso Not isSseGame AndAlso options.FaceTints AndAlso
+           PresetCategoryFilter.MotorEscribe(source, PresetCategory.FaceTints, isSseGame) Then
+            Dim raceFidForTints As UInteger = NpcOverrideSaver.RazaEfectivaParaGuardado(npc, ctx)
+            Dim raceForTints As Canon.IRace = Nothing
+            Dim raceRecForTints = _pluginManager.GetRecord(raceFidForTints)
+            If raceRecForTints IsNot Nothing AndAlso raceRecForTints.Header.Signature = "RACE" Then
+                raceForTints = _ctx.ParseRaceCanonCached(raceRecForTints)
+            End If
+            NpcRecordOverlay.ValidarTintsDelArchivo(toApply, raceForTints, sexoEfectivoFemale, _pluginManager, npcFormID)
+        End If
     End Sub
 
     ''' <summary>Capture the current rendered state into a LooksMenu preset and save it to a JSON
@@ -11623,34 +12374,7 @@ Public Class MainForm
         ' to call back into the host. All MainForm helpers it consumes (overlay merge, round-trip
         ' field copy, parallel-collection sync, CharGen bake) are forwarded as delegates so the
         ' orchestrator stays UI-free.
-        Dim ctx As New NpcOverrideSaver.SaveContext With {
-            .PluginManager = _pluginManager,
-            .AppliedPresets = _appliedPresets,
-            .RenderHost = _renderHost,
-            .DataPath = _dataPath,
-            .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayParaGuardado,
-            .MaterializarCategorias = AddressOf MaterializarCategoriasDelEditor,
-            .AplicarEscalares = AddressOf AplicarEscalaresDelEditor,
-            .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
-                                        prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
-                                   As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
-                                  Return RunChargenBake(npcFid, anchor, srcPlugin, prog)
-                              End Function,
-            .RunChargenPackBatch = Function(anchor As String,
-                                             bundles As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle),
-                                             excludeEntries As IReadOnlyList(Of String),
-                                             prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
-                                        As Task(Of (Summary As String, Success As Boolean))
-                                       Return RunChargenPackBatch(anchor, bundles, excludeEntries, prog)
-                                   End Function,
-            .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
-            .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts),
-            .ArmoDrafts = New List(Of ArmoDraft)(_armoDrafts),
-            .ArmaDrafts = New List(Of ArmaDraft)(_armaDrafts),
-            .MswpDrafts = New List(Of MswpDraft)(_mswpDrafts),
-            .RecordsToRemove = New HashSet(Of UInteger)(_recordsToRemove),
-            .AllocateDraftFormID = AddressOf AllocateDraftFormID
-        }
+        Dim ctx = NuevoContextoDeGuardado()
 
         ' Show dialog. The form runs the orchestrator internally (async, with progress in an
         ' embedded panel), and exposes the result via dlg.ExecutionResult. ShowDialog returns
@@ -11806,6 +12530,71 @@ Public Class MainForm
             MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}{resumenAvisos}",
                             boxTitle, MessageBoxButtons.OK, iconoFinal)
         End If
+    End Function
+
+    ''' <summary>El `SaveContext` del guardado de la app. ⛔ RONDA 4 (rev-18 iii): salio de `LaunchSaveDialogAsync` SIN
+    ''' cambios para que un arnes pueda leer el MISMO cableado (`ContextoDeGuardadoParaArnes`): antes el mutante "sin
+    ''' `HojaDeListaPara`/`GetParsedNpc`" no tenia testigo, porque los gates arman su propio contexto.</summary>
+    ''' <summary>⛔⛔ RONDA 16 (DECISIONES 21, rev-42): CONTADOR DE ARMADOS — superficie de arnes, hermana de
+    ''' <c>PresetCategoryFilter.LlamadasABuildFiltered</c>.
+    ''' <para>Armar el contexto NO es gratis: copia las SEIS listas de borradores (outfits, LVLI, ARMO, ARMA, MSWP,
+    ''' marcados-para-borrar) y la decision del usuario es que un guardado masivo arme UNO, no uno por NPC. Sin
+    ''' contarlo, esa decision no tiene testigo: el mutante "armalo adentro del delegado del overlay" vuelve a costar
+    ''' N copias y la salida sale IDENTICA, o sea verde. En produccion cuesta un incremento de entero.</para>
+    ''' <para>No se resetea sola — la pone en cero quien mide.</para></summary>
+    Friend ContextosDeGuardadoArmadosParaArnes As Long = 0L
+
+    Private Function NuevoContextoDeGuardado() As NpcOverrideSaver.SaveContext
+        Threading.Interlocked.Increment(ContextosDeGuardadoArmadosParaArnes)
+        Return New NpcOverrideSaver.SaveContext With {
+            .PluginManager = _pluginManager,
+            .AppliedPresets = _appliedPresets,
+            .RenderHost = _renderHost,
+            .DataPath = _dataPath,
+            .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayParaGuardado,
+            .MaterializarCategorias = AddressOf MaterializarCategoriasDelEditor,
+            .AplicarEscalares = AddressOf AplicarEscalaresDelEditor,
+            .HojaDeListaPara = AddressOf HojaDeListaPara,
+            .GetParsedNpc = AddressOf _ctx.GetParsedNpc,
+            .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
+                                        prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
+                                   As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
+                                  Return RunChargenBake(npcFid, anchor, srcPlugin, prog)
+                              End Function,
+            .RunChargenPackBatch = Function(anchor As String,
+                                             bundles As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle),
+                                             excludeEntries As IReadOnlyList(Of String),
+                                             prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
+                                        As Task(Of (Summary As String, Success As Boolean))
+                                       Return RunChargenPackBatch(anchor, bundles, excludeEntries, prog)
+                                   End Function,
+            .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
+            .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts),
+            .ArmoDrafts = New List(Of ArmoDraft)(_armoDrafts),
+            .ArmaDrafts = New List(Of ArmaDraft)(_armaDrafts),
+            .MswpDrafts = New List(Of MswpDraft)(_mswpDrafts),
+            .RecordsToRemove = New HashSet(Of UInteger)(_recordsToRemove),
+            .AllocateDraftFormID = AddressOf AllocateDraftFormID
+        }
+    End Function
+
+    ''' <summary>⛔⛔ RONDA 11 (aud-07): EL SEXO EFECTIVO de un NPC de la sesion, por LA MISMA funcion que el guardado
+    ''' (<see cref="NpcOverrideSaver.SexoEfectivoParaGuardado"/>, sede <c>NpcTemplateMaterializer.SexoEfectivo</c>) y con el
+    ''' MISMO contexto (<see cref="NuevoContextoDeGuardado"/>: cache de la sesion y `HojaDeListaPara`). La usa el Load de
+    ''' LooksMenu (validacion de tintes y bundle de la plantilla de piel).
+    ''' <para>⛔⛔ RONDA 16 (DECISIONES 21, rev-42): <paramref name="ctx"/> = EL CONTEXTO QUE YA HAY. Dentro de un
+    ''' guardado lo trae el orquestador (una vez para todos los NPC); fuera de un guardado — Load de LooksMenu, Paste
+    ''' Look, el panel — no hay ninguno y se arma el de la sesion, que es UNA llamada por click. Sigue habiendo un solo
+    ''' dueño de la ley (<c>NpcOverrideSaver.SexoEfectivoParaGuardado</c> ⇒ <c>NpcTemplateMaterializer.SexoEfectivo</c>):
+    ''' esto elige de donde sale el contexto, no quien contesta.</para></summary>
+    Friend Function SexoEfectivoDeLaSesion(npc As NPC_Data,
+                                           Optional ctx As NpcOverrideSaver.SaveContext = Nothing) As Boolean
+        Return NpcOverrideSaver.SexoEfectivoParaGuardado(npc, If(ctx, NuevoContextoDeGuardado()))
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (rev-18 iii): el contexto de guardado con el cableado EXACTO de la app.</summary>
+    Friend Function ContextoDeGuardadoParaArnes() As NpcOverrideSaver.SaveContext
+        Return NuevoContextoDeGuardado()
     End Function
 
     ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>, under
@@ -12366,14 +13155,16 @@ Public Class MainForm
             ' en él tras el Yield), INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake
             ' en thread de fondo (Await Task.Run). Secuencial -> sin race entre NPCs.
             Dim fidL = bakeFormID
+            ' ⛔ RONDA 20b (D2): la lectura se arma ACA, en el hilo de UI (tras el Yield seguimos en el), antes del Task.Run.
+            Dim lecturaL = LecturaDeHorneado()
             If FaceGenBuilder.WriteGPUSandboxOutput Then
-                bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
+                bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
-                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
+                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
             Else
-                bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
+                bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
-                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate, resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend))
+                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
             End If
         Catch ex As Exception
             Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}", "")

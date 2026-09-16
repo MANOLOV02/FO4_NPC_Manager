@@ -44,6 +44,21 @@
        (Friend) para bakear NIF+texturas sin GUI/GL. Sin cambiar la visibilidad del API interno. -->
   <ItemGroup>
     <InternalsVisibleTo Include="FO4_FaceTint_CLI" />
+    <!-- ⛔⛔ RONDA 18 (rev-49, punto 3 del pedido): LOS SEIS IVT QUE NO DECLARABAN QUE APAGAN, MEDIDOS UNO POR UNO.
+         El metodo: sacar la linea, compilar SOLO a ese consumidor, y mirar el primer simbolo que el compilador
+         rechaza. NINGUNO sobra: los seis son necesarios HOY, y este es el simbolo Friend que cada uno habilita
+         (medido el 16-sep, log en fixes\ronda18\logs\ivt_<gate>.log):
+           · OclusionRenderGate      -> NpcRenderContext / NpcStateResolver          (Program.vb:326)
+           · EstadoAbGate            -> NpcStateResolver / NpcRenderContext          (Program.vb:7536-7537)
+           · SidecarIdentifierProbe  -> BssliderSidecar.NormalizeKeys                (Program.vb:83)
+           · ContextoPropioGate      -> ArmaEditor_Form.AplicarReferencias/LeerRefs  (Program.vb:311-312)
+           · OutfitDraftSaveGate     -> FotosDeBorrador(Of TVista)                   (Program.vb:5266)
+           · DetalleDelRecordGate    -> DetalleNodo                                  (Program.vb:441)
+         ⛔ LO QUE LOS SEIS APAGAN, que es lo mismo en todos: cada uno deja de ser un testigo PASIVO de que su
+         camino se puede ejercer contra la superficie PUBLICA sola. Con el IVT puesto, si manana alguien mueve a
+         Friend una clase de ese camino, ese arnes no se entera al construirse. El unico arnes del camino de
+         guardado que sigue SIN IVT (y por eso sigue siendo ese testigo) es PresetCargaEstadoMotorGate, mas
+         abajo. -->
     <InternalsVisibleTo Include="OclusionRenderGate" />
     <!-- Sonda de medición (Tools/, sólo lectura): ejercita NpcTemplateMaterializer.MakeCategoryOwn REAL
          sobre el load order en vez de reimplementar su lógica. Ver Tools/TemplateMaterializeProbe. -->
@@ -67,6 +82,18 @@
          hoja de comparacion por valor (`ComparacionPorValor`), las tres Friend A PROPOSITO. Mismo criterio
          que los demas: IVT antes que ampliar la superficie publica. -->
     <InternalsVisibleTo Include="HerenciaAlDibujarGate" />
+    <!-- ⛔ RONDA 16 (rev-44): SE QUITO el IVT de PresetCargaEstadoMotorGate que la ronda 14 (rev-37) habia agregado.
+         Estaba SOLO para poder llamar `NpcOverrideSaver.SexoEfectivoParaGuardado`, que era Friend; en la ronda 16 esa
+         funcion pasa a Public porque es la ENTRADA OBLIGATORIA de una API Public (`NpcRecordOverlay.SombraDeGuardado` ya
+         no resuelve el sexo por su cuenta). VERIFICADO: el gate compila sin el IVT. Y esto no apaga nada — al reves,
+         DEVUELVE un testigo pasivo: ese gate vuelve a compilar contra la superficie PUBLICA sola, asi que si manana
+         alguien vuelve Friend algo de ese camino, se entera al construirlo.
+         ⛔⛔ RONDA 18 (DECISIONES 22, rev-49): el IVT SIGUE FUERA y ahora es EL MOTIVO de que
+         `SexoEfectivoParaGuardado` no vuelva a Friend. La ronda 18 saco las NUEVE llamadas repetidas a esa funcion
+         (`SombraDeGuardado` la resuelve adentro), asi que el motivo de la ronda 16 ya no vale; pero el llamador que
+         queda fuera del ensamblado —`PresetCargaEstadoMotorGate.SexoDeLaApp`, que replica el LOAD, no el guardado—
+         es justamente este gate SIN IVT. Volverla Friend = devolverle este IVT = apagar ese testigo pasivo a cambio
+         de nada. Queda Public y el motivo esta escrito en la propia funcion. -->
     <InternalsVisibleTo Include="SidecarIdentifierProbe" />
     <!-- SlotResolutionProbe: es el unico probe que monta plugins sinteticos REALES con un PluginManager,
          asi que es el unico que puede correr el overload de PRODUCCION de BssliderSidecar.NormalizeKeys

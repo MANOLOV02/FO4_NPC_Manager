@@ -228,6 +228,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             raceFormID:=state.RaceFormID,
             isFemale:=state.IsFemale,
             pluginManager:=_ctx.PluginManager,
+            lectura:=New LecturaDeCadena With {.PluginManager = _ctx.PluginManager, .Leer = AddressOf _ctx.GetParsedNpc},
             appliedPresets:=_appliedPresets,
             overlayPreset:=NpcRecordOverlay.OverlayDeDibujo(state, _appliedPresets),
             tintBytesCache:=_tintBytesCache,

@@ -77,6 +77,24 @@ Public Module PresetCategoryFilter
         Threading.Interlocked.Increment(_llamadasABuildFiltered)
         Dim p = LooksmenuLoader.ClonePreset(source)
 
+        ' ⛔⛔ RONDA 16 (rev-41): ¿LA LISTA DE HEAD PARTS DEL RESULTADO VA A VENIR DEL ORIGEN? Es la MISMA condicion
+        ' que decide el `Revert` de abajo, sacada afuera porque el rastreo de la inyeccion LM la necesita: el rastreo
+        ' DESCRIBE FILAS de `HeadPartFormIDs` y no puede venir de un dueño distinto que la lista.
+        Dim facePartsDelOrigen As Boolean =
+            options.Value(PresetCategory.FaceParts) AndAlso
+            AppliesToGame(PresetCategory.FaceParts, isSse) AndAlso
+            MotorEscribe(source, PresetCategory.FaceParts, isSse)
+
+        ' ⛔⛔ RONDA 17 (rev-46): ¿Y LA PLANTILLA? El rastreo describe filas de `HeadPartFormIDs` PERO BAJO LA
+        ' AUTORIDAD DE `SkinTemplateId` -- los dos consumidores (`NpcRecordOverlay.RetirarInyeccionLmDeOtroSexo` y
+        ' `RetractLmTemplateBundleFromPreset`) RESUELVEN `preset.SkinTemplateId` y BORRAN de la lista lo que el
+        ' rastreo les diga. Y esos dos campos son de CATEGORIAS DISTINTAS (`FaceParts` y `LmSkinTemplate`), que el
+        ' usuario tilda POR SEPARADO: la misma condicion, calculada igual, para la otra mitad de la pregunta.
+        Dim lmTemplateDelOrigen As Boolean =
+            options.Value(PresetCategory.LmSkinTemplate) AndAlso
+            AppliesToGame(PresetCategory.LmSkinTemplate, isSse) AndAlso
+            MotorEscribe(source, PresetCategory.LmSkinTemplate, isSse)
+
         For Each cat In AllCategories
             ' A category the running game doesn't have behaves like an unticked one: its carrier gets the
             ' target's value, so a cross-game source can never leak MRSV/FMRS into SSE (or sculpt into FO4).
@@ -135,17 +153,82 @@ Public Module PresetCategoryFilter
         ' If the result carries an LM skin template, populate the origin tracker so a later Retract (user
         ' switches template in EditBody) can identify exactly which HDPTs came from it. Without this the
         ' HDPTs would be stuck and a later combo change would duplicate them by PartType.
-        If Not isSse AndAlso resolveLmTemplate IsNot Nothing AndAlso Not String.IsNullOrEmpty(p.SkinTemplateId) Then
-            Dim tpl = resolveLmTemplate(p.SkinTemplateId)
-            If tpl IsNot Nothing Then
-                Dim genderIdx As Integer = If(p.Gender = 1, 1, 0)
-                Dim head As UInteger = tpl.HeadHdptFormID(genderIdx)
-                Dim rear As UInteger = tpl.HeadRearHdptFormID(genderIdx)
-                If head <> 0UI AndAlso p.HeadPartFormIDs.Contains(head) Then p.LmTemplateInjectedHdptFormIDs.Add(head)
-                If rear <> 0UI AndAlso p.HeadPartFormIDs.Contains(rear) Then p.LmTemplateInjectedHdptFormIDs.Add(rear)
-                ' HasHeadPartFormIDsSetByTemplate stays as-is: the Has* assertion below is made on
-                ' snapshot grounds, independent of the template, so Retract must not flip it off.
+        '
+        ' ⛔⛔⛔ LA SEDE UNICA DEL RASTREO (RONDA 16 rev-41 + RONDA 17 rev-46). El rastreo
+        ' (`LmTemplateInjectedHdptFormIDs` + `HasHeadPartFormIDsSetByTemplate`) es una AFIRMACION SOBRE UN PAR:
+        ' «estas filas de `HeadPartFormIDs` las puso `SkinTemplateId`». Lista y plantilla son de categorias
+        ' DISTINTAS (`FaceParts` y `LmSkinTemplate`) que el usuario tilda por separado, asi que el par puede
+        ' quedar con DUEÑOS distintos y entonces la afirmacion no la sostiene nadie. Las CUATRO combinaciones,
+        ' una por una, y ninguna se contesta en otro lado -- este bloque corre DESPUES del `Revert` y de la
+        ' limpieza de categorias sin declarar, que son los unicos que pueden mover la lista, y PISA lo que
+        ' `Revert(LmSkinTemplate)` haya dejado, porque `Revert` corre antes y no puede ver de donde termino
+        ' saliendo la lista:
+        '
+        '   (1) lista del ORIGEN + plantilla del ORIGEN ⇒ el rastreo del ORIGEN, ampliado con el bundle que esa
+        '       plantilla tiene EN esa lista. El `Gender` con el que se resuelve el bundle es el del DUEÑO DE LA
+        '       LISTA -- aca `p.Gender`, que `ClonePreset` trae del origen.
+        '   (2) lista del ORIGEN + plantilla del DESTINO ⇒ VACIO. Ninguna fila de la lista del origen la puso la
+        '       plantilla del destino.
+        '       ⛔ RONDA 17 (rev-46) — ERA EL ESPEJO DEL DEFECTO DE rev-41 Y SEGUIA VIVO: con «LM skin template»
+        '       DESTILDADO y «Face parts» TILDADO quedaba el rastreo del DESTINO (el que copia `Revert` en el Case
+        '       LmSkinTemplate) sobre la lista del ORIGEN, y encima este bloque le sumaba el bundle de la plantilla
+        '       del DESTINO resuelto con el `Gender` del ORIGEN. `RetirarInyeccionLmDeOtroSexo`, que corre en el
+        '       Paste con el sexo EFECTIVO del destino, le BORRABA entonces a la lista recien pegada toda pieza
+        '       rastreada que no fuera del bundle de ese sexo.
+        '   (3) lista del DESTINO + plantilla del DESTINO ⇒ el rastreo del BASELINE, y SOLO si el baseline es de
+        '       donde salio la lista.
+        '       ⛔ RONDA 17 (rev-46): `Revert(FaceParts)` (Case FaceParts, mas abajo) copia la lista del baseline
+        '       UNICAMENTE cuando `baseline.HasHeadPartFormIDs`; si no, la lista sale del RECORD del target. Sin esa
+        '       misma guarda aca, el rastreo del baseline describia filas que NO estaban en la lista resultante --
+        '       y si alguna coincidia con una head part propia del record, `RetirarInyeccionLmDeOtroSexo` se la
+        '       borraba al destino. Es el MISMO defecto de rev-41 por otra puerta: la condicion tiene que ser la
+        '       misma que la del `Revert` que repone la lista.
+        '   (4) lista del DESTINO + plantilla del ORIGEN ⇒ VACIO, por lo mismo que (2) al reves: el rastreo del
+        '       baseline describe filas del baseline, pero bajo la plantilla del baseline, no bajo la del origen.
+        '       ⛔ RONDA 18 (rev-49): esta rama YA TIENE TESTIGO PROPIO — EstadoAbGate --g18 R18-rev49 C, con el
+        '       rastreo del baseline POBLADO (hasta la ronda 17 la recorria el caso de rev-41 con el rastreo vacio,
+        '       o sea sin discriminar) y su control por la rama (3). Mutante: `If facePartsDelOrigen AndAlso Not
+        '       lmTemplateDelOrigen Then` ⇒ (4) cae en el baseline y el Paste le borra al destino su head part.
+        '
+        ' ⛔ En SKYRIM `lmTemplateDelOrigen` es SIEMPRE False (`AppliesToGame(LmSkinTemplate, True)` = False), asi
+        ' que con «Face parts» tildado se cae en (2) y el rastreo queda vacio. DECLARADO: en SSE el rastreo no
+        ' tiene quien lo siembre (el bundle de piel LM es de F4EE y `SkinTemplateId` no se puebla en ese juego),
+        ' asi que el valor que este bloque escribe y el que escribia antes coinciden en la poblacion que un arnes
+        ' puede alcanzar; lo que NO esta medido es un overlay de sesion de SSE con el rastreo poblado.
+        p.LmTemplateInjectedHdptFormIDs.Clear()
+        If facePartsDelOrigen <> lmTemplateDelOrigen Then
+            ' (2) y (4): el par tiene dueños distintos. El rastreo no puede afirmar nada y `HasHeadPartFormIDsSetByTemplate`
+            ' tampoco -- esa bandera dice «la plantilla fue la que prendio `HasHeadPartFormIDs`», y la plantilla que viaja
+            ' no es la que declaro esta lista. Queda en False, que es el lado conservador: `RetractLmTemplateBundleFromPreset`
+            ' no le apaga la declaracion a una lista que no puso la plantilla.
+            p.HasHeadPartFormIDsSetByTemplate = False
+        ElseIf facePartsDelOrigen Then
+            ' (1) las dos del ORIGEN.
+            p.HasHeadPartFormIDsSetByTemplate = source.HasHeadPartFormIDsSetByTemplate
+            For Each fid In source.LmTemplateInjectedHdptFormIDs
+                p.LmTemplateInjectedHdptFormIDs.Add(fid)
+            Next
+            If Not isSse AndAlso resolveLmTemplate IsNot Nothing AndAlso Not String.IsNullOrEmpty(p.SkinTemplateId) Then
+                Dim tpl = resolveLmTemplate(p.SkinTemplateId)
+                If tpl IsNot Nothing Then
+                    ' ⛔ `p.Gender` = el del dueño de la LISTA (el origen). Resolver el bundle con OTRO sexo marca como
+                    ' «inyectada» una fila que esa plantilla nunca puso en ESTA lista, y el que retira por rastreo la borra.
+                    Dim genderIdx As Integer = If(p.Gender = 1, 1, 0)
+                    Dim head As UInteger = tpl.HeadHdptFormID(genderIdx)
+                    Dim rear As UInteger = tpl.HeadRearHdptFormID(genderIdx)
+                    If head <> 0UI AndAlso p.HeadPartFormIDs.Contains(head) Then p.LmTemplateInjectedHdptFormIDs.Add(head)
+                    If rear <> 0UI AndAlso p.HeadPartFormIDs.Contains(rear) Then p.LmTemplateInjectedHdptFormIDs.Add(rear)
+                End If
             End If
+        ElseIf baseline IsNot Nothing AndAlso baseline.HasHeadPartFormIDs Then
+            ' (3) las dos del DESTINO, y el baseline es de donde salio la lista.
+            p.HasHeadPartFormIDsSetByTemplate = baseline.HasHeadPartFormIDsSetByTemplate
+            For Each fid In baseline.LmTemplateInjectedHdptFormIDs
+                p.LmTemplateInjectedHdptFormIDs.Add(fid)
+            Next
+        Else
+            ' (3) con la lista sacada del RECORD (o sin baseline): el rastreo del baseline no describe ninguna de esas filas.
+            p.HasHeadPartFormIDsSetByTemplate = False
         End If
 
         Return p
@@ -717,10 +800,10 @@ Public Module PresetCategoryFilter
     ''' <para>Se distingue de un preset en blanco en algun canal heredable -- de VALOR o de MARCA. La marca
     ''' cuenta: es la unica forma de expresar "lo vacie a proposito", y por valor una lista vacia declarada
     ''' es indistinguible de una no declarada.</para></summary>
-    ''' <param name="soloHeredables">True --lo de la PUERTA-- mira solo los canales que el bit 0 copia:
-    ''' los otros no pueden desprender nada porque el motor no los pisa. False mira TODOS, y es lo que
-    ''' necesita la pregunta del tono: en Skyrim las capas de tinte NO se heredan y aun asi authorearlas
-    ''' es tocar el tono.</param>
+    ''' <param name="soloHeredables">True --lo de la PUERTA-- mira solo los canales cuya edicion DESPRENDE
+    ''' (<see cref="PresetCategories.DesprendeElCanal"/>: los que el bit 0 copia Y los que solo llegan por el
+    ''' FaceGen horneado): los otros no pueden desprender nada porque el motor ni los pisa ni deja de leerlos.
+    ''' False mira TODOS.</param>
     ''' <param name="canalesQueNoCuentan">Canales que el llamador declara IRRELEVANTES para SU pregunta,
     ''' con su cita. No es un filtro de conveniencia: la pregunta del tono la contesta lo que ALIMENTA la
     ''' derivacion, y declarar algo que la derivacion no lee no es authorear el tono.</param>
@@ -743,7 +826,9 @@ Public Module PresetCategoryFilter
                  Sub(nombre, leerCanal, escribirCanal)
                      If marcado OrElse fuera.Contains(nombre) Then Return
                      If Not nombre.StartsWith("Has", StringComparison.Ordinal) Then Return
-                     If soloHeredables AndAlso Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
+                     ' ⛔ La MISMA pregunta que `PrimerCanalDistinto`: la de la puerta (punto 1).
+                     If soloHeredables AndAlso
+                        Not PresetCategories.DesprendeElCanal(cat, nombre, isSse) Then Return
                      Dim v = leerCanal(autoria)
                      If TypeOf v Is Boolean AndAlso CBool(v) Then marcado = True
                  End Sub)
@@ -753,9 +838,9 @@ Public Module PresetCategoryFilter
     ''' <summary>El NOMBRE del primer canal que difiere, o Nothing. Es la forma que necesita un gate para poder
     ''' decir QUÉ se rompió; un booleano pelado obliga a re-recorrer a mano, y esa segunda pasada es una
     ''' segunda ley.</summary>
-    ''' <param name="soloHeredables">True = mirar SOLO los canales que el bucket Traits copia. Lo usa la
-    ''' puerta del desprendimiento: authorear un canal que el motor NO hereda no puede desprender a nadie,
-    ''' porque el bit 0 no se lo va a pisar. Ver <see cref="PresetCategories.HeredaElCanal"/>.</param>
+    ''' <param name="soloHeredables">True = mirar SOLO los canales cuya edicion DESPRENDE. Lo usa la puerta
+    ''' del desprendimiento: authorear un canal que el motor ni pisa ni deja de leer no puede desprender a
+    ''' nadie. Ver <see cref="PresetCategories.DesprendeElCanal"/>.</param>
     Friend Function PrimerCanalDistinto(a As LooksmenuLoader.LooksmenuPreset,
                                         b As LooksmenuLoader.LooksmenuPreset,
                                         cat As PresetCategory, isSse As Boolean,
@@ -770,7 +855,7 @@ Public Module PresetCategoryFilter
         PorCanal(cat, isSse, Sub(nombre, leerCanal, escribirCanal)
                                  If distinto IsNot Nothing OrElse fuera.Contains(nombre) Then Return
                                  If soloHeredables AndAlso
-                                    Not PresetCategories.HeredaElCanal(cat, nombre, isSse) Then Return
+                                    Not PresetCategories.DesprendeElCanal(cat, nombre, isSse) Then Return
                                  ' ⛔ Y ademas tiene que ser un canal de VALOR: las banderas de
                                  ' contabilidad de la app no son campos del motor, asi que el bit 0 no
                                  ' puede pisarlas. Ver `EsCanalDeValor`.

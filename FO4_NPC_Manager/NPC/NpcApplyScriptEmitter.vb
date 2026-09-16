@@ -250,6 +250,12 @@ Public Module NpcApplyScriptEmitter
     ''' FO4 nuestro barrido usa el keyword <c>None</c>, que es EL MISMO SLOT que escribe BodyGen — sin el flag,
     ''' con el modo .ini activo el barrido borraría lo que BodyGen acaba de aplicar, o no, según quién corra
     ''' primero (el orden entre el evento de f4ee y el OnLoad de Papyrus no está garantizado).</param>
+    ''' <param name="isFemaleEfectivo">⛔ PUNTO 4 (DECISIONES 14-sep): el sexo EFECTIVO (el de la base viva), no el
+    ''' bit crudo del record. El bit 0 fusiona el 0x1 desde la plantilla (SSE 0x1403C20E3, FO4 0x1406582C5) y
+    ''' skee/f4ee aplican con `GetSex` de la base del actor. Lo calcula el llamador con la sede
+    ''' (`NpcOverrideSaver.SexoEfectivoParaGuardado`). Es SOLO el VALOR de la property `IsFemale`: el `.psc`/`.pex`
+    ''' no se toca. ⚠ PARCIAL: en una cadena por lista de sexos mezclados el sexo lo decide la hoja de cada
+    ''' spawn, y una constante no puede seguirla.</param>
     Public Function ApplyToNpc(npcSpec As NPC_Data,
                                preset As LooksmenuLoader.LooksmenuPreset,
                                game As Config_App.Game_Enum,
@@ -258,15 +264,15 @@ Public Module NpcApplyScriptEmitter
                                generation As Integer,
                                salt As String,
                                ownBodyMorphs As Boolean,
-                               warnings As List(Of String)) As Boolean
+                               warnings As List(Of String),
+                               isFemaleEfectivo As Boolean) As Boolean
         If npcSpec Is Nothing Then Return False
 
         Dim spec As NpcVmadBuilder.VmadScriptSpec = Nothing
         If enabled Then
-            ' ACBS bit 0 = Female (identical in both games — verificado contra los datos
-            ' del juego).
-            Dim isFemale = (npcSpec.Record.ConfigurationFlags And 1UI) <> 0UI
-            spec = BuildSpec(preset, game, isFemale, generation, salt, ownBodyMorphs, warnings)
+            ' ⛔ Aca se leia `ConfigurationFlags And 1` del record ESCRITO: para un heredero es el bit PROPIO,
+            ' que el motor pisa con el de la plantilla. Ver el parametro.
+            spec = BuildSpec(preset, game, isFemaleEfectivo, generation, salt, ownBodyMorphs, warnings)
         End If
 
         ' El nombre de NUESTRO script en ESTE plugin. Se calcula acá arriba —y no junto al upsert— porque
@@ -302,8 +308,7 @@ Public Module NpcApplyScriptEmitter
         ' Unchecking "Emit apply-script" (enabled = False) is the deliberate exception: the user asked for
         ' the script GONE, so we strip it, and whatever is already in a running save stays there.
         If spec Is Nothing AndAlso enabled AndAlso hadOurs Then
-            Dim isFemaleCleanup = (npcSpec.Record.ConfigurationFlags And 1UI) <> 0UI
-            spec = BuildCleanupSpec(game, isFemaleCleanup, generation, salt, ownBodyMorphs, warnings)
+            spec = BuildCleanupSpec(game, isFemaleEfectivo, generation, salt, ownBodyMorphs, warnings)
         End If
 
         ' UpsertScript(Nothing) saca el nuestro y deja el resto; si no queda ninguno saca el subrecord VMAD

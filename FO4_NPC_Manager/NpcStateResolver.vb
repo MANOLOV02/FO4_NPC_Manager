@@ -124,8 +124,8 @@ Friend NotInheritable Class NpcStateResolver
         End If
 
         Dim warnings As New List(Of String)
-        Dim traits = ResolveTraitsStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings, pinnedTraitsLeaf)
-        Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings, pinnedInventoryLeaf)
+        Dim traits = ResolveTraitsStateFromNPC(npc.FormID, warnings, pinnedTraitsLeaf, pinnedInventoryLeaf)
+        Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, warnings, pinnedInventoryLeaf, pinnedTraitsLeaf)
 
         If traits Is Nothing Then traits = NpcStateFactory.CreateOwnTraitsState(npc)
         If inventory Is Nothing Then inventory = NpcStateFactory.CreateOwnInventoryState(npc)
@@ -618,51 +618,85 @@ Friend NotInheritable Class NpcStateResolver
     ''' <param name="pinnedTraitsLeaf">Hoja de LVLN que esta EN PANTALLA (0 = sortear). Viaja por
     ''' parametro y NO por un campo: <see cref="ResolveNPCBaseState"/> corre bajo <c>Task.Run</c>
     ''' (MainForm:5463, :5558, :9191) y dos previews pueden resolver a la vez.</param>
-    Friend Function ResolveTraitsStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
-                                              Optional pinnedTraitsLeaf As UInteger = 0UI) As MainForm.TraitsState
+    ''' <param name="pinnedInventoryLeaf">⛔ RONDA 4 (rev-10): la hoja de Inventory en pantalla. La cadena de Traits de FO4
+    ''' puede pedir la hoja de la lista de Inventory (bucket anterior, punto 8) y esa lista se ancla con la hoja de SU
+    ''' bucket, no con la de Traits.</param>
+    Friend Function ResolveTraitsStateFromNPC(formID As UInteger, warnings As List(Of String),
+                                              Optional pinnedTraitsLeaf As UInteger = 0UI,
+                                              Optional pinnedInventoryLeaf As UInteger = 0UI) As MainForm.TraitsState
         Dim npc = _ctx.GetParsedNpc(formID)
         If npc Is Nothing Then Return Nothing
-
-        Dim own = NpcStateFactory.CreateOwnTraitsState(npc)
-        If visited.Contains(formID) Then Return own
-
-        Dim acbsOppGender As Boolean = (npc.Record.ConfigurationFlags And &H80000UI) <> 0UI
-
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then
-            Return own
-        End If
-
-        visited.Add(formID)
-        Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Traits)
-        Dim sourceRec = _ctx.PluginManager.GetRecord(sourceFormID)
-
-        Dim resolved = ResolveTraitsStateFromTemplateSource(sourceFormID, visited, warnings, pinnedTraitsLeaf)
-        visited.Remove(formID)
-
-        If resolved IsNot Nothing Then Return resolved
-
-        warnings.Add($"Traits template unresolved for {NpcManagerFormat.DescribeNpc(npc)}")
-        Return own
+        Dim fuente = FuenteDelRender(npc, NPC_TemplateCategory.Traits, warnings, pinnedTraitsLeaf, pinnedInventoryLeaf)
+        Return NpcStateFactory.CreateOwnTraitsState(If(fuente, npc))
     End Function
 
-    Private Function ResolveInventoryStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
-                                                  Optional pinnedInventoryLeaf As UInteger = 0UI) As MainForm.InventoryState
+    Private Function ResolveInventoryStateFromNPC(formID As UInteger, warnings As List(Of String),
+                                                  Optional pinnedInventoryLeaf As UInteger = 0UI,
+                                                  Optional pinnedTraitsLeaf As UInteger = 0UI) As MainForm.InventoryState
         Dim npc = _ctx.GetParsedNpc(formID)
         If npc Is Nothing Then Return Nothing
+        Dim fuente = FuenteDelRender(npc, NPC_TemplateCategory.Inventory, warnings, pinnedTraitsLeaf, pinnedInventoryLeaf)
+        Return NpcStateFactory.CreateOwnInventoryState(If(fuente, npc))
+    End Function
 
-        Dim own = NpcStateFactory.CreateOwnInventoryState(npc)
-        If visited.Contains(formID) Then Return own
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Inventory) Then Return own
+    ''' <summary>⛔ Costura de arnes (rev-10): abre una resolucion NUEVA (cache de hojas por LVLN vacia), como la abre
+    ''' <see cref="ResolveNPCBaseState"/>. Un arnes que llama a `ResolveTraitsStateFromNPC` suelto hereda la cache de la
+    ''' ultima resolucion del hilo.</summary>
+    Friend Sub NuevaResolucionParaArnes()
+        _lvlnPickCache = New Dictionary(Of UInteger, UInteger)()
+    End Sub
 
-        visited.Add(formID)
-        Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Inventory)
-        Dim resolved = ResolveInventoryStateFromTemplateSource(sourceFormID, visited, warnings, pinnedInventoryLeaf)
-        visited.Remove(formID)
+    ''' <summary>El ancla y el rotulo de la politica de hoja del render, POR BUCKET. Solo Traits e Inventory tienen ancla
+    ''' (`LeveledLeafPin`); el resto no tiene: cache de la resolucion o sorteo.</summary>
+    Private Shared Function AnclaDelBucket(bucket As NPC_TemplateCategory, pinnedTraitsLeaf As UInteger,
+                                           pinnedInventoryLeaf As UInteger) As UInteger
+        Select Case bucket
+            Case NPC_TemplateCategory.Traits : Return pinnedTraitsLeaf
+            Case NPC_TemplateCategory.Inventory : Return pinnedInventoryLeaf
+            Case Else : Return 0UI
+        End Select
+    End Function
 
-        If resolved IsNot Nothing Then Return resolved
-
-        warnings.Add($"Inventory template unresolved for {NpcManagerFormat.DescribeNpc(npc)}")
-        Return own
+    ''' <summary>⛔⛔ LA FUENTE DE UN BUCKET PARA EL RENDER, POR LA SEDE UNICA (punto 11).
+    ''' <para>Aca habia un caminante RECURSIVO propio (`ResolveTraitsStateFromTemplateSource` +
+    ''' `ResolveTemplateSourceRecord`) con su propia regla de lista y de puntero muerto, uno de los cinco que
+    ''' contestaban distinto para la misma cadena. Ahora la cadena la camina
+    ''' `NpcTemplateMaterializer.ResolverCadena` -- con la ley de FO4 del bucket anterior adentro-- y el render
+    ''' solo aporta QUE HOJA elige de cada lista: la de siempre (`ResolveSingleLeveledTemplate`: la cacheada de
+    ''' esta resolucion, la anclada, o el sorteo, que NO se toca por decision del usuario).</para>
+    ''' <para>Devuelve Nothing cuando el NPC no hereda el bucket o la cadena no resuelve (en ese caso con el
+    ''' mismo aviso de antes): el llamador dibuja el record propio, igual que antes.</para></summary>
+    Private Function FuenteDelRender(npc As NPC_Data, category As NPC_TemplateCategory,
+                                     warnings As List(Of String), pinnedTraitsLeaf As UInteger,
+                                     pinnedInventoryLeaf As UInteger) As NPC_Data
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return Nothing
+        ' ⛔ RONDA 4 (rev-10): la politica de hoja es POR BUCKET. El pedido para la lista de un bucket ANTERIOR (FO4, punto 8)
+        ' usa el ancla y el rotulo de ESE bucket; la cache por LVLN (`_lvlnPickCache`) es la misma para todos, como en el
+        ' motor (`0x140309E4E`). Antes la lista de Inventory se anclaba con la hoja de Traits y los avisos decian "Traits".
+        Dim hojaDe As Func(Of NPC_TemplateCategory, UInteger, UInteger) =
+            Function(bucket As NPC_TemplateCategory, fid As UInteger) As UInteger
+                Dim nombre = bucket.ToString()
+                Dim rec = _ctx.PluginManager.GetRecord(fid)
+                If rec Is Nothing Then
+                    warnings.Add($"Missing {nombre} template source {fid:X8}")
+                    Return 0UI
+                End If
+                If rec.Header.Signature = "LVLN" Then
+                    Return ResolveSingleLeveledTemplate(rec, warnings, AnclaDelBucket(bucket, pinnedTraitsLeaf, pinnedInventoryLeaf), nombre,
+                                                        npc, pinnedTraitsLeaf, pinnedInventoryLeaf)
+                End If
+                warnings.Add($"Unsupported {nombre} template source {rec.Header.Signature} [{fid:X8}]")
+                Return 0UI
+            End Function
+        ' ⛔ El render conserva SU hoja (cacheada / anclada / sorteo: el sorteo NO se toca por decision del usuario);
+        ' la firma separa lista de ilegible para la ley FO4 del bucket anterior (8-acotado).
+        Dim r = NpcTemplateMaterializer.ResolverCadena(npc, category, AddressOf _ctx.GetParsedNpc,
+                                                       Function(fid As UInteger) hojaDe(category, fid),
+                                                       NpcTemplateHelpers.FirmaDeRecord(_ctx.PluginManager),
+                                                       hojaDe)
+        If r.Source IsNot Nothing Then Return r.Source
+        warnings.Add($"{category} template unresolved for {NpcManagerFormat.DescribeNpc(npc)}")
+        Return Nothing
     End Function
 
     ' NOTE: the former Model/Animation bucket (ResolveModelAnimationStateFromNPC + its template-source
@@ -671,48 +705,10 @@ Friend NotInheritable Class NpcStateResolver
     ' Model/Animation — so it now rides the Traits chain (ResolveTraitsStateFromNPC). Measured across
     ' all 4365 load-order NPC_: 225 fixes, 0 regressions (GutsyTemplateProbe).
 
-    Private Function ResolveTraitsStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
-                                                          pinnedTraitsLeaf As UInteger) As MainForm.TraitsState
-        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Traits", visited, warnings, pinnedTraitsLeaf)
-        If sourceRecord Is Nothing Then Return Nothing
-        Return ResolveTraitsStateFromNPC(sourceRecord.Header.FormID, visited, warnings, pinnedTraitsLeaf)
-    End Function
-
-    Private Function ResolveInventoryStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String),
-                                                             pinnedInventoryLeaf As UInteger) As MainForm.InventoryState
-        ' ⛔ Aca decia `0UI` a proposito, con el frente declarado: la cadena de Inventory sorteaba en cada
-        ' resolucion (181 NPC de FO4 y 281 de SSE cambiaban de atuendo) porque `InventorySourceFormID` nunca
-        ' se asignaba. Ahora viaja su PROPIA hoja, independiente de la de Traits.
-        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Inventory", visited, warnings, pinnedInventoryLeaf)
-        If sourceRecord Is Nothing Then Return Nothing
-        Return ResolveInventoryStateFromNPC(sourceRecord.Header.FormID, visited, warnings, pinnedInventoryLeaf)
-    End Function
-
-    ''' <param name="pinnedLeaf">Ancla de la categoria que se esta caminando (0 = sortear). Ver
-    ''' <see cref="ResolveSingleLeveledTemplate"/>.</param>
-    Private Function ResolveTemplateSourceRecord(sourceFormID As UInteger, categoryName As String, visited As HashSet(Of UInteger),
-                                                 warnings As List(Of String), pinnedLeaf As UInteger) As PluginRecord
-        If sourceFormID = 0UI Then Return Nothing
-
-        Dim sourceRecord = _ctx.PluginManager.GetRecord(sourceFormID)
-        If sourceRecord Is Nothing Then
-            warnings.Add($"Missing {categoryName} template source {sourceFormID:X8}")
-            Return Nothing
-        End If
-
-        Select Case sourceRecord.Header.Signature
-            Case "NPC_"
-                Return sourceRecord
-            Case "LVLN"
-                Dim resolvedFormID = ResolveSingleLeveledTemplate(sourceRecord, warnings, pinnedLeaf, categoryName)
-                If resolvedFormID = 0UI Then Return Nothing
-                If visited.Contains(resolvedFormID) Then Return Nothing
-                Return ResolveTemplateSourceRecord(resolvedFormID, categoryName, visited, warnings, pinnedLeaf)
-            Case Else
-                warnings.Add($"Unsupported {categoryName} template source {sourceRecord.Header.Signature} [{sourceFormID:X8}]")
-                Return Nothing
-        End Select
-    End Function
+    ' ⛔ Aca vivian `ResolveTraitsStateFromTemplateSource`, `ResolveInventoryStateFromTemplateSource` y
+    ' `ResolveTemplateSourceRecord`: el caminante recursivo propio del render. Se fueron a la sede unica
+    ' (`FuenteDelRender` -> `NpcTemplateMaterializer.ResolverCadena`). La hoja de Inventory sigue viajando
+    ' aparte de la de Traits (181 NPC de FO4 y 281 de SSE cambiaban de atuendo cuando no viajaba).
 
     ''' <summary>Pick a random leaf NPC from a LVLN, using Count as weight, recursing into nested LVLNs.
     ''' Ignores Level requirements and ChanceNone for NPC leveled lists.</summary>
@@ -836,7 +832,10 @@ Friend NotInheritable Class NpcStateResolver
     ''' <remarks>Precedencia: (1) el pick que YA hizo esta misma resolucion para esta lista ·
     ''' (2) la hoja que esta EN PANTALLA · (3) el sorteo ponderado de siempre.</remarks>
     Private Function ResolveSingleLeveledTemplate(lvlnRec As PluginRecord, warnings As List(Of String),
-                                                  pinnedLeaf As UInteger, categoryName As String) As UInteger
+                                                  pinnedLeaf As UInteger, categoryName As String,
+                                                  raiz As NPC_Data,
+                                                  Optional pinnedTraitsLeaf As UInteger = 0UI,
+                                                  Optional pinnedInventoryLeaf As UInteger = 0UI) As UInteger
         Dim lvlnFormID = lvlnRec.Header.FormID
 
         ' Check cache first — same LVLN must return same pick within one NPC resolution
@@ -854,6 +853,16 @@ Friend NotInheritable Class NpcStateResolver
         ' ESCRITURA teniendo el de lectura.
         Dim picked As UInteger = _ctx.PluginManager.RunUnderRecordsReadLock(
             Function() As UInteger
+                ' ⛔ RONDA 5 (rev-19): (1) con las DOS hojas publicadas, la hoja de ESTA lista que REPRODUCE lo publicado en las
+                ' dos cadenas. Es la misma sede que usa `MainForm.ResolveLvlnPick_Friend`: con anclas alcanzables el render y la
+                ' app ya no pueden elegir hojas distintas (G18 R5-2).
+                If pinnedTraitsLeaf <> 0UI AndAlso pinnedInventoryLeaf <> 0UI Then
+                    Dim hojasC = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFormID, _ctx.PluginManager)
+                    ' ⛔ RONDA 6 (rev-23): DENTRO de una resolucion la cache es la de ESTA resolucion, y viaja explicita.
+                    ' ⛔ RONDA 6 (rev-24): la hoja se prueba sobre la cadena de la RAIZ que se esta resolviendo.
+                    Dim conjunta = HojaQueReproduce(raiz, lvlnFormID, hojasC, pinnedTraitsLeaf, pinnedInventoryLeaf, _lvlnPickCache)
+                    If conjunta <> 0UI Then Return conjunta
+                End If
                 If pinnedLeaf <> 0UI Then
                     Dim hojas = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFormID, _ctx.PluginManager)
                     If hojas IsNot Nothing AndAlso hojas.Count > 0 Then
@@ -887,7 +896,7 @@ Friend NotInheritable Class NpcStateResolver
                         End If
                         If conTerminal Then
                             For Each hoja In hojas
-                                If TerminalDe(hoja, cat) = pinnedLeaf Then Return hoja
+                                If TerminalDe(hoja, cat, _lvlnPickCache) = pinnedLeaf Then Return hoja
                             Next
                         End If
                     End If
@@ -909,35 +918,197 @@ Friend NotInheritable Class NpcStateResolver
     ''' (si aparece una, se rinde y devuelve 0: no se sortea aca). Solo lo usa el paso (2b) de
     ''' <see cref="ResolveSingleLeveledTemplate"/>. Corre con el lock de lectura YA TOMADO — por eso usa
     ''' <c>GetRecordNoLock</c>, igual que el resto del walk.</summary>
-    Private Function TerminalDeTraits(formID As UInteger) As UInteger
-        Return TerminalDe(formID, NPC_TemplateCategory.Traits)
+    Private Function TerminalDeTraits(formID As UInteger, cacheDeHojas As Dictionary(Of UInteger, UInteger)) As UInteger
+        Return TerminalDe(formID, NPC_TemplateCategory.Traits, cacheDeHojas)
     End Function
 
     ''' <summary>Final de la cadena de <paramref name="category"/> SIN pasar por ninguna LVLN. Una sola ley para
-    ''' las dos cadenas que tienen ancla; `TerminalDeTraits` queda como su caso Traits.</summary>
-    Private Function TerminalDe(formID As UInteger, category As NPC_TemplateCategory) As UInteger
-        Dim actual = formID
-        Dim vistos As New HashSet(Of UInteger)()
-        For paso = 0 To 31
-            If Not vistos.Add(actual) Then Return 0UI
-            Dim npc = _ctx.GetParsedNpc(actual)
-            If npc Is Nothing Then Return 0UI
-            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return actual
-            Dim siguiente = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, category)
-            If siguiente = 0UI Then Return actual
-            Dim rec = _ctx.PluginManager.GetRecordNoLock(siguiente)
-            If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Return 0UI
-            actual = siguiente
-        Next
+    ''' las dos cadenas que tienen ancla; `TerminalDeTraits` queda como su caso Traits.
+    ''' <para>⛔⛔ POR LA SEDE UNICA (punto 11). Aca habia otro caminante con su propio tope de 32 pasos y su
+    ''' propia regla de puntero muerto. Ahora camina `NpcTemplateMaterializer.ResolverCadena` SIN hoja: el
+    ''' resolvedor de hoja que se le pasa solo ANOTA que la cadena pidio una (lista o record ilegible), y en ese
+    ''' caso se rinde con 0 como antes -- aca no se sortea, y rendirse nunca elige mal: cae al sorteo.</para>
+    ''' <para>⛔⛔ RONDA 6 (rev-23): <paramref name="cacheDeHojas"/> es EXPLICITA. Antes se leia `_lvlnPickCache`, que es
+    ''' <c>ThreadStatic</c> y queda viva despues de cada resolucion: una llamada PUBLICA (fuera de una resolucion, p. ej.
+    ''' `MainForm.ResolveLvlnPick_Friend`) contestaba con las hojas que habia sorteado OTRO NPC en ese hilo. Dentro de una
+    ''' resolucion se pasa la de esa resolucion; fuera, una vacia.</para></summary>
+    Private Function TerminalDe(formID As UInteger, category As NPC_TemplateCategory,
+                                cacheDeHojas As Dictionary(Of UInteger, UInteger)) As UInteger
+        Dim npc = _ctx.GetParsedNpc(formID)
+        If npc Is Nothing Then Return 0UI
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return formID
+        Dim pidioHoja = False
+        ' ⛔ RONDA 4 (rev-10): solo una lista de ESTA cadena la rinde. La lista de un bucket ANTERIOR (FO4, punto 8) se
+        ' contesta con la politica de ESE bucket SIN sortear ni anclar: la hoja que esta resolucion ya eligio para esa LVLN
+        ' (cache compartida entre buckets, `0x140309E4E`). Antes marcaba `pidioHoja` y devolvia 0 aunque la cadena de
+        ' Traits no pasara por ninguna lista.
+        ' ⛔ RONDA 5 (rev-19): si la cache NO tiene hoja para esa lista, se RINDE (`pidioHoja`), no contesta "ninguna": sin
+        ' la hoja, que el bucket anterior aporte o no origen depende de un sorteo que esta resolucion todavia no hizo.
+        Dim r = NpcTemplateMaterializer.ResolverCadena(npc, category, AddressOf _ctx.GetParsedNpc,
+                                                       Function(lista As UInteger) As UInteger
+                                                           pidioHoja = True
+                                                           Return 0UI
+                                                       End Function,
+                                                       NpcTemplateHelpers.FirmaDeRecord(_ctx.PluginManager),
+                                                       Function(bucket As NPC_TemplateCategory, lista As UInteger) As UInteger
+                                                           If bucket = category Then
+                                                               pidioHoja = True
+                                                               Return 0UI
+                                                           End If
+                                                           Dim cacheada As UInteger = 0UI
+                                                           If cacheDeHojas IsNot Nothing AndAlso cacheDeHojas.TryGetValue(lista, cacheada) Then
+                                                               Return cacheada
+                                                           End If
+                                                           ' ⛔ RONDA 5 (rev-19): SIN hoja cacheada para la lista del bucket anterior, la
+                                                           ' respuesta dependeria de un sorteo que esta resolucion todavia no hizo. El
+                                                           ' contrato de (2b) es rendirse (0) ante lo que no es determinista: nunca elige
+                                                           ' mal, a lo sumo cae al sorteo.
+                                                           pidioHoja = True
+                                                           Return 0UI
+                                                       End Function)
+        If pidioHoja Then Return 0UI
+        If r.Source IsNot Nothing Then Return r.Source.FormID
+        ' Bit sin puntero en el propio NPC (y, en FO4, sin bucket anterior): sus datos son los suyos.
+        If r.Outcome = NpcTemplateMaterializer.MaterializeOutcome.NoSourceToLose Then Return formID
         Return 0UI
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (rev-10): <see cref="TerminalDe"/> dentro de una resolucion cuya cache de hojas por
+    ''' LVLN es <paramref name="cacheDeLaResolucion"/> (la que `ResolveSingleLeveledTemplate` ya lleno).</summary>
+    Friend Function TerminalDeParaArnes(formID As UInteger, category As NPC_TemplateCategory,
+                                        cacheDeLaResolucion As Dictionary(Of UInteger, UInteger)) As UInteger
+        ' ⛔ RONDA 6 (rev-23): la cache viaja por parametro; esta costura ya no pisa la del hilo.
+        Return _ctx.PluginManager.RunUnderRecordsReadLock(Function() TerminalDe(formID, category, cacheDeLaResolucion))
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (RONDA 6, rev-23): COPIA de la cache de hojas por LVLN que dejo en este hilo la ultima
+    ''' resolucion (Nothing si no hubo). Solo para que un testigo compruebe que la sembro.</summary>
+    Friend Function HojasDelHiloParaArnes() As Dictionary(Of UInteger, UInteger)
+        If _lvlnPickCache Is Nothing Then Return Nothing
+        Return New Dictionary(Of UInteger, UInteger)(_lvlnPickCache)
     End Function
 
     ''' <summary>Costura Friend de <see cref="TerminalDeTraits"/> para
     ''' <c>MainForm.ResolveLvlnPick_Friend</c>: la ley del ancla vive en UN solo sitio y el Save la
     ''' CONSUME, no la re-escribe. Toma el lock de lectura porque, a diferencia del llamador interno,
-    ''' aca no esta tomado.</summary>
+    ''' aca no esta tomado.
+    ''' <para>⛔ RONDA 6 (rev-23): corre FUERA de toda resolucion, asi que con una cache EXPLICITA VACIA: nunca con la
+    ''' que dejo en el hilo la resolucion de otro NPC.</para></summary>
     Friend Function TerminalDeTraitsPublico(formID As UInteger) As UInteger
-        Return _ctx.PluginManager.RunUnderRecordsReadLock(Function() TerminalDeTraits(formID))
+        Dim sinResolucion As New Dictionary(Of UInteger, UInteger)()
+        Return _ctx.PluginManager.RunUnderRecordsReadLock(Function() TerminalDeTraits(formID, sinResolucion))
     End Function
+
+    ''' <summary>⛔⛔ RONDA 5 (rev-19): LA SEDE UNICA del ancla CONJUNTA. De <paramref name="hojas"/> (las de una lista), la
+    ''' que reproduce lo publicado en las DOS cadenas con ancla: su terminal de Traits es <paramref name="traitsPublicado"/> y
+    ''' su terminal de Inventory es <paramref name="inventoryPublicado"/>. Prefiere una hoja que ES una de las publicadas;
+    ''' si no, la primera que reproduce. 0 = ninguna (o falta una de las dos), y el llamador sigue con su ancla por cadena.
+    ''' <para>Por que: un estado publicado guarda el TERMINAL de cada cadena, no la hoja; la hoja es UNA por lista y la
+    ''' comparten los buckets (`0x140309E4E`). Anclar con una sola cadena elige mal cuando la hoja hereda la otra de otra
+    ''' entrada de la misma lista: medido en FO4 (G18 R5-2) el render anclando por bucket no reproducia lo publicado en 1035
+    ''' de 1808 estados y la app, Traits primero, en 124.</para>
+    ''' <para>⛔⛔ RONDA 6 (rev-24): LA HOJA SE PRUEBA SOBRE LA CADENA DE LA RAIZ, y solo en las cadenas que PASAN por la
+    ''' lista. Antes se exigia `TerminalDe(hoja, c) = publicado` en las DOS cadenas, y eso supone que las dos pasan por
+    ''' ESTA lista. Medido sobre raices reales (G18 R6-3): una raiz que no hereda Traits (publicado = ella misma) o cuya
+    ''' cadena de Traits va por otro lado nunca encontraba hoja, y la app caia a Traits-luego-Inventory: 409 estados de SSE
+    ''' y 75 de FO4 publicaban un atuendo y la app materializaba otro. Ahora, para cada cadena c de la raiz: si con
+    ''' lista -> hoja la cadena no pide esta lista, c no restringe; si la pide, la fuente tiene que ser la publicada; si
+    ''' ademas pide OTRA lista sin hoja en la cache, no se puede decidir y la hoja no se elige (se rinde, como (2b)). Una
+    ''' hoja vale si ninguna cadena falla y al menos una la restringe; ninguna restringe = 0 (no es asunto del ancla).</para>
+    ''' <para>Corre con el lock de lectura ya tomado.</para></summary>
+    Private Function HojaQueReproduce(raiz As NPC_Data, lista As UInteger, hojas As List(Of UInteger),
+                                      traitsPublicado As UInteger, inventoryPublicado As UInteger,
+                                      cacheDeHojas As Dictionary(Of UInteger, UInteger),
+                                      Optional supuestas As Dictionary(Of UInteger, UInteger) = Nothing) As UInteger
+        LlamadasHojaQueReproduceParaArnes += 1
+        If raiz Is Nothing OrElse raiz.Record Is Nothing OrElse hojas Is Nothing OrElse hojas.Count = 0 OrElse
+           traitsPublicado = 0UI OrElse inventoryPublicado = 0UI Then Return 0UI
+        Dim reproduce = Function(h As UInteger) As Boolean
+                            Dim t = CadenaConHoja(raiz, lista, h, NPC_TemplateCategory.Traits, traitsPublicado, inventoryPublicado, cacheDeHojas, supuestas)
+                            If t = ResultadoDeCadena.Falla Then Return False
+                            Dim i = CadenaConHoja(raiz, lista, h, NPC_TemplateCategory.Inventory, traitsPublicado, inventoryPublicado, cacheDeHojas, supuestas)
+                            If i = ResultadoDeCadena.Falla Then Return False
+                            Return t = ResultadoDeCadena.Cumple OrElse i = ResultadoDeCadena.Cumple
+                        End Function
+        For Each preferida In {traitsPublicado, inventoryPublicado}
+            If hojas.Contains(preferida) AndAlso reproduce(preferida) Then Return preferida
+        Next
+        For Each h In hojas
+            If reproduce(h) Then Return h
+        Next
+        Return 0UI
+    End Function
+
+    Private Enum ResultadoDeCadena
+        NoRestringe
+        Cumple
+        Falla
+    End Enum
+
+    ''' <summary>La cadena <paramref name="category"/> de <paramref name="raiz"/> por la SEDE (`ResolverCadena`) con
+    ''' <paramref name="lista"/> -> <paramref name="hoja"/>: si no pide la lista, no restringe; si la pide, cumple cuando su
+    ''' fuente es la publicada de esa categoria. OTRA lista: la hoja de <paramref name="cacheDeHojas"/> (la de la
+    ''' resolucion en curso); si no esta, la supuesta por una prueba de mas afuera; si tampoco, la que reproduce lo publicado
+    ''' en ESA lista por esta misma ley con (esta lista -> esta hoja) supuesta (la hoja es una por lista, `0x140309E4E`;
+    ''' termina porque cada nivel supone una lista mas); si no hay ninguna, falla (no se decide sobre un sorteo que no se
+    ''' hizo). Una raiz que no hereda la categoria no la pide.</summary>
+    Private Function CadenaConHoja(raiz As NPC_Data, lista As UInteger, hoja As UInteger, category As NPC_TemplateCategory,
+                                   traitsPublicado As UInteger, inventoryPublicado As UInteger,
+                                   cacheDeHojas As Dictionary(Of UInteger, UInteger),
+                                   supuestas As Dictionary(Of UInteger, UInteger)) As ResultadoDeCadena
+        LlamadasCadenaConHojaParaArnes += 1
+        If Not NpcTemplateHelpers.HasTemplateFlag(raiz.Record.ConfigurationTemplateFlags, category) Then Return ResultadoDeCadena.NoRestringe
+        Dim publicado = If(category = NPC_TemplateCategory.Traits, traitsPublicado, inventoryPublicado)
+        Dim pidioLista = False
+        Dim sinHojaEnOtra = False
+        Dim pick = Function(l As UInteger) As UInteger
+                       If l = lista Then
+                           pidioLista = True
+                           Return hoja
+                       End If
+                       Dim ya As UInteger = 0UI
+                       If supuestas IsNot Nothing AndAlso supuestas.TryGetValue(l, ya) Then Return ya
+                       If cacheDeHojas IsNot Nothing AndAlso cacheDeHojas.TryGetValue(l, ya) Then Return ya
+                       Dim conEsta = If(supuestas Is Nothing, New Dictionary(Of UInteger, UInteger), New Dictionary(Of UInteger, UInteger)(supuestas))
+                       conEsta(lista) = hoja
+                       Dim otra = HojaQueReproduce(raiz, l, NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(l, _ctx.PluginManager),
+                                                   traitsPublicado, inventoryPublicado, cacheDeHojas, conEsta)
+                       If otra = 0UI Then sinHojaEnOtra = True
+                       Return otra
+                   End Function
+        Dim r = NpcTemplateMaterializer.ResolverCadena(raiz, category, AddressOf _ctx.GetParsedNpc, pick,
+                                                       NpcTemplateHelpers.FirmaDeRecord(_ctx.PluginManager),
+                                                       Function(bucket As NPC_TemplateCategory, l As UInteger) pick(l))
+        If Not pidioLista Then Return ResultadoDeCadena.NoRestringe
+        If sinHojaEnOtra Then Return ResultadoDeCadena.Falla
+        Return If(r.Source IsNot Nothing AndAlso r.Source.FormID = publicado, ResultadoDeCadena.Cumple, ResultadoDeCadena.Falla)
+    End Function
+
+    ''' <summary>Costura Friend de <see cref="HojaQueReproduce"/> para <c>MainForm.ResolveLvlnPick_Friend</c> (toma el lock).
+    ''' <para>⛔ RONDA 6 (rev-23): FUERA de toda resolucion ⇒ cache EXPLICITA VACIA, nunca la del hilo.</para></summary>
+    Friend Function HojaQueReproducePublico(raizFormID As UInteger, lista As UInteger, traitsPublicado As UInteger,
+                                            inventoryPublicado As UInteger) As UInteger
+        LlamadasHojaQueReproducePublicoParaArnes += 1
+        If LlamadasHojaQueReproducePublicoPorClaveParaArnes IsNot Nothing Then
+            Dim n As Integer
+            LlamadasHojaQueReproducePublicoPorClaveParaArnes.TryGetValue((raizFormID, lista), n)
+            LlamadasHojaQueReproducePublicoPorClaveParaArnes((raizFormID, lista)) = n + 1
+        End If
+        Dim sinResolucion As New Dictionary(Of UInteger, UInteger)()
+        Return _ctx.PluginManager.RunUnderRecordsReadLock(
+            Function() HojaQueReproduce(_ctx.GetParsedNpc(raizFormID), lista,
+                                        NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lista, _ctx.PluginManager),
+                                        traitsPublicado, inventoryPublicado, sinResolucion))
+    End Function
+
+    ''' <summary>⛔ Contadores de arnes (RONDA 8, rev-26): llamadas a <see cref="HojaQueReproducePublico"/>, a
+    ''' <see cref="HojaQueReproduce"/> (con su recursion) y a <see cref="CadenaConHoja"/> (una `ResolverCadena` cada una).
+    ''' Solo los lee y los pone en cero un arnes (`EstadoAbGate --costo-panel`); la app no los consulta.</summary>
+    Friend LlamadasHojaQueReproducePublicoParaArnes As Long = 0L
+    Friend LlamadasHojaQueReproduceParaArnes As Long = 0L
+    Friend LlamadasCadenaConHojaParaArnes As Long = 0L
+    ''' <summary>⛔ Contador de arnes (RONDA 9): llamadas a <see cref="HojaQueReproducePublico"/> por (raiz, lista). Nothing =
+    ''' no se cuenta (la app). Lo engancha y lo vacia `EstadoAbGate --memoria-hoja` / `--costo-panel`.</summary>
+    Friend LlamadasHojaQueReproducePublicoPorClaveParaArnes As Dictionary(Of (Raiz As UInteger, Lista As UInteger), Integer) = Nothing
 
 End Class

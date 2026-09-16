@@ -1511,7 +1511,7 @@ Module Program
             Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, dataPath)
             Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st As FO4_NPC_Manager.MainForm.NPCVisualState) st.RecordBase)
             Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(
-                npcFormID, pm, presets, Nothing,
+                npcFormID, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing,
                 AddressOf mres.ApplyShapeMaterialOverrides,
                 willBePacked:=False,
                 lutDataPath:=dataPath)
@@ -2492,7 +2492,7 @@ Module Program
                         Continue For
                     End If
                 Else
-                    Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                    Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
                     ' Skipped: el bake decidio a proposito no emitir NIF (raza sin FaceGen / sin head parts).
                     ' Se contabiliza aparte ANTES del chequeo de Success — si no, cae en la rama de fallo.
                     If res IsNot Nothing AndAlso res.Skipped Then
@@ -2850,7 +2850,7 @@ Module Program
                 ' compartido vs 0.033 con resolver fresco). El path --list ya crea uno por NPC — lo replicamos.
                 Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
                 Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st2 As FO4_NPC_Manager.MainForm.NPCVisualState) st2.RecordBase)
-                Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
                 Console.SetOut(savedOut)
                 Dim origin = pm.GetOriginatingPluginName(fid)
                 If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) OrElse Not File.Exists(res.OutputPath) Then
@@ -5098,18 +5098,22 @@ persist:
             Dim npc = parseNpc(rec.Header.FormID)
             If npc Is Nothing Then parseFail += 1 : Continue For
 
-            ' Fuente de apariencia = cadena "Use Traits" (misma regla que NpcStateResolver.ResolveTraitsStateFromNPC
-            ' → NpcStateFactory.FaceAppearanceSourceFormID). El FaceGeom y la raza salen de la FUENTE.
-            Dim src = npc
-            Dim visited As New HashSet(Of UInteger) From {npc.FormID}
-            Do While FO4_NPC_Manager.NpcTemplateHelpers.HasTemplateFlag(src.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits)
-                Dim nextFid = FO4_NPC_Manager.NpcTemplateHelpers.ResolveTemplateSourceFormID(src, NPC_TemplateCategory.Traits)
-                If nextFid = 0UI OrElse visited.Contains(nextFid) Then Exit Do
-                Dim nxt = parseNpc(nextFid)
-                If nxt Is Nothing Then Exit Do          ' apunta a LVLN u otro tipo ⇒ se queda con el propio
-                visited.Add(nextFid)
-                src = nxt
-            Loop
+            ' Fuente de apariencia = terminal de la cadena "Use Traits". El FaceGeom y la raza salen de la FUENTE.
+            ' ⛔ RONDA 14 (rev-39): NO es "la misma regla que NpcStateResolver.ResolveTraitsStateFromNPC". Las dos caminan la
+            ' cadena por la misma sede (`ResolverCadena`), pero ante una lista nivelada ELIGEN HOJA DISTINTO: el render ANCLA
+            ' la hoja (la del NPC en pantalla, `HojaQueReproduce`, decision 10b) y la CLI, sin pantalla, toma `leaves(0)` via
+            ' `NpcTemplateHelpers.FuenteSinPantalla`. Para una cadena sin LVLN dan el mismo terminal.
+            ' ⛔ Por la sede unica de cadena (`NpcTemplateMaterializer.ResolverCadena`, punto 11). Aca habia otro
+            ' caminante que ante un puntero no-NPC_ volvia al ultimo eslabon leido y no conocia la ley de Fallout 4
+            ' del bucket anterior.
+            ' ⛔ R2 (ronda 2): con la MISMA politica de hoja que el resto de la app. La CLI no tiene pantalla, asi que
+            ' es la rama sin pantalla (`NpcTemplateHelpers.HojaSinPantalla` = `leaves(0)`), no "sin hoja".
+            ' ⛔ RONDA 3 (T2): extraida a `NpcTemplateHelpers.FuenteSinPantalla` para que un gate mida la MISMA funcion
+            ' que corre aca.
+            ' ⛔ RONDA 11 (aud-08): la CLI CAMBIO de conducta con la unificacion (punto 11): una cadena que atraviesa una
+            ' lista nivelada ya no se queda con el ultimo eslabon NPC_ leido, resuelve por la hoja `leaves(0)`.
+            Dim src = FO4_NPC_Manager.NpcTemplateHelpers.FuenteSinPantalla(npc, NPC_TemplateCategory.Traits,
+                                                                          Function(f As UInteger) parseNpc(f), pm)
 
             Dim raceEid = ""
             Dim raceRec = pm.GetRecord(src.Record.Race)
@@ -5222,7 +5226,7 @@ persist:
             ' resolvedor de hoja --esta es la linea de comandos, no tiene pantalla-- rige la primera hoja,
             ' que es la regla declarada en la sede.
             Dim sinPresets = New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)()
-            Dim datosCli = FO4_NPC_Manager.NpcRecordOverlay.ResolveOverlaidNpcData(r.SrcFid, pm, sinPresets)
+            Dim datosCli = FO4_NPC_Manager.NpcRecordOverlay.ResolveOverlaidNpcData(r.SrcFid, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, sinPresets)
             Dim st = FO4_NPC_Manager.FaceGenBuildPipeline.BuildBakeState(r.SrcFid, pm, sinPresets, regions,
                                                                         Nothing, datosCli)
             If st Is Nothing Then bakeFail += 1 : Continue For

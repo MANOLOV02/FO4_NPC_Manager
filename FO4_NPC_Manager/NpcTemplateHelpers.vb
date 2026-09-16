@@ -130,6 +130,50 @@ Friend NotInheritable Class NpcTemplateHelpers
         Return leaves
     End Function
 
+    ''' <summary>⛔⛔ LA POLITICA DE HOJA SIN PANTALLA (R2, ronda 2): la de siempre, `leaves(0)`. Es la MISMA rama final
+    ''' de <c>MainForm.ResolveLvlnPick_Friend</c> para un NPC que no esta en pantalla, escrita UNA vez para los
+    ''' consumidores que no tienen pantalla (CLI, arneses, panel o filtro sin MainForm). Con MainForm, la politica es
+    ''' <c>MainForm.HojaDeListaPara</c>, que cae exactamente aca cuando el NPC no es el del preview.
+    ''' <para>No es ley de motor: es la regla ya decidida de la app (DECISIONES 14-sep, punto 10).</para></summary>
+    Public Shared Function HojaSinPantalla(pluginManager As PluginManager) As Func(Of UInteger, UInteger)
+        Return Function(lista As UInteger) As UInteger
+                   Dim hojas = CollectLvlnLeafNpcFormIDs(lista, pluginManager)
+                   If hojas Is Nothing OrElse hojas.Count = 0 Then Return 0UI
+                   Return hojas(0)
+               End Function
+    End Function
+
+    ''' <summary>⛔ RONDA 3 (T2): la fuente de una categoria SIN PANTALLA, tal como la resuelve la CLI
+    ''' (`FO4_FaceTint_CLI --facegengate`): el propio NPC si no hereda la categoria o si la sede no la resuelve; si no,
+    ''' la fuente de <see cref="NpcTemplateMaterializer.ResolverCadena"/> con <see cref="HojaSinPantalla"/>. Extraida
+    ''' de la CLI para que un gate la pueda medir.
+    ''' <para>⛔ RONDA 11 (aud-08): la extraccion no cambio la conducta de la ronda 2, pero la CLI SI cambio de conducta
+    ''' respecto de su caminante original (punto 11, unificacion): antes, ante un puntero a una LVLN (u otro no-NPC_) se
+    ''' quedaba con el ultimo eslabon leido; ahora una cadena que atraviesa una lista resuelve por la hoja
+    ''' <c>leaves(0)</c> (y en FO4, con puntero 0 o record inexistente/ilegible, la ley del bucket anterior, punto
+    ''' 8-acotado).</para></summary>
+    Public Shared Function FuenteSinPantalla(npc As NPC_Data, category As NPC_TemplateCategory,
+                                             getParsedNpc As Func(Of UInteger, NPC_Data),
+                                             pluginManager As PluginManager) As NPC_Data
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return npc
+        If Not HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return npc
+        Dim cadena = NpcTemplateMaterializer.ResolverCadena(npc, category, getParsedNpc,
+                                                            HojaSinPantalla(pluginManager),
+                                                            FirmaDeRecord(pluginManager))
+        Return If(cadena.Source, npc)
+    End Function
+
+    ''' <summary>FormID -> firma del record ("NPC_", "LVLN", ...) o Nothing si no existe en el orden de carga. La
+    ''' necesita la sede de cadena para separar un puntero a LISTA (se resuelve por hoja) de uno ILEGIBLE (FO4: origen
+    ''' del bucket anterior, DECISIONES 8-acotado).</summary>
+    Public Shared Function FirmaDeRecord(pluginManager As PluginManager) As Func(Of UInteger, String)
+        Return Function(fid As UInteger) As String
+                   If pluginManager Is Nothing OrElse fid = 0UI Then Return Nothing
+                   Dim rec = pluginManager.GetRecord(fid)
+                   Return If(rec Is Nothing, Nothing, rec.Header.Signature)
+               End Function
+    End Function
+
     Private Shared Sub CollectLvlnLeavesRecursive(lvlnFormID As UInteger, pluginManager As PluginManager,
                                                   leaves As List(Of UInteger), seenLeaves As HashSet(Of UInteger),
                                                   seenLists As HashSet(Of UInteger))

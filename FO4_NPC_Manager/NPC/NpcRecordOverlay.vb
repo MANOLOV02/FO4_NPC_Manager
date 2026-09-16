@@ -33,14 +33,19 @@ Public Module NpcRecordOverlay
     ''' fetch+parse the NPC record and apply the LooksMenu preset overlay in one call. Returns Nothing if the
     ''' NPC record doesn't resolve. Single source of truth for the FaceGen bake paths (FaceGenBuilder.BuildCharGen /
     ''' .BakeFaceTextures, FaceGenBuildPipeline.BuildBakeState) which all needed the same two-step sequence.</summary>
+    ''' <param name="lectura">⛔⛔ RONDA 20b (D2): de donde salen el record del NPC y los de su cadena, y con que hoja. Antes
+    ''' `raw` y el lector de la cadena re-parseaban del PLUGIN, asi que el horneado no veia las ediciones de la sesion -- ni
+    ''' la del propio NPC ni la de sus plantillas -- mientras el render si. OBLIGATORIO: la politica la decide el llamador
+    ''' (la app, una lectura congelada de la sesion; Bake All y la CLI, el parse de su orden de carga).</param>
     Public Function ResolveOverlaidNpcData(npcFormID As UInteger,
                                            pluginManager As PluginManager,
+                                           lectura As LecturaDeCadena,
                                            appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                            Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
-                                           Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing,
                                            Optional ByRef baseUsada As NPC_Data = Nothing,
                                            Optional ByRef terminalUsado As UInteger = 0UI) As NPC_Data
-        Dim raw = GetParsedNpc(npcFormID, pluginManager)
+        Dim politica = lectura.Resuelta(npcFormID)
+        Dim raw = politica.Leer(npcFormID)
         If raw Is Nothing Then Return Nothing
 
         ' ⛔⛔ LA MISMA BASE QUE EL RENDER. Esta funcion es la entrada del HORNEADO, y hasta aca componia
@@ -59,15 +64,12 @@ Public Module NpcRecordOverlay
         Dim baseHeredada = raw
         If NpcTemplateHelpers.HasTemplateFlag(raw.Record.ConfigurationTemplateFlags,
                                               NPC_TemplateCategory.Traits) Then
-            Dim leer1 = Function(f As UInteger) GetParsedNpc(f, pluginManager)
-            Dim hoja As Func(Of UInteger, UInteger) = resolveLvlnPick
-            If hoja Is Nothing Then
-                hoja = Function(lvlnFid As UInteger)
-                           Dim hojas = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFid, pluginManager)
-                           Return If(hojas Is Nothing OrElse hojas.Count = 0, 0UI, hojas(0))
-                       End Function
-            End If
-            Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(raw, NPC_TemplateCategory.Traits, leer1, hoja)
+            ' ⛔⛔ RONDA 20b: el lector y la hoja salen de LA LECTURA (defaults en `LecturaDeCadena.Resuelta`), no de un
+            ' re-parse del plugin escrito aca.
+            Dim leer1 = politica.Leer
+            Dim hoja As Func(Of UInteger, UInteger) = politica.Hoja
+            Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(raw, NPC_TemplateCategory.Traits, leer1, hoja,
+                                                                 NpcTemplateHelpers.FirmaDeRecord(pluginManager))
             If probe.Source IsNot Nothing Then
                 ' ⛔ El TERMINAL sale de aca y viaja al estado del horneado. Sin esto el bake se ponia a
                 ' si mismo como fuente de Traits y toda ley cableada sobre ese campo se bifurcaba.
@@ -276,6 +278,46 @@ Public Module NpcRecordOverlay
     ''' heredero tambien es un llamador.</summary>
     Friend LlamadasABaseDeDibujo As Long
 
+    ''' <summary>⛔⛔ EL RECORD EFECTIVO POR BUCKET (panel de detalle, punto 13): una COPIA de <paramref name="npc"/>
+    ''' con cada categoria heredada copiada con la ley de `MakeCategoryOwn` en modo `soloCopiar` (no baja bits),
+    ''' desde la fuente de la sede unica de cadena (`ResolverCadena`); y encima las banderas efectivas del colapso
+    ''' de Skyrim (`BanderasDePlantillaEfectivas`, punto 7).
+    ''' <para>⛔ Vive aca y no en el panel: armar un record efectivo con `MakeCategoryOwn` es armar una base, y la
+    ''' base tiene sede (HerenciaAlDibujarGate G10a).</para></summary>
+    ''' <param name="omitirTraits">True si <paramref name="npc"/> ya trae el bucket Traits resuelto por
+    ''' <see cref="BaseDeDibujo"/> (el record compuesto del render): recopiarlo desde el terminal crudo perderia el
+    ''' overlay del terminal y la autoria del root.</param>
+    ''' <param name="sombraDelTerminal">R7 (ronda 2): el terminal CON su overlay de sesion -- la MISMA
+    ''' `SombraDelTerminal` que arma la base del dibujo (`MainForm.SombraDelTerminal`). El bucket Traits se copia de
+    ''' ahi y no del terminal crudo: si el usuario le cargo un preset a la plantilla, lo que se ve del heredero es la
+    ''' plantilla CON ese preset. Nothing = sin sesion (arneses): el terminal crudo es su propia sombra.</param>
+    Public Function RecordEfectivoPorBuckets(npc As NPC_Data,
+                                             categorias As IEnumerable(Of NPC_TemplateCategory),
+                                             getParsedNpc As Func(Of UInteger, NPC_Data),
+                                             hoja As Func(Of UInteger, UInteger),
+                                             firmaDe As Func(Of UInteger, String),
+                                             omitirTraits As Boolean,
+                                             sombraDelTerminal As Func(Of NPC_Data, NPC_Data)) As NPC_Data
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return npc
+        Dim ef = npc.Copia()
+        For Each cat In categorias
+            If omitirTraits AndAlso cat = NPC_TemplateCategory.Traits Then Continue For
+            If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then Continue For
+            Dim r = NpcTemplateMaterializer.ResolverCadena(npc, cat, getParsedNpc, hoja, firmaDe)
+            If cat = NPC_TemplateCategory.Traits AndAlso r.Source IsNot Nothing AndAlso sombraDelTerminal IsNot Nothing Then
+                Dim sombra = sombraDelTerminal(r.Source)
+                If sombra IsNot Nothing Then r.Source = sombra
+            End If
+            NpcTemplateMaterializer.MakeCategoryOwn(ef, cat, r, soloCopiar:=True)
+        Next
+        Dim b = NpcTemplateMaterializer.BanderasDePlantillaEfectivas(npc, getParsedNpc, firmaDe)
+        If b.Colapso Then
+            ef.Record.ConfigurationTemplateFlags = b.TemplateFlags
+            ef.Record.ConfigurationFlags = (ef.Record.ConfigurationFlags And Not &H20UI) Or (b.AcbsFlags And &H20UI)
+        End If
+        Return ef
+    End Function
+
     Public Function BaseDeDibujo(root As NPC_Data, sombraDelTerminal As NPC_Data) As NPC_Data
         Threading.Interlocked.Increment(LlamadasABaseDeDibujo)
         If root Is Nothing OrElse root.Record Is Nothing Then Return root
@@ -345,27 +387,69 @@ Public Module NpcRecordOverlay
     ''' render no puede rechazar --corre en el hilo de UI sin Try, con ThrowException-- y por eso
     ''' `AplicarOverlay` lo deja como bandera; pero TODO camino de guardado va con la bandera arriba, y
     ''' esta sede es ese camino.</para></summary>
+    ''' <param name="ctx">⛔⛔⛔ RONDA 18 (DECISIONES 22, rev-49): LA SEDE UNICA DEL SEXO DEL GUARDADO ES ESTA FUNCION.
+    ''' <para>⛔⛔ RONDA 15: el overlay del guardado necesita el sexo EFECTIVO del NPC (ver <see cref="AplicarOverlay"/>).
+    ''' El guardado compone sobre el record CRUDO del heredero --`ComposeSaveShadow` parte de `rawNpcSpec.Copia()` y
+    ''' `MaterializarCategorias` es no-op sin edicion del editor-- asi que acá el bit propio NO es el efectivo y el
+    ''' bundle LM salia con las piezas del sexo equivocado, distinto de lo que mostraba el render.</para>
+    ''' <para>⛔⛔ RONDA 16 (rev-43 b): el sexo dejo de tener FALLBACK. Hasta la ronda 15 el parametro era `Boolean?` y
+    ''' con `Nothing` esta funcion resolvia el sexo por su cuenta clavando `HojaSinPantalla`, mientras produccion lo
+    ''' resolvia con `ctx.HojaDeListaPara` (la hoja ANCLADA del render, 10b): DOS politicas de hoja para la MISMA
+    ''' pregunta, y la de los gates no era la de la app. Se paso a pedir el booleano ya resuelto.</para>
+    ''' <para>⛔⛔⛔ RONDA 18 (rev-49): PERO ESO DEJO LA LLAMADA A LA SEDE ESCRITA NUEVE VECES — una en produccion y
+    ''' OCHO en arneses, todas iguales (`NpcOverrideSaver.SexoEfectivoParaGuardado(d, c)`), y por eso esa funcion tuvo
+    ''' que ampliar su superficie a `Public`. Nueve copias de la misma linea son nueve lugares donde puede aparecer
+    ''' una DECIMA politica: basta que un llamador arme otro `SaveContext` --sin `HojaDeListaPara` ni `GetParsedNpc`--
+    ''' para volver a tener dos respuestas a la misma pregunta, y ninguna prueba lo notaria. Ahora el que llega es el
+    ''' `SaveContext`, el sexo se resuelve ACA UNA sola vez por la unica sede, y ningun llamador vuelve a decidirlo.
+    ''' <para>⛔ SIGUE SIN FALLBACK: es OBLIGATORIO y no es `Optional`. La politica de hoja (`HojaDeListaPara`) y el
+    ''' lector de sesion (`GetParsedNpc`) viajan DECLARADOS en el propio contexto — en produccion los del guardado en
+    ''' curso, en un arnes los que ese arnes arma; `Nothing` en esos dos campos es la politica de la app SIN PANTALLA
+    ''' y lo dice el `SaveContext`, no esta funcion. Quien no tenga un contexto a mano NO pasa `Nothing`: pide el de
+    ''' la sesion a quien sabe armarlo (`MainForm.SombraDeGuardadoParaArnes`).</para>
+    ''' <para>⛔⛔ RONDA 19 (rev-51, rev-56): Y EL `PluginManager` SALE DEL MISMO CONTEXTO. Hasta la ronda 18 viajaba DOS veces
+    ''' --un parametro `pluginManager` y `ctx.PluginManager`-- y nada obligaba a que fueran el mismo: el sexo se resolvia con
+    ''' el del contexto y el overlay se estampaba con el del parametro. Ahora `AplicarOverlay` recibe literalmente
+    ''' `ctx.PluginManager` (testigo HerenciaAlDibujarGate G12-l8).</para></para></param>
     Public Function SombraDeGuardado(raw As NPC_Data,
                                      selectedNpcFormID As UInteger,
                                      appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                     pluginManager As PluginManager,
+                                     ctx As NpcOverrideSaver.SaveContext,
                                      Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
                                      Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing) As NPC_Data
         Dim esSse = (Config_App.Current IsNot Nothing AndAlso
                      Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        ' ⛔ LA UNICA LLAMADA A LA SEDE DEL SEXO EN TODO EL CAMINO DE GUARDADO. No se envuelve en `If ctx Is Nothing`
+        ' ni en un `If(...)`: un contexto ausente es un error del llamador y tiene que sonar, no resolverse solo con
+        ' una segunda politica de hoja (que es exactamente lo que la ronda 16 saco de acá).
+        Dim sexoEfectivoFemale As Boolean = NpcOverrideSaver.SexoEfectivoParaGuardado(raw, ctx)
         Return AplicarOverlay(raw,
                               AutoriaParaGuardado(OverlayDeAutoria(selectedNpcFormID, appliedPresets), raw, esSse),
-                              selectedNpcFormID, pluginManager, lmSkinTemplateResolver, parseRace,
-                              estricto:=True)
+                              selectedNpcFormID, ctx.PluginManager, lmSkinTemplateResolver, parseRace,
+                              estricto:=True, sexoEfectivoFemale:=sexoEfectivoFemale)
     End Function
 
+    ''' <param name="sexoEfectivoFemale">⛔⛔ RONDA 15: EL SEXO CON EL QUE SE ELIGE EL BUNDLE LM (face TXST y
+    ''' head/headRear HDPT, SkinInterface.cpp:292-320) ES EL EFECTIVO, no el bit propio del record. El bit 0 FUSIONA
+    ''' el ACBS 0x1 desde la plantilla (FO4 0x1406582C5, SSE 0x1403C20E3) y `ActorBase.GetSex` lee el de la base viva
+    ''' (FO4 0x14114A680 -> 0x1406448B0), asi que para un heredero el bit propio es letra muerta.
+    ''' <para>Nothing = <b>el llamador ya trae la base con el 0x1 fusionado</b> y se lee de ahi: el render y el
+    ''' horneado componen sobre <see cref="BaseDeDibujo"/> (que copia el bucket Traits con `MakeCategoryOwn`, y esa
+    ''' copia fusiona la palabra ACBS con `TraitsAcbsFlagsMask`), y los dos compositores de cara componen sobre el
+    ''' record del TERMINAL, cuyo bit propio ES el efectivo. Con el GUARDADO no valia: parte del record crudo, y por
+    ''' eso <see cref="SombraDeGuardado"/> lo resuelve y lo pasa.</para>
+    ''' <para>⛔ La ley NO se repite acá: la sede es <c>NpcTemplateMaterializer.SexoEfectivo</c> y esta funcion sólo
+    ''' consume el booleano. Resolverla adentro en cada llamada caminaria la cadena otra vez por repintado, y con la
+    ''' politica de hoja SIN PANTALLA -- que para una cadena con LVLN puede elegir otra hoja que la anclada del
+    ''' render (10b), o sea un segundo dueño.</para></param>
     Public Function AplicarOverlay(raw As NPC_Data,
                                    preset As LooksmenuLoader.LooksmenuPreset,
                                    selectedNpcFormID As UInteger,
                                    pluginManager As PluginManager,
                                    Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
                                    Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
-                                   Optional estricto As Boolean = False) As NPC_Data
+                                   Optional estricto As Boolean = False,
+                                   Optional sexoEfectivoFemale As Boolean? = Nothing) As NPC_Data
         If raw Is Nothing OrElse raw.Record Is Nothing Then Return raw
         ' ⛔⛔ COPIA AUNQUE NO HAYA PRESET. Antes devolvia `raw` tal cual, y hay dos llamadores que le
         ' escriben la raza encima ("mutar es seguro porque `raw` es un parse FRESCO"). Con la base del estado
@@ -487,12 +571,22 @@ finDelSkin:
         Dim lmTemplate As LmSkinTemplate = Nothing
         If Not String.IsNullOrEmpty(preset.SkinTemplateId) AndAlso lmSkinTemplateResolver IsNot Nothing Then
             lmTemplate = lmSkinTemplateResolver(preset.SkinTemplateId)
+            ' ⛔ (Solo FO4: el bundle LM SkinTemplate es de LooksMenu/F4EE.) El WNAM del bundle se escribe TAMBIEN
+            ' en un heredero de Traits, aunque el bit 0 lo pise al cargar: FO4 bloque del bit 0 `0x140658380` lee el
+            ' WNAM de la plantilla (+0x150) y `0x14065838C` lo copia al NPC (`[r14+0xE8]`, r14 = npc+0x68 ⇒ +0x150).
+            ' Se probo no escribirlo (punto 17, 14-sep) y
+            ' se REVIRTIO por decision del usuario (15-sep): el estado del horneado lee `Record.Skin` y dejaba de
+            ' coincidir con el render, y la siembra de borradores de ARMO por WNAM del guardado dejaba de emitir la
+            ' piel de la plantilla LM.
             If lmTemplate IsNot Nothing AndAlso lmTemplate.SkinArmoFormID <> 0UI Then
                 sr.Skin = lmTemplate.SkinArmoFormID
             End If
         End If
 
-        Dim isFemale As Boolean = raw.Record.ConfigurationFlagsFemale
+        ' ⛔⛔ RONDA 15: EL SEXO EFECTIVO. Ver el parametro `sexoEfectivoFemale` -- sin el, el bit de `raw`, que es
+        ' el efectivo para todo llamador que compone sobre la base del dibujo o sobre el record del terminal.
+        Dim isFemale As Boolean = If(sexoEfectivoFemale.HasValue, sexoEfectivoFemale.Value,
+                                     raw.Record.ConfigurationFlagsFemale)
 
         ' NPC.DOFT (atuendo por defecto → OTFT). Tres estados, igual que WNAM: sin override se preserva;
         ' con valor se escribe; con cero se SACA el subrecord, que es lo que significa "sin atuendo" —
@@ -838,9 +932,14 @@ finDelSkin:
     ''' deja las capas como vinieron — es el mismo criterio de «lo que no se puede resolver, se preserva» y
     ''' el comportamiento que ya tenía. Se loguea.
     ''' <para>Se llama UNA vez por carga de .json, sólo sobre las capas que vienen del ARCHIVO
-    ''' (MainForm.PreviewLooksmenuOverlay, con la categoría Tints tickeada). No se llama desde el overlay por
-    ''' sombra: ahí llegan también capas sembradas del record (Edit Face, Paste Look, categoría no tickeada), que
-    ''' en el motor no pasan por LoadPreset. Es idempotente: una lista ya validada sale igual.</para></summary>
+    ''' (MainForm.AjustarPresetAlSexoDelDestino con <c>validarTintes:=True</c>, que es el Load, y con la categoría
+    ''' Tints tickeada). No se llama desde el overlay por sombra: ahí llegan también capas sembradas del record
+    ''' (Edit Face, categoría no tickeada), que en el motor no pasan por LoadPreset. Es idempotente: una lista ya
+    ''' validada sale igual.</para>
+    ''' <para>⛔ RONDA 15 (DECISIONES 15b REFINADO, 15-sep): el PASTE ya NO pasa por acá. Es una copia INTERNA entre
+    ''' dos NPC de la sesión, no un `LoadPreset`; del destino sale sólo el sexo, y sólo para la plantilla de piel LM.
+    ''' MEDIDO en la ronda 14: validar al pegar cambiaba las capas también entre NPC del MISMO sexo (el portapapeles
+    ''' trae <c>TemplateColorIndex=-1</c> y salían con el ColorID del primer color de la plantilla).</para></summary>
     Public Function ValidarCapasDeTinteContraLaRaza(capas As IEnumerable(Of LooksmenuLoader.CapaDeTintePreset),
                                                       race As Canon.IRace, isFemale As Boolean,
                                                       pluginManager As PluginManager,
@@ -1156,6 +1255,37 @@ finDelSkin:
             preset.HasHeadPartFormIDs = False
             preset.HasHeadPartFormIDsSetByTemplate = False
         End If
+    End Sub
+
+    ''' <summary>⛔ RONDA 14 (rev-35, DECISIONES 15b): Paste Look. Del bundle de plantilla de piel LM que el preset
+    ''' tiene RASTREADO como inyectado (<see cref="LooksmenuLoader.LooksmenuPreset.LmTemplateInjectedHdptFormIDs"/>), retira
+    ''' de <c>HeadPartFormIDs</c> y del rastreo las piezas que NO son la cabeza/headRear de la plantilla para el sexo
+    ''' <paramref name="isFemale"/>. Las del sexo pedido quedan donde estan (sin reordenar la lista), asi que pegar entre
+    ''' dos NPC del mismo sexo no cambia nada; entre sexos distintos, <see cref="MaterializeLmTemplateBundleToPreset"/>
+    ''' pone despues las del destino. No toca las head parts que no estan rastreadas.
+    ''' <para>⛔⛔ RONDA 16 (rev-41) + RONDA 17 (rev-46) — PRECONDICION: el rastreo tiene que describir filas de
+    ''' <b>esta</b> <c>HeadPartFormIDs</c> puestas por <b>esta</b> <c>SkinTemplateId</c>. Esta funcion BORRA de la lista
+    ''' lo que el rastreo le diga, asi que cualquier desalineo del par (lista, plantilla) le saca a alguien una head
+    ''' part suya: con un rastreo del ORIGEN sobre una lista del DESTINO («Face parts» destildado) le sacaba al destino
+    ''' una head part SUYA que solo coincidia con una del bundle del origen (rev-41), y en el ESPEJO («LM skin template»
+    ''' destildado + «Face parts» tildado) le sacaba al ORIGEN una pieza recien pegada que coincidia con el bundle del
+    ''' DESTINO resuelto con el sexo del origen (rev-46). La precondicion la garantiza <c>PresetCategoryFilter.BuildFiltered</c>,
+    ''' que es la SEDE UNICA del rastreo y lo decide en las cuatro combinaciones de dueños; acá no se repite la
+    ''' pregunta.</para></summary>
+    Public Sub RetirarInyeccionLmDeOtroSexo(preset As LooksmenuLoader.LooksmenuPreset,
+                                            isFemale As Boolean,
+                                            resolver As ResolveLmSkinTemplateDelegate)
+        If preset Is Nothing OrElse resolver Is Nothing Then Return
+        If String.IsNullOrEmpty(preset.SkinTemplateId) OrElse preset.LmTemplateInjectedHdptFormIDs.Count = 0 Then Return
+        Dim tpl = resolver(preset.SkinTemplateId)
+        If tpl Is Nothing Then Return
+        Dim genderIdx As Integer = If(isFemale, 1, 0)
+        Dim delSexo As New HashSet(Of UInteger) From {tpl.HeadHdptFormID(genderIdx), tpl.HeadRearHdptFormID(genderIdx)}
+        For Each fid In preset.LmTemplateInjectedHdptFormIDs.ToList()
+            If delSexo.Contains(fid) Then Continue For
+            preset.HeadPartFormIDs.Remove(fid)
+            preset.LmTemplateInjectedHdptFormIDs.Remove(fid)
+        Next
     End Sub
 
     Private Sub AddHdptIfMissingPreset(list As List(Of UInteger), hdptFormID As UInteger)

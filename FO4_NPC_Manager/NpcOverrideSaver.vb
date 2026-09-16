@@ -92,8 +92,19 @@ Public Module NpcOverrideSaver
         Public RenderHost As Object  ' NpcRenderHost — typed loosely to avoid an extra import.
         Public DataPath As String
         ''' <summary>MainForm helper: returns the post-overlay shadow NPC_Data, or the raw
-        ''' instance unchanged when no overlay is applied.</summary>
-        Public ApplyPresetOverlayToNpcData As Func(Of NPC_Data, UInteger, NPC_Data)
+        ''' instance unchanged when no overlay is applied.
+        ''' <para>⛔⛔ RONDA 16 (DECISIONES 21, rev-42): EL TERCER ARGUMENTO ES **ESTE MISMO** `SaveContext`, y por eso
+        ''' esta en la firma. El overlay del guardado necesita el sexo EFECTIVO (ronda 15), que sale de
+        ''' <see cref="SexoEfectivoParaGuardado"/> y ESA pide un contexto; sin el parametro, `MainForm` tenia que
+        ''' ARMAR uno nuevo por NPC guardado (`NuevoContextoDeGuardado`), que COPIA las seis listas de borradores
+        ''' (outfits, LVLI, ARMO, ARMA, MSWP, marcados-para-borrar) leyendolas desde el hilo del guardado. Dos
+        ''' problemas en uno: costo por NPC y una lectura de estado de UI fuera del hilo de UI.
+        ''' <para>⛔ El contexto que llega aca es el del guardado EN CURSO -- el mismo que el orquestador usa para
+        ''' todo lo demas-- asi que la politica de hoja (`HojaDeListaPara`) y el lector de sesion (`GetParsedNpc`)
+        ''' son los MISMOS con los que se resuelven la fila de BodyGen y el payload del apply-script. La ley del sexo
+        ''' sigue teniendo UN dueño (<c>NpcTemplateMaterializer.SexoEfectivo</c>); lo que cambia es de donde sale el
+        ''' contexto, no quien contesta.</para></para></summary>
+        Public ApplyPresetOverlayToNpcData As Func(Of NPC_Data, UInteger, SaveContext, NPC_Data)
 
         ''' <summary>Set by <see cref="BuildOverrideEntry"/> when at least one NPC got our Papyrus apply-script
         ''' attached to its VMAD. The compiled .pex is then installed ONCE into <c>Data\Scripts\</c> — no point
@@ -125,6 +136,18 @@ Public Module NpcOverrideSaver
         ''' <para>⛔ OBLIGATORIO. Es el mas peligroso de los tres de olvidar: en Nothing, las doce cosas de arriba
         ''' se pierden EN SILENCIO y el ESP sale sin ninguna.</para></summary>
         Public AplicarEscalares As Action(Of NPC_Data, UInteger) = Nothing
+        ''' <summary>NPC raiz -> el resolvedor de hoja de lista nivelada para ESE NPC (en produccion
+        ''' `MainForm.HojaDeListaPara`). Lo consume <see cref="SexoEfectivoParaGuardado"/> para caminar la cadena
+        ''' de Traits de un heredero que pasa por una lista.
+        ''' <para>Opcional: con Nothing la sede de cadena corta la lista como en carga (FO4 bucket anterior, SSE
+        ''' ultimo eslabon resuelto), que es lo que ya hacen los arneses sin UI.</para></summary>
+        Public HojaDeListaPara As Func(Of UInteger, Func(Of UInteger, UInteger)) = Nothing
+        ''' <summary>⛔ R4 (ronda 2): FormID -> NPC de LA SESION (en produccion `NpcRenderContext.GetParsedNpc`, la cache
+        ''' que el NPC Editor edita y que la materializacion/el guardado usan). Lo consume
+        ''' <see cref="SexoEfectivoParaGuardado"/>: con un parse FRESCO del plugin, una plantilla a la que el usuario le
+        ''' cambio el sexo EN SESION seguia dando el sexo viejo en la fila de BodyGen y en el `IsFemale` del heredero.
+        ''' <para>Nothing = sin sesion (CLI/arneses sin cache): se lee del plugin, que en ese caso ES la unica fuente.</para></summary>
+        Public GetParsedNpc As Func(Of UInteger, NPC_Data) = Nothing
         ''' <summary>FaceGen bake delegate: invoked once per NPC during Phase 4a. Writes the 4 loose
         ''' files (NIF + 3 DDS) on the UI thread (GL-bound), returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
         ''' identifying that NPC's bake outputs so the orchestrator can batch them into one pack call.
@@ -1353,7 +1376,8 @@ Public Module NpcOverrideSaver
         Dim npcSpec = rawNpcSpec.Copia()
         fallo = ctx.MaterializarCategorias(npcSpec, npcFormID, strict)
         baseMaterializada = npcSpec.Copia()
-        npcSpec = ctx.ApplyPresetOverlayToNpcData(npcSpec, npcFormID)
+        ' ⛔ RONDA 16 (DECISIONES 21): se le pasa ESTE contexto. Ver el comentario del campo.
+        npcSpec = ctx.ApplyPresetOverlayToNpcData(npcSpec, npcFormID, ctx)
         ctx.AplicarEscalares(npcSpec, npcFormID)
         Return npcSpec
     End Function
@@ -1423,7 +1447,8 @@ Public Module NpcOverrideSaver
         If NpcApplyScriptEmitter.ApplyToNpc(npcSpec, lmPreset, Config_App.Current.Game,
                                             target.EmitApplyScript,
                                             ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt,
-                                            target.ScriptOwnsBodyMorphs, applyWarnings) Then
+                                            target.ScriptOwnsBodyMorphs, applyWarnings,
+                                            SexoEfectivoParaGuardado(npcSpec, ctx)) Then
             ctx.WroteApplyScript = True   ' at least one NPC carries it → the .pex must be installed
         End If
         Dim applyLabel = NpcLabel(npcSpec, npcFormID)
@@ -2202,6 +2227,80 @@ Public Module NpcOverrideSaver
         progress.Report(New SaveProgress With {.Phase = phase, .Detail = detail, .Determinate = False})
     End Sub
 
+    ''' <summary>⛔ El sexo EFECTIVO del NPC tal como sale al archivo: el que el juego lee con `GetSex` de la base
+    ''' viva. Envoltorio de la sede (<see cref="NpcTemplateMaterializer.SexoEfectivo"/>) con el lector de records y
+    ''' el resolvedor de hoja del guardado para ESTE NPC; lo consumen la fila de BodyGen (punto 3) y el payload del
+    ''' apply-script (punto 4), que antes leian cada uno el bit crudo por su lado.
+    ''' <para>⛔ RONDA 16 (rev-43 b): PASO A `Public` porque era la ENTRADA OBLIGATORIA de una API Public —
+    ''' <c>NpcRecordOverlay.SombraDeGuardado</c> pedia el sexo YA RESUELTO como parametro, asi que los nueve
+    ''' llamadores (produccion + ocho arneses) tenian que llamar aca.</para>
+    ''' <para>⛔⛔⛔ RONDA 18 (DECISIONES 22, rev-49): ESE MOTIVO SE FUE — `SombraDeGuardado` recibe el `SaveContext` y
+    ''' llama aca ADENTRO, una sola vez — PERO SIGUE SIENDO `Public`, Y ESTE ES EL MOTIVO MEDIDO: queda UN llamador
+    ''' fuera del ensamblado que NO pasa por `SombraDeGuardado` y que compila contra la superficie PUBLICA SOLA,
+    ''' <c>PresetCargaEstadoMotorGate.SexoDeLaApp</c> (replica «lo que hace la app al CARGAR un preset», que es
+    ''' <c>MainForm.SexoEfectivoDeLaSesion</c>, no el guardado). Volverla `Friend` no ahorra superficie: obliga a
+    ''' devolverle a ese gate el `InternalsVisibleTo` que la ronda 16 le SACO, y ese IVT apaga un testigo pasivo
+    ''' —que ese camino se pueda ejercer sin `Friend`— a cambio de nada. El otro llamador externo
+    ''' (<c>ChargenFlagSaveGate</c>, caso P3(c)) ya tiene IVT por otra razon declarada en el `.vbproj`.
+    ''' La sede NO cambia: sigue siendo <c>NpcTemplateMaterializer.SexoEfectivo</c>.</para>
+    ''' <para>⛔⛔ RONDA 19 (rev-59): es una PROYECCION de <see cref="FuenteDeTraitsParaGuardado"/> — la misma fuente de la
+    ''' que proyecta <see cref="RazaEfectivaParaGuardado"/>. La politica de hoja y el lector que vivian aca se MUDARON alla
+    ''' (no se copiaron): el mismo resultado que antes, con la politica escrita UNA vez.</para>
+    ''' <para>⛔⛔ RONDA 20a (rev-63): tampoco lee el bit de Traits. «Sin el bit ⇒ el propio» vive SOLO en la fuente, que
+    ''' sin el bit devuelve la resolucion VACIA (`Source Is Nothing`).</para></summary>
+    Public Function SexoEfectivoParaGuardado(npcSpec As NPC_Data, ctx As SaveContext) As Boolean
+        If npcSpec Is Nothing OrElse npcSpec.Record Is Nothing Then Return False
+        Return NpcTemplateMaterializer.SexoEfectivo(npcSpec, FuenteDeTraitsParaGuardado(npcSpec, ctx))
+    End Function
+
+    ''' <summary>⛔⛔⛔ RONDA 19 (rev-59, rev-54 opcion a): LA FUENTE DE TRAITS DEL GUARDADO, resuelta con la politica del
+    ''' contexto. Es la UNICA sede de la politica de hoja y del lector de records del camino de guardado; el sexo
+    ''' (<see cref="SexoEfectivoParaGuardado"/>) y la raza (<see cref="RazaEfectivaParaGuardado"/>) son proyecciones de lo
+    ''' que devuelve. Arma la politica UNA vez y llama a la sede de cadena (<c>NpcTemplateMaterializer.ResolverCadena</c>).
+    ''' <para>⛔ NO lee el override de raza del editor, y no es una omision: editar la raza DESPRENDE Traits
+    ''' (<c>NpcEditor_Form.vb</c> :1261 `traitsChanged` por `TextBoxRace` y :1303 `categoriesToOwn.Add(Traits)`), y la cache y el
+    ''' override se mueven JUNTOS (:1483 `ov.RaceFormID` y :1567 `_npc.Record.Race` sobre la instancia cacheada; al descartar
+    ''' y al releer tras guardar, `MainForm` los saca o los repone a la vez). La pregunta «que raza pisa el editor» es OTRA y
+    ''' tiene su propio hook, <see cref="NpcRecordOverlay.EffectiveRaceResolver"/> (solo el override).</para>
+    ''' <para>⛔⛔ RONDA 20a (rev-63): SIN el bit de Traits devuelve la resolucion VACIA (`Source Is Nothing`): no hay cadena
+    ''' que el motor copie, y las proyecciones contestan el propio SOLO por eso. La regla «sin bit ⇒ propio» vive aca y en
+    ''' ningun otro lugar del guardado.</para></summary>
+    Private Function FuenteDeTraitsParaGuardado(npcSpec As NPC_Data, ctx As SaveContext) As NpcTemplateMaterializer.TraitsResolution
+        If npcSpec Is Nothing OrElse npcSpec.Record Is Nothing OrElse
+           Not NpcTemplateHelpers.HasTemplateFlag(npcSpec.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.Traits) Then
+            Return New NpcTemplateMaterializer.TraitsResolution()
+        End If
+        Dim pm = ctx.PluginManager
+        ' ⛔ R4 (ronda 2): los records de LA SESION, no un parse fresco del plugin; y la hoja del contexto.
+        ' ⛔⛔ RONDA 20b: la lectura se arma DESDE el contexto y los defaults (sin lector, el parse del plugin; sin hoja, la
+        ' de la app sin pantalla) los pone `LecturaDeCadena.Resuelta`, la misma sede que el horneado y los tintes.
+        Dim lectura As New LecturaDeCadena With {
+            .PluginManager = pm,
+            .Leer = ctx.GetParsedNpc,
+            .HojaPara = ctx.HojaDeListaPara}
+        Dim politica = lectura.Resuelta(npcSpec.FormID)
+        Return NpcTemplateMaterializer.ResolverCadena(npcSpec, NPC_TemplateCategory.Traits, politica.Leer, politica.Hoja, NpcTemplateHelpers.FirmaDeRecord(pm))
+    End Function
+
+    ''' <summary>⛔⛔⛔ RONDA 19 (rev-54 opcion a, rev-55): LA RAZA EFECTIVA del NPC tal como la deja el bit 0 en la base viva.
+    ''' Proyeccion de <see cref="FuenteDeTraitsParaGuardado"/>, hermana de <see cref="SexoEfectivoParaGuardado"/>.
+    ''' <list type="bullet">
+    ''' <item>Sin el bit de Traits, o sin fuente (`Unresolvable` / `NoSourceToLose`: el motor no copia nada) ⇒ la PROPIA,
+    ''' <c>npcSpec.Record.Race</c>.</item>
+    ''' <item>Con fuente ⇒ LO MISMO que copia <c>NpcTemplateMaterializer.MaterializeTraits</c>
+    ''' (`CopiarReferencia(d, s.RacePresente, s.Race, "RNAM", ...)`): el `RNAM` de la fuente si lo declara, y si NO lo
+    ''' declara el destino queda SIN `RNAM` (`QuitarSubrecord`), que se lee 0 (`CanonBridge.U32`: nodo ausente ⇒ 0UI).</item>
+    ''' </list>
+    ''' La consume la validacion de tintes del Load de LooksMenu (FO4), que antes elegia la plantilla de tintes con la raza
+    ''' CRUDA del heredero. ⛔ No lee el override de raza: ver <see cref="FuenteDeTraitsParaGuardado"/>.
+    ''' <para>⛔⛔ RONDA 20a (rev-63): no lee el bit de Traits; sin el bit la fuente viene VACIA y cae en el propio.</para></summary>
+    Public Function RazaEfectivaParaGuardado(npcSpec As NPC_Data, ctx As SaveContext) As UInteger
+        If npcSpec Is Nothing OrElse npcSpec.Record Is Nothing Then Return 0UI
+        Dim fuente = FuenteDeTraitsParaGuardado(npcSpec, ctx)
+        If fuente.Source Is Nothing OrElse fuente.Source.Record Is Nothing Then Return npcSpec.Record.Race
+        Return If(fuente.Source.Record.RacePresente, fuente.Source.Record.Race, 0UI)
+    End Function
+
     ''' <summary>Overwrite the entry for one NPC in an in-memory sidecar with whatever its overlay
     ''' currently holds (BodyMorphs + SkinTemplate). Entries for other NPCs are preserved. The
     ''' caller reads the sidecar once and calls this per NPC, then writes once.</summary>
@@ -2225,9 +2324,14 @@ Public Module NpcOverrideSaver
         ' drift and silently drop fields, wiping them on a second Save.
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
+        ' ⛔⛔ PUNTO 3: EL SEXO DE LA FILA ES EL EFECTIVO, no el bit crudo del record escrito. skee y f4ee registran
+        ' la fila en el mapa de SU sufijo (skee BodyMorphInterface.cpp:1600-1734; f4ee BodyGenInterface.cpp:278-412)
+        ' y la buscan con `GetSex` de la base viva, que para un heredero trae el 0x1 FUSIONADO de la plantilla (SSE
+        ' 0x1403C20E3, FO4 0x1406582C5). Con el bit crudo, un heredero cuyo sexo propio difiere del de su plantilla
+        ' quedaba en el mapa equivocado y sus morphs no se aplicaban nunca.
         Dim entry = BssliderSidecar.EntryFromPreset(overlay,
                                                     If(npcSpec.EditorID, ""),
-                                                    If(npcSpec.Record.ConfigurationFlagsFemale, "female", "male"))
+                                                    If(SexoEfectivoParaGuardado(npcSpec, ctx), "female", "male"))
 
         ' Always overwrite the NPC's slot — even if entry ends up empty. Write() drops empty entries
         ' so a clear-then-save round trip removes the row instead of leaving stale data on disk.
@@ -2536,7 +2640,8 @@ Public Module NpcOverrideSaver
             If NpcApplyScriptEmitter.ApplyToNpc(parsed, preset, Config_App.Current.Game,
                                                 target.EmitApplyScript,
                                                 ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt,
-                                                target.ScriptOwnsBodyMorphs, refreshWarnings) Then
+                                                target.ScriptOwnsBodyMorphs, refreshWarnings,
+                                                SexoEfectivoParaGuardado(parsed, ctx)) Then
                 ctx.WroteApplyScript = True
             End If
             Dim refreshLabel = NpcLabel(parsed, globalFid)

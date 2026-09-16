@@ -23,6 +23,7 @@ Public Module FaceTintLayerBuilder
                           raceFormID As UInteger,
                           isFemale As Boolean,
                           pluginManager As PluginManager,
+                          lectura As LecturaDeCadena,
                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                           overlayPreset As LooksmenuLoader.LooksmenuPreset,
                           tintBytesCache As Dictionary(Of String, Byte()),
@@ -47,6 +48,10 @@ Public Module FaceTintLayerBuilder
         ' ⛔ NO cambiar esto por `state.RecordBase`: la base es para el CUERPO y para los campos que el
         ' bit 0 copia. Si el usuario edita la cara, la puerta desprende y a partir de ahi el NPC ya no
         ' hereda -- la cara pasa a salir de su propio record por el mismo camino, sin ninguna excepcion.
+        ' ⛔ Esa frase era FALSA para las capas TINI, el sculpt y los custom morphs de Skyrim: la puerta
+        ' preguntaba solo «¿los copia el bit 0?», y no los copia, asi que no desprendia -- y el juego igual
+        ' no los mostraba, porque abre el FaceGen del ULTIMO eslabon. Desde el punto 1 (14-sep) la puerta
+        ' pregunta `PresetCategories.DesprendeElCanal` y la frase vale para todos los canales de cara.
         ' ⛔⛔ LA PLANTILLA VA CON SU PROPIO OVERLAY. Aca se componia la autoria del NPC sobre el
         ' record CRUDO de su plantilla, asi que si el usuario le habia cargado un preset a la PLANTILLA, el
         ' heredero seguia mostrando la cara vieja de ella -- justo lo contrario de lo que promete el cartel
@@ -55,7 +60,11 @@ Public Module FaceTintLayerBuilder
         ' congelado del editor; este era el CUARTO lector del terminal y el unico que no la usaba.
         ' ⛔ Solo cuando la cara viene de OTRO record: para un no heredero el modelo es el propio NPC, y
         ' estamparle su autoria dos veces es la ida y vuelta que ya perdio un escalon de 255 una vez.
-        Dim recordDelModelo = NpcRecordOverlay.GetParsedNpc(modelFormID, pluginManager)
+        ' ⛔⛔ RONDA 20b (D2): el record del modelo sale de LA LECTURA del llamador, no de un parse del plugin. El render
+        ' pasa la cache de la sesion; el horneado, su lectura congelada. Con el parse, un modelo editado en la sesion
+        ' (la plantilla con otra raza, otra cara) se componia con el record VIEJO. La instancia que llega puede ser la
+        ' de la cache: `SombraDelTerminal`/`AplicarOverlay` no la mutan (devuelven copia) y la raza se estampa sobre esa copia.
+        Dim recordDelModelo = lectura.Resuelta(rootFormID).Leer(modelFormID)
         If modelFormID <> rootFormID Then
             recordDelModelo = NpcRecordOverlay.SombraDelTerminal(recordDelModelo, appliedPresets,
                                                                  pluginManager, Nothing, parseRace)
@@ -69,7 +78,7 @@ Public Module FaceTintLayerBuilder
         ' parseado trae la cruda del récord. Alinearlas acá deja el resultado auto-consistente (built.race y
         ' built.npcData.RaceFormID = la misma raza) — sin esto, tras un cambio de raza los consumidores que
         ' leían npcData.RaceFormID componían la CARA con el catálogo de la raza vieja. Mutar es seguro:
-        ' GetParsedNpc parsea fresco (sin cache) y el shadow del preset también es una copia propia.
+        ' `AplicarOverlay` devuelve SIEMPRE una copia (con o sin preset), nunca la instancia de la lectura.
         If raceFormID <> 0UI AndAlso npcData.Record.Race <> raceFormID Then
             npcData.Record.Race = raceFormID
         End If

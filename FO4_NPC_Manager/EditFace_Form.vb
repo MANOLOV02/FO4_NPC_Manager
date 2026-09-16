@@ -854,7 +854,7 @@ Public Class EditFace_Form
         Dim oldCursor = Cursor
         Cursor = Cursors.WaitCursor
         Try
-            res = SseMorphReverseEngineer.Build(_rootNpcFormID, _pluginManager, _appliedPresets)
+            res = SseMorphReverseEngineer.Build(_rootNpcFormID, _pluginManager, _mainForm.LecturaDeHorneado(), _appliedPresets)
         Catch ex As Exception
             Cursor = oldCursor
             MessageBox.Show(Me, "Reconstruction failed:" & vbCrLf & vbCrLf & ex.ToString(),

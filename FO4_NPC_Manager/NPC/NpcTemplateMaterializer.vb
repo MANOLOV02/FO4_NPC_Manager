@@ -17,20 +17,21 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' al renderizar, hornear o guardar. FTST, QNAM y APPR fueron exactamente ese agujero (medido: 52 NPCs de SSE
 ''' perdian un valor real, 0 en FO4 - latente, no ausente). Al agregar un campo a TraitsState, agregarlo aca en el
 ''' MISMO commit.</para>
-''' <para>Alignment y Weapon List siguen fuera del modelo. Las categorias soportadas se materializan completas;
-''' una categoria no soportada falla cerrada y conserva su flag de herencia.</para></summary>
+''' <para>Las categorias soportadas se materializan completas; una categoria no soportada falla cerrada y
+''' conserva su flag de herencia.</para>
+''' <para>⛔ Aca vivia `UnmodeledTraitsFields = {"Alignment", "Weapon List"}`, un "TODO visible" de campos de
+''' Traits sin modelar. Era RANCIO: ninguno de los dos es campo del `NPC_` en ninguno de los dos esquemas
+''' (`WbSchemaGen_FO4` / `WbSchemaGen_TES5`: los dos nombres solo aparecen adentro de parametros de
+''' condicion/efecto de otros records), asi que no habia nada que materializar, y no tenia un solo
+''' consumidor. Borrado por decision del usuario (14-sep, punto 18).</para></summary>
 Friend NotInheritable Class NpcTemplateMaterializer
 
     Private Sub New()
     End Sub
 
-    ''' <summary>Traits sub-fields the app does not model yet, so they are not materialized here. Kept as a
-    ''' visible TODO surface (and for a caller that wants to warn the user).</summary>
-    Friend Shared ReadOnly UnmodeledTraitsFields As String() = {"Alignment", "Weapon List"}
-
-    ''' <summary>Guard against a cyclic template chain (a resolves to b resolves to a). The engine's walk
-    ''' has a cycle check; ours bounds the depth.</summary>
-    Private Const MaxChainDepth As Integer = 32
+    ' ⛔ Aca vivia `MaxChainDepth = 32`, un tope de profundidad sin cita («the engine's walk has a cycle
+    ' check; ours bounds the depth» -- el motor NO tiene guarda de ciclo: crashea). El conjunto de vistos de
+    ' `ResolverCadena` ya corta el unico caso en que una cadena no termina, que es el ciclo.
     ''' <summary>Make <paramref name="npc"/> own <paramref name="category"/>: materialize the resolved
     ''' template-chain values for that category into the NPC's own fields, then clear the Use-X flag bit.
     ''' No-op (returns False) when the NPC does not inherit the category (flag already clear) — its own
@@ -168,7 +169,8 @@ Friend NotInheritable Class NpcTemplateMaterializer
     Friend Shared Function ProbeCategoryOwn(npc As NPC_Data,
                                             category As NPC_TemplateCategory,
                                             getParsedNpc As Func(Of UInteger, NPC_Data),
-                                            Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As TraitsResolution
+                                            resolveLvlnPick As Func(Of UInteger, UInteger),
+                                            firmaDe As Func(Of UInteger, String)) As TraitsResolution
         If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then
             Return New TraitsResolution With {.Outcome = MaterializeOutcome.NotInheriting}
         End If
@@ -178,7 +180,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
                  NPC_TemplateCategory.Keywords, NPC_TemplateCategory.Factions, NPC_TemplateCategory.Inventory,
                  NPC_TemplateCategory.SpellList, NPC_TemplateCategory.AIData,
                  NPC_TemplateCategory.DefaultPackageList, NPC_TemplateCategory.AttackData
-                Return ResolveCategorySource(npc, category, getParsedNpc, resolveLvlnPick)
+                Return ResolverCadena(npc, category, getParsedNpc, resolveLvlnPick, firmaDe)
             Case Else
                 Return New TraitsResolution With {.Outcome = MaterializeOutcome.UnsupportedCategory,
                                                   .LogFormID = npc.FormID, .LogEditorId = npc.EditorID,
@@ -244,17 +246,55 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' SSE 1294 of 2461 (6 single, 1288 multi).</para>
     '''
     ''' <para>Refusal is reserved for the case where there is nothing to pick FROM (unreadable record, cycle,
-    ''' list with no NPC_ leaves) — measured 0 times in either vanilla load order.</para></summary>
-    Private Shared Function ResolveCategorySource(npc As NPC_Data,
-                                                  category As NPC_TemplateCategory,
-                                                  getParsedNpc As Func(Of UInteger, NPC_Data),
-                                                  resolveLvlnPick As Func(Of UInteger, UInteger)) As TraitsResolution
-        Dim res As New TraitsResolution With {.LogFormID = npc.FormID, .LogEditorId = npc.EditorID}
+    ''' list with no NPC_ leaves) — measured 0 times in either vanilla load order.</para>
+    ''' <para>⛔⛔ ES LA UNICA RESOLUCION DE CADENA DE LA APP (DECISIONES 14-sep, punto 11). Habia CINCO
+    ''' caminantes con cinco respuestas distintas para la misma cadena: este, el del render
+    ''' (`NpcStateResolver.ResolveTraitsStateFromNPC/ResolveInventoryStateFromNPC`, recursivo, con su propia
+    ''' regla de lista), `NpcStateResolver.TerminalDe`, el del panel de detalle
+    ''' (`RecordDetailsTree.ResolverNpcHeredado`, que tomaba la PRIMERA entrada de una lista), el del filtro
+    ''' (`NpcFilterIndex.ResolveSource`, que ante un ciclo devolvia el ultimo antes de repetir) y el de los
+    ''' nombres heredados (`MainForm.ResolveInheritedFullName`, que cortaba en el primer eslabon CON nombre
+    ''' aunque heredara Base Data). Hoy todos llaman aca; cada uno elige solo QUE HOJA de lista quiere
+    ''' (<paramref name="resolveLvlnPick"/>) y que hace con la fuente.</para>
+    ''' <para>⛔ Con las dos leyes que ningun caminante modelaba adentro:</para>
+    ''' <list type="bullet">
+    ''' <item>FO4 — bucket con el bit puesto y puntero 0, ilegible o LVLN sin hoja (en carga): el origen es
+    ''' el del bucket ANTERIOR en el orden de la copia. Ver <see cref="OrigenDelBucketAnterior"/>.</item>
+    ''' <item>SSE — colapso de la cadena en una LVLN (`0x1403C2620`..`0x1403C264B`, `0x1401DD260`): NO cambia
+    ''' ninguna fuente de bucket, y por eso este caminante no lo aplica; ver
+    ''' <see cref="BanderasDePlantillaEfectivas"/>, que tiene la demostracion y es la sede de las banderas y del
+    ''' Unique efectivos.</item>
+    ''' </list>
+    ''' <para>⛔ Sin tope de profundidad: el conjunto de vistos corta el ciclo, que es la unica cadena que no
+    ''' termina (el motor no tiene guarda: crashea; la app lo contesta `Unresolvable`).</para></summary>
+    ''' <param name="firmaDe">FormID -> firma del record o Nothing si no existe (`NpcTemplateHelpers.FirmaDeRecord`).
+    ''' ⛔ OBLIGATORIO: separa el puntero a LVLN (se resuelve por hoja) del puntero ILEGIBLE (FO4: origen del bucket
+    ''' anterior). Sin firma esas dos clases son indistinguibles y la ley del punto 8 no se puede aplicar.</param>
+    ''' <param name="hojaDeOtroBucket">⛔ RONDA 4 (rev-10): la hoja para la lista de un bucket ANTERIOR (FO4, punto 8), con
+    ''' el bucket que la pide. Es la politica de hoja de ESE bucket, no la de <paramref name="category"/>: el motor comparte
+    ''' la eleccion por LVLN entre buckets (`0x140309E4E`) pero el ancla y el rotulo son del bucket dueño del puntero.
+    ''' Nothing = <paramref name="resolveLvlnPick"/> para todos (los consumidores cuya politica no depende del bucket).</param>
+    Friend Shared Function ResolverCadena(npc As NPC_Data,
+                                          category As NPC_TemplateCategory,
+                                          getParsedNpc As Func(Of UInteger, NPC_Data),
+                                          resolveLvlnPick As Func(Of UInteger, UInteger),
+                                          firmaDe As Func(Of UInteger, String),
+                                          Optional hojaDeOtroBucket As Func(Of NPC_TemplateCategory, UInteger, UInteger) = Nothing) As TraitsResolution
+        Dim res As New TraitsResolution
+        If firmaDe Is Nothing Then Throw New ArgumentNullException(NameOf(firmaDe),
+            "La sede de cadena necesita la firma del record: sin ella un puntero a LVLN y uno ilegible son la misma clase.")
+        If npc Is Nothing OrElse npc.Record Is Nothing Then
+            res.Outcome = MaterializeOutcome.Unresolvable
+            res.LogReason = "no NPC record"
+            Return res
+        End If
+        res.LogFormID = npc.FormID
+        res.LogEditorId = npc.EditorID
         Dim current = npc
         Dim seen As New HashSet(Of UInteger)
         Dim wentThroughLeveledList = False
 
-        For depth = 0 To MaxChainDepth - 1
+        Do
             If Not NpcTemplateHelpers.HasTemplateFlag(current.Record.ConfigurationTemplateFlags, category) Then
                 ' current owns the category → it is the source (unless it IS the original npc, which by
                 ' contract inherits, so we only get here after ≥1 hop).
@@ -270,101 +310,259 @@ Friend NotInheritable Class NpcTemplateMaterializer
             End If
 
             Dim srcFid = NpcTemplateHelpers.ResolveTemplateSourceFormID(current, category)
+            ' ⛔ `next_` Nothing al salir de este bloque = EL PUNTERO MURIO: bit sin TPLT/TPTA, record
+            ' ilegible, lista sin hoja o hoja que no parsea. Las tres formas son UNA clase y se contestan
+            ' juntas mas abajo -- se fueron arreglando de a una y cada vez volvia la que faltaba.
+            Dim next_ As NPC_Data = Nothing
+            Dim porQueMurio As String = Nothing
+            ' ⛔⛔ DECISIONES 8-acotado (rev-01): la regla del bucket anterior es SOLO para "sin plantilla o plantilla
+            ' que no existe": puntero 0, o un record que no existe / no es legible como plantilla (ni NPC_ ni LVLN).
+            ' Un puntero a LVLN sigue el camino de la hoja; sin hoja cae a la regla de abajo (ultimo resuelto).
+            Dim firma As String = Nothing
+            If srcFid <> 0UI Then firma = firmaDe(srcFid)
+            Dim punteroSinPlantilla As Boolean =
+                srcFid = 0UI OrElse firma Is Nothing OrElse
+                (Not String.Equals(firma, "NPC_", StringComparison.Ordinal) AndAlso
+                 Not String.Equals(firma, "LVLN", StringComparison.Ordinal))
             If srcFid = 0UI Then
-                ' ⛔⛔ UN BIT SIN PUNTERO ES UN PUNTERO MUERTO, igual que uno ilegible. A profundidad
-                ' >= 1 la fuente es el ULTIMO ESLABON RESUELTO, no «ninguna»: el motor camina la cadena
-                ' puntero por puntero y se detiene donde el puntero muere (`TESNPC+0x270` en Fallout,
-                ' `0x140658E80`; `+0x1F0` en Skyrim, `0x1403C2E20`), y lo copiado hasta ahi ya esta copiado.
-                ' ⛔ Esto lo destapo el caso sembrado: la primera correccion cubria solo el puntero
-                ' ILEGIBLE y este camino --el bit puesto sin TPLT-- seguia devolviendo «ninguna», con lo
-                ' cual el horneado y el render volvian a contestar distinto para la misma cadena.
+                porQueMurio = $"el eslabon 0x{current.FormID:X8} tiene el bit sin TPLT/TPTA"
+            Else
+                If Not seen.Add(srcFid) Then
+                    res.Outcome = MaterializeOutcome.Unresolvable
+                    res.LogReason = $"cycle in the chain (0x{srcFid:X8} seen twice)"
+                    Return res
+                End If
+                next_ = getParsedNpc(srcFid)
+                If next_ Is Nothing Then
+                    ' Not an NPC_ we can parse — a leveled list (the common case) or a missing/foreign record.
+                    ' PIN one leaf and keep walking from it: the leaf may itself inherit Traits, in which case
+                    ' the real source is further down the chain.
+                    Dim pick As UInteger = 0UI
+                    If resolveLvlnPick IsNot Nothing Then pick = resolveLvlnPick(srcFid)
+                    If pick = 0UI Then
+                        porQueMurio = $"el eslabon 0x{srcFid:X8} no resuelve (ilegible, o lista sin hoja)"
+                    Else
+                        If Not seen.Add(pick) Then
+                            res.Outcome = MaterializeOutcome.Unresolvable
+                            res.LogReason = $"cycle through leveled list 0x{srcFid:X8}"
+                            Return res
+                        End If
+                        next_ = getParsedNpc(pick)
+                        If next_ Is Nothing Then
+                            porQueMurio = $"la hoja 0x{pick:X8} no se puede parsear"
+                        Else
+                            wentThroughLeveledList = True
+                        End If
+                    End If
+                End If
+            End If
+
+            ' ⛔⛔ PUNTO 8 — FALLOUT 4: UN PUNTERO MUERTO NO COPIA "DE NADIE". La copia de FO4 llama a la
+            ' lambda `0x140664FC0` para los once buckets EN ORDEN (8,7,0,12,1,2,3,4,5,10,11: `0x14065812C`
+            ' y siguientes) con UNA variable de origen compartida; la lambda solo la pisa con un puntero NPC_
+            ' (`0x140664FE3`/`0x140665005` `cmp byte [..+0x1a],0x2d`), asi que un bucket cuyo puntero no es
+            ' NPC_ copia del origen del bucket anterior. Ver `OrigenDelBucketAnterior`.
+            ' ⛔ Skyrim no: sin puntero NO copia (`0x1403C1E5B je 0x1403C265A`), y ahi sigue valiendo lo de
+            ' abajo -- los datos del eslabon son los suyos.
+            ' ⛔ Y SOLO con `punteroSinPlantilla` (8-acotado): un puntero a LVLN sin hoja NO toma el bucket anterior.
+            If next_ Is Nothing AndAlso punteroSinPlantilla AndAlso Not EsSse(current.Record) Then
+                Dim previoDeLista As Boolean = False
+                Dim hojaPorBucket As Func(Of NPC_TemplateCategory, UInteger, UInteger) = hojaDeOtroBucket
+                If hojaPorBucket Is Nothing AndAlso resolveLvlnPick IsNot Nothing Then
+                    hojaPorBucket = Function(b As NPC_TemplateCategory, lista As UInteger) resolveLvlnPick(lista)
+                End If
+                Dim previo = OrigenDelBucketAnterior(current, category, getParsedNpc, hojaPorBucket, firmaDe, previoDeLista)
+                If previo IsNot Nothing Then
+                    If Not seen.Add(previo.FormID) Then
+                        res.Outcome = MaterializeOutcome.Unresolvable
+                        res.LogReason = $"cycle in the chain (0x{previo.FormID:X8} seen twice, via the previous bucket)"
+                        Return res
+                    End If
+                    next_ = previo
+                    If previoDeLista Then wentThroughLeveledList = True
+                End If
+                ' ⛔ HUECO DECLARADO: si ningun bucket anterior aporto un NPC_, el motor copia del NPC POR
+                ' DEFECTO que arma en memoria (`0x140665022`: `0x1431F11D8`, construido por `0x14064E700`).
+                ' Ese NPC no es un record, la app no lo puede leer, y sus valores no estan transcritos: se
+                ' cae a la regla de abajo (NO canonica para este caso).
+            End If
+
+            If next_ Is Nothing Then
+                ' ⛔⛔ UN SALTO QUE FALLA NO BORRA LOS QUE SI RESOLVIERON. A profundidad >= 1 la fuente es
+                ' el ULTIMO ESLABON RESUELTO: el motor camina la cadena PUNTERO POR PUNTERO hasta el ultimo
+                ' (`TESNPC+0x270` en Fallout, `0x140658E80`-`0x...EAA`; `TESNPC+0x1F0` en Skyrim,
+                ' `0x1403C2E20`-`0x...E49`) y se detiene donde el puntero muere; lo copiado hasta ahi ya esta.
                 If Not ReferenceEquals(current, npc) Then
                     res.Outcome = If(wentThroughLeveledList,
                                      MaterializeOutcome.MaterializedFromLeveledPick,
                                      MaterializeOutcome.Materialized)
                     res.Source = current
-                    res.LogReason = $"el eslabon 0x{current.FormID:X8} tiene el bit sin TPLT/TPTA; se toma " &
-                                    "como ultimo resuelto"
+                    res.LogReason = $"{porQueMurio}; se toma el ultimo resuelto 0x{current.FormID:X8}"
                     Return res
                 End If
-                ' A profundidad 0: el NPC mismo tiene el bit sin puntero. El motor no tiene NADA que copiar.
-                res.Outcome = MaterializeOutcome.NoSourceToLose
-                res.LogReason = "no TPLT/TPTA"
+                ' A profundidad 0 no se resolvio NADA: devolver el propio NPC como su fuente seria decir que
+                ' se hereda de si mismo. Bit sin puntero = el motor no tiene nada que copiar.
+                res.Outcome = If(srcFid = 0UI, MaterializeOutcome.NoSourceToLose, MaterializeOutcome.Unresolvable)
+                res.LogReason = porQueMurio
                 Return res
-            End If
-            If Not seen.Add(srcFid) Then
-                res.Outcome = MaterializeOutcome.Unresolvable
-                res.LogReason = $"cycle in the chain (0x{srcFid:X8} seen twice)"
-                Return res
-            End If
-
-            Dim next_ = getParsedNpc(srcFid)
-            If next_ Is Nothing Then
-                ' Not an NPC_ we can parse — a leveled list (the common case) or a missing/foreign record.
-                ' PIN one leaf and keep walking from it: the leaf may itself inherit Traits, in which case the
-                ' real source is further down the chain.
-                Dim pick As UInteger = 0UI
-                If resolveLvlnPick IsNot Nothing Then pick = resolveLvlnPick(srcFid)
-                If pick = 0UI Then
-                    ' ⛔⛔ UN SALTO INTERMEDIO QUE FALLA NO BORRA LOS QUE SI RESOLVIERON. Aca se
-                    ' devolvia `Unresolvable` SIEMPRE, y el horneado caia al propio NPC -- mientras el render
-                    ' se quedaba con el ULTIMO ESLABON RESUELTO. Dos respuestas para la misma cadena.
-                    ' ⛔ La correcta es la del render, y no por gusto: el motor camina la cadena
-                    ' PUNTERO POR PUNTERO hasta el ultimo (`TESNPC+0x270` en Fallout, `0x140658E80`-`0x...EAA`;
-                    ' `TESNPC+0x1F0` en Skyrim, `0x1403C2E20`-`0x...E49`) y se detiene donde el puntero muere.
-                    ' Un eslabon que no resuelve ES el puntero muerto: lo copiado hasta ahi ya esta copiado.
-                    ' ⛔ A profundidad 0 sigue siendo `Unresolvable`: ahi no se resolvio NADA, y devolver
-                    ' el propio NPC como su fuente seria decir que se hereda de si mismo.
-                    If Not ReferenceEquals(current, npc) Then
-                        res.Outcome = If(wentThroughLeveledList,
-                                         MaterializeOutcome.MaterializedFromLeveledPick,
-                                         MaterializeOutcome.Materialized)
-                        res.Source = current
-                        res.LogReason = $"el eslabon 0x{srcFid:X8} no resuelve; se toma el ultimo resuelto " &
-                                        $"0x{current.FormID:X8}"
-                        Return res
-                    End If
-                    res.Outcome = MaterializeOutcome.Unresolvable
-                    res.LogReason = $"source 0x{srcFid:X8} is unreadable or has no NPC_ leaves"
-                    Return res
-                End If
-                If Not seen.Add(pick) Then
-                    res.Outcome = MaterializeOutcome.Unresolvable
-                    res.LogReason = $"cycle through leveled list 0x{srcFid:X8}"
-                    Return res
-                End If
-                Dim picked = getParsedNpc(pick)
-                If picked Is Nothing Then
-                    ' ⛔⛔ EL TERCER HERMANO DEL MISMO PUNTERO MUERTO. La hoja se eligio pero no se
-                    ' puede parsear: para el motor es otra vez un puntero que muere, asi que a profundidad
-                    ' >= 1 la fuente es el ULTIMO ESLABON RESUELTO, igual que el puntero ilegible y que el
-                    ' bit sin TPLT.
-                    ' ⛔ SE CIERRA POR CLASE, NO POR ENUMERACION. Las tres formas las fui arreglando de
-                    ' a una --y las dos primeras solo porque un caso sembrado las destapo--. Una regla que
-                    ' se cierra caso por caso vuelve por el que falta; la clase es "el puntero murio".
-                    If Not ReferenceEquals(current, npc) Then
-                        res.Outcome = If(wentThroughLeveledList,
-                                         MaterializeOutcome.MaterializedFromLeveledPick,
-                                         MaterializeOutcome.Materialized)
-                        res.Source = current
-                        res.LogReason = $"la hoja 0x{pick:X8} no se puede parsear; se toma el ultimo resuelto " &
-                                        $"0x{current.FormID:X8}"
-                        Return res
-                    End If
-                    res.Outcome = MaterializeOutcome.Unresolvable
-                    res.LogReason = $"leveled-list pick 0x{pick:X8} could not be parsed"
-                    Return res
-                End If
-                wentThroughLeveledList = True
-                next_ = picked
             End If
 
             current = next_
-        Next
+        Loop
+    End Function
 
-        res.Outcome = MaterializeOutcome.Unresolvable
-        res.LogReason = $"chain deeper than {MaxChainDepth}"
-        Return res
+    ''' <summary>El orden en que la copia de Fallout 4 (`0x1406580A0`) llama a la lambda `0x140664FC0`, con el
+    ''' bucket en edx: `0x140658140` (8), `0x1406581CE` (7), `0x14065826B` (0), `0x140658535` (0xC),
+    ''' `0x14065857C` (1), `0x1406586AE` (2), `0x140658700` (3), `0x140658768` (4), `0x1406587DE` (5),
+    ''' `0x140658825` (0xA), `0x140658872` (0xB). Los buckets 6 y 9 no pasan por la lambda.</summary>
+    Private Shared ReadOnly OrdenDeCopiaFo4 As NPC_TemplateCategory() = {
+        NPC_TemplateCategory.Inventory, NPC_TemplateCategory.BaseData, NPC_TemplateCategory.Traits,
+        NPC_TemplateCategory.Keywords, NPC_TemplateCategory.Stats, NPC_TemplateCategory.Factions,
+        NPC_TemplateCategory.SpellList, NPC_TemplateCategory.AIData, NPC_TemplateCategory.AIPackages,
+        NPC_TemplateCategory.DefaultPackageList, NPC_TemplateCategory.AttackData}
+
+    ''' <summary>⛔⛔ PUNTO 8 (FO4): el origen que la copia deja en su variable compartida ANTES de llegar al
+    ''' bucket <paramref name="category"/> de <paramref name="eslabon"/>.
+    ''' <para>La lambda `0x140664FC0`, por bucket, en orden: (1) `0x140664FD9 call 0x140309770` trae el puntero
+    ''' del bucket y, si es NPC_ (`0x140664FE3`), lo deja como origen; (2) si viene el arreglo de hojas del
+    ''' spawn por lista y la ranura del bucket es NPC_ (`0x140665005`), lo pisa; (3) si el origen sigue vacio,
+    ''' pone el NPC por defecto (`0x140665022`). La variable NO se reinicia entre buckets
+    ''' (`0x14065812C mov [rbp+0x30],r15` una sola vez; cada vuelta la reescribe con el retorno), y la lambda se
+    ''' llama para los once buckets tenga o no el bit: el bit se mira DESPUES (`0x140658155 call 0x140309730`).</para>
+    ''' <para>El puntero del bucket es la sede de la app (`NpcTemplateHelpers.ResolveTemplateSourceFormID`:
+    ''' TPTA[k], si no TPLT). La hoja del paso (2) es la que elige <paramref name="resolveLvlnPick"/> para esa
+    ''' lista, que la app comparte entre buckets igual que el motor (`0x140309E4E`).</para>
+    ''' <para>Devuelve Nothing si ningun bucket anterior aporto un NPC_ (el motor pondria el NPC por defecto, que
+    ''' la app no modela) o si <paramref name="category"/> no pasa por la lambda (6, 9).</para></summary>
+    Private Shared Function OrigenDelBucketAnterior(eslabon As NPC_Data,
+                                                    category As NPC_TemplateCategory,
+                                                    getParsedNpc As Func(Of UInteger, NPC_Data),
+                                                    resolveLvlnPick As Func(Of NPC_TemplateCategory, UInteger, UInteger),
+                                                    firmaDe As Func(Of UInteger, String),
+                                                    ByRef deLista As Boolean) As NPC_Data
+        deLista = False
+        Dim hasta = Array.IndexOf(OrdenDeCopiaFo4, category)
+        If hasta < 0 Then Return Nothing
+        Dim origen As NPC_Data = Nothing
+        ' ⛔ R9: se recorre HASTA el bucket pedido y el ultimo que aporta GANA -- la lambda reescribe la MISMA variable
+        ' en cada vuelta (`0x140664FED mov [rdx],rax`), no se queda con el primero.
+        For i = 0 To hasta - 1
+            ' ⛔ Sin el bit de ESE bucket no hay puntero: `0x140309770` devuelve 0 (`0x140309783`) y la lambda
+            ' no toca el origen. `ResolveTemplateSourceFormID` no mira el bit, asi que la guarda va aca.
+            If Not NpcTemplateHelpers.HasTemplateFlag(eslabon.Record.ConfigurationTemplateFlags,
+                                                      OrdenDeCopiaFo4(i)) Then Continue For
+            Dim ptr = NpcTemplateHelpers.ResolveTemplateSourceFormID(eslabon, OrdenDeCopiaFo4(i))
+            If ptr = 0UI Then Continue For
+            Dim n = getParsedNpc(ptr)
+            Dim viaLista = False
+            ' ⛔ R1 (8-acotado): un puntero a LVLN aporta origen SOLO por la hoja (la ranura del spawn,
+            ' `0x140665005`); sin hoja no aporta. Un puntero que no es LVLN no pide hoja.
+            If n Is Nothing AndAlso resolveLvlnPick IsNot Nothing AndAlso
+               String.Equals(firmaDe(ptr), "LVLN", StringComparison.Ordinal) Then
+                ' ⛔ rev-10: con el bucket DUEÑO del puntero, no con el que se esta resolviendo.
+                Dim hoja = resolveLvlnPick(OrdenDeCopiaFo4(i), ptr)
+                If hoja <> 0UI Then
+                    n = getParsedNpc(hoja)
+                    viaLista = n IsNot Nothing
+                End If
+            End If
+            If n IsNot Nothing Then
+                origen = n
+                deLista = viaLista
+            End If
+        Next
+        Return origen
+    End Function
+
+    ''' <summary>Las banderas de plantilla y el bit Unique que el motor deja en memoria.</summary>
+    Friend Structure BanderasEfectivas
+        ''' <summary>Template Flags efectivas (u16).</summary>
+        Public TemplateFlags As UShort
+        ''' <summary>ACBS Flags con el Unique (0x20) efectivo.</summary>
+        Public AcbsFlags As UInteger
+        ''' <summary>True si la cadena llego a un eslabon no-NPC_ y el motor la colapso.</summary>
+        Public Colapso As Boolean
+    End Structure
+
+    ''' <summary>⛔⛔ PUNTO 7 — SKYRIM: EL COLAPSO DE LA CADENA EN UNA LISTA NIVELADA. Sede de las banderas y del
+    ''' Unique EFECTIVOS; la consumen el panel de detalle y todo el que muestre esas banderas.
+    ''' <para>Al final de la copia (`0x1403C2620`..`0x1403C264B`) el motor llama a `0x1401DD260` desde el propio
+    ''' NPC: arranca con 0xFFFF, y mientras el eslabon sea NPC_ (`0x1401DD270 cmp byte [rcx+0x1a],0x2b`) le hace
+    ''' AND con sus Template Flags (`0x1401DD27A and word [r8],dx` sobre `[rcx+0x4a]`) y salta al TPLT
+    ''' (`0x1401DD27E mov rcx,[rcx+0x60]`). Si llega a un puntero nulo devuelve 0 y no pasa nada; si llega a un
+    ''' no-NPC_ (la lista) lo devuelve, y el motor fija TPLT := ese eslabon (`0x1401DCB30`) y Template Flags :=
+    ''' el AND (`0x1401DCB50`). Al ENTRAR a la copia, con la misma pregunta, apaga el Unique 0x20
+    ''' (`0x1403C1FC8`..`0x1403C1FF5`: `shr eax,5 / test al,1` -> `0x1401DD260` -> `0x1401DD2C0(this,0x20,0,1)`).</para>
+    ''' <para>FO4 no tiene colapso (el unico AND sobre las banderas, `0x14030A0CA`, es del bit 15): devuelve las
+    ''' crudas.</para>
+    ''' <para>⛔⛔ POR QUE `ResolverCadena` NO LO APLICA, Y NO ES UNA OMISION. El colapso corre DESPUES de la
+    ''' copia del mismo NPC, y cada eslabon inicializa su plantilla ANTES de copiar (`0x1403C1F97`..`0x1403C1FBC`),
+    ''' asi que lo que un NPC trae de un NPC_ de su cadena ya quedo copiado con sus bits CRUDOS. Las banderas
+    ''' colapsadas solo gobiernan la copia del SPAWN desde la hoja, y un bucket k llega a la lista caminando por
+    ''' bits crudos si y solo si todos los NPC_ hasta la lista tienen k, que es exactamente "k esta en el AND".
+    ''' Para un bucket fuera del AND el caminante ya se detuvo en el primer eslabon sin el bit, que es de donde
+    ''' vinieron los datos. ⇒ la fuente de cada bucket es la MISMA con o sin colapso; lo que cambia es el valor
+    ''' de las banderas y del Unique en memoria. Por eso esta sede no es un parametro del caminante: aplicarle
+    ''' el AND a la raiz daria "no hereda" para datos que el motor SI copio al cargar.</para>
+    ''' <para>Ciclo de NPC_: el motor no termina; la app no inventa un estado y devuelve las crudas.</para></summary>
+    ''' <param name="firmaDe">FormID -> firma del record ("NPC_", "LVLN", ...) o Nothing si no existe. Hace
+    ''' falta porque un puntero ILEGIBLE en memoria es nulo (no colapsa) y una lista no.</param>
+    Friend Shared Function BanderasDePlantillaEfectivas(npc As NPC_Data,
+                                                        getParsedNpc As Func(Of UInteger, NPC_Data),
+                                                        firmaDe As Func(Of UInteger, String)) As BanderasEfectivas
+        Dim crudas As New BanderasEfectivas
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return crudas
+        crudas.TemplateFlags = npc.Record.ConfigurationTemplateFlags
+        crudas.AcbsFlags = npc.Record.ConfigurationFlags
+        If Not EsSse(npc.Record) OrElse getParsedNpc Is Nothing OrElse firmaDe Is Nothing Then Return crudas
+        Dim acumulado As UShort = &HFFFFUS
+        Dim actual = npc
+        Dim vistos As New HashSet(Of UInteger)
+        Do
+            If Not vistos.Add(actual.FormID) Then Return crudas
+            acumulado = acumulado And actual.Record.ConfigurationTemplateFlags
+            Dim tplt = actual.Record.Plantilla()
+            If tplt = 0UI Then Return crudas
+            Dim firma = firmaDe(tplt)
+            If firma Is Nothing Then Return crudas
+            If Not String.Equals(firma, "NPC_", StringComparison.Ordinal) Then
+                Dim colapsada = crudas
+                colapsada.TemplateFlags = acumulado
+                colapsada.AcbsFlags = crudas.AcbsFlags And Not AcbsBitUnique
+                colapsada.Colapso = True
+                Return colapsada
+            End If
+            Dim siguiente = getParsedNpc(tplt)
+            If siguiente Is Nothing OrElse siguiente.Record Is Nothing Then Return crudas
+            actual = siguiente
+        Loop
+    End Function
+
+    ''' <summary>ACBS Unique. El bit que `0x1403C1FEE lea edx,[r8+0x20]` apaga.</summary>
+    Private Const AcbsBitUnique As UInteger = &H20UI
+
+    ''' <summary>⛔⛔ EL SEXO EFECTIVO: el bit ACBS 0x1 que el motor deja en la base viva de este NPC (puntos 3, 4
+    ''' y 15, DECISIONES 14-sep).
+    ''' <para>El bit 0 FUSIONA el 0x1 desde la plantilla (`TraitsAcbsFlagsMask` = 0x80001: SSE 0x1403C20E3,
+    ''' FO4 0x1406582C5), asi que para un heredero el bit PROPIO es letra muerta. `ActorBase.GetSex` lee el ACBS&amp;1
+    ''' de la base viva (SSE 0x140A3E060 -> 0x1403AFEB0, FO4 0x14114A680 -> 0x1406448B0), que ya trae la fusion.</para>
+    ''' <para>⛔ La ley de QUE se fusiona no se repite aca: es la misma mascara que usa `MaterializeTraits`, y la
+    ''' FUENTE sale de la sede unica de cadena (<see cref="ResolverCadena"/>).</para>
+    ''' <para>Sin fuente (`Unresolvable`, `NoSourceToLose`) el motor no copia nada y vale el propio.</para>
+    ''' <para>⚠ PARCIAL por construccion en una cadena que pasa por una lista de SEXOS MEZCLADOS: el sexo lo decide
+    ''' la hoja de CADA spawn; aca vale el de la hoja que eligio la politica con la que se resolvio <paramref name="fuente"/>.</para>
+    ''' <para>⛔⛔ RONDA 19 (rev-59): recibe la FUENTE YA RESUELTA en vez de resolverla adentro. El guardado pregunta por el
+    ''' sexo Y por la raza del mismo heredero, y las dos son proyecciones de la MISMA fuente de Traits
+    ''' (<c>NpcOverrideSaver.FuenteDeTraitsParaGuardado</c>): resolver la cadena aca otra vez era una segunda politica de
+    ''' hoja escrita en otro lugar. La ley de QUE se proyecta (la mascara) sigue viviendo aca.</para>
+    ''' <para>⛔⛔ RONDA 20a (rev-63): no lee el bit de Traits. «Sin el bit ⇒ el propio» vive SOLO en la fuente
+    ''' (<c>NpcOverrideSaver.FuenteDeTraitsParaGuardado</c> devuelve la resolucion vacia); aca solo `Source Is Nothing`.</para></summary>
+    Friend Shared Function SexoEfectivo(npc As NPC_Data, fuente As TraitsResolution) As Boolean
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return False
+        Dim propio = (npc.Record.ConfigurationFlags And 1UI) <> 0UI
+        Dim r = fuente
+        If r.Source Is Nothing OrElse r.Source.Record Is Nothing Then Return propio
+        Return (r.Source.Record.ConfigurationFlags And NpcTemplateHelpers.TraitsAcbsFlagsMask And 1UI) <> 0UI
     End Function
 
     ''' <summary>Returns the terminal effective owner used to seed an editor panel. If the chain cannot be
@@ -372,9 +570,10 @@ Friend NotInheritable Class NpcTemplateMaterializer
     Friend Shared Function ResolveEffectiveSourceForEditor(npc As NPC_Data,
                                                             category As NPC_TemplateCategory,
                                                             getParsedNpc As Func(Of UInteger, NPC_Data),
-                                                            Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As NPC_Data
+                                                            resolveLvlnPick As Func(Of UInteger, UInteger),
+                                                            firmaDe As Func(Of UInteger, String)) As NPC_Data
         If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return npc
-        Dim resolution = ResolveCategorySource(npc, category, getParsedNpc, resolveLvlnPick)
+        Dim resolution = ResolverCadena(npc, category, getParsedNpc, resolveLvlnPick, firmaDe)
         If resolution.Outcome = MaterializeOutcome.Materialized OrElse
            resolution.Outcome = MaterializeOutcome.MaterializedFromLeveledPick Then Return resolution.Source
         Return npc
@@ -765,6 +964,12 @@ Friend NotInheritable Class NpcTemplateMaterializer
 
     Private Shared Sub MaterializeBaseData(npc As NPC_Data, src As NPC_Data)
         Dim d = npc.Record, s = src.Record
+        ' ⛔ RONDA 5: el bit 7 copia FULL y SHRT. SSE, bloque del bit 7 (gate `0x1403C204B mov edx,7` ->
+        ' `0x1403C2053 call 0x1401DCAF0`): `0x1403C2071 call 0x1401E82D0` (TESFullName, origen +0xD8 -> destino +0xA8) y
+        ' `0x1403C2084 call 0x140EB11E0` (nombre corto, origen +0x208 -> destino +0x1D8), antes de la mascara de
+        ' `0x1403C208F` y del `0x1403C209B call 0x1401DD2A0`. FO4, bloque del bit 7 (gate `0x1406581E0 mov edx,7` ->
+        ' `0x1406581E8 call 0x140309730`): `0x14065820B call 0x140315EC0` (TESFullName, origen +0x120 -> destino +0xB8) y
+        ' `0x140658222 call 0x14167CD70` (nombre corto, origen +0x298 -> destino +0x230).
         If s.NamePresente Then d.Name = s.Name Else d.QuitarSubrecord("FULL")
         If s.ShortNamePresente Then d.ShortName = s.ShortName Else d.QuitarSubrecord("SHRT")
         ' La mascara de Base Data es un dato POR JUEGO, y el juego sale del RECORD, no de un global:

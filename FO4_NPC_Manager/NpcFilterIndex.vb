@@ -52,9 +52,19 @@ Friend NotInheritable Class NpcFilterIndex
 
     Private _followTemplates As Boolean = True
 
-    Public Sub New(pluginManager As PluginManager, npcLookup As Func(Of UInteger, NPC_Data))
+    ''' <summary>R2 (ronda 2): NPC raiz -> resolvedor de hoja de lista, la MISMA politica que el resto de la app
+    ''' (`MainForm.HojaDeListaPara`). Nothing = la politica sin pantalla (`NpcTemplateHelpers.HojaSinPantalla`).</summary>
+    Private ReadOnly _hojaDeListaPara As Func(Of UInteger, Func(Of UInteger, UInteger))
+
+    Public Sub New(pluginManager As PluginManager, npcLookup As Func(Of UInteger, NPC_Data),
+                   Optional hojaDeListaPara As Func(Of UInteger, Func(Of UInteger, UInteger)) = Nothing)
         _pluginManager = pluginManager
         _npcLookup = npcLookup
+        If hojaDeListaPara Is Nothing Then
+            Dim sinPantalla = NpcTemplateHelpers.HojaSinPantalla(pluginManager)
+            hojaDeListaPara = Function(raiz As UInteger) sinPantalla
+        End If
+        _hojaDeListaPara = hojaDeListaPara
     End Sub
 
     ''' <summary>When True (default) a facet resolves through the template chain, so the 40 raiders
@@ -86,6 +96,34 @@ Friend NotInheritable Class NpcFilterIndex
         _facetIds.Clear()
         _facetText.Clear()
     End Sub
+
+    ''' <summary>⛔ RONDA 3 (T3): cambio el NPC en pantalla (o su hoja). La politica de hoja
+    ''' (`MainForm.ResolveLvlnPick_Friend`) solo depende de la pantalla para la RAIZ pedida
+    ''' (`ResolveShownTraitsLeaf` exige `LastRenderedState.RootNpcFormID = raiz`), asi que las unicas respuestas por NPC
+    ''' que cambian son las de la raiz que sale y la que entra: se tiran esas, y nada mas.
+    ''' <para>Sin esto la cache congelaba la hoja que se vio: el filtro seguia contestando con la hoja del render
+    ''' anterior mientras el panel ya contestaba con la politica vigente (MEDIDO en `EstadoAbGate --g18`, F15).</para></summary>
+    Public Sub InvalidarRaiz(npcFormID As UInteger)
+        If npcFormID = 0UI Then Return
+        _traitsSource.Remove(npcFormID)
+        _inventorySource.Remove(npcFormID)
+        For Each porNpc In _facetIds.Values
+            porNpc.Remove(npcFormID)
+        Next
+        For Each porNpc In _facetText.Values
+            porNpc.Remove(npcFormID)
+        Next
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (T2/T3): la fuente de la categoria que usa el filtro para este NPC -- la MISMA
+    ''' `ResolveSource` con su cache, sin atajo.</summary>
+    Friend Function FuenteParaArnes(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
+        Select Case category
+            Case NPC_TemplateCategory.Traits : Return ResolveSource(npc, category, _traitsSource)
+            Case NPC_TemplateCategory.Inventory : Return ResolveSource(npc, category, _inventorySource)
+        End Select
+        Throw New ArgumentOutOfRangeException(NameOf(category), "el filtro solo resuelve Traits e Inventory")
+    End Function
 
     ''' <summary>True when this NPC satisfies the term (negation included).</summary>
     Public Function Matches(npc As NPC_Data, term As NpcFilterTerm) As Boolean
@@ -346,28 +384,25 @@ Friend NotInheritable Class NpcFilterIndex
     End Function
 
     ''' <summary>Walk the template chain for one bucket and return the FormID of the NPC whose OWN
-    ''' subrecords are the effective ones. Mirrors NpcStateResolver.ResolveTraitsStateFromNPC's rule:
-    ''' follow while the bucket's flag is set; stop at the first NPC that does not inherit it.
-    ''' <para>An LVLN source stops the walk (the lookup returns Nothing because only NPC_ records are
-    ''' in the cache): a leveled template yields a DIFFERENT actor per spawn, so there is no single
-    ''' honest answer and the filter reports the last readable NPC instead of inventing one.</para></summary>
+    ''' subrecords are the effective ones.
+    ''' <para>⛔⛔ POR LA SEDE UNICA (punto 11): `NpcTemplateMaterializer.ResolverCadena`, SIN hoja de lista
+    ''' -- el filtro recorre todos los NPC y no hay ninguno en pantalla que anclar. Aca habia un caminante
+    ''' propio que ante un ciclo devolvia el ultimo eslabon antes de repetir (la sede lo contesta irresoluble:
+    ''' el propio NPC) y que no conocia la ley de Fallout 4 del bucket anterior.</para></summary>
     Private Function ResolveSource(npc As NPC_Data, category As NPC_TemplateCategory,
                                    cache As Dictionary(Of UInteger, UInteger)) As UInteger
         Dim cached As UInteger
         If cache.TryGetValue(npc.FormID, cached) Then Return cached
 
-        Dim visited As New HashSet(Of UInteger)()
-        Dim cur = npc
         Dim result = npc.FormID
-        While cur IsNot Nothing AndAlso visited.Add(cur.FormID)
-            result = cur.FormID
-            If Not NpcTemplateHelpers.HasTemplateFlag(cur.Record.ConfigurationTemplateFlags, category) Then Exit While
-            Dim nextFid = NpcTemplateHelpers.ResolveTemplateSourceFormID(cur, category)
-            If nextFid = 0UI Then Exit While
-            Dim nxt = _npcLookup(nextFid)
-            If nxt Is Nothing Then Exit While
-            cur = nxt
-        End While
+        If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then
+            ' ⛔ R2 (ronda 2): con la politica de hoja de la app, no "sin hoja". La cache por NPC depende de la
+            ' pantalla solo para la raiz mostrada: `MainForm` la invalida con `InvalidarRaiz` en el MISMO punto donde
+            ' publica el estado mostrado (RONDA 3, T3).
+            Dim r = NpcTemplateMaterializer.ResolverCadena(npc, category, _npcLookup, _hojaDeListaPara(npc.FormID),
+                                                           NpcTemplateHelpers.FirmaDeRecord(_pluginManager))
+            If r.Source IsNot Nothing Then result = r.Source.FormID
+        End If
 
         cache(npc.FormID) = result
         Return result

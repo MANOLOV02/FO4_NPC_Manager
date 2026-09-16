@@ -103,8 +103,11 @@ Public Module SseMorphReverseEngineer
     ''' sintético no reconstruye (hair color). La predicción se hace SIEMPRE contra el record crudo:
     ''' si se hiciera contra el overlay, un sculpt de una corrida previa se hornearía dentro de la
     ''' predicción y el residual saldría ~0 (auto-confirmación circular).</param>
+    ''' <param name="lectura">⛔ RONDA 20b (D2): la lectura de la cadena (records y hoja) con la que se resuelve el NPC; la
+    ''' del horneado de la sesion (`MainForm.LecturaDeHorneado`). OBLIGATORIA.</param>
     Public Function Build(npcFormID As UInteger,
                           pluginManager As PluginManager,
+                          lectura As LecturaDeCadena,
                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                           Optional sculptThreshold As Single = DefaultSculptThreshold) As Result
         Dim res As New Result()
@@ -152,7 +155,7 @@ Public Module SseMorphReverseEngineer
         ' ⛔ El record resuelto lo arma ESTA sonda y se lo pasa: `BuildBakeState` ya no camina la
         ' cadena por su cuenta. Sin resolvedor de hoja --esta herramienta no tiene pantalla-- rige la
         ' primera hoja, que es la regla declarada en la sede.
-        Dim datosRe = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, zeroMap)
+        Dim datosRe = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, lectura, zeroMap)
         Dim state = FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, zeroMap, Nothing,
                                                         Nothing, datosRe)
         If state Is Nothing OrElse state.NpcData Is Nothing Then
@@ -398,7 +401,7 @@ Public Module SseMorphReverseEngineer
         ' "Desde": el estado EFECTIVO actual — overlay si tomó posesión, si no el record crudo. Misma
         ' regla que LoadSseMorphValues (EditFace_Form.vb) para que el diálogo y el tab coincidan.
         Dim before(SseNam9MorphMap.Nam9SliderCount - 1) As Single
-        Dim curEffective = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets)
+        Dim curEffective = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, lectura, appliedPresets)
         Dim beforeRaw = If(curEffective IsNot Nothing, curEffective.Record.DeslizadoresDeCara(), Nothing)
         If beforeRaw IsNot Nothing Then
             For s = 0 To Math.Min(before.Length, beforeRaw.Length) - 1

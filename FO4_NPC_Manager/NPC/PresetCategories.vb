@@ -166,6 +166,93 @@ Public Module PresetCategories
         Return alguno
     End Function
 
+    ''' <summary>⛔⛔ LA PREGUNTA DE LA PUERTA (punto 1, DECISIONES 14-sep): con el bit 0 arriba, ¿una edicion de
+    ''' ESTE canal se PIERDE en el juego? Se pierde por DOS caminos, y `HeredaElCanal` contesta solo el primero.
+    ''' <para>(1) El motor la PISA: el bucket Traits copia el campo desde la plantilla. Es `HeredaElCanal`.</para>
+    ''' <para>(2) El motor NO la LEE: el canal no viaja en el record que el juego usa para dibujar sino en el
+    ''' FaceGen horneado, y con el bit 0 arriba el FaceGen que se abre es el del ULTIMO eslabon, no el del
+    ''' heredero. SSE arma la ruta con el FormID del eslabon de `+0x1F0` (0x1403C2E20, 0x1403BFCA0) y, si el
+    ''' NIF falta, arma la cabeza SIN tinte (0x1403C513E, 0x1404335ED); las capas TINI ni se cargan salvo con
+    ''' ACBS 0x04 o `bUseFaceGenPreprocessedHeads`=0 (0x1403BCA8F).</para>
+    ''' <para>⛔ Existe porque la puerta preguntaba solo (1): un heredero de Skyrim al que se le editaban capas
+    ''' de tinte, sculpt o custom morphs NO desprendia, el ESP salia con el bit arriba y el juego seguia
+    ''' mostrando la cara horneada de la plantilla.</para>
+    ''' <para>⛔ `HeredaElCanal` SIGUE siendo la del Revert y la del guardado (`AutoriaParaGuardado`): esas
+    ''' preguntan "¿el bucket copia este campo?", no "¿se ve la edicion?".</para>
+    ''' <para>⛔⛔ SIN EXCEPCION POR ACBS 0x04 (DECISIONES 1d, rev-15). Hubo un parametro `cargaLaCaraEnRuntime`
+    ''' que, con 0x04, sacaba las capas de la lista. Era una ley FALSA: que el loader lea las TINI con 0x04
+    ''' (0x1403BCA8F) no hace que la cara se arme con ellas. La composicion del tinte en runtime corre solo con
+    ''' `bUseFaceGenPreprocessedHeads` == 0 (0x1404335ED: `cmp byte [rip+...], 0` / `jne` saltea el armado), y la
+    ''' cabeza runtime solo con esa opcion en 0 o para el jugador (0x140433B7C). Con el valor de distribucion la
+    ''' cara de un NPC con 0x04 TAMBIEN sale del FaceGen del ultimo eslabon, asi que sus tintes desprenden igual.</para></summary>
+    Public Function DesprendeElCanal(cat As PresetCategory, canal As String, isSse As Boolean) As Boolean
+        If HeredaElCanal(cat, canal, isSse) Then Return True
+        Return SoloLlegaPorElFaceGenHorneado(cat, canal, isSse)
+    End Function
+
+    ''' <summary>⛔ ¿Hay ALGUN canal de esta categoria cuya edicion desprende? Se DERIVA de
+    ''' <see cref="DesprendeElCanal"/>, igual que `HeredaPorTraits` de `HeredaElCanal`: es la guarda de bucle
+    ''' de la puerta, y una segunda tabla escrita a mano seria una contradiccion esperando pasar.</summary>
+    Public Function DesprendePorTraits(cat As PresetCategory, isSse As Boolean) As Boolean
+        Dim alguno As Boolean = False
+        PresetCategoryFilter.PorCanal(cat, isSse,
+                                      Sub(nombre, leerCanal, escribirCanal)
+                                          If DesprendeElCanal(cat, nombre, isSse) Then alguno = True
+                                      End Sub)
+        Return alguno
+    End Function
+
+    ''' <summary>⛔ Los canales que llegan al juego SOLO por el FaceGen horneado, y por lo tanto son
+    ''' invisibles para un heredero con el bit 0 arriba (ver <see cref="DesprendeElCanal"/>).
+    ''' <para>La lista NO sale de memoria: sale de lo que el HORNEADO de la app mete en el FaceGen y de que
+    ''' ninguna otra via lo entrega. Verificado en el codigo:</para>
+    ''' <list type="bullet">
+    ''' <item><term>SSE FaceTints (capas)</term><description>`SseTintLayers` + `SseTintTexOverride` (+ su marca
+    ''' `HasSseTints`) componen el `.dds` de FaceTint: `FaceGenBuilder` los pasa a `SseFaceGenBaker.BakeFaceTintDds`
+    ''' (`SseFaceTintComposer.CapasDeTinteSse(npcData.Record)` + `npcData.SseTintTexOverride`). `SkinToneOffset`
+    ''' NO esta aca: es QNAM y ya lo contesta `HeredaElCanal` (0x1403BE09A).</description></item>
+    ''' <item><term>SSE Sculpt</term><description>canal `RaceMenuSculpt` del plan de morfos, que el horneado
+    ''' aplica al NIF SIEMPRE (`FaceGenBuildPipeline.ApplyChargenMorphsInPlace` → `NpcMorphResolver.BuildFaceMorphPlan`
+    ''' con `applySculpt` y `applyChargenMorphs` en su default True: headless no hay interruptor). El apply-script
+    ''' no lo emite (`NpcApplyScriptEmitter`: "morphs de cara, sculpt y TINTS de cara ... se hornea en el
+    ''' FaceGen").</description></item>
+    ''' <item><term>SSE CustomMorphs</term><description>mismo plan, canal por slider, SOLO con
+    ''' `NpcMorphResolver.ExtendedMorphsEnabled` (skee64 FaceMorphInterface.cpp:1126/:1204 cortan antes del
+    ''' bucle con `bExtendedMorphs=0`): apagado, el canal no llega ni horneado ni en runtime, y desprender no
+    ''' lo haria visible.</description></item>
+    ''' </list>
+    ''' <para>⛔ FO4 devuelve False SIEMPRE, y no por omision: FMIN y MRSV —los dos canales de cara/cuerpo que
+    ''' el bit 0 no copia— se aplican en RUNTIME desde el NPC propio (QueuedHead 0x140652420, 0x14065F600), asi
+    ''' que se ven sin desprender. Que el horneado FO4 los meta en el NIF no cambia nada: con el bit 0 arriba el
+    ''' NIF del heredero no se abre (0x140658E80; con preprocesado y NIF de la raiz no se encola nada,
+    ''' 0x1406E2625).</para>
+    ''' <para>⛔ HUECO DECLARADO: los overlays de CARA de SSE tambien se hornean cuando
+    ''' `Setting_BakeSseRaceMenuOverlays` esta prendido, pero viajan en `SseBodyOverlays` junto con los de
+    ''' cuerpo, que el apply-script SI entrega. La tabla de canales no separa nodos de cara de nodos de cuerpo,
+    ''' asi que ese caso NO esta aca. Hace falta un canal propio para los nodos de cara.</para>
+    ''' <para>⛔ HUECO DECLARADO: la app no lee `bUseFaceGenPreprocessedHeads` del INI del jugador; la tabla
+    ''' contesta para el valor con el que se distribuye el juego.</para></summary>
+    Private Function SoloLlegaPorElFaceGenHorneado(cat As PresetCategory, canal As String, isSse As Boolean) As Boolean
+        If Not isSse Then Return False
+        Select Case cat
+            Case PresetCategory.FaceTints
+                ' ⛔ Con o sin ACBS 0x04: el tinte runtime solo se compone con `bUseFaceGenPreprocessedHeads` == 0
+                ' (0x1404335ED) y la cabeza runtime solo con la opcion en 0 o para el jugador (0x140433B7C).
+                Select Case canal
+                    Case "SseTintLayers", "SseTintTexOverride", "HasSseTints" : Return True
+                    Case Else : Return False
+                End Select
+            Case PresetCategory.Sculpt
+                Return String.Equals(canal, "SseSculptHead", StringComparison.Ordinal) OrElse
+                       String.Equals(canal, "SseSculptParts", StringComparison.Ordinal)
+            Case PresetCategory.CustomMorphs
+                Return NpcMorphResolver.ExtendedMorphsEnabled AndAlso
+                       String.Equals(canal, "SseCustomMorphs", StringComparison.Ordinal)
+            Case Else
+                Return False
+        End Select
+    End Function
+
     ''' <summary>⛔⛔ ¿Este canal lleva un VALOR que el bit 0 puede pisar? Es la pregunta de LA PUERTA,
     ''' y NO es la misma que <see cref="HeredaElCanal"/>.
     ''' <para>Un preset lleva, además de los valores, banderas de CONTABILIDAD DE LA APP: las `Has*` de

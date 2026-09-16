@@ -43,8 +43,8 @@ End Class
 ''' sonidos, actor values, las listas de override— se leen del record PROPIO, porque es de ahí de
 ''' donde las lee el motor.</para>
 '''
-''' <para>⛔ UN SOLO HILO. <see cref="Construir"/> escribe estado de instancia (las raíces en curso y la
-''' caché de LVLN), así que no es reentrante. Es el mismo contrato que tenía cuando esto vivía en
+''' <para>⛔ UN SOLO HILO. <see cref="Construir"/> escribe estado de instancia (las raíces en curso), así
+''' que no es reentrante. Es el mismo contrato que tenía cuando esto vivía en
 ''' MainForm: <c>PopulateRecordDetails</c> hace <c>Invoke</c> al hilo de UI antes de llamar, y los otros
 ''' dos consumidores (el sembrado de altura del editor de cuerpo y el <c>DescribeFormID</c> de
 ''' EditFace_Form) son manejadores de la UI. El día que alguien lo llame desde <c>Task.Run</c>, hay que
@@ -57,16 +57,40 @@ Friend NotInheritable Class RecordDetailsTree
     ''' <summary>Raíces del árbol que se está construyendo. Vive por llamada a <see cref="Construir"/>.</summary>
     Private _raices As List(Of DetalleNodo)
 
-    ''' <summary>LVLN parseadas mientras se arma UN árbol. El panel resuelve trece categorías de
-    ''' plantilla por separado y un salto de cadena por la misma leveled list la re-parsearía una vez
-    ''' por categoría. Se vacía al entrar a <see cref="Construir"/>, así que no puede quedar vieja
-    ''' contra una recarga de plugins.</summary>
-    Private ReadOnly _detailsLvlnCache As New Dictionary(Of UInteger, Canon.ILvln)
+    ''' <summary>NPC raiz -> el resolvedor de hoja de lista nivelada para ESE NPC (en la app,
+    ''' <c>MainForm.HojaDeListaPara</c>: la hoja en pantalla si el NPC es el que esta en pantalla, si no la
+    ''' primera). Nothing (arneses) = sin hoja: la cadena se corta donde la sede corta un puntero muerto.
+    ''' <para>⛔ Aca vivia `_detailsLvlnCache`, la cache de LVLN del caminante propio que se fue a la sede.</para></summary>
+    Private ReadOnly _resolveLvlnPick As Func(Of UInteger, Func(Of UInteger, UInteger))
 
-    Public Sub New(pluginManager As PluginManager, ctx As NpcRenderContext)
+    ''' <summary>R7 (ronda 2): el terminal CON su overlay de sesion (`MainForm.SombraDelTerminal`), la MISMA sombra
+    ''' que arma la base del dibujo. Nothing (arneses sin sesion) = el terminal crudo.</summary>
+    Private ReadOnly _sombraDelTerminal As Func(Of NPC_Data, NPC_Data)
+
+    ''' <param name="resolveLvlnPick">⛔ R2 (ronda 2): Nothing ya NO es "sin hoja": es la politica SIN PANTALLA de la
+    ''' app (`NpcTemplateHelpers.HojaSinPantalla`, `leaves(0)`), la misma que `MainForm.HojaDeListaPara` le da a un NPC
+    ''' que no esta en pantalla.</param>
+    Public Sub New(pluginManager As PluginManager, ctx As NpcRenderContext,
+                   Optional resolveLvlnPick As Func(Of UInteger, Func(Of UInteger, UInteger)) = Nothing,
+                   Optional sombraDelTerminal As Func(Of NPC_Data, NPC_Data) = Nothing)
         _pluginManager = pluginManager
         _ctx = ctx
+        If resolveLvlnPick Is Nothing Then
+            Dim sinPantalla = NpcTemplateHelpers.HojaSinPantalla(pluginManager)
+            resolveLvlnPick = Function(raiz As UInteger) sinPantalla
+        End If
+        _resolveLvlnPick = resolveLvlnPick
+        _sombraDelTerminal = sombraDelTerminal
     End Sub
+
+    ''' <summary>R2 (ronda 2): el FULL del record efectivo del ultimo <see cref="Construir"/> -- el MISMO valor del
+    ''' renglon «Full Name». Lo lee el titulo del panel para que titulo y renglon no puedan diferir.</summary>
+    Public ReadOnly Property NombreDelEfectivo As String
+        Get
+            If _efectivo Is Nothing OrElse _efectivo.Record Is Nothing Then Return ""
+            Return If(_efectivo.Record.Name, "")
+        End Get
+    End Property
 
     '==============================================================================================
     ' Volcado a controles
@@ -137,10 +161,13 @@ Friend NotInheritable Class RecordDetailsTree
 
     ''' <summary>El árbol completo del NPC. Nunca Nothing; con <paramref name="npc"/> Nothing devuelve
     ''' la lista vacía.</summary>
-    Public Function Construir(npc As NPC_Data) As List(Of DetalleNodo)
+    ''' <param name="traitsYaResuelto">True cuando <paramref name="npc"/> ya es el record compuesto por el render
+    ''' (base del estado + autoria): el bucket Traits no se vuelve a copiar.</param>
+    Public Function Construir(npc As NPC_Data, Optional traitsYaResuelto As Boolean = False) As List(Of DetalleNodo)
         _raices = New List(Of DetalleNodo)()
-        _detailsLvlnCache.Clear()
+        _efectivo = Nothing
         If npc Is Nothing Then Return _raices
+        _efectivo = RecordEfectivo(npc, traitsYaResuelto)
 
         ' El NPC_ no es UN esquema para los dos juegos. FO4 y Skyrim difieren en el layout de ACBS, en
         ' el tamaño del cuerpo (MWGT delgado/musculoso/gordo contra un solo flotante NAM7), en el bloque
@@ -182,26 +209,32 @@ Friend NotInheritable Class RecordDetailsTree
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionEncabezado(npc As NPC_Data)
         Dim headerNode = Agregar(Nothing, $"NPC_ {npc.EditorID}  [{npc.FormID:X8}]  {npc.PluginName}", npc.FormID)
-        Agregar(headerNode, $"Full Name: {If(npc.Record.Name <> "", npc.Record.Name, "(none)")}")
+        ' ⛔ FULL/SHRT los copia Base Data (bucket 7) y el sexo el bit 0 (0x1 de `TraitsAcbsFlagsMask`): se leen
+        ' del record EFECTIVO (punto 13). EditorID, FormID y plugin son del propio record.
+        Dim ef = _efectivo.Record
+        Agregar(headerNode, $"Full Name: {If(ef.Name <> "", ef.Name, "(none)")}")
         ' ⛔ «PRESENTE Y VACÍO» NO ES «AUSENTE». Antes el renglón pedía además `ShortName <> ""`, así que
         ' un record que TRAE el SHRT vacío se veía igual que uno que no lo trae. MEDIDO: en el corpus de
         ' Fallout 4 del usuario los 24 records testigo de SHRT lo traen vacío — o sea que el subrecord
         ' existía y el panel no lo mostraba NUNCA, y por eso el gate no podía verlo.
-        If npc.Record.ShortNamePresente Then Agregar(headerNode, $"Short Name: {If(npc.Record.ShortName <> "", npc.Record.ShortName, "(empty)")}")
+        If ef.ShortNamePresente Then Agregar(headerNode, $"Short Name: {If(ef.ShortName <> "", ef.ShortName, "(empty)")}")
         Agregar(headerNode, $"Editor ID: {npc.EditorID}")
         Agregar(headerNode, $"Form ID: {npc.FormID:X8}")
         Agregar(headerNode, $"Plugin: {npc.PluginName}")
-        Agregar(headerNode, $"Gender: {If(npc.Record.ConfigurationFlagsFemale, "Female", "Male")}")
+        Agregar(headerNode, $"Gender: {If(ef.ConfigurationFlagsFemale, "Female", "Male")}")
     End Sub
 
     '----------------------------------------------------------------------------------------------
     ' OBND
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionObjectBounds(npc As NPC_Data)
-        If Not npc.Record.MinXPresente AndAlso Not npc.Record.MaxXPresente Then Return
-        Dim n = Agregar(Nothing, "Object Bounds (OBND)")
-        Agregar(n, $"Min: X={npc.Record.MinX}  Y={npc.Record.MinY}  Z={npc.Record.MinZ}")
-        Agregar(n, $"Max: X={npc.Record.MaxX}  Y={npc.Record.MaxY}  Z={npc.Record.MaxZ}")
+        ' ⛔ OBND lo copia el bit 0 (SSE 0x1403C225D, FO4 0x14065846E): record EFECTIVO.
+        Dim ef = _efectivo.Record
+        If Not ef.MinXPresente AndAlso Not ef.MaxXPresente Then Return
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Traits)
+        Dim n = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, "Object Bounds (OBND)"), FormIDDeFuente(npc, fuente))
+        Agregar(n, $"Min: X={ef.MinX}  Y={ef.MinY}  Z={ef.MinZ}")
+        Agregar(n, $"Max: X={ef.MaxX}  Y={ef.MaxY}  Z={ef.MaxZ}")
     End Sub
 
     '----------------------------------------------------------------------------------------------
@@ -210,7 +243,12 @@ Friend NotInheritable Class RecordDetailsTree
     Private Sub SeccionPlantilla(npc As NPC_Data, isSse As Boolean)
         If npc.Record.Plantilla() = 0UI AndAlso npc.Record.ActoresDePlantilla().Count = 0 Then Return
 
-        Dim tplNode = Agregar(Nothing, $"Template Configuration  (flags: {npc.Record.ConfigurationTemplateFlags:X4})")
+        ' ⛔ PUNTO 7: si la cadena colapsa en una lista (Skyrim), las banderas que el motor deja en memoria son
+        ' el AND de la cadena (`0x1403C264B`), no las del archivo. Se muestran las dos cuando difieren.
+        Dim flagsEfectivas = _efectivo.Record.ConfigurationTemplateFlags
+        Dim tplNode = Agregar(Nothing, $"Template Configuration  (flags: {npc.Record.ConfigurationTemplateFlags:X4}" &
+                                       If(flagsEfectivas <> npc.Record.ConfigurationTemplateFlags,
+                                          $", in memory {flagsEfectivas:X4}: the chain collapses on a leveled list", "") & ")")
         ' ⛔⛔ "(disabled)" = el puntero SIGUE en el record pero su bit Use-X esta ABAJO, asi que el motor no
         ' lo lee. Desprender una categoria baja el bit y DEJA el TPLT/TPTA --es lo que hace el motor--, de
         ' modo que sin esta marca el panel mostraba una plantilla que ya no gobierna nada.
@@ -250,6 +288,13 @@ Friend NotInheritable Class RecordDetailsTree
             If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then flagList.Add(NpcManagerFormat.GetTemplateCategoryLabel(cat))
         Next
         If flagList.Count > 0 Then Agregar(tplNode, $"Active flags: {String.Join(", ", flagList)}")
+        If flagsEfectivas <> npc.Record.ConfigurationTemplateFlags Then
+            Dim efList As New List(Of String)
+            For Each cat As NPC_TemplateCategory In Canon.CanonInterpretacion.CategoriasDePlantilla
+                If NpcTemplateHelpers.HasTemplateFlag(flagsEfectivas, cat) Then efList.Add(NpcManagerFormat.GetTemplateCategoryLabel(cat))
+            Next
+            Agregar(tplNode, $"Active flags in memory (spawn from the list): {If(efList.Count > 0, String.Join(", ", efList), "(none)")}")
+        End If
     End Sub
 
     '----------------------------------------------------------------------------------------------
@@ -259,11 +304,18 @@ Friend NotInheritable Class RecordDetailsTree
         ' Los bytes de ACBS viven SIEMPRE en ESTE record (subrecord requerido) — sólo los VALORES de
         ' las categorías de abajo se resuelven por la cadena de plantilla, así que esta sección nunca
         ' es "heredada".
+        ' ⛔ PUNTO 13: los VALORES si se reparten por bucket -- los bits de la mascara del bit 0 (0x80001), los
+        ' planos de Stats (0x40080) con la regla del 0x10, los de Base Data (por juego), el nivel, los offsets y el
+        ' bleedout de Stats-- y encima el Unique efectivo del punto 7. Se leen del record EFECTIVO.
+        Dim ef = _efectivo.Record
         Dim cfgNode = Agregar(Nothing, "Configuration (ACBS)")
-        Agregar(cfgNode, $"Flags: {NpcManagerFormat.DescribirBanderas(npc.Record.Node, "ACBS", "Flags")}")
-        Agregar(cfgNode, NpcManagerFormat.FormatAcbsLevel(npc.Record))
-        Dim cfgSse = TryCast(npc.Record, Canon.NpcSSE)
-        Dim cfgFo4 = TryCast(npc.Record, Canon.NpcFO4)
+        Agregar(cfgNode, $"Flags: {NpcManagerFormat.DescribirBanderas(ef.Node, "ACBS", "Flags")}")
+        If (ef.ConfigurationFlags And &H20UI) <> (npc.Record.ConfigurationFlags And &H20UI) Then
+            Agregar(cfgNode, "Unique: set in the record, cleared in memory (the template chain collapses on a leveled list)")
+        End If
+        Agregar(cfgNode, NpcManagerFormat.FormatAcbsLevel(ef))
+        Dim cfgSse = TryCast(ef, Canon.NpcSSE)
+        Dim cfgFo4 = TryCast(ef, Canon.NpcFO4)
         If cfgSse IsNot Nothing Then
             Agregar(cfgNode, $"Offsets: Magicka={cfgSse.ConfigurationMagickaOffset}  Stamina={cfgSse.ConfigurationStaminaOffset}  Health={cfgSse.ConfigurationHealthOffset}")
             Agregar(cfgNode, $"Speed Multiplier: {cfgSse.ConfigurationSpeedMultiplier}%")
@@ -272,9 +324,10 @@ Friend NotInheritable Class RecordDetailsTree
             If cfgSse.ConfigurationDispositionBaseUnusedPresente Then Agregar(cfgNode, $"Disposition Base (unused): {cfgSse.ConfigurationDispositionBaseUnused}")
         ElseIf cfgFo4 IsNot Nothing Then
             Agregar(cfgNode, $"XP Value Offset: {cfgFo4.ConfigurationXPValueOffset}")
-            Agregar(cfgNode, $"Disposition Base: {npc.Record.BaseDeDisposicion()}")
+            ' Ningun bucket la copia: el setter se llama con el valor del PROPIO destino (FO4 0x140658387).
+            Agregar(cfgNode, $"Disposition Base: {ef.BaseDeDisposicion()}")
         End If
-        Agregar(cfgNode, $"Bleedout Override: {npc.Record.ConfigurationBleedoutOverride}")
+        Agregar(cfgNode, $"Bleedout Override: {ef.ConfigurationBleedoutOverride}")
     End Sub
 
     '----------------------------------------------------------------------------------------------
@@ -283,34 +336,37 @@ Friend NotInheritable Class RecordDetailsTree
     Private Sub SeccionTraits(npc As NPC_Data, isSse As Boolean)
         Dim traitsNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Traits)
         Dim traitsNode = Agregar(Nothing, EtiquetaDeSeccion(npc, traitsNpc, "Traits"), FormIDDeFuente(npc, traitsNpc))
-        Agregar(traitsNode, $"Race: {DescribirFormID(traitsNpc.Record.Race)}", traitsNpc.Record.Race)
-        ExpandirRaza(traitsNode, traitsNpc.Record.Race, traitsNpc.Record.ConfigurationFlagsFemale)
-        If traitsNpc.Record.Skin <> 0UI Then Agregar(traitsNode, $"Skin Armor: {DescribirFormID(traitsNpc.Record.Skin)}", traitsNpc.Record.Skin)
-        If traitsNpc.Record.VoicePresente Then Agregar(traitsNode, $"Voice: {DescribirFormID(traitsNpc.Record.Voice)}", traitsNpc.Record.Voice)
+        ' ⛔ PUNTO 13: el encabezado nombra la fuente del bucket 0; los VALORES salen del record efectivo.
+        Dim t = _efectivo.Record
+        Agregar(traitsNode, $"Race: {DescribirFormID(t.Race)}", t.Race)
+        ExpandirRaza(traitsNode, t.Race, t.ConfigurationFlagsFemale)
+        If t.Skin <> 0UI Then Agregar(traitsNode, $"Skin Armor: {DescribirFormID(t.Skin)}", t.Skin)
+        If t.VoicePresente Then Agregar(traitsNode, $"Voice: {DescribirFormID(t.Voice)}", t.Voice)
         If isSse Then
             ' El tamaño del cuerpo en Skyrim = NAM6 Height + NAM7 Weight, dos flotantes sueltos. No
             ' tiene ni el triple MWGT delgado/musculoso/gordo ni las regiones de morph MRSV. NAM7 se
             ' parsea como payload opaco porque en FO4 la misma firma es un campo sin uso — acá lleva
             ' el peso.
-            If traitsNpc.Record.TieneAltura() Then Agregar(traitsNode, $"Height: {traitsNpc.Record.Altura():F2}")
-            If traitsNpc.Record.TienePesoDeSkyrim() Then Agregar(traitsNode, $"Weight: {traitsNpc.Record.PesoDeSkyrim():F2}")
+            If t.TieneAltura() Then Agregar(traitsNode, $"Height: {t.Altura():F2}")
+            If t.TienePesoDeSkyrim() Then Agregar(traitsNode, $"Weight: {t.PesoDeSkyrim():F2}")
         Else
-            If traitsNpc.Record.TieneAltura() OrElse traitsNpc.Record.TieneAlturaMaxima() Then
+            If t.TieneAltura() OrElse t.TieneAlturaMaxima() Then
                 ' Cada mitad se reporta sólo si su subrecord está de verdad: HeightMax vale 0.0 por
                 ' defecto, así que imprimirlo siempre mostraba "max=0.00" para un record que
                 ' simplemente no trae NAM4 — indistinguible de uno que guarda cero.
-                Dim hMin = If(traitsNpc.Record.TieneAltura(), $"{traitsNpc.Record.Altura():F2}", "(absent)")
-                Dim hMax = If(traitsNpc.Record.TieneAlturaMaxima(), $"{traitsNpc.Record.AlturaMaxima():F2}", "(absent)")
+                Dim hMin = If(t.TieneAltura(), $"{t.Altura():F2}", "(absent)")
+                Dim hMax = If(t.TieneAlturaMaxima(), $"{t.AlturaMaxima():F2}", "(absent)")
                 Agregar(traitsNode, $"Height: min={hMin}  max={hMax}")
             End If
             Dim fmtMwgt = Function(v As Single?) If(v.HasValue, v.Value.ToString("F2"), "Default")
-            Agregar(traitsNode, $"Weight: Thin={fmtMwgt(traitsNpc.Record.PesoDelCuerpo(0))}  Muscular={fmtMwgt(traitsNpc.Record.PesoDelCuerpo(1))}  Fat={fmtMwgt(traitsNpc.Record.PesoDelCuerpo(2))}")
-            Dim regiones = traitsNpc.Record.ValoresDeRegionCorporal()
+            Agregar(traitsNode, $"Weight: Thin={fmtMwgt(t.PesoDelCuerpo(0))}  Muscular={fmtMwgt(t.PesoDelCuerpo(1))}  Fat={fmtMwgt(t.PesoDelCuerpo(2))}")
+            Dim regiones = t.ValoresDeRegionCorporal()
             If regiones.Count > 0 Then
                 ' Los nombres de las cinco regiones salen del ESQUEMA (MRSV\Body Morph Region Values),
                 ' que es donde el formato los declara; el índice suelto no decía cuál era cuál.
-                Dim morphNode = Agregar(traitsNode, $"Body Morph Regions ({regiones.Count} values)")
-                VolcarHojas(morphNode, BloqueDeSubrecord(traitsNpc.Record.Node, "MRSV"))
+                ' ⛔ MRSV NO lo copia ningun bucket (`TESNPC+0x2D8`, ninguna escritura de la copia): es el PROPIO.
+                Dim morphNode = Agregar(traitsNode, $"Body Morph Regions ({regiones.Count} values){MarcaPropio(npc, traitsNpc)}")
+                VolcarHojas(morphNode, BloqueDeSubrecord(t.Node, "MRSV"))
             End If
         End If
     End Sub
@@ -321,14 +377,25 @@ Friend NotInheritable Class RecordDetailsTree
     Private Sub SeccionStats(npc As NPC_Data, isSse As Boolean)
         Dim statsNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Stats)
         Dim statsNode = Agregar(Nothing, EtiquetaDeSeccion(npc, statsNpc, "Stats"), FormIDDeFuente(npc, statsNpc))
-        If statsNpc.Record.ClassPresente Then Agregar(statsNode, $"Class: {DescribirFormID(statsNpc.Record.[Class])}", statsNpc.Record.[Class])
+        ' ⛔ PUNTO 13: el DNAM tiene CUATRO dueños (habilidades = bucket 1, distancia del modelo lejano = 0,
+        ' armas listas = 8, vida/magia/aguante = ninguno: se derivan) — ver `CopiarHabilidadesDelDnam`. El record
+        ' efectivo ya los trae repartidos; el encabezado nombra la fuente del bucket 1.
+        Dim s = _efectivo.Record
+        If s.ClassPresente Then Agregar(statsNode, $"Class: {DescribirFormID(s.[Class])}", s.[Class])
+        ' ⛔ R8 (ronda 2): los renglones que NO son del bucket 1 llevan su marca POR RENGLON, igual que «Other»: el
+        ' encabezado nombra la fuente de Stats y, sin marca, un valor de otro dueño se leia como heredado de ella.
+        ' Duenos (tabla de `NpcTemplateMaterializer.CopiarHabilidadesDelDnam`): distancia lejana = 0 (SSE 0x1403C217A,
+        ' FO4 0x1406583A1), armas listas = 8 (SSE 0x1403C2045, FO4 0x1406581BE), vida/magia/aguante = ninguno.
+        Dim deTraits = DeBucket(npc, NPC_TemplateCategory.Traits)
+        Dim deInventory = DeBucket(npc, NPC_TemplateCategory.Inventory)
+        Dim propioDnam = MarcaPropio(npc, statsNpc)
         If isSse Then
             ' DNAM = 52 bytes de Player Skills. Nada cuando el payload era demasiado corto para modelarlo.
-            Dim skillsSse = TryCast(statsNpc.Record, Canon.NpcSSE)
+            Dim skillsSse = TryCast(s, Canon.NpcSSE)
             If skillsSse IsNot Nothing AndAlso skillsSse.PlayerSkillsHealthPresente Then
-                Agregar(statsNode, $"Health {skillsSse.PlayerSkillsHealth}   Magicka {skillsSse.PlayerSkillsMagicka}   Stamina {skillsSse.PlayerSkillsStamina}")
-                If skillsSse.PlayerSkillsFarAwayModelDistancePresente Then Agregar(statsNode, $"Far Away Model Distance: {skillsSse.PlayerSkillsFarAwayModelDistance:F2}")
-                If skillsSse.PlayerSkillsGearedUpWeaponsPresente Then Agregar(statsNode, $"Geared Up Weapons: {skillsSse.PlayerSkillsGearedUpWeapons}")
+                Agregar(statsNode, $"Health {skillsSse.PlayerSkillsHealth}   Magicka {skillsSse.PlayerSkillsMagicka}   Stamina {skillsSse.PlayerSkillsStamina}{propioDnam}")
+                If skillsSse.PlayerSkillsFarAwayModelDistancePresente Then Agregar(statsNode, $"Far Away Model Distance: {skillsSse.PlayerSkillsFarAwayModelDistance:F2}{deTraits}")
+                If skillsSse.PlayerSkillsGearedUpWeaponsPresente Then Agregar(statsNode, $"Geared Up Weapons: {skillsSse.PlayerSkillsGearedUpWeapons}{deInventory}")
                 Dim skillsNode = Agregar(statsNode, $"Player Skills ({skillsSse.SkillValues.Count})")
                 For i = 0 To skillsSse.SkillValues.Count - 1
                     Dim off = If(i < skillsSse.SkillOffsets.Count, skillsSse.SkillOffsets(i).Skill, CByte(0))
@@ -340,12 +407,12 @@ Friend NotInheritable Class RecordDetailsTree
         Else
             ' DNAM = 8 bytes de Calculated Stats. Ojo: acá la distancia del modelo lejano es u16, en SSE
             ' es flotante.
-            Dim calcFo4 = TryCast(statsNpc.Record, Canon.NpcFO4)
+            Dim calcFo4 = TryCast(s, Canon.NpcFO4)
             If calcFo4 IsNot Nothing AndAlso calcFo4.CalculatedHealthPresente Then
-                Agregar(statsNode, $"Calculated Health: {calcFo4.CalculatedHealth}")
-                Agregar(statsNode, $"Calculated Action Points: {calcFo4.CalculatedActionPoints}")
-                If calcFo4.FarAwayModelDistancePresente Then Agregar(statsNode, $"Far Away Model Distance: {calcFo4.FarAwayModelDistance}")
-                If calcFo4.GearedUpWeaponsPresente Then Agregar(statsNode, $"Geared Up Weapons: {calcFo4.GearedUpWeapons}")
+                Agregar(statsNode, $"Calculated Health: {calcFo4.CalculatedHealth}{propioDnam}")
+                Agregar(statsNode, $"Calculated Action Points: {calcFo4.CalculatedActionPoints}{propioDnam}")
+                If calcFo4.FarAwayModelDistancePresente Then Agregar(statsNode, $"Far Away Model Distance: {calcFo4.FarAwayModelDistance}{deTraits}")
+                If calcFo4.GearedUpWeaponsPresente Then Agregar(statsNode, $"Geared Up Weapons: {calcFo4.GearedUpWeapons}{deInventory}")
             End If
         End If
     End Sub
@@ -354,9 +421,11 @@ Friend NotInheritable Class RecordDetailsTree
     ' PRPS — los actor values que el record fija de arranque (sólo Fallout 4)
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionActorValues(npc As NPC_Data)
-        Dim fo4 = TryCast(npc.Record, Canon.NpcFO4)
+        ' ⛔ PRPS lo copia Stats (bucket 1) en FO4: 0x140658644 `call sub_140256EF0`. Record EFECTIVO.
+        Dim fo4 = TryCast(_efectivo.Record, Canon.NpcFO4)
         If fo4 Is Nothing OrElse fo4.Properties2.Count = 0 Then Return
-        Dim n = Agregar(Nothing, $"Actor Values (PRPS, {fo4.Properties2.Count})")
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Stats)
+        Dim n = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, $"Actor Values (PRPS, {fo4.Properties2.Count})"), FormIDDeFuente(npc, fuente))
         For Each p In fo4.Properties2
             Agregar(n, $"{DescribirFormID(p.PropertyActorValue)} = {p.PropertyValue:F4}", p.PropertyActorValue)
         Next
@@ -367,7 +436,7 @@ Friend NotInheritable Class RecordDetailsTree
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionFacciones(npc As NPC_Data)
         Dim facNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Factions)
-        Dim facciones = facNpc.Record.Factions
+        Dim facciones = _efectivo.Record.Factions
         If facciones.Count = 0 Then Return
         Dim facNode = Agregar(Nothing, EtiquetaDeSeccion(npc, facNpc, $"Factions ({facciones.Count})"), FormIDDeFuente(npc, facNpc))
         For Each fac In facciones
@@ -380,21 +449,23 @@ Friend NotInheritable Class RecordDetailsTree
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionAIData(npc As NPC_Data)
         Dim aiNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.AIData)
-        If Not aiNpc.Record.AIDataAggressionPresente Then Return
+        ' ⛔ PUNTO 13: el bucket 4 copia SOLO parte del AIDT (`CamposAidtSse`/`CamposAidtFo4`); el resto es propio.
+        Dim a = _efectivo.Record
+        If Not a.AIDataAggressionPresente Then Return
         Dim aiNode = Agregar(Nothing, EtiquetaDeSeccion(npc, aiNpc, "AI Data"), FormIDDeFuente(npc, aiNpc))
-        Agregar(aiNode, $"Aggression: {aiNpc.Record.AIDataAggressionNombre}")
-        Agregar(aiNode, $"Confidence: {aiNpc.Record.AIDataConfidenceNombre}")
-        Agregar(aiNode, $"Morality: {aiNpc.Record.AIDataMoralityNombre}")
-        Agregar(aiNode, $"Mood: {aiNpc.Record.AIDataMoodNombre}")
-        Agregar(aiNode, $"Assistance: {aiNpc.Record.AIDataAssistanceNombre}")
-        Agregar(aiNode, $"Energy Level: {aiNpc.Record.AIDataEnergyLevel}")
-        Agregar(aiNode, $"Aggro Radius Behavior: {If(aiNpc.Record.AIDataAggroRadiusBehavior, "Yes", "No")}")
-        Agregar(aiNode, $"Radius: warn={aiNpc.Record.AggroWarn}  warn/attack={aiNpc.Record.AggroWarnAttack}  attack={aiNpc.Record.AggroAttack}")
-        Dim aiFo4 = TryCast(aiNpc.Record, Canon.NpcFO4)
+        Agregar(aiNode, $"Aggression: {a.AIDataAggressionNombre}")
+        Agregar(aiNode, $"Confidence: {a.AIDataConfidenceNombre}")
+        Agregar(aiNode, $"Morality: {a.AIDataMoralityNombre}")
+        Agregar(aiNode, $"Mood: {a.AIDataMoodNombre}")
+        Agregar(aiNode, $"Assistance: {a.AIDataAssistanceNombre}")
+        Agregar(aiNode, $"Energy Level: {a.AIDataEnergyLevel}")
+        Agregar(aiNode, $"Aggro Radius Behavior: {If(a.AIDataAggroRadiusBehavior, "Yes", "No")}")
+        Agregar(aiNode, $"Radius: warn={a.AggroWarn}  warn/attack={a.AggroWarnAttack}  attack={a.AggroAttack}")
+        Dim aiFo4 = TryCast(a, Canon.NpcFO4)
         If aiFo4 IsNot Nothing Then
             If aiFo4.AIDataNoSlowApproachPresente Then Agregar(aiNode, $"No Slow Approach: {If(aiFo4.AIDataNoSlowApproach, "Yes", "No")}")
-            If aiFo4.AggroUnknownPresente Then Agregar(aiNode, $"Aggro (unknown byte): {aiFo4.AggroUnknown}")
-            If aiFo4.AIDataUnknownPresente Then Agregar(aiNode, $"AIDT trailing bytes: {EnHex(aiFo4.AIDataUnknown)}")
+            If aiFo4.AggroUnknownPresente Then Agregar(aiNode, $"Aggro (unknown byte): {aiFo4.AggroUnknown}{MarcaPropio(npc, aiNpc)}")
+            If aiFo4.AIDataUnknownPresente Then Agregar(aiNode, $"AIDT trailing bytes: {EnHex(aiFo4.AIDataUnknown)}{MarcaPropio(npc, aiNpc)}")
         End If
     End Sub
 
@@ -404,34 +475,42 @@ Friend NotInheritable Class RecordDetailsTree
     Private Sub SeccionPaquetes(npc As NPC_Data)
         Dim pkgNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.AIPackages)
         Dim dpltNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.DefaultPackageList)
-        If pkgNpc.Record.PaquetesDeIA().Count = 0 AndAlso Not dpltNpc.Record.DefaultPackageListPresente Then Return
+        ' ⛔ PKID: bucket 5, sin materializador (fuente de la cadena entera). DPLT: bucket 10, record EFECTIVO.
+        Dim dplt = _efectivo.Record
+        If pkgNpc.Record.PaquetesDeIA().Count = 0 AndAlso Not dplt.DefaultPackageListPresente Then Return
         Dim pkgNode = Agregar(Nothing, EtiquetaDeSeccion(npc, pkgNpc, $"AI Packages ({pkgNpc.Record.PaquetesDeIA().Count})"), FormIDDeFuente(npc, pkgNpc))
         For Each pkgID In pkgNpc.Record.PaquetesDeIA()
             Agregar(pkgNode, DescribirFormID(pkgID), pkgID)
         Next
-        If dpltNpc.Record.DefaultPackageListPresente Then Agregar(pkgNode, $"Default Package List (DPLT): {DescribirFormID(dpltNpc.Record.DefaultPackageList)}", dpltNpc.Record.DefaultPackageList)
+        If dplt.DefaultPackageListPresente Then Agregar(pkgNode, $"Default Package List (DPLT): {DescribirFormID(dplt.DefaultPackageList)}" &
+                                                             If(dpltNpc.FormID <> npc.FormID, $"  (inherited from [{dpltNpc.FormID:X8}])", ""),
+                                                             dplt.DefaultPackageList)
     End Sub
 
     '----------------------------------------------------------------------------------------------
     ' SPOR / OCOR / GWOR / ECOR / FCPL / RCLR
     '----------------------------------------------------------------------------------------------
-    ''' <summary>Las listas de override de paquete. ⛔ NO son categoría de plantilla: ninguna de las
-    ''' trece las cubre, así que el motor las lee del record PROPIO aunque el NPC herede AI Packages.
-    ''' Por eso van en su propia sección y no colgadas de «AI Packages», que sí puede venir de otro
-    ''' actor y diría una fuente que no es la de estos campos.</summary>
+    ''' <summary>Las listas de override de paquete.
+    ''' <para>⛔ Aca decia «NO son categoría de plantilla: el motor las lee del record PROPIO». Era FALSO: las
+    ''' copia el bucket 10 (Use Def Pack List) junto con el DPLT — SSE `0x1403C2572` → `sub_1401DAB00`, cuatro
+    ''' stores consecutivos; FO4 `0x140658864` → `sub_140306E40`, seis (ver
+    ''' `NpcTemplateMaterializer.MaterializeDefPackList`). Punto 13: se leen del record EFECTIVO y el
+    ''' encabezado nombra la fuente del bucket 10.</para></summary>
     Private Sub SeccionListasDeOverride(npc As NPC_Data)
         Dim filas As New List(Of (Etiqueta As String, Fid As UInteger))
-        If npc.Record.SpectatorOverridePackageListPresente Then filas.Add(("Spectator (SPOR)", npc.Record.SpectatorOverridePackageList))
-        If npc.Record.ObserveDeadBodyOverridePackageListPresente Then filas.Add(("Observe Dead Body (OCOR)", npc.Record.ObserveDeadBodyOverridePackageList))
-        If npc.Record.GuardWarnOverridePackageListPresente Then filas.Add(("Guard Warn (GWOR)", npc.Record.GuardWarnOverridePackageList))
-        If npc.Record.CombatOverridePackageListPresente Then filas.Add(("Combat (ECOR)", npc.Record.CombatOverridePackageList))
-        Dim fo4 = TryCast(npc.Record, Canon.NpcFO4)
+        Dim o = _efectivo.Record
+        If o.SpectatorOverridePackageListPresente Then filas.Add(("Spectator (SPOR)", o.SpectatorOverridePackageList))
+        If o.ObserveDeadBodyOverridePackageListPresente Then filas.Add(("Observe Dead Body (OCOR)", o.ObserveDeadBodyOverridePackageList))
+        If o.GuardWarnOverridePackageListPresente Then filas.Add(("Guard Warn (GWOR)", o.GuardWarnOverridePackageList))
+        If o.CombatOverridePackageListPresente Then filas.Add(("Combat (ECOR)", o.CombatOverridePackageList))
+        Dim fo4 = TryCast(o, Canon.NpcFO4)
         If fo4 IsNot Nothing Then
             If fo4.FollowerCommandPackageListPresente Then filas.Add(("Follower Command (FCPL)", fo4.FollowerCommandPackageList))
             If fo4.FollowerElevatorPackageListPresente Then filas.Add(("Follower Elevator (RCLR)", fo4.FollowerElevatorPackageList))
         End If
         If filas.Count = 0 Then Return
-        Dim n = Agregar(Nothing, $"Override Package Lists ({filas.Count})")
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.DefaultPackageList)
+        Dim n = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, $"Override Package Lists ({filas.Count})"), FormIDDeFuente(npc, fuente))
         For Each f In filas
             Agregar(n, $"{f.Etiqueta}: {DescribirFormID(f.Fid)}", f.Fid)
         Next
@@ -442,9 +521,10 @@ Friend NotInheritable Class RecordDetailsTree
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionEfectos(npc As NPC_Data)
         Dim spellNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.SpellList)
-        If spellNpc.Record.EfectosDeActor().Count = 0 Then Return
-        Dim spellNode = Agregar(Nothing, EtiquetaDeSeccion(npc, spellNpc, $"Actor Effects ({spellNpc.Record.EfectosDeActor().Count})"), FormIDDeFuente(npc, spellNpc))
-        For Each spellID In spellNpc.Record.EfectosDeActor()
+        Dim efectos = _efectivo.Record.EfectosDeActor()
+        If efectos.Count = 0 Then Return
+        Dim spellNode = Agregar(Nothing, EtiquetaDeSeccion(npc, spellNpc, $"Actor Effects ({efectos.Count})"), FormIDDeFuente(npc, spellNpc))
+        For Each spellID In efectos
             Agregar(spellNode, DescribirFormID(spellID), spellID)
         Next
     End Sub
@@ -454,20 +534,24 @@ Friend NotInheritable Class RecordDetailsTree
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionKeywords(npc As NPC_Data)
         Dim kwNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Keywords)
-        If kwNpc.Record.PalabrasClave().Count = 0 Then Return
-        Dim kwNode = Agregar(Nothing, EtiquetaDeSeccion(npc, kwNpc, $"Keywords ({kwNpc.Record.PalabrasClave().Count})"), FormIDDeFuente(npc, kwNpc))
-        For Each kwID In kwNpc.Record.PalabrasClave()
+        Dim palabras = _efectivo.Record.PalabrasClave()
+        If palabras.Count = 0 Then Return
+        Dim kwNode = Agregar(Nothing, EtiquetaDeSeccion(npc, kwNpc, $"Keywords ({palabras.Count})"), FormIDDeFuente(npc, kwNpc))
+        For Each kwID In palabras
             Agregar(kwNode, DescribirFormID(kwID), kwID)
         Next
     End Sub
 
     '----------------------------------------------------------------------------------------------
-    ' PRKR — sin categoría de plantilla: siempre del record propio
+    ' PRKR — ⛔ aca decia «sin categoría de plantilla: siempre del record propio», y es FALSO: los perks
+    ' viajan por Spell List (bucket 3) — SSE 0x1403C24C3 -> sub_1401DB120, FO4 0x14065875A -> sub_1403075B0
+    ' (`NpcTemplateMaterializer.MakeCategoryOwn`, caso SpellList). Punto 13: record EFECTIVO.
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionPerks(npc As NPC_Data)
-        Dim ventajas = npc.Record.Perks
+        Dim ventajas = _efectivo.Record.Perks
         If ventajas.Count = 0 Then Return
-        Dim perkNode = Agregar(Nothing, $"Perks ({ventajas.Count})")
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.SpellList)
+        Dim perkNode = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, $"Perks ({ventajas.Count})"), FormIDDeFuente(npc, fuente))
         For Each perk In ventajas
             Agregar(perkNode, $"{DescribirFormID(perk.Perk)}  rank {perk.PerkRank}", perk.Perk)
         Next
@@ -479,19 +563,20 @@ Friend NotInheritable Class RecordDetailsTree
     Private Sub SeccionInventario(npc As NPC_Data)
         Dim invNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Inventory)
         Dim invNode = Agregar(Nothing, EtiquetaDeSeccion(npc, invNpc, "Inventory"), FormIDDeFuente(npc, invNpc))
-        If invNpc.Record.DefaultOutfit <> 0UI Then
-            Dim outfitNode = Agregar(invNode, $"Default Outfit: {DescribirFormID(invNpc.Record.DefaultOutfit)}", invNpc.Record.DefaultOutfit)
-            ExpandirAtuendo(outfitNode, invNpc.Record.DefaultOutfit)
+        Dim inv = _efectivo.Record
+        If inv.DefaultOutfit <> 0UI Then
+            Dim outfitNode = Agregar(invNode, $"Default Outfit: {DescribirFormID(inv.DefaultOutfit)}", inv.DefaultOutfit)
+            ExpandirAtuendo(outfitNode, inv.DefaultOutfit)
         Else
             Agregar(invNode, "Default Outfit: (none)")
         End If
-        If invNpc.Record.SleepingOutfit <> 0UI Then
-            Dim sleepNode = Agregar(invNode, $"Sleep Outfit: {DescribirFormID(invNpc.Record.SleepingOutfit)}", invNpc.Record.SleepingOutfit)
-            ExpandirAtuendo(sleepNode, invNpc.Record.SleepingOutfit)
+        If inv.SleepingOutfit <> 0UI Then
+            Dim sleepNode = Agregar(invNode, $"Sleep Outfit: {DescribirFormID(inv.SleepingOutfit)}", inv.SleepingOutfit)
+            ExpandirAtuendo(sleepNode, inv.SleepingOutfit)
         End If
         ' Los CNTO se listan por nombre nada más — a propósito NO se expanden a su grafo ARMO/ARMA como
         ' el atuendo, así un mercader de 40 ítems no lo paga en cada selección.
-        Dim inventario = invNpc.Record.Items
+        Dim inventario = inv.Items
         If inventario.Count > 0 Then
             Dim itemsNode = Agregar(invNode, $"Items ({inventario.Count})")
             For Each item In inventario
@@ -512,25 +597,30 @@ Friend NotInheritable Class RecordDetailsTree
     ' FTST / HCLF / BCLF / QNAM / PNAM / MSDK+MSDV / FMRI+FMRS / FMIN / TETI+TEND / NAM9 / NAMA / TIN*
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionApariencia(npc As NPC_Data, isSse As Boolean)
-        Dim modelNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.ModelAnimation)
+        ' ⛔⛔ PUNTO 13 (D10): la apariencia salia del bucket 6 (Model/Animation), y TODO lo que esta seccion
+        ' muestra lo copia el bit 0 (Traits) — FTST, HCLF, BCLF, QNAM, PNAM, MSDK/MSDV, FMRI/FMRS, TETI/TEND (FO4),
+        ' NAM9/NAMA (SSE): `NpcTemplateMaterializer.MaterializeTraits`. Salvo lo que NO copia ningun bucket y queda
+        ' PROPIO: FMIN (FO4, tabla lateral 0x142F092B8, 0 accesos desde la copia) y las capas TINI de Skyrim (el
+        ' bit 0 de SSE no toca +0x260). Encabezado = fuente de Traits; valores = record EFECTIVO.
+        Dim modelNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Traits)
         Dim modelNode = Agregar(Nothing, EtiquetaDeSeccion(npc, modelNpc, "Appearance"), FormIDDeFuente(npc, modelNpc))
-        If modelNpc.Record.HeadTexture <> 0UI Then Agregar(modelNode, $"Head Texture: {DescribirFormID(modelNpc.Record.HeadTexture)}", modelNpc.Record.HeadTexture)
-        If modelNpc.Record.HairColor <> 0UI Then Agregar(modelNode, $"Hair Color: {DescribirFormID(modelNpc.Record.HairColor)}", modelNpc.Record.HairColor)
+        If _efectivo.Record.HeadTexture <> 0UI Then Agregar(modelNode, $"Head Texture: {DescribirFormID(_efectivo.Record.HeadTexture)}", _efectivo.Record.HeadTexture)
+        If _efectivo.Record.HairColor <> 0UI Then Agregar(modelNode, $"Hair Color: {DescribirFormID(_efectivo.Record.HairColor)}", _efectivo.Record.HairColor)
         ' BCLF (color de barba) es un subrecord sólo de Fallout — Skyrim tiñe la barba desde HCLF.
-        If Not isSse AndAlso modelNpc.Record.ColorDeBarba() <> 0UI Then Agregar(modelNode, $"Facial Hair Color: {DescribirFormID(modelNpc.Record.ColorDeBarba())}", modelNpc.Record.ColorDeBarba())
+        If Not isSse AndAlso _efectivo.Record.ColorDeBarba() <> 0UI Then Agregar(modelNode, $"Facial Hair Color: {DescribirFormID(_efectivo.Record.ColorDeBarba())}", _efectivo.Record.ColorDeBarba())
         ' QNAM existe en los dos motores (RGB(A) flotante).
-        If modelNpc.Record.TextureLightingRedPresente Then
-            Dim qnam = $"Texture Lighting: R={modelNpc.Record.ColorDeIluminacionDeTextura().R} G={modelNpc.Record.ColorDeIluminacionDeTextura().G} B={modelNpc.Record.ColorDeIluminacionDeTextura().B}"
+        If _efectivo.Record.TextureLightingRedPresente Then
+            Dim qnam = $"Texture Lighting: R={_efectivo.Record.ColorDeIluminacionDeTextura().R} G={_efectivo.Record.ColorDeIluminacionDeTextura().G} B={_efectivo.Record.ColorDeIluminacionDeTextura().B}"
             ' El cuarto flotante sólo lo declara Fallout 4.
-            Dim modelFo4Qnam = TryCast(modelNpc.Record, Canon.NpcFO4)
+            Dim modelFo4Qnam = TryCast(_efectivo.Record, Canon.NpcFO4)
             If modelFo4Qnam IsNot Nothing AndAlso modelFo4Qnam.TextureLightingAlphaPresente Then qnam &= $" A={modelFo4Qnam.TextureLightingAlpha:F4}"
             Agregar(modelNode, qnam)
         End If
 
         ' Head Parts (PNAM — los dos motores)
-        If modelNpc.Record.PartesDeCabeza().Count > 0 Then
-            Dim hpNode = Agregar(modelNode, $"Head Parts ({modelNpc.Record.PartesDeCabeza().Count})")
-            For Each hpFormID In modelNpc.Record.PartesDeCabeza()
+        If _efectivo.Record.PartesDeCabeza().Count > 0 Then
+            Dim hpNode = Agregar(modelNode, $"Head Parts ({_efectivo.Record.PartesDeCabeza().Count})")
+            For Each hpFormID In _efectivo.Record.PartesDeCabeza()
                 Dim hpRec = _pluginManager.GetRecord(hpFormID)
                 If hpRec IsNot Nothing Then
                     Dim hdpt = _ctx.ParseHdptCached(hpRec)
@@ -551,20 +641,20 @@ Friend NotInheritable Class RecordDetailsTree
         End If
 
         If isSse Then
-            AgregarMorfosSse(modelNode, modelNpc.Record)
-            AgregarPartesDeCaraSse(modelNode, modelNpc.Record)
-            AgregarCapasDeTinteSse(modelNode, TryCast(modelNpc.Record, Canon.NpcSSE))
+            AgregarMorfosSse(modelNode, _efectivo.Record)
+            AgregarPartesDeCaraSse(modelNode, _efectivo.Record)
+            AgregarCapasDeTinteSse(modelNode, TryCast(_efectivo.Record, Canon.NpcSSE), MarcaTiniSseInvisible(npc, modelNpc))
         Else
             ' Face Morph Presets (MSDK/MSDV)
-            If modelNpc.Record.MorfosDeCara().Count > 0 Then
-                Dim morphNode = Agregar(modelNode, $"Face Morph Presets ({modelNpc.Record.MorfosDeCara().Count})")
-                For Each kvp In modelNpc.Record.MorfosDeCara()
+            If _efectivo.Record.MorfosDeCara().Count > 0 Then
+                Dim morphNode = Agregar(modelNode, $"Face Morph Presets ({_efectivo.Record.MorfosDeCara().Count})")
+                For Each kvp In _efectivo.Record.MorfosDeCara()
                     Agregar(morphNode, $"Key {kvp.Key:X8} = {kvp.Value:F4}")
                 Next
             End If
 
             ' Face Morph Sculpting (FMRI/FMRS)
-            Dim modelFo4 = TryCast(modelNpc.Record, Canon.NpcFO4)
+            Dim modelFo4 = TryCast(_efectivo.Record, Canon.NpcFO4)
             If modelFo4 IsNot Nothing AndAlso modelFo4.FaceMorphs.Count > 0 Then
                 Dim fmNode = Agregar(modelNode, $"Face Morph Sculpting ({modelFo4.FaceMorphs.Count} morphs)")
                 For Each fm In modelFo4.FaceMorphs
@@ -579,10 +669,10 @@ Friend NotInheritable Class RecordDetailsTree
                                     $"scale {fm.ValuesScale:F3}")
                 Next
             End If
-            If modelNpc.Record.TieneIntensidadDeMorfoFacial() Then Agregar(modelNode, $"Facial Morph Intensity (FMIN): {modelNpc.Record.IntensidadDeMorfoFacial():F2}")
+            If _efectivo.Record.TieneIntensidadDeMorfoFacial() Then Agregar(modelNode, $"Facial Morph Intensity (FMIN): {_efectivo.Record.IntensidadDeMorfoFacial():F2}{MarcaPropio(npc, modelNpc)}")
 
             ' Face Tint Layers (TETI/TEND)
-            Dim capasDeTinte = FaceTintInputBuilder.CapasAutoradasDelRecord(modelNpc.Record)
+            Dim capasDeTinte = FaceTintInputBuilder.CapasAutoradasDelRecord(_efectivo.Record)
             If capasDeTinte.Count > 0 Then
                 Dim tintNode = Agregar(modelNode, $"Face Tint Layers ({capasDeTinte.Count})")
                 For Each tl In capasDeTinte
@@ -594,20 +684,23 @@ Friend NotInheritable Class RecordDetailsTree
     End Sub
 
     '----------------------------------------------------------------------------------------------
-    ' OBTE / OBTF / OBTS + APPR — sólo Fallout 4, y sin categoría de plantilla
+    ' OBTE / OBTF / OBTS + APPR — sólo Fallout 4. ⛔ Aca decia «sin categoría de plantilla»: los dos viajan por
+    ' la cadena de Traits (`MaterializeTraits`: `ReemplazarCombinations` + `PonerRanurasDeEnganche`). Punto 13:
+    ' record EFECTIVO, encabezado con la fuente de Traits.
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionObjectTemplates(npc As NPC_Data)
-        Dim ranuras = npc.Record.RanurasDeEnganche()
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Traits)
+        Dim ranuras = _efectivo.Record.RanurasDeEnganche()
         If ranuras.Count > 0 Then
-            Dim apprNode = Agregar(Nothing, $"Attach Parent Slots (APPR, {ranuras.Count})")
+            Dim apprNode = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, $"Attach Parent Slots (APPR, {ranuras.Count})"), FormIDDeFuente(npc, fuente))
             For Each kw In ranuras
                 Agregar(apprNode, DescribirFormID(kw), kw)
             Next
         End If
 
-        Dim combos = npc.Record.CombinacionesDelNpc()
+        Dim combos = _efectivo.Record.CombinacionesDelNpc()
         If combos.Count = 0 Then Return
-        Dim raiz = Agregar(Nothing, $"Object Templates (OBTE, {combos.Count} combination(s))")
+        Dim raiz = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, $"Object Templates (OBTE, {combos.Count} combination(s))"), FormIDDeFuente(npc, fuente))
         Dim i = 0
         For Each c In combos
             Dim nombre = If(String.IsNullOrEmpty(c.CombinationName), $"(unnamed #{i})", c.CombinationName)
@@ -661,10 +754,11 @@ Friend NotInheritable Class RecordDetailsTree
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionAtaques(npc As NPC_Data, isSse As Boolean)
         Dim atkNpc = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.AttackData)
-        Dim ataques = atkNpc.Record.Attacks
-        If ataques.Count = 0 AndAlso Not atkNpc.Record.AttackRacePresente Then Return
+        Dim at = _efectivo.Record
+        Dim ataques = at.Attacks
+        If ataques.Count = 0 AndAlso Not at.AttackRacePresente Then Return
         Dim n = Agregar(Nothing, EtiquetaDeSeccion(npc, atkNpc, $"Attacks ({ataques.Count})"), FormIDDeFuente(npc, atkNpc))
-        If atkNpc.Record.AttackRacePresente Then Agregar(n, $"Attack Race (ATKR): {DescribirFormID(atkNpc.Record.AttackRace)}", atkNpc.Record.AttackRace)
+        If at.AttackRacePresente Then Agregar(n, $"Attack Race (ATKR): {DescribirFormID(at.AttackRace)}", at.AttackRace)
         Dim i = 0
         For Each a In ataques
             Dim etiqueta = If(String.IsNullOrEmpty(a.AttackEvent), $"[{i}]", $"[{i}] {a.AttackEvent}")
@@ -693,21 +787,25 @@ Friend NotInheritable Class RecordDetailsTree
     ' DEST / DAMC / DSTD / DSTA / DMDL / DMDC / DMDS / DSTF
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionDestruible(npc As NPC_Data, isSse As Boolean)
-        If Not npc.Record.HeaderHealthPresente AndAlso npc.Record.Stages.Count = 0 Then Return
-        Dim n = Agregar(Nothing, $"Destructible (DEST, {npc.Record.Stages.Count} stage(s))")
-        If npc.Record.HeaderHealthPresente Then
-            Agregar(n, $"Health: {npc.Record.HeaderHealth}   DEST Count: {npc.Record.HeaderDESTCount}")
+        ' ⛔ PUNTO 13: el grupo Destructible lo copia el bit 0 (SSE 0x1403C2194 sub_1401D2AF0, FO4 0x1406583D4
+        ' sub_1402FD6C0). Record EFECTIVO, encabezado con la fuente de Traits.
+        Dim d = _efectivo.Record
+        If Not d.HeaderHealthPresente AndAlso d.Stages.Count = 0 Then Return
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Traits)
+        Dim n = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, $"Destructible (DEST, {d.Stages.Count} stage(s))"), FormIDDeFuente(npc, fuente))
+        If d.HeaderHealthPresente Then
+            Agregar(n, $"Health: {d.HeaderHealth}   DEST Count: {d.HeaderDESTCount}")
             If isSse Then
-                Dim dSse = TryCast(npc.Record, Canon.NpcSSE)
+                Dim dSse = TryCast(d, Canon.NpcSSE)
                 If dSse IsNot Nothing Then Agregar(n, $"VATS Targetable: {If(dSse.HeaderVATSTargetable, "Yes", "No")}")
             Else
-                Dim dFo4 = TryCast(npc.Record, Canon.NpcFO4)
-                If dFo4 IsNot Nothing Then Agregar(n, $"Flags: {NpcManagerFormat.DescribirBanderas(npc.Record.Node, "DEST", "Flags")}")
+                Dim dFo4 = TryCast(d, Canon.NpcFO4)
+                If dFo4 IsNot Nothing Then Agregar(n, $"Flags: {NpcManagerFormat.DescribirBanderas(d.Node, "DEST", "Flags")}")
             End If
-            If npc.Record.HeaderUnknownPresente Then Agregar(n, $"DEST trailing bytes: {EnHex(npc.Record.HeaderUnknown)}")
+            If d.HeaderUnknownPresente Then Agregar(n, $"DEST trailing bytes: {EnHex(d.HeaderUnknown)}")
         End If
         ' DAMC: las resistencias del destruible, sólo Fallout 4.
-        Dim fo4 = TryCast(npc.Record, Canon.NpcFO4)
+        Dim fo4 = TryCast(d, Canon.NpcFO4)
         If fo4 IsNot Nothing AndAlso fo4.Resistances.Count > 0 Then
             Dim rn = Agregar(n, $"Damage Resistances (DAMC, {fo4.Resistances.Count})")
             For Each r In fo4.Resistances
@@ -715,7 +813,7 @@ Friend NotInheritable Class RecordDetailsTree
             Next
         End If
         Dim i = 0
-        For Each s In npc.Record.Stages
+        For Each s In d.Stages
             Dim sn = Agregar(n, $"Stage [{i}] index={s.DestructionStageDataIndex}  health%={s.DestructionStageDataHealth}")
             Agregar(sn, $"Model Damage Stage: {s.DestructionStageDataModelDamageStage}   Flags: {NpcManagerFormat.DescribirBanderas(s.Node, "DSTD", "Flags")}")
             Agregar(sn, $"Self Damage/s: {s.DestructionStageDataSelfDamagePerSecond}   Debris Count: {s.DestructionStageDataDebrisCount}")
@@ -756,16 +854,21 @@ Friend NotInheritable Class RecordDetailsTree
     ' CS2H/CS2K/CS2D/CS2F (FO4) · CSDT/CSDI/CSDC (SSE) · CSCR
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionSonidos(npc As NPC_Data, isSse As Boolean)
-        Dim fo4 = TryCast(npc.Record, Canon.NpcFO4)
-        Dim sse = TryCast(npc.Record, Canon.NpcSSE)
+        ' ⛔ PUNTO 13: el canal de sonidos lo copia el bit 0 (SSE 0x1403C21A7-0x1403C2243, FO4 0x1406583D9-
+        ' 0x140658436; `NpcTemplateMaterializer.CopiarSonidos`). Record EFECTIVO, encabezado con la fuente de Traits.
+        ' (La cola de sonidos fuera del gate — SPEC F10 — no esta aprobada y no se modela.)
+        Dim so = _efectivo.Record
+        Dim fo4 = TryCast(so, Canon.NpcFO4)
+        Dim sse = TryCast(so, Canon.NpcSSE)
         Dim hayFo4 = fo4 IsNot Nothing AndAlso fo4.Sounds.Count > 0
         Dim haySse = sse IsNot Nothing AndAlso sse.SoundTypes.Count > 0
-        If Not hayFo4 AndAlso Not haySse AndAlso Not npc.Record.InheritsSoundsFromPresente Then Return
+        If Not hayFo4 AndAlso Not haySse AndAlso Not so.InheritsSoundsFromPresente Then Return
 
-        Dim n = Agregar(Nothing, "Actor Sounds")
-        If npc.Record.InheritsSoundsFromPresente Then
+        Dim fuente = ResolverFuenteDeSeccion(npc, NPC_TemplateCategory.Traits)
+        Dim n = Agregar(Nothing, EtiquetaDeSeccion(npc, fuente, "Actor Sounds"), FormIDDeFuente(npc, fuente))
+        If so.InheritsSoundsFromPresente Then
             ' ⛔ CSCR apunta a un NPC_: es navegable igual que una plantilla.
-            Agregar(n, $"Inherits Sounds From (CSCR): {DescribirFormID(npc.Record.InheritsSoundsFrom)}", npc.Record.InheritsSoundsFrom)
+            Agregar(n, $"Inherits Sounds From (CSCR): {DescribirFormID(so.InheritsSoundsFrom)}", so.InheritsSoundsFrom)
         End If
         If hayFo4 Then
             For Each s In fo4.Sounds
@@ -833,39 +936,110 @@ Friend NotInheritable Class RecordDetailsTree
     End Function
 
     '----------------------------------------------------------------------------------------------
-    ' Lo que queda: referencias sueltas del record propio
+    ' Lo que queda: referencias sueltas. ⛔ PUNTO 13: NO son todas "del record propio" — cada renglon dice
+    ' de que bucket viene su valor (ley de `MakeCategoryOwn`): INAM, ANAM, NAM8, STCP = 0; CRIF = 2; ZNAM, GNAM = 4;
+    ' NTRM = 7; PFRN = 8. FTYP, PTRN, ATTX y NAM5 no los copia ningun bucket. Valores del record EFECTIVO.
     '----------------------------------------------------------------------------------------------
     Private Sub SeccionOtros(npc As NPC_Data, isSse As Boolean)
         Dim otherNode = Agregar(Nothing, "Other")
-        If npc.Record.DeathItemPresente Then Agregar(otherNode, $"Death Item (INAM): {DescribirFormID(npc.Record.DeathItem)}", npc.Record.DeathItem)
-        If npc.Record.CombatStylePresente Then Agregar(otherNode, $"Combat Style (ZNAM): {DescribirFormID(npc.Record.CombatStyle)}", npc.Record.CombatStyle)
-        If npc.Record.CrimeFactionPresente Then Agregar(otherNode, $"Crime Faction (CRIF): {DescribirFormID(npc.Record.CrimeFaction)}", npc.Record.CrimeFaction)
-        If npc.Record.GiftFilterPresente Then Agregar(otherNode, $"Gift Filter (GNAM): {DescribirFormID(npc.Record.GiftFilter)}", npc.Record.GiftFilter)
-        If npc.Record.FarAwayModelPresente Then Agregar(otherNode, $"Far Away Model (ANAM): {DescribirFormID(npc.Record.FarAwayModel)}", npc.Record.FarAwayModel)
+        Dim o = _efectivo.Record
+        Dim de0 = DeBucket(npc, NPC_TemplateCategory.Traits)
+        If o.DeathItemPresente Then Agregar(otherNode, $"Death Item (INAM): {DescribirFormID(o.DeathItem)}{de0}", o.DeathItem)
+        If o.CombatStylePresente Then Agregar(otherNode, $"Combat Style (ZNAM): {DescribirFormID(o.CombatStyle)}{DeBucket(npc, NPC_TemplateCategory.AIData)}", o.CombatStyle)
+        If o.CrimeFactionPresente Then Agregar(otherNode, $"Crime Faction (CRIF): {DescribirFormID(o.CrimeFaction)}{DeBucket(npc, NPC_TemplateCategory.Factions)}", o.CrimeFaction)
+        If o.GiftFilterPresente Then Agregar(otherNode, $"Gift Filter (GNAM): {DescribirFormID(o.GiftFilter)}{DeBucket(npc, NPC_TemplateCategory.AIData)}", o.GiftFilter)
+        If o.FarAwayModelPresente Then Agregar(otherNode, $"Far Away Model (ANAM): {DescribirFormID(o.FarAwayModel)}{de0}", o.FarAwayModel)
         ' El nombre del nivel de sonido sale del ESQUEMA (NAM8 es un enumerado declarado), no de una
         ' tabla repetida acá: Fallout agrega un quinto valor que Skyrim no tiene y la tabla a mano lo
         ' tenía que saber.
-        If npc.Record.SoundLevelPresente Then Agregar(otherNode, $"Sound Level (NAM8): {npc.Record.SoundLevelNombre}")
-        If npc.Record.UnknownPresente Then Agregar(otherNode, $"Unknown (NAM5): {EnHex(npc.Record.Unknown)}")
+        If o.SoundLevelPresente Then Agregar(otherNode, $"Sound Level (NAM8): {o.SoundLevelNombre}{de0}")
+        If o.UnknownPresente Then Agregar(otherNode, $"Unknown (NAM5): {EnHex(o.Unknown)}")
         If Not isSse Then
             ' PFRN (soporte de servoarmadura), NTRM (terminal nativa), FTYP, PTRN, STCP y ATTX no tienen
             ' equivalente en Skyrim.
-            Dim otherFo4 = TryCast(npc.Record, Canon.NpcFO4)
+            Dim otherFo4 = TryCast(o, Canon.NpcFO4)
             If otherFo4 IsNot Nothing Then
-                If otherFo4.PowerArmorStandPresente Then Agregar(otherNode, $"Power Armor Stand (PFRN): {DescribirFormID(otherFo4.PowerArmorStand)}", otherFo4.PowerArmorStand)
-                If otherFo4.NativeTerminalPresente Then Agregar(otherNode, $"Native Terminal (NTRM): {DescribirFormID(otherFo4.NativeTerminal)}", otherFo4.NativeTerminal)
+                If otherFo4.PowerArmorStandPresente Then Agregar(otherNode, $"Power Armor Stand (PFRN): {DescribirFormID(otherFo4.PowerArmorStand)}{DeBucket(npc, NPC_TemplateCategory.Inventory)}", otherFo4.PowerArmorStand)
+                If otherFo4.NativeTerminalPresente Then Agregar(otherNode, $"Native Terminal (NTRM): {DescribirFormID(otherFo4.NativeTerminal)}{DeBucket(npc, NPC_TemplateCategory.BaseData)}", otherFo4.NativeTerminal)
                 If otherFo4.ForcedLocRefTypePresente Then Agregar(otherNode, $"Forced Loc Ref Type (FTYP): {DescribirFormID(otherFo4.ForcedLocRefType)}", otherFo4.ForcedLocRefType)
                 If otherFo4.PreviewTransformPresente Then Agregar(otherNode, $"Preview Transform (PTRN): {DescribirFormID(otherFo4.PreviewTransform)}", otherFo4.PreviewTransform)
-                If otherFo4.AnimationSoundPresente Then Agregar(otherNode, $"Animation Sound (STCP): {DescribirFormID(otherFo4.AnimationSound)}", otherFo4.AnimationSound)
+                If otherFo4.AnimationSoundPresente Then Agregar(otherNode, $"Animation Sound (STCP): {DescribirFormID(otherFo4.AnimationSound)}{de0}", otherFo4.AnimationSound)
                 If otherFo4.ActivateTextOverridePresente Then Agregar(otherNode, $"Activate Text Override (ATTX): {otherFo4.ActivateTextOverride}")
             End If
         End If
         If otherNode.Hijos.Count = 0 Then _raices.Remove(otherNode)
     End Sub
 
+    ''' <summary>Sufijo de renglon «(inherited from X)» para un campo del bucket <paramref name="cat"/>, o vacio si
+    ''' el bucket es propio.</summary>
+    Private Function DeBucket(npc As NPC_Data, cat As NPC_TemplateCategory) As String
+        Dim fuente = ResolverFuenteDeSeccion(npc, cat)
+        If fuente Is Nothing OrElse fuente.FormID = npc.FormID Then Return ""
+        Return $"  (inherited from [{fuente.FormID:X8}])"
+    End Function
+
     '==============================================================================================
     ' Herencia
     '==============================================================================================
+
+    ''' <summary>El record que el motor deja en memoria para el NPC que se esta construyendo. Vive por llamada a
+    ''' <see cref="Construir"/>.</summary>
+    Private _efectivo As NPC_Data
+
+    ''' <summary>Las categorias cuya ley de copia POR CAMPO esta transcrita en
+    ''' <c>NpcTemplateMaterializer.MakeCategoryOwn</c> (la misma lista que <c>ProbeCategoryOwn</c> soporta). AI
+    ''' Packages (5), Model/Animation (6) y Script (9) no tienen materializador: sus secciones siguen leyendo la
+    ''' fuente de la cadena entera.</summary>
+    Private Shared ReadOnly CategoriasConLeyPorCampo As NPC_TemplateCategory() = {
+        NPC_TemplateCategory.Traits, NPC_TemplateCategory.Stats, NPC_TemplateCategory.Factions,
+        NPC_TemplateCategory.SpellList, NPC_TemplateCategory.AIData, NPC_TemplateCategory.BaseData,
+        NPC_TemplateCategory.Inventory, NPC_TemplateCategory.DefaultPackageList,
+        NPC_TemplateCategory.AttackData, NPC_TemplateCategory.Keywords}
+
+    ''' <summary>⛔⛔ PUNTO 13 — LOS VALORES EFECTIVOS POR BUCKET, CON LA LEY DEL MATERIALIZADOR Y NO CON UNA SEGUNDA.
+    ''' <para>El panel leia cada SECCION entera de un record: las heredables del terminal de su categoria y el resto
+    ''' del record PROPIO. Las dos mitades estaban mal repartidas contra el motor: (a) campos que un bucket PISA se
+    ''' mostraban propios -- OBND, sonidos, destruible, NAM8, INAM, ANAM, STCP (bucket 0), CRIF (2), perks (3), ZNAM
+    ''' y GNAM (4), NTRM y FULL/SHRT (7), PFRN (8), las listas de override de paquete (10), PRPS (1)--; (b) campos
+    ''' que el bucket NO copia se mostraban del terminal -- MRSV y FMIN de FO4, las capas TINI de SSE--; y (c) la
+    ''' apariencia salia del bucket 6 (Model/Animation), cuando todo lo que muestra lo copia el bit 0.</para>
+    ''' <para>⛔ La ley de QUE campo viaja en QUE bucket vive UNA vez, con sus citas, en
+    ''' <c>NpcTemplateMaterializer.MakeCategoryOwn</c>. Aca se corre esa misma ley en modo <c>soloCopiar</c> (el de
+    ''' la base del dibujo: copia y no baja bits) sobre una COPIA del NPC, bucket por bucket, con la fuente de la
+    ''' sede unica de cadena. Lo que no copia ningun bucket queda propio por construccion.</para>
+    ''' <para>Y encima las banderas EFECTIVAS del punto 7 (colapso SSE en una lista: Template Flags = AND, Unique
+    ''' apagado), de <c>NpcTemplateMaterializer.BanderasDePlantillaEfectivas</c>.</para></summary>
+    ''' <remarks>⛔ El cuerpo vive en la SEDE (`NpcRecordOverlay.RecordEfectivoPorBuckets`): armar un record
+    ''' efectivo con `MakeCategoryOwn` fuera de las sedes es un segundo armador de base (HerenciaAlDibujarGate
+    ''' G10a). Y <paramref name="traitsYaResuelto"/> existe porque el render le pasa al panel el record YA
+    ''' compuesto sobre `state.RecordBase` (Traits del terminal con SU overlay + la autoria del root): volver a
+    ''' copiar Traits desde el terminal CRUDO le borraba al panel las ediciones del heredero.</remarks>
+    Private Function RecordEfectivo(npc As NPC_Data, traitsYaResuelto As Boolean) As NPC_Data
+        Dim hoja As Func(Of UInteger, UInteger) = Nothing
+        If npc IsNot Nothing AndAlso _resolveLvlnPick IsNot Nothing Then hoja = _resolveLvlnPick(npc.FormID)
+        Return NpcRecordOverlay.RecordEfectivoPorBuckets(
+            npc, CategoriasConLeyPorCampo, AddressOf _ctx.GetParsedNpc, hoja,
+            NpcTemplateHelpers.FirmaDeRecord(_pluginManager),
+            omitirTraits:=traitsYaResuelto,
+            sombraDelTerminal:=_sombraDelTerminal)
+    End Function
+
+    ''' <summary>Marca de renglon para un campo que el bucket de su seccion NO copia: se ve el del propio NPC aunque
+    ''' la seccion diga «inherited».</summary>
+    Private Shared Function MarcaPropio(npc As NPC_Data, source As NPC_Data) As String
+        If source IsNot Nothing AndAlso source.FormID <> npc.FormID Then Return "  (own: not copied by the template)"
+        Return ""
+    End Function
+
+    ''' <summary>⛔ RONDA 11 (aud-06): marca de las capas TINI PROPIAS de un NPC de SSE con el bit 0 (Traits) arriba. Ningun
+    ''' bucket las copia (el bit 0 de SSE no toca +0x260), pero TAMPOCO se ven: mientras hereda, la cara del juego sale del
+    ''' FaceGen del ULTIMO eslabon de la cadena (`0x1403C2E20` / `0x1403BFCA0`), no de las TINI del record.</summary>
+    Private Shared Function MarcaTiniSseInvisible(npc As NPC_Data, source As NPC_Data) As String
+        If source IsNot Nothing AndAlso source.FormID <> npc.FormID Then
+            Return "  (own: not copied by the template; INVISIBLE in game while it inherits Traits: the face comes from the FaceGen of the last template in the chain)"
+        End If
+        Return ""
+    End Function
 
     ''' <summary>El NPC que de verdad provee una categoría de plantilla — el terminal de la cadena, o el
     ''' record mismo cuando la categoría no se hereda. Nunca Nothing (cae en <paramref name="npc"/>).</summary>
@@ -888,56 +1062,18 @@ Friend NotInheritable Class RecordDetailsTree
         Return 0UI
     End Function
 
-    ''' <summary>Sigue la cadena de plantilla de una categoría y devuelve el NPC terminal que provee el valor.</summary>
+    ''' <summary>Sigue la cadena de plantilla de una categoría y devuelve el NPC terminal que provee el valor.
+    ''' <para>⛔⛔ POR LA SEDE UNICA (punto 11): `NpcTemplateMaterializer.ResolverCadena`. Aca habia un
+    ''' caminante propio que ante una lista nivelada tomaba la PRIMERA entrada NPC_ -- una hoja que el preview
+    ''' no mostraba y que el guardado no materializaba --, y que ante un record ilegible volvia al propio NPC.
+    ''' La hoja la elige ahora el mismo resolvedor que el resto de la app (<see cref="_resolveLvlnPick"/>).</para></summary>
     Private Function ResolverNpcHeredado(npc As NPC_Data, category As NPC_TemplateCategory) As NPC_Data
         If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return npc
-
-        Dim visited As New HashSet(Of UInteger)
-        Dim current = npc
-
-        While current IsNot Nothing
-            If visited.Contains(current.FormID) Then Exit While
-            visited.Add(current.FormID)
-
-            If Not NpcTemplateHelpers.HasTemplateFlag(current.Record.ConfigurationTemplateFlags, category) Then Return current
-
-            Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(current, category)
-            If sourceFormID = 0UI Then Return current
-
-            ' Si la fuente es una leveled NPC, se toma la primera entrada.
-            Dim sourceRec = _pluginManager.GetRecord(sourceFormID)
-            If sourceRec Is Nothing Then Return current
-
-            If sourceRec.Header.Signature = "NPC_" Then
-                current = _ctx.GetParsedNpc(sourceFormID)
-                If current Is Nothing Then Return npc
-            ElseIf sourceRec.Header.Signature = "LVLN" Then
-                Dim lvln As Canon.ILvln = Nothing
-                If Not _detailsLvlnCache.TryGetValue(sourceFormID, lvln) Then
-                    lvln = NpcTemplateHelpers.TryAbrirLvlnTolerante(sourceRec, _pluginManager)
-                    ' El fallo también se cachea: `_detailsLvlnCache` se vacía en CADA construcción del
-                    ' árbol de detalle, o sea en cada selección de NPC, así que no puede quedar pegado.
-                    _detailsLvlnCache(sourceFormID) = lvln
-                End If
-                ' TryAbrirLvlnTolerante devuelve Nothing en el LVLN malformado que existe para tolerar.
-                ' Sin este guard el .LeveledListEntries de abajo tira NRE adentro del handler que
-                ' repuebla el panel. Mismo patrón que los otros call sites en NpcTemplateHelpers /
-                ' NpcStateResolver.
-                If lvln Is Nothing Then Return current
-                Dim firstNpcId = lvln.LeveledListEntries.Select(Function(e) e.LeveledListEntryNPC).
-                    FirstOrDefault(Function(fid)
-                                       Dim r = _pluginManager.GetRecord(fid)
-                                       Return r IsNot Nothing AndAlso r.Header.Signature = "NPC_"
-                                   End Function)
-                If firstNpcId = 0UI Then Return current
-                current = _ctx.GetParsedNpc(firstNpcId)
-                If current Is Nothing Then Return npc
-            Else
-                Return current
-            End If
-        End While
-
-        Return npc
+        Dim hoja As Func(Of UInteger, UInteger) = Nothing
+        If _resolveLvlnPick IsNot Nothing Then hoja = _resolveLvlnPick(npc.FormID)
+        Dim r = NpcTemplateMaterializer.ResolverCadena(npc, category, AddressOf _ctx.GetParsedNpc, hoja,
+                                                       NpcTemplateHelpers.FirmaDeRecord(_pluginManager))
+        Return If(r.Source, npc)
     End Function
 
     '==============================================================================================
@@ -1140,9 +1276,9 @@ Friend NotInheritable Class RecordDetailsTree
 
     ''' <summary>TINI/TINC/TINV/TIAS: las capas de tinte de cara, el equivalente de Skyrim a los pares
     ''' TETI/TEND de Fallout. Cada campo se muestra sólo si el record lo declara.</summary>
-    Private Sub AgregarCapasDeTinteSse(padre As DetalleNodo, npcSse As Canon.NpcSSE)
+    Private Sub AgregarCapasDeTinteSse(padre As DetalleNodo, npcSse As Canon.NpcSSE, Optional marca As String = "")
         If npcSse Is Nothing OrElse npcSse.TintLayers.Count = 0 Then Return
-        Dim tintNode = Agregar(padre, "Face Tint Layers")
+        Dim tintNode = Agregar(padre, "Face Tint Layers" & marca)
         Dim layerCount = 0
         For Each tl In npcSse.TintLayers
             If Not tl.LayerTintIndexPresente Then Continue For
@@ -1158,7 +1294,8 @@ Friend NotInheritable Class RecordDetailsTree
                 Agregar(layerNode, If(tl.LayerPreset < 0, "Preset: custom (-1)", $"Preset: {tl.LayerPreset}"))
             End If
         Next
-        tintNode.Texto = $"Face Tint Layers ({layerCount})"
+        ' ⛔ RONDA 11 (aud-06): con la MARCA. Antes este renglon se reescribia sin ella y la marca no llegaba nunca al panel.
+        tintNode.Texto = $"Face Tint Layers ({layerCount}){marca}"
     End Sub
 
     '==============================================================================================

@@ -19,12 +19,15 @@ Friend NotInheritable Class NpcDisplayHelpers
     ''' <summary>Build the concatenated lowercase searchable text for an NPC. Mirror the same 6
     ''' fields que MatchesNpcFilter comparaba (ToString, EditorID, FullName, PluginName,
     ''' FormID hex). Single string permite reducir el match a un IndexOf en lugar de 6.</summary>
-    Public Shared Function BuildNpcSearchableText(npc As NPC_Data) As String
+    ''' <param name="nombre">El FULL EFECTIVO (el heredado por Base Data si hereda; ver
+    ''' <c>MainForm.NombreEfectivo</c>). Nothing = el FULL crudo del record.</param>
+    Public Shared Function BuildNpcSearchableText(npc As NPC_Data, Optional nombre As String = Nothing) As String
         If npc Is Nothing Then Return ""
+        Dim full = If(nombre, If(npc.Record.Name, ""))
         Dim sb As New System.Text.StringBuilder()
-        sb.Append(If(npc.ToString(), "")).Append("|"c)
+        sb.Append(If(full <> "", $"{full} [{npc.EditorID}]", If(npc.EditorID, ""))).Append("|"c)
         sb.Append(If(npc.EditorID, "")).Append("|"c)
-        sb.Append(If(npc.Record.Name, "")).Append("|"c)
+        sb.Append(full).Append("|"c)
         sb.Append(If(npc.PluginName, "")).Append("|"c)
         sb.Append(npc.FormID.ToString("X8"))
         Return sb.ToString().ToLowerInvariant()
@@ -33,11 +36,12 @@ Friend NotInheritable Class NpcDisplayHelpers
     ''' <summary>Display label for an NPC tree node: "FullName (EditorID, FormID)" with fallbacks
     ''' a EditorID (FormID) cuando no hay FullName, o sólo FormID cuando tampoco hay EditorID.
     ''' Compartido por Section 1 placed NPCs y Section 2 LVLN children.</summary>
-    Public Shared Function BuildNpcDisplayLabel(npc As NPC_Data) As String
+    Public Shared Function BuildNpcDisplayLabel(npc As NPC_Data, Optional nombre As String = Nothing) As String
         Dim formIdText = npc.FormID.ToString("X8")
-        If npc.Record.Name <> "" Then
+        Dim full = If(nombre, If(npc.Record.Name, ""))
+        If full <> "" Then
             Dim parenContent = If(npc.EditorID <> "", $"{npc.EditorID}, {formIdText}", formIdText)
-            Return $"{npc.Record.Name} ({parenContent})"
+            Return $"{full} ({parenContent})"
         ElseIf npc.EditorID <> "" Then
             Return $"{npc.EditorID} ({formIdText})"
         End If
