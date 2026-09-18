@@ -56,12 +56,12 @@ Partial Class EditFace_Form
         FaceFlagsLayout = New FlowLayoutPanel()
         CheckBoxIsCharGenFacePreset = New CheckBox()
         LabelCharGenHelp = New Label()
-        GroupBoxSseHeadTexture = New GroupBox()
-        FlowSseHeadTex = New FlowLayoutPanel()
-        LabelSseHeadTex = New Label()
-        ButtonSseHeadTexPick = New Button()
-        ButtonSseHeadTexDefault = New Button()
-        ButtonSseHeadTexClear = New Button()
+        GroupBoxHeadTexture = New GroupBox()
+        FlowHeadTex = New FlowLayoutPanel()
+        LabelHeadTex = New Label()
+        ButtonHeadTexPick = New Button()
+        ButtonHeadTexDefault = New Button()
+        ButtonHeadTexClear = New Button()
         TabPageSseTints = New TabPage()
         PanelSseTints = New Panel()
         SseTintSplit = New TableLayoutPanel()
@@ -189,8 +189,8 @@ Partial Class EditFace_Form
         PanelSseCustomHair.SuspendLayout()
         GroupBoxFaceFlags.SuspendLayout()
         FaceFlagsLayout.SuspendLayout()
-        GroupBoxSseHeadTexture.SuspendLayout()
-        FlowSseHeadTex.SuspendLayout()
+        GroupBoxHeadTexture.SuspendLayout()
+        FlowHeadTex.SuspendLayout()
         TabPageSseTints.SuspendLayout()
         PanelSseTints.SuspendLayout()
         SseTintSplit.SuspendLayout()
@@ -303,7 +303,7 @@ Partial Class EditFace_Form
         FacePartsLayout.Controls.Add(GroupBoxHeadParts, 0, 0)
         FacePartsLayout.Controls.Add(GroupBoxHairColor, 0, 1)
         FacePartsLayout.Controls.Add(GroupBoxFaceFlags, 0, 2)
-        FacePartsLayout.Controls.Add(GroupBoxSseHeadTexture, 0, 3)
+        FacePartsLayout.Controls.Add(GroupBoxHeadTexture, 0, 3)
         FacePartsLayout.Dock = DockStyle.Fill
         FacePartsLayout.Location = New Point(6, 6)
         FacePartsLayout.Name = "FacePartsLayout"
@@ -690,70 +690,71 @@ Partial Class EditFace_Form
         LabelCharGenHelp.TabIndex = 1
         LabelCharGenHelp.Text = "Marks the NPC as a chargen template.  The engine will remorph every time. Recommended false + build chargen"
         ' 
-        ' GroupBoxSseHeadTexture
+        ' GroupBoxHeadTexture
         ' 
-        GroupBoxSseHeadTexture.AutoSize = True
-        GroupBoxSseHeadTexture.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        GroupBoxSseHeadTexture.Controls.Add(FlowSseHeadTex)
-        GroupBoxSseHeadTexture.Dock = DockStyle.Fill
-        GroupBoxSseHeadTexture.Location = New Point(3, 614)
-        GroupBoxSseHeadTexture.Name = "GroupBoxSseHeadTexture"
-        GroupBoxSseHeadTexture.Size = New Size(812, 61)
-        GroupBoxSseHeadTexture.TabIndex = 3
-        GroupBoxSseHeadTexture.TabStop = False
-        GroupBoxSseHeadTexture.Text = "Head texture (FTST)"
-        GroupBoxSseHeadTexture.Visible = False
+        GroupBoxHeadTexture.AutoSize = True
+        GroupBoxHeadTexture.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxHeadTexture.Controls.Add(FlowHeadTex)
+        GroupBoxHeadTexture.Dock = DockStyle.Fill
+        GroupBoxHeadTexture.Location = New Point(3, 614)
+        GroupBoxHeadTexture.Name = "GroupBoxHeadTexture"
+        GroupBoxHeadTexture.Size = New Size(812, 61)
+        GroupBoxHeadTexture.TabIndex = 3
+        GroupBoxHeadTexture.TabStop = False
+        GroupBoxHeadTexture.Text = "Head texture (FTST)"
+        GroupBoxHeadTexture.Visible = False
         ' 
-        ' FlowSseHeadTex
+        ' FlowHeadTex
         ' 
-        FlowSseHeadTex.AutoSize = True
-        FlowSseHeadTex.Controls.Add(LabelSseHeadTex)
-        FlowSseHeadTex.Controls.Add(ButtonSseHeadTexPick)
-        FlowSseHeadTex.Controls.Add(ButtonSseHeadTexDefault)
-        FlowSseHeadTex.Controls.Add(ButtonSseHeadTexClear)
-        FlowSseHeadTex.Dock = DockStyle.Fill
-        FlowSseHeadTex.Location = New Point(3, 19)
-        FlowSseHeadTex.Name = "FlowSseHeadTex"
-        FlowSseHeadTex.Padding = New Padding(4)
-        FlowSseHeadTex.Size = New Size(806, 39)
-        FlowSseHeadTex.TabIndex = 0
-        FlowSseHeadTex.WrapContents = False
+        FlowHeadTex.AutoSize = True
+        FlowHeadTex.Controls.Add(ButtonHeadTexPick)
+        FlowHeadTex.Controls.Add(ButtonHeadTexDefault)
+        FlowHeadTex.Controls.Add(ButtonHeadTexClear)
+        FlowHeadTex.Controls.Add(LabelHeadTex)
+        FlowHeadTex.Dock = DockStyle.Fill
+        FlowHeadTex.Location = New Point(3, 19)
+        FlowHeadTex.Name = "FlowHeadTex"
+        FlowHeadTex.Padding = New Padding(4)
+        FlowHeadTex.Size = New Size(806, 39)
+        FlowHeadTex.TabIndex = 0
+        FlowHeadTex.WrapContents = False
         ' 
-        ' LabelSseHeadTex
+        ' LabelHeadTex
         ' 
-        LabelSseHeadTex.AutoSize = True
-        LabelSseHeadTex.Location = New Point(7, 13)
-        LabelSseHeadTex.Margin = New Padding(3, 9, 12, 3)
-        LabelSseHeadTex.Name = "LabelSseHeadTex"
-        LabelSseHeadTex.Size = New Size(0, 15)
-        LabelSseHeadTex.TabIndex = 0
+        LabelHeadTex.AutoSize = True
+        LabelHeadTex.Location = New Point(331, 13)
+        LabelHeadTex.Margin = New Padding(12, 9, 3, 3)
+        LabelHeadTex.MaximumSize = New Size(450, 0)
+        LabelHeadTex.Name = "LabelHeadTex"
+        LabelHeadTex.Size = New Size(0, 15)
+        LabelHeadTex.TabIndex = 3
         ' 
-        ' ButtonSseHeadTexPick
+        ' ButtonHeadTexPick
         ' 
-        ButtonSseHeadTexPick.AutoSize = True
-        ButtonSseHeadTexPick.Location = New Point(22, 7)
-        ButtonSseHeadTexPick.Name = "ButtonSseHeadTexPick"
-        ButtonSseHeadTexPick.Size = New Size(87, 25)
-        ButtonSseHeadTexPick.TabIndex = 1
-        ButtonSseHeadTexPick.Text = "Change…"
+        ButtonHeadTexPick.AutoSize = True
+        ButtonHeadTexPick.Location = New Point(7, 7)
+        ButtonHeadTexPick.Name = "ButtonHeadTexPick"
+        ButtonHeadTexPick.Size = New Size(87, 25)
+        ButtonHeadTexPick.TabIndex = 0
+        ButtonHeadTexPick.Text = "Change…"
         ' 
-        ' ButtonSseHeadTexDefault
+        ' ButtonHeadTexDefault
         ' 
-        ButtonSseHeadTexDefault.AutoSize = True
-        ButtonSseHeadTexDefault.Location = New Point(115, 7)
-        ButtonSseHeadTexDefault.Name = "ButtonSseHeadTexDefault"
-        ButtonSseHeadTexDefault.Size = New Size(140, 25)
-        ButtonSseHeadTexDefault.TabIndex = 2
-        ButtonSseHeadTexDefault.Text = "Use record default"
+        ButtonHeadTexDefault.AutoSize = True
+        ButtonHeadTexDefault.Location = New Point(100, 7)
+        ButtonHeadTexDefault.Name = "ButtonHeadTexDefault"
+        ButtonHeadTexDefault.Size = New Size(140, 25)
+        ButtonHeadTexDefault.TabIndex = 1
+        ButtonHeadTexDefault.Text = "Use record default"
         ' 
-        ' ButtonSseHeadTexClear
+        ' ButtonHeadTexClear
         ' 
-        ButtonSseHeadTexClear.AutoSize = True
-        ButtonSseHeadTexClear.Location = New Point(261, 7)
-        ButtonSseHeadTexClear.Name = "ButtonSseHeadTexClear"
-        ButtonSseHeadTexClear.Size = New Size(128, 25)
-        ButtonSseHeadTexClear.TabIndex = 3
-        ButtonSseHeadTexClear.Text = "Clear (no FTST)"
+        ButtonHeadTexClear.AutoSize = True
+        ButtonHeadTexClear.Location = New Point(246, 7)
+        ButtonHeadTexClear.Name = "ButtonHeadTexClear"
+        ButtonHeadTexClear.Size = New Size(128, 25)
+        ButtonHeadTexClear.TabIndex = 2
+        ButtonHeadTexClear.Text = "Clear (no FTST)"
         ' 
         ' TabPageSseTints
         ' 
@@ -2090,10 +2091,10 @@ Partial Class EditFace_Form
         GroupBoxFaceFlags.PerformLayout()
         FaceFlagsLayout.ResumeLayout(False)
         FaceFlagsLayout.PerformLayout()
-        GroupBoxSseHeadTexture.ResumeLayout(False)
-        GroupBoxSseHeadTexture.PerformLayout()
-        FlowSseHeadTex.ResumeLayout(False)
-        FlowSseHeadTex.PerformLayout()
+        GroupBoxHeadTexture.ResumeLayout(False)
+        GroupBoxHeadTexture.PerformLayout()
+        FlowHeadTex.ResumeLayout(False)
+        FlowHeadTex.PerformLayout()
         TabPageSseTints.ResumeLayout(False)
         PanelSseTints.ResumeLayout(False)
         SseTintSplit.ResumeLayout(False)
@@ -2221,12 +2222,12 @@ Partial Class EditFace_Form
     Friend WithEvents CheckBoxIsCharGenFacePreset As System.Windows.Forms.CheckBox
     Friend WithEvents LabelCharGenHelp As System.Windows.Forms.Label
 
-    Friend WithEvents GroupBoxSseHeadTexture As System.Windows.Forms.GroupBox
-    Friend WithEvents FlowSseHeadTex As System.Windows.Forms.FlowLayoutPanel
-    Friend WithEvents LabelSseHeadTex As System.Windows.Forms.Label
-    Friend WithEvents ButtonSseHeadTexPick As System.Windows.Forms.Button
-    Friend WithEvents ButtonSseHeadTexDefault As System.Windows.Forms.Button
-    Friend WithEvents ButtonSseHeadTexClear As System.Windows.Forms.Button
+    Friend WithEvents GroupBoxHeadTexture As System.Windows.Forms.GroupBox
+    Friend WithEvents FlowHeadTex As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents LabelHeadTex As System.Windows.Forms.Label
+    Friend WithEvents ButtonHeadTexPick As System.Windows.Forms.Button
+    Friend WithEvents ButtonHeadTexDefault As System.Windows.Forms.Button
+    Friend WithEvents ButtonHeadTexClear As System.Windows.Forms.Button
 
     Friend WithEvents TabPageSseRaceMenu As System.Windows.Forms.TabPage
     Friend WithEvents SseRaceMenuRoot As System.Windows.Forms.TableLayoutPanel

@@ -518,17 +518,20 @@ Public Module PresetCompatibilityReport
     End Sub
 
     ' ---------------------------------------------------------------------------------------------
-    ' 5) Every other FormID the preset carries: SSE head TXST, skin ARMO (WNAM), outfits (DOFT/SOFT).
+    ' 5) Every other FormID the preset carries: head TXST (FTST), skin ARMO (WNAM), outfits (DOFT/SOFT).
     ' ---------------------------------------------------------------------------------------------
     Private Sub AuditFormIdFields(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
         ' `.Value` explícito: el guard garantiza HasValue, pero pasar el nullable pelado a un parámetro UInteger
         ' compila por Option Strict Off y tiraría InvalidOperationException si alguien afloja el guard.
         ' El estado clear (Some(0)) no se audita acá: no referencia ningún FormID que pueda faltar.
-        If ctx.IsSse AndAlso p.SseHeadTextureFormIDOverride.HasValue AndAlso p.SseHeadTextureFormIDOverride.Value <> 0UI Then
-            CheckFormId(ctx, r, "Head texture", p.SseHeadTextureFormIDOverride.Value, "TXST",
+        ' Los dos juegos: NPC_.FTST es campo vanilla de ambos (SSE lo trae el .jslot; FO4, `_npcm_HeadTexture`).
+        If p.HeadTextureFormIDOverride.HasValue AndAlso p.HeadTextureFormIDOverride.Value <> 0UI Then
+            CheckFormId(ctx, r, "Head texture", p.HeadTextureFormIDOverride.Value, "TXST",
                         "the NPC's face TextureSet override (FTST) — the head falls back to the RACE/skin texture.")
         End If
+        AuditOverrideSinResolver(r, p.UnresolvedHeadTexture, "Head texture (FTST)",
+                                 "the NPC keeps its own face texture instead of the preset's")
         If p.SkinFormIDOverride.HasValue AndAlso p.SkinFormIDOverride.Value <> 0UI Then
             CheckFormId(ctx, r, "Skin (WNAM)", p.SkinFormIDOverride.Value, "ARMO",
                         "the NPC's skin ARMO override — the engine falls back to the RACE's skin.")

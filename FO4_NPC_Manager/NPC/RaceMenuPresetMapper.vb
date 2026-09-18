@@ -167,9 +167,9 @@ Public Module RaceMenuPresetMapper
         ' que nada que escribamos acá haría que RaceMenu limpie el FTST. El clear degrada a "preservar" en el
         ' round-trip por .jslot; está documentado en el campo. NO inventar `"headTexture": ""` para significar
         ' clear: sería inerte in-game y además key churn contra el archivo del usuario (ver j.Save).
-        If preset.SseHeadTextureFormIDOverride.HasValue AndAlso preset.SseHeadTextureFormIDOverride.Value <> 0UI _
+        If preset.HeadTextureFormIDOverride.HasValue AndAlso preset.HeadTextureFormIDOverride.Value <> 0UI _
            AndAlso pluginManager IsNot Nothing Then
-            j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormIDOverride.Value, pluginManager)
+            j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.HeadTextureFormIDOverride.Value, pluginManager)
         End If
         ' Hair colour (actor.hairColor). j.Save emits the key SÓLO con HadHairColor (antes lo emitía SIEMPRE, y
         ' dejarlo sin setear escribía hairColor:0
@@ -458,7 +458,7 @@ Public Module RaceMenuPresetMapper
         ' CLFM. We carry the packed RGB on the preset (→ state.SseHairColorRgb → ResolveHairTintColor); Nothing when
         ' the preset had no hairColor so the render falls back to the CLFM.
         preset.SseHairColorRgb = If(j.HadHairColor, CType(j.HairColor, Integer?), Nothing)
-        ' ---- FACE IDENTITY: headTexture (face FTST FormID) — see SseHeadTextureFormIDOverride below (render override).
+        ' ---- FACE IDENTITY: headTexture (face FTST FormID) — see HeadTextureFormIDOverride below (render override).
         ' Se asigna SÓLO si el identificador RESOLVIÓ. `ResolveFormIdentifier` devuelve 0 cuando el plugin dueño
         ' del TXST no está en el load order, y con el carrier tri-estado ese 0 significaría CLEAR EXPLÍCITO: un
         ' preset que referencia un TXST de un mod ausente le BORRARÍA el FTST al NPC en vez de preservarlo. Además
@@ -466,7 +466,7 @@ Public Module RaceMenuPresetMapper
         ' (skee64 PresetInterface.cpp:147 + GetFormFromIdentifier fallido → nullptr). No-resuelto ⇒ Nothing.
         If pluginManager IsNot Nothing AndAlso Not String.IsNullOrEmpty(j.HeadTexture) Then
             Dim ftstFid = LooksmenuLoader.ResolveFormIdentifier(j.HeadTexture, pluginManager)
-            If ftstFid <> 0UI Then preset.SseHeadTextureFormIDOverride = ftstFid
+            If ftstFid <> 0UI Then preset.HeadTextureFormIDOverride = ftstFid
         End If
 
         ' ---- FACE: morphs.default.morphs → NAM9 y morphs.default.presets → NAMA. El motor los escribe POSICIONALMENTE

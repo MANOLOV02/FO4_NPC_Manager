@@ -287,7 +287,7 @@ Public Module PresetCategories
         Public SkinOverride As Boolean       ' SkinFormIDOverride (NPC.WNAM record skin)
         Public LmSkinTemplate As Boolean     ' SkinTemplateId (F4SE LM SkinInterface) — FO4-only
         Public Outfit As Boolean             ' DefaultOutfitFormIDOverride + SleepOutfitFormIDOverride (DOFT/SOFT)
-        Public FaceParts As Boolean          ' HeadPartFormIDs (+ SSE head FTST override)
+        Public FaceParts As Boolean          ' HeadPartFormIDs (+ head FTST override, both games)
         Public HairColor As Boolean          ' HairColorFormID (+ SSE RaceMenu custom RGB)
         Public FaceTints As Boolean          ' FO4 FaceTintLayers — SSE SseTintLayers + mask textures
         Public FaceVertexMorphs As Boolean   ' FO4 ChargenFaceMorphs (MSDV) — SSE NAM9/NAMA (record-backed)
@@ -458,12 +458,15 @@ Public Module PresetCategories
                  $"DOFT {FmtFid(p.DefaultOutfitFormIDOverride)} / SOFT {FmtFid(p.SleepOutfitFormIDOverride)}")
         End If
 
-        ' --- Face parts (head parts + el head TXST de SSE; los irresolubles van al tooltip) ---
+        ' --- Face parts (head parts + el head TXST / NPC_.FTST; los irresolubles van al tooltip) ---
         ' El gate incluye el head TXST y NO sólo los head parts: el override viaja en la MISMA categoría
         ' (PresetCategoryFilter, Case FaceParts), así que un preset que trae headTexture pero ningún head part
         ' —.jslot sin array `headParts`, o con todos irresolubles— no emitía fila, la categoría no aparecía en
         ' el diálogo, el usuario no podía tildarla y el Revert descartaba el headTexture sin decir nada.
-        Dim hasFtstOv As Boolean = isSse AndAlso p.SseHeadTextureFormIDOverride.HasValue
+        ' SIN gate de juego: el FTST es campo vanilla de los dos (FO4 lo trae Copy Look / `_npcm_HeadTexture`
+        ' y lo edita Edit Face), y el Revert de la categoría ya lo movía en los dos — con el gate, en FO4 un
+        ' clear viajaba en el Paste sin que la fila lo mostrara.
+        Dim hasFtstOv As Boolean = p.HeadTextureFormIDOverride.HasValue
         ' SSE: las que el archivo trae pero RaceMenu no aplicaría a este NPC (sexo/raza, skee64 PresetInterface.cpp
         ' :164-175) no cuentan como aplicadas, pero sí hacen que la categoría exista y se vean en el tooltip.
         Dim filtradas As Integer = If(isSse AndAlso p.SseHeadPartsFiltradasPorMotor IsNot Nothing, p.SseHeadPartsFiltradasPorMotor.Count, 0)
@@ -478,12 +481,12 @@ Public Module PresetCategories
             ' "12 + FTST cleared" se recorta y el fix no sirve de nada. El detalle largo va al tooltip.
             Dim txt As String = p.HeadPartFormIDs.Count.ToString()
             If hasFtstOv Then
-                If p.SseHeadTextureFormIDOverride.Value = 0UI Then
+                If p.HeadTextureFormIDOverride.Value = 0UI Then
                     txt &= " ✕FTST"
                     det = If(det.Length > 0, det & "  •  ", "") & "head FTST: cleared (no FTST subrecord emitted)"
                 Else
                     txt &= " +FTST"
-                    det = If(det.Length > 0, det & "  •  ", "") & $"head FTST 0x{p.SseHeadTextureFormIDOverride.Value:X8}"
+                    det = If(det.Length > 0, det & "  •  ", "") & $"head FTST 0x{p.HeadTextureFormIDOverride.Value:X8}"
                 End If
             End If
             Set0(d, PresetCategory.FaceParts, txt, det)

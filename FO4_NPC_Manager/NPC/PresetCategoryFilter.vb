@@ -474,7 +474,7 @@ Public Module PresetCategoryFilter
             Case PresetCategory.FaceParts
                 ' The overlay merge does wipe + race defaults + preset entries, so preserving means copying
                 ' the target's own head parts in: the merge's "preset wins per type" rule then re-establishes
-                ' exactly what the NPC had. The unresolved-part lists and the SSE head FTST travel with the
+                ' exactly what the NPC had. The unresolved-part lists and the head FTST (both games) travel with the
                 ' parts (they describe the same selection).
                 p.HeadPartFormIDs.Clear()
                 p.UnresolvedHeadParts.Clear()
@@ -484,9 +484,8 @@ Public Module PresetCategoryFilter
                 ' `Nothing` (= "sin override, preservar el FTST del target"), NUNCA `0UI`: con el carrier
                 ' tri-estado, 0 significa CLEAR EXPLÍCITO. Poner 0 acá —el camino de "categoría NO tickeada",
                 ' o sea preservar— le BORRARÍA el FTST al target en el Paste más común del diálogo, y en AMBOS
-                ' juegos: este Case no está gateado por juego y NpcRecordOverlay tampoco. Es la única línea de
-                ' todo el tri-estado con potencial de cambiar bytes en FO4.
-                p.SseHeadTextureFormIDOverride = Nothing
+                ' juegos: este Case no está gateado por juego y NpcRecordOverlay tampoco (el FTST se edita en los dos).
+                p.HeadTextureFormIDOverride = Nothing
                 If baseline IsNot Nothing AndAlso baseline.HasHeadPartFormIDs Then
                     p.HeadPartFormIDs.AddRange(baseline.HeadPartFormIDs)
                     p.UnresolvedHeadParts.AddRange(baseline.UnresolvedHeadParts)
@@ -496,7 +495,7 @@ Public Module PresetCategoryFilter
                 ElseIf raw IsNot Nothing Then
                     p.HeadPartFormIDs.AddRange(raw.Record.PartesDeCabeza())
                 End If
-                If baseline IsNot Nothing Then p.SseHeadTextureFormIDOverride = baseline.SseHeadTextureFormIDOverride
+                If baseline IsNot Nothing Then p.HeadTextureFormIDOverride = baseline.HeadTextureFormIDOverride
                 p.HasHeadPartFormIDs = True
 
             Case PresetCategory.HairColor
@@ -646,7 +645,7 @@ Public Module PresetCategoryFilter
     ''' se acuerde.
     ''' <para>⛔⛔ CINCO canales son SUB-CARRIERS que no tienen categoría propia y que un comparador escrito a
     ''' mano se come, siempre: <c>SkinToneOffset</c> viaja dentro de <c>FaceTints</c> aunque su panel viva en Edit
-    ''' Body; <c>SseHeadTextureFormIDOverride</c> y <c>HeadPartFormIDsIncludeRawExtras</c> dentro de
+    ''' Body; <c>HeadTextureFormIDOverride</c> y <c>HeadPartFormIDsIncludeRawExtras</c> dentro de
     ''' <c>FaceParts</c>; <c>SseHairColorRgb</c> dentro de <c>HairColor</c>; y <c>SseVampireMorph</c> dentro de
     ''' <c>FaceVertexMorphs</c> — éste último con su propio comentario en Revert diciendo que olvidarlo ya
     ''' causó una fuga al ESP.</para>
@@ -687,7 +686,7 @@ Public Module PresetCategoryFilter
             Case PresetCategory.FaceParts
                 Return New String() {"HeadPartFormIDs", "UnresolvedHeadParts", "SseUnresolvedHeadParts",
                                      "SseHeadPartsFiltradasPorMotor", "HeadPartFormIDsIncludeRawExtras",
-                                     "SseHeadTextureFormIDOverride", "HasHeadPartFormIDs"}
+                                     "HeadTextureFormIDOverride", "HasHeadPartFormIDs"}
 
             Case PresetCategory.HairColor
                 Return New String() {"HairColorFormID", "SseHairColorRgb", "UnresolvedHairColor"}

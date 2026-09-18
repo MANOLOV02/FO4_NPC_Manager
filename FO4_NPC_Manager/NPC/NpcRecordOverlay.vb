@@ -616,7 +616,7 @@ finDelSkin:
         '      todo: es la del camino de RENDER en NpcStateResolver.vb:160-172, donde el template se
         '      aplica DESPUÉS del preset y gana. Alinear el guardado con el render es lo que mantiene
         '      el WYSIWYG.
-        '   2) SseHeadTextureFormIDOverride del preset — TRES estados: Nothing = el .jslot no trae
+        '   2) HeadTextureFormIDOverride del preset — TRES estados: Nothing = el .jslot no trae
         '      `headTexture` y el editor no lo tocó → no participa; <> 0 = override explícito (RaceMenu
         '      skee64 PresetInterface.cpp:158-160, o el picker de Edit Face); = 0 = BORRADO EXPLÍCITO →
         '      no se emite FTST y la cara cae al DefaultFaceTexture de la RAZA / HDPT.TNAM.
@@ -631,8 +631,8 @@ finDelSkin:
             Dim genderIdx As Integer = If(isFemale, 1, 0)
             If lmTemplate.FaceTxstFormID(genderIdx) <> 0UI Then headTxstOverride = lmTemplate.FaceTxstFormID(genderIdx)
         End If
-        If Not headTxstOverride.HasValue AndAlso preset.SseHeadTextureFormIDOverride.HasValue Then
-            headTxstOverride = preset.SseHeadTextureFormIDOverride
+        If Not headTxstOverride.HasValue AndAlso preset.HeadTextureFormIDOverride.HasValue Then
+            headTxstOverride = preset.HeadTextureFormIDOverride
         End If
         If headTxstOverride.HasValue Then
             If headTxstOverride.Value <> 0UI Then

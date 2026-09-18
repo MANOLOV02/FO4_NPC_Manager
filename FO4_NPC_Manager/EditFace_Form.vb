@@ -90,7 +90,7 @@ Public Class EditFace_Form
     ' viven en el Designer (FlowSseRaceMenu, TextBoxSseRaceMenuFilter, ListBoxSseFaceOvApplied,
     ' ListBoxSseFacePaintCatalog, TextBoxSseFaceOvFilter, TextBoxSseFaceOvDiffuse/Normal,
     ' CheckBoxSseFaceOvTint/Magic, ButtonSseFaceOvTintColor, SliderSseFaceOvAlpha, ButtonSseFaceOvUp/Down,
-    ' LabelSseHeadTex, ButtonSseHeadTexDefault/Clear — ver EditFace_Form.Designer.vb).
+    ' LabelHeadTex, ButtonHeadTexDefault/Clear — ver EditFace_Form.Designer.vb).
     Private ReadOnly _sseFacePaintShown As New List(Of FO4_Base_Library.RaceMenuPaintCatalog.Entry)
 
     ''' <summary>SSE face-morph CK categories (matches the Creation Kit Character Gen grouping the user referenced):
@@ -352,7 +352,6 @@ Public Class EditFace_Form
             PopulateSseSculptTab()  ' read-only list of RaceMenu per-shape sculpt blocks (head/brows/eyes/mouth)
             BuildSseRaceMenuTab()   ' RaceMenu EXTENDED sliders (per-race .slider catalog) — separate from vanilla NAM9/NAMA
             BuildSseFaceOverlaysTab()   ' RaceMenu "Face [Ovl]" face-paint overlays
-            BuildSseHeadTextureSection()   ' vanilla NPC_.FTST — RaceMenu applies it too (PresetInterface.cpp:160)
             ' Tab names carry the SYSTEM, not the game: unprefixed tabs are vanilla data written to the NPC_
             ' record in the ESP; "RaceMenu ·" tabs are skee64 co-save data (.jslot + sidecar) that needs
             ' RaceMenu installed to show in-game. "(SSE)" told the user nothing — every tab here is SSE.
@@ -385,6 +384,11 @@ Public Class EditFace_Form
             BuildBoneRegionsUI()
             BuildTintGroupRanks()
         End If
+        ' NPC_.FTST es campo vanilla del record en LOS DOS juegos (mismo subrecord, mismo carrier tri-estado,
+        ' mismo guardado en NpcRecordOverlay y mismo render en NpcStateResolver), así que la fila va fuera del
+        ' If de juego. Lo único game-aware es el aviso de la plantilla de piel de LooksMenu (sólo existe en FO4),
+        ' y lo decide el DATO (SkinTemplateId), igual que el guardado y el render.
+        BuildHeadTextureSection()
 
         ' Click-to-sort on the two ListViews (HeadParts + Tints). The helper subscribes to
         ' ColumnClick and rewires ListViewItemSorter on every click; Refresh*List() repopulates
@@ -1050,34 +1054,49 @@ Public Class EditFace_Form
         LoadSseMorphValues()
     End Sub
 
-    ''' <summary>SSE-only "Head texture" row on the (vanilla) Face Parts tab: the NPC's face TextureSet override,
-    ''' <c>NPC_.FTST</c>. It is vanilla record data — but it had no UI, so until now it could only be set by
-    ''' importing a preset. RaceMenu writes the same field when a preset is applied
-    ''' (<c>npc-&gt;headData-&gt;headTexture = presetData-&gt;headTexture</c>, PresetInterface.cpp:160).
-    ''' <para>TRES acciones, una por estado de <c>Preset.SseHeadTextureFormIDOverride</c>. Antes había DOS caminos
+    ''' <summary>"Head texture" row on the (vanilla) Face Parts tab, BOTH games: the NPC's face TextureSet,
+    ''' <c>NPC_.FTST</c>. It is vanilla record data in FO4 and SSE alike. In SSE RaceMenu writes the same field when
+    ''' a preset is applied (<c>npc-&gt;headData-&gt;headTexture = presetData-&gt;headTexture</c>,
+    ''' PresetInterface.cpp:160); in FO4 an NPC that keeps a vanilla FTST after a race change (Cait on a custom
+    ''' race) shows the vanilla face instead of the race's, and this row is the only in-app way to change or
+    ''' clear it.
+    ''' <para>TRES acciones, una por estado de <c>Preset.HeadTextureFormIDOverride</c>. Antes había DOS caminos
     ''' —el botón "Use record default" y la fila NULL del picker— que terminaban en LA MISMA llamada
-    ''' (<c>SetSseHeadTexture(0UI)</c>): con el carrier plano, 0 significaba a la vez "sin override" y "ninguno",
+    ''' (<c>SetHeadTexture(0UI)</c>): con el carrier plano, 0 significaba a la vez "sin override" y "ninguno",
     ''' así que elegir "ninguno" sólo borraba el override y el FTST crudo volvía. Por eso el picker ya NO ofrece
     ''' fila NULL — el "ninguno" es su propio botón.</para></summary>
-    Private Sub BuildSseHeadTextureSection()
-        GroupBoxSseHeadTexture.Visible = True
-        UpdateSseHeadTextureLabel()
+    Private Sub BuildHeadTextureSection()
+        GroupBoxHeadTexture.Visible = True
+        UpdateHeadTextureLabel()
     End Sub
 
     ''' <summary>The NPC record's own FTST (0 = the record carries none). This is the FLOOR the "Use record
     ''' default" state falls back to — and the reason the old UI looked like it worked on some NPCs: when the
     ''' record had no FTST the floor was already 0, so "clearing" appeared to stick.</summary>
-    Private Function RawSseHeadTextureFormID() As UInteger
+    Private Function RawHeadTextureFormID() As UInteger
         Dim raw = TryGetRawNpc()
         Return If(raw IsNot Nothing, raw.Record.HeadTexture, 0UI)
     End Function
 
     ''' <summary>Seed for the TXST picker: the override's value when there is one, else the record's FTST.
     ''' On the CLEAR state it returns 0 so the picker opens with nothing selected.</summary>
-    Private Function EffectiveSseHeadTextureFormID() As UInteger
+    Private Function EffectiveHeadTextureFormID() As UInteger
         Dim p = Preset
-        If p IsNot Nothing AndAlso p.SseHeadTextureFormIDOverride.HasValue Then Return p.SseHeadTextureFormIDOverride.Value
-        Return RawSseHeadTextureFormID()
+        If p IsNot Nothing AndAlso p.HeadTextureFormIDOverride.HasValue Then Return p.HeadTextureFormIDOverride.Value
+        Return RawHeadTextureFormID()
+    End Function
+
+    ''' <summary>El face TXST que la plantilla de piel de LooksMenu del overlay impone para el sexo de este NPC,
+    ''' o 0 si no hay plantilla / no resuelve / no trae cara para ese sexo. Misma resolución que el guardado
+    ''' (NpcRecordOverlay: <c>SkinTemplateId</c> no vacío + resolver + <c>FaceTxstFormID(genderIdx)</c> &lt;&gt; 0) y que
+    ''' el render (NpcStateResolver). En SSE <c>SkinTemplateId</c> nunca se puebla (no hay plantillas de piel en
+    ''' RaceMenu), así que devuelve 0 por el dato, sin If de juego — igual que las dos sedes que refleja.</summary>
+    Private Function LmTemplateFaceTxstFormID() As UInteger
+        Dim p = Preset
+        If p Is Nothing OrElse String.IsNullOrEmpty(p.SkinTemplateId) OrElse _mainForm Is Nothing Then Return 0UI
+        Dim tpl = _mainForm.ResolveLmSkinTemplate_Friend(p.SkinTemplateId)
+        If tpl Is Nothing Then Return 0UI
+        Return tpl.FaceTxstFormID(If(_isFemale, 1, 0))
     End Function
 
     Private Function DescribeTxst(fid As UInteger) As String
@@ -1090,63 +1109,74 @@ Public Class EditFace_Form
     ''' FormID, so "no override on a record without FTST" and "explicit clear" printed the same text — the user
     ''' could not tell whether the clear had taken. Each state also says what it is DISCARDING, which is the whole
     ''' point of the clear when the record does carry an FTST.</summary>
-    Private Sub UpdateSseHeadTextureLabel()
-        ' CERRADO (no "hay que comprobar"): ResetFacePartsSection llama a esta función en los DOS juegos,
-        ' así que el guard tiene que ser el JUEGO, no un nulo — GroupBoxSseHeadTexture/LabelSseHeadTex viven
-        ' siempre en el Designer y nunca son Nothing (00-reglas-identidad-no-es-guard-de-nulo).
-        If Not _isSSE Then Return
+    Private Sub UpdateHeadTextureLabel()
+        ' Sin guard de juego: la fila existe en los dos (ver BuildHeadTextureSection). GroupBoxHeadTexture /
+        ' LabelHeadTex viven siempre en el Designer y nunca son Nothing (00-reglas-identidad-no-es-guard-de-nulo).
         Dim p = Preset
-        Dim ov As UInteger? = p?.SseHeadTextureFormIDOverride
-        Dim rawFid = RawSseHeadTextureFormID()
+        Dim ov As UInteger? = p?.HeadTextureFormIDOverride
+        Dim rawFid = RawHeadTextureFormID()
 
+        Dim estado As String
         If Not ov.HasValue Then
-            LabelSseHeadTex.Text = If(rawFid = 0UI,
-                                       "Record default: (none — race / head part texture)",
-                                       $"Record default: {DescribeTxst(rawFid)}")
+            estado = If(rawFid = 0UI,
+                        "Record default: (none — race / head part texture)",
+                        $"Record default: {DescribeTxst(rawFid)}")
         ElseIf ov.Value <> 0UI Then
-            LabelSseHeadTex.Text = $"Override: {DescribeTxst(ov.Value)}"
+            estado = $"Override: {DescribeTxst(ov.Value)}"
         Else
-            LabelSseHeadTex.Text = If(rawFid = 0UI,
-                                       "Cleared (no FTST) — same as the record",
-                                       $"Cleared (no FTST) — record had {DescribeTxst(rawFid)}")
+            estado = If(rawFid = 0UI,
+                        "Cleared (no FTST) — same as the record",
+                        $"Cleared (no FTST) — record had {DescribeTxst(rawFid)}")
         End If
+
+        ' La plantilla de piel de LooksMenu (FO4) le GANA a esta fila, en el guardado (NpcRecordOverlay: LM
+        ' SkinTemplate face[gender] > override del preset > FTST del record) y en el render (NpcStateResolver: el
+        ' bloque de la plantilla corre después y pisa HeadTextureFormID). Sin decirlo, el usuario elige una
+        ' textura acá, no ve ningún cambio y lo toma por un bug. Los botones siguen activos a propósito: el
+        ' override queda guardado en el overlay y vuelve a mandar si se quita la plantilla en Edit Body.
+        Dim tplTxst = LmTemplateFaceTxstFormID()
+        If tplTxst <> 0UI Then
+            estado &= vbLf & $"⚠ Ignored while the LooksMenu skin template '{p.SkinTemplateId}' is set (Edit Body): " &
+                             $"it sets the face texture to {DescribeTxst(tplTxst)}"
+        End If
+        LabelHeadTex.Text = estado
 
         ' Deshabilitar el botón del estado ACTUAL: con un record sin FTST los textos de "record default" y de
         ' "cleared" describen el mismo resultado visual, y esto es lo que deja ver cuál de los dos está activo.
-        ButtonSseHeadTexDefault.Enabled = ov.HasValue
-        ButtonSseHeadTexClear.Enabled = Not (ov.HasValue AndAlso ov.Value = 0UI)
+        ButtonHeadTexDefault.Enabled = ov.HasValue
+        ButtonHeadTexClear.Enabled = Not (ov.HasValue AndAlso ov.Value = 0UI)
     End Sub
 
-    Private Sub OnPickSseHeadTexture(sender As Object, e As EventArgs) Handles ButtonSseHeadTexPick.Click
+    Private Sub OnPickHeadTexture(sender As Object, e As EventArgs) Handles ButtonHeadTexPick.Click
         ' allowNull:=False — elegir un TXST es SÓLO el estado "override". El "ninguno" tiene su propio botón; dejar
         ' la fila NULL acá reintroduciría la ambigüedad de origen (el picker devuelve 0 para NULL, que ahora
         ' significa CLEAR, y el usuario no tendría cómo distinguirlo de "volver al valor del record").
         Using dlg As New FormIdPicker_Form(_pluginManager, {"TXST"}, "Head texture (TXST)",
-                                           EffectiveSseHeadTextureFormID(), allowNull:=False)
+                                           EffectiveHeadTextureFormID(), allowNull:=False)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             ' Con allowNull:=False el picker no puede devolver 0 (la fila NULL no se construye y OK vetea el
             ' cierre sin selección), así que este guard es defensa redundante, no la barrera que sostiene el
             ' invariante — la barrera es el allowNull. Se deja por si alguien reactiva la fila NULL.
             If dlg.SelectedFormID = 0UI Then Return
-            SetSseHeadTexture(CType(dlg.SelectedFormID, UInteger?))
+            SetHeadTexture(CType(dlg.SelectedFormID, UInteger?))
         End Using
     End Sub
 
     ''' <param name="fid">Nothing = sin override (preservar el FTST del record) · 0 = clear explícito · &lt;&gt;0 = override.</param>
-    Private Sub SetSseHeadTexture(fid As UInteger?)
+    Private Sub SetHeadTexture(fid As UInteger?)
         Dim p = Preset
         If p Is Nothing Then Return
-        p.SseHeadTextureFormIDOverride = fid
-        UpdateSseHeadTextureLabel()
+        p.HeadTextureFormIDOverride = fid
+        UpdateHeadTextureLabel()
         ScheduleRefresh(FaceRefreshScope.FullReload)
     End Sub
 
-    Private Sub OnSseHeadTexDefaultClick(sender As Object, e As EventArgs) Handles ButtonSseHeadTexDefault.Click
-        SetSseHeadTexture(Nothing)
+    Private Sub OnHeadTexDefaultClick(sender As Object, e As EventArgs) Handles ButtonHeadTexDefault.Click
+        SetHeadTexture(Nothing)
     End Sub
 
-    Private Sub OnSseHeadTexClearClick(sender As Object, e As EventArgs) Handles ButtonSseHeadTexClear.Click
-        SetSseHeadTexture(CType(0UI, UInteger?))
+    Private Sub OnHeadTexClearClick(sender As Object, e As EventArgs) Handles ButtonHeadTexClear.Click
+        SetHeadTexture(CType(0UI, UInteger?))
     End Sub
 
     ''' <summary>SSE-only "RaceMenu" tab — the EXTENDED face sliders from RaceMenu's per-race .slider catalog
@@ -4885,13 +4915,13 @@ Public Class EditFace_Form
             p.HeadPartFormIDs.Clear()
             If src IsNot Nothing Then p.HeadPartFormIDs.AddRange(src.HeadPartFormIDs)
             p.HairColorFormID = If(src IsNot Nothing, src.HairColorFormID, 0UI)
-            ' El "Head texture (FTST)" de SSE vive en ESTA sección (BuildSseHeadTextureSection le agrega su fila
-            ' a FacePartsLayout), así que el Reset lo tiene que revertir con ella. Esta línea NO es opcional
+            ' El "Head texture (FTST)" (los dos juegos) vive en ESTA sección (su fila está en
+            ' FacePartsLayout), así que el Reset lo tiene que revertir con ella. Esta línea NO es opcional
             ' desde que la sección tiene "Clear (no FTST)": es una acción DESTRUCTIVA, y sin revert por sección el
             ' único escape sería Cancel (que tira todo el tab). Mismo agujero que ya se tapó dos veces en este
             ' archivo con ResetSseRaceMenuSection y ResetSseSculptSection — las secciones construidas POR CÓDIGO
             ' se le escapan al Reset porque el dispatch sólo conoce los GroupBox del Designer.
-            p.SseHeadTextureFormIDOverride = src?.SseHeadTextureFormIDOverride
+            p.HeadTextureFormIDOverride = src?.HeadTextureFormIDOverride
             ' El RGB custom de RaceMenu vive en la MISMA sección (Hair Color), así que el Reset lo revierte
             ' con ella. Sin esto el color custom sobrevivía a un Reset que ya había revertido el CLFM.
             p.SseHairColorRgb = src?.SseHairColorRgb
@@ -4900,7 +4930,7 @@ Public Class EditFace_Form
             PopulateHairColorCombo()
             RefreshSseCustomHairUi()
             UpdateHairColorSwatch()
-            UpdateSseHeadTextureLabel()   ' no-op en FO4 (el guard es "If Not _isSSE Then Return")
+            UpdateHeadTextureLabel()
             CheckBoxIsCharGenFacePreset.Checked = p.IsCharGenFacePreset.GetValueOrDefault(
                 (_priorAcbsFlagsRaw And AcbsBitIsCharGenFacePreset) <> 0UI)
         Finally

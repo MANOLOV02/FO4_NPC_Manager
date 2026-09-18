@@ -10927,6 +10927,25 @@ Public Class MainForm
         ' destino (quedaría en Nothing = "preservar el del destino").
         preset.SleepOutfitFormIDOverride = state.SleepOutfitFormID
 
+        ' NPC_.FTST (face TXST), rama FO4. La de SSE vive más abajo, en el bloque de Skyrim, y lee
+        ' `state.ExplicitHeadTextureFormID`; acá NO se puede leer ese campo: en FO4 el render lo pisa con el face
+        ' TXST de la plantilla de piel de LooksMenu (NpcStateResolver, bloque de la plantilla), y copiarlo lo
+        ' convertiría en un FTST fijo — si al pegar se destilda la categoría de la plantilla, el destino se quedaría
+        ' igual con la cara de la plantilla. La plantilla ya viaja en su propio carrier (`SkinTemplateId`, arriba).
+        ' Por eso: el OVERLAY si declara (distingue "sin override" de "clear", que el record no puede), si no el
+        ' FTST PROPIO del record que se está dibujando (`raw` = la fuente de apariencia, heredero incluido).
+        ' Tri-estado igual que SSE: FTST=0 ⇒ Nothing (preservar el del destino), nunca Some(0) = CLEAR.
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then
+            If overlay IsNot Nothing AndAlso overlay.HeadTextureFormIDOverride.HasValue Then
+                preset.HeadTextureFormIDOverride = overlay.HeadTextureFormIDOverride
+            ElseIf raw.Record.HeadTexture <> 0UI Then
+                ' If/Then y no el ternario: con un nullable el ternario convierte el Nothing en 0 = CLEAR.
+                preset.HeadTextureFormIDOverride = raw.Record.HeadTexture
+            Else
+                preset.HeadTextureFormIDOverride = Nothing
+            End If
+        End If
+
         ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": se captura el valor EFECTIVO (overlay si existe,
         ' si no el bit crudo); sin esto Copy->Paste perdía la flag aunque el checkbox estuviera activo.
 
@@ -11073,10 +11092,9 @@ Public Class MainForm
             ' Se captura `ExplicitHeadTextureFormID`, NO el efectivo: el explícito vale 0 justamente cuando
             ' el TXST salió del default de la RAZA. Copiar el efectivo convertiría ese default en un override
             ' explícito y, al pegarlo sobre un NPC de otra raza, le clavaría la cara de la raza de origen.
-            ' Va sólo en la rama SSE por ORIGEN DEL DATO, no por olvido: en FO4 el override de cara viaja
-            ' por la plantilla de LooksMenu, que esta misma función ya captura en su propio carrier; poblar
-            ' además éste duplicaría el dato y le daría precedencia al de menor rango. En SSE no existen esas
-            ' plantillas, así que éste es el ÚNICO carrier.
+            ' Leer `ExplicitHeadTextureFormID` es propio de SSE: en FO4 ese campo puede traer el face TXST de la
+            ' plantilla de LooksMenu, así que la rama FO4 (arriba, junto a DOFT/SOFT) lee el FTST del record.
+            ' En SSE no existen esas plantillas, así que el explícito ES el FTST.
             ' La traducción al carrier tri-estado es EXPLÍCITA, no una asignación directa: `UInteger` ensancha a
             ' `UInteger?` en silencio (Option Strict está Off) y un Explicit=0 —que es "este NPC no tiene FTST
             ' propio", el caso de arriba— se volvería Some(0) = CLEAR EXPLÍCITO. Copiar la cara de un NPC sin FTST
@@ -11087,15 +11105,15 @@ Public Class MainForm
             ' (= "preservar") y al pegarla el target se quedaba con SU PROPIO FTST: la cara pegada no se parecía
             ' a la copiada, en silencio. El overlay sí distingue los tres estados, así que se prefiere.
             ' Mismo criterio que los demás carriers SSE de este bloque (SseWeight, SseNam9, SseTintLayers).
-            If overlay IsNot Nothing AndAlso overlay.SseHeadTextureFormIDOverride.HasValue Then
-                preset.SseHeadTextureFormIDOverride = overlay.SseHeadTextureFormIDOverride
+            If overlay IsNot Nothing AndAlso overlay.HeadTextureFormIDOverride.HasValue Then
+                preset.HeadTextureFormIDOverride = overlay.HeadTextureFormIDOverride
             ElseIf state.ExplicitHeadTextureFormID <> 0UI Then
                 ' If/Then, NO el ternario `If(cond, valor, Nothing)`: con un nullable ese ternario resuelve el
                 ' tipo dominante a UInteger y convierte el `Nothing` en 0 ⇒ HasValue=True con valor 0 = CLEAR,
                 ' justo lo contrario de lo que se quiere. Es la trampa de VB que este proyecto ya se comió antes.
-                preset.SseHeadTextureFormIDOverride = state.ExplicitHeadTextureFormID
+                preset.HeadTextureFormIDOverride = state.ExplicitHeadTextureFormID
             Else
-                preset.SseHeadTextureFormIDOverride = Nothing
+                preset.HeadTextureFormIDOverride = Nothing
             End If
 
             ' --- F4SE/RaceMenu-only carriers (no record source): overlay only, else leave empty. ---

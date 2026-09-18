@@ -125,7 +125,12 @@ Public Module LooksmenuLoader
         Public UnresolvedSkin As String = ""
         Public UnresolvedDefaultOutfit As String = ""
         Public UnresolvedSleepOutfit As String = ""
-        ''' <summary>SSE-ONLY face texture set (NPC_.FTST) override. THREE states, same shape as
+        ''' <summary>El identificador crudo de <c>_npcm_HeadTexture</c> cuando NO resolvió contra el orden de carga.
+        ''' Mismo patrón y mismo motivo que <see cref="UnresolvedSkin"/>: el campo queda en <c>Nothing</c>
+        ''' (= preservar el FTST del NPC, nunca CLEAR) y el informe de compatibilidad lo nombra. "" = resolvió, o el
+        ''' preset no declara ese campo.</summary>
+        Public UnresolvedHeadTexture As String = ""
+        ''' <summary>Face texture set (NPC_.FTST) override, BOTH games. THREE states, same shape as
         ''' <see cref="SkinFormIDOverride"/> / <see cref="DefaultOutfitFormIDOverride"/> / <see cref="SleepOutfitFormIDOverride"/>:
         ''' <list type="bullet">
         ''' <item>Nothing    → no override: preserve the raw NPC.FTST verbatim (Edit Face's "Use record default").</item>
@@ -135,13 +140,16 @@ Public Module LooksmenuLoader
         '''       DefaultFaceTexture[gender] and, failing that, to the head part's own HDPT.TNAM.</item>
         ''' </list>
         ''' The render consumes it as state.ExplicitHeadTextureFormID (NpcMaterialResolver.ResolveTextureSet).
-        ''' SSE-only; Nothing on FO4, where the face override travels through the LooksMenu skin template instead.
+        ''' Sources: SSE → a loaded .jslot's actor.headTexture; FO4 → the <c>_npcm_HeadTexture</c> key of an app-saved
+        ''' LooksMenu JSON (LooksMenu itself has no such field); both games → Edit Face and Copy Look.
+        ''' In FO4 a LooksMenu skin template with a face TXST for the NPC's sex still WINS over this field (saved and
+        ''' rendered), exactly as f4ee's SkinInterface ApplyOverride does.
         ''' <para>El estado "clear explícito" NO sobrevive un round-trip por `.jslot`: el formato de RaceMenu no
         ''' distingue "sin clave" de "clave nula" (RaceMenuJslot colapsa null/"" en ""), y su motor NUNCA limpia el
         ''' FTST — skee64 PresetInterface.cpp:147 sólo asigna dentro de `if (presetData-&gt;headTexture)`. Guardar
         ''' como preset RaceMenu y recargarlo degrada `0` → `Nothing` (= preservar). Es inherente al formato ajeno y
         ''' NO se workaroundea: la casa del clear es el ESP, no el .jslot.</para></summary>
-        Public SseHeadTextureFormIDOverride As UInteger?
+        Public HeadTextureFormIDOverride As UInteger?
         ''' <summary>SSE-ONLY RaceMenu absolute hair tint from a loaded .jslot's actor.hairColor (packed 0xRRGGBB).
         ''' skee writes it straight onto the hair shape's BSLightingShaderMaterialHairTint.tintColor (unpacked /255,
         ''' ×2, PresetInterface.cpp:112-116), taking precedence over the NPC's CLFM/HCLF colour. Nothing = the preset
@@ -989,6 +997,25 @@ Public Module LooksmenuLoader
                     End If
                 End If
             End If
+            Dim ftstFidEl As JsonElement
+            If root.TryGetProperty("_npcm_HeadTexture", ftstFidEl) AndAlso ftstFidEl.ValueKind = JsonValueKind.String Then
+                Dim ftStr = ftstFidEl.GetString()
+                If String.IsNullOrEmpty(ftStr) Then
+                    ' Empty string = CLEAR explícito (no FTST: la cara cae a la raza / HDPT.TNAM). Equivale a Some(0).
+                    preset.HeadTextureFormIDOverride = 0UI
+                Else
+                    ' Mismo criterio que los tres de arriba: sin resolver ⇒ Nothing = preservar, nunca CLEAR.
+                    Dim ftResolved = ResolveFormIdentifier(ftStr, pluginManager)
+                    If ftResolved <> 0UI Then
+                        preset.HeadTextureFormIDOverride = ftResolved
+                    Else
+                        preset.UnresolvedHeadTexture = ftStr   ' ver la nota de `_npcm_SkinFormID`
+                        Dim ftMissing = ftStr
+                        Logger.LogLazy(Function() $"[LMLoad] _npcm_HeadTexture '{ftMissing}' no resuelve " &
+                                                  "(su plugin no está en el load order) -> se preserva el FTST del NPC.")
+                    End If
+                End If
+            End If
             Dim cgpEl As JsonElement
             If root.TryGetProperty("_npcm_IsCharGenPreset", cgpEl) AndAlso
                (cgpEl.ValueKind = JsonValueKind.True OrElse cgpEl.ValueKind = JsonValueKind.False) Then
@@ -1113,7 +1140,8 @@ Public Module LooksmenuLoader
         c.UnresolvedSkin = p.UnresolvedSkin
         c.UnresolvedDefaultOutfit = p.UnresolvedDefaultOutfit
         c.UnresolvedSleepOutfit = p.UnresolvedSleepOutfit
-        c.SseHeadTextureFormIDOverride = p.SseHeadTextureFormIDOverride
+        c.UnresolvedHeadTexture = p.UnresolvedHeadTexture
+        c.HeadTextureFormIDOverride = p.HeadTextureFormIDOverride
         c.SseHairColorRgb = p.SseHairColorRgb
         c.SkinToneOffset = SkinToneQnamOffset.CloneOrNothing(p.SkinToneOffset)
         c.WeightThin = p.WeightThin
@@ -1696,6 +1724,9 @@ Public Module LooksmenuLoader
                 EmitNpcmFormIdentifier(w, "_npcm_SkinFormID", "skin", preset.SkinFormIDOverride, pluginManager, omittedFields)
                 EmitNpcmFormIdentifier(w, "_npcm_DefaultOutfit", "default outfit", preset.DefaultOutfitFormIDOverride, pluginManager, omittedFields)
                 EmitNpcmFormIdentifier(w, "_npcm_SleepOutfit", "sleep outfit", preset.SleepOutfitFormIDOverride, pluginManager, omittedFields)
+                ' NPC_.FTST, mismos tres estados. LooksMenu no tiene este campo (el face TXST de f4ee viaja sólo en la
+                ' plantilla de piel), así que sin esta key Save → Load LooksMenu perdía el FTST editado en Edit Face.
+                EmitNpcmFormIdentifier(w, "_npcm_HeadTexture", "head texture", preset.HeadTextureFormIDOverride, pluginManager, omittedFields)
                 If preset.IsCharGenFacePreset.HasValue Then
                     w.WriteBoolean("_npcm_IsCharGenPreset", preset.IsCharGenFacePreset.Value)
                 End If

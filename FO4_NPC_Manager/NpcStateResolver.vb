@@ -291,9 +291,9 @@ Friend NotInheritable Class NpcStateResolver
             ' LM de abajo lo pisa ⇒ LM SkinTemplate > preset .jslot headTexture > raw NPC.FTST.
             '
             ' GAME-AWARENESS: el reparto es por ORIGEN DEL DATO, no por un If de juego.
-            '   • FO4 → la vía es la plantilla LM (bundle f4ee) = el bloque de abajo. `SseHeadTextureFormIDOverride`
-            '     queda en Nothing (LooksmenuLoader lo puebla sólo desde `.jslot`), así que esta rama no corre.
-            '   • SSE → RaceMenu no tiene plantillas de piel; la vía es ésta.
+            '   • Los dos juegos → Edit Face ("Head texture (FTST)") y Copy Look pueblan `HeadTextureFormIDOverride`.
+            '   • SSE → además el `.jslot` (actor.headTexture). FO4 → además `_npcm_HeadTexture` del JSON de la app.
+            '   • FO4 → la plantilla LM (bundle f4ee) = el bloque de abajo, que corre DESPUÉS y le gana a esta rama.
             ' NO se agrega un gate `If isSse` a propósito: el shadow del BAKE tampoco lo tiene, y gatear un
             ' solo lado volvería a abrir la divergencia render/bake que este mismo fix cierra.
             '
@@ -303,8 +303,8 @@ Friend NotInheritable Class NpcStateResolver
             '   = 0     → clear explícito (ver el bloque de abajo, que NO es simétrico y por eso está comentado).
             ' El gate es `.HasValue`, NO `<> 0UI`: sobre un nullable esa comparación da Boolean? y colapsa
             ' Nothing con 0 — o sea, deja el clear indistinguible de "sin override", que es el bug original.
-            If overlayPreset.SseHeadTextureFormIDOverride.HasValue Then
-                Dim ovFtst As UInteger = overlayPreset.SseHeadTextureFormIDOverride.Value
+            If overlayPreset.HeadTextureFormIDOverride.HasValue Then
+                Dim ovFtst As UInteger = overlayPreset.HeadTextureFormIDOverride.Value
                 state.HeadTextureFormID = ovFtst
                 ' Explicit VIAJA CON el valor: declara "este face TXST es del ACTOR", que es lo que le gana al
                 ' HDPT.TNAM en ResolveTextureSet. Ver el invariante documentado en CloneVisualState.
