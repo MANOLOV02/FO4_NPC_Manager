@@ -1,4 +1,4 @@
-<Project>
+﻿<Project>
 
   <!-- IDENTIDAD DE LOS ENSAMBLADOS DE ESTE REPO. La explicacion completa (por que aca y no en la raiz del
        arbol, que deriva cada campo, y por que el numero solo NO alcanza) esta en
@@ -11,7 +11,7 @@
        en el AssemblyRef de quien compile contra esto), FileVersion y InformationalVersion. -->
 
   <PropertyGroup>
-    <Version>2.1.8</Version>
+    <Version>2.1.9</Version>
     <Company>MANOLOV02</Company>
     <Copyright>Copyright (c) 2026 MANOLOV02</Copyright>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

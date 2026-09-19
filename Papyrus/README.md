@@ -201,7 +201,24 @@ de `PurgeOverlayGroup` en el `.psc`.
   -o="pex_fo4" -all
 ```
 Después **borrar los `.pex` de los stubs** de las carpetas de salida (ver arriba), **rebuildear la app** (el
-`.pex` es un `EmbeddedResource`) y correr `python tools\check_sweep_ceiling.py`.
+`.pex` es un `EmbeddedResource`) y correr `python tools\check_sweep_ceiling.py` y `python tools\check_sexo_en_runtime.py`.
+
+## ⛔ El sexo con el que el script escribe y barre sale del ACTOR (no del VMAD)
+
+`IsFemale_G<n>` sigue viajando en el VMAD, pero desde la **revisión 11 de `ScriptLogicRevision`** es sólo el
+**fallback**: los dos `.psc` resuelven el sexo con `GetActorBase().GetSex()`, que es el mismo
+`refr->baseForm->GetSex()` que leen skee y f4ee en **todos** sus caminos, y usan la property únicamente si el
+actor no tiene base o su `GetSex()` da `-1` (None). El detalle y las citas están en el bloque de
+`femaleActivo` de cada `.psc`.
+
+⛔ **No usar `GetLeveledActorBase()`**: es otra nativa (la "fake base" del leveled) y puede devolver algo
+distinto de lo que lee el consumidor. Se matchea al consumidor, no a la intuición.
+
+⛔ **Si se edita el sexo en un `.psc`, correr `python tools\check_sexo_en_runtime.py`** (exit 0 / 4). Mira el
+`.pex`, no el `.psc`, y lo que chequea de verdad es que **ninguna** función de apply/barrido se haya quedado
+con la property mientras el resto usa `femaleActivo`: barrer con un sexo y escribir con el otro deja lo
+escrito invisible y sin barrer en el co-save, para siempre.
+
 
 ## Dependencia: blanda, no dura
 

@@ -148,7 +148,10 @@ int Property OVL_SWEEP_MAX = 127 AutoReadOnly
 ; en VB y su entrada en check_sweep_ceiling.py.
 
 bool Property IsFemale_G0000010000 = false Auto
-{Género para el que se autoraron los overrides. NiOverride guarda los sets male/female por separado.}
+{⭐ FALLBACK. YA NO ES LO QUE SE USA: el sexo con el que se escribe y se barre lo resuelve
+ `SexoDelActor()` contra el actor, en runtime (ver el bloque de `femaleActivo`). Esta property sigue
+ viajando en el VMAD y es lo que se usa SOLO si el actor no tiene base o su GetSex() da -1 (None).
+ NiOverride guarda los sets male/female por separado, y el sexo del set lo decide el ACTOR.}
 
 bool Property Verbose_G0000010000 = false Auto
 {DIAGNOSTICO. false (default, y lo que se publica) = el script NO traza NADA. La app lo pone en true
@@ -296,6 +299,46 @@ float[]  Property MorphValue_G0000010000 Auto
 ;-- estado por instancia (persiste en el savegame, como el TeleportActorScript vanilla) ----------
 int appliedVersion = -1
 
+;-- ⭐⭐⭐ EL SEXO CON EL QUE SE ESCRIBE Y SE BARRE SALE DEL ACTOR, NO DEL VMAD --------------------
+;
+; TODO consumidor del extender lee el sexo del MISMO lugar: `refr->baseForm->GetSex()`. No hay un solo
+; camino que use otra fuente -- censado sobre la fuente, no de memoria:
+;   OverrideInterface.cpp:556,586,705,788,840,908,976,997,1123,1138,1163,1184
+;   NiTransformInterface.cpp:571-574   BodyMorphInterface.cpp:1822-1826
+;   PapyrusNiOverride.cpp:194-199,296-301,407-412,509-514
+;
+; ⇒ CONSECUENCIA DE PASARLE UN SEXO QUE NO ES EL DEL ACTOR: no se aplica NADA y no se loguea nada.
+;   La capa de Papyrus de skee GATEA EL PINTADO con esa comparacion, textual:
+;       // Applies the properties visually, only if the current gender matches
+;       if (isFemale == (gender == 1)) { Impl_SetNodeProperty(...) }   <- PapyrusNiOverride.cpp:300-301
+;   El override igual ENTRA AL STORE (el persist es incondicional, :292-293) ⇒ no se pinta NUNCA y
+;   el barrido del sexo real tampoco lo encuentra: queda en el co-save para siempre.
+;   (Los body morphs de SSE NO tienen esta dimension: el store de skee se indexa solo por formID
+;    -- ver ClearMorphs/SetBodyMorph, que no reciben isFemale. Aca el sexo pesa en overlays de
+;    nodo, skin overrides y node transforms.)
+;
+; LA LLAMADA CORRECTA ES `GetActorBase()`, NO `GetLeveledActorBase()`:
+;   `ActorBase Function GetActorBase()` es literalmente `return GetBaseObject() as ActorBase`
+;   (Actor.psc:138-139) ⇒ es el MISMO `refr->baseForm` que lee el extender. Matchea al CONSUMIDOR por
+;   construccion, sin depender de como el motor resuelva un leveled. `GetLeveledActorBase()` es OTRA
+;   nativa (la "fake base" del leveled, Actor.psc:268-272) y puede devolver algo distinto de lo que el
+;   consumidor lee: elegirla seria elegir una fuente que nadie usa.
+;
+; QUE ARREGLA, EXACTAMENTE -- y que NO. El emisor ya manda el sexo EFECTIVO (fusiona el bit 0 de la
+; plantilla Traits: NpcTemplateMaterializer.SexoEfectivo), asi que la constante ya era correcta para
+; toda cadena de plantillas FIJA. Lo que una constante NO puede seguir es una cadena por LISTA (LVLN)
+; de sexos mezclados, donde la hoja la elige cada spawn -- el hueco que el propio emisor declara en el
+; docstring de `isFemaleEfectivo`. Ese es el caso que esto cubre.
+; ⚠️ Y NO arregla el DATO: el payload sigue autorado para el sexo que vio la app (los ids de template
+;   y los nombres de morph son especificos del sexo). Si los dos no coinciden, esto hace que el CANAL
+;   sea el correcto; que el CONTENIDO lo sea es del emisor. Por eso el mismatch se TRAZA.
+;
+; ⚠️ INVARIANTE: `femaleActivo` es una variable de script, o sea que PERSISTE en el savegame (igual que
+;   appliedVersion) y NO lleva sufijo de generacion. Es seguro porque OnLoad la asigna ANTES de que la
+;   lea nadie, y todo lector cuelga de OnLoad. Si algun dia se agrega un evento nuevo que llame a un
+;   Apply*/Remove*, tiene que asignarla el tambien.
+bool femaleActivo = false
+
 Event OnLoad()
     ; TRAZA: el script no logueaba NADA, y sin eso no se puede distinguir tres cosas que dan el MISMO
     ; sintoma ("el NPC no cambia"): (a) OnLoad no se dispara en esa referencia, (b) se dispara y se saltea
@@ -365,6 +408,15 @@ Event OnLoad()
     endif
     appliedVersion = SchemaVersion_G0000010000
 
+    ; ⭐⭐⭐ EL SEXO, ANTES DE TOCAR NADA: lo usan el BARRIDO y el APPLY, y tienen que usar el mismo.
+    ; Va DESPUES del sello a proposito: el camino caliente (actor que ya aplico y saltea) no paga las
+    ; dos nativas. Ver el bloque de `femaleActivo` arriba.
+    bool sexoReal = SexoDelActor()
+    femaleActivo = sexoReal
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] sexo VMAD=" + SexoTexto(IsFemale_G0000010000) + " runtime=" + SexoTexto(sexoReal))
+    endif
+
     ; ⭐⭐ EL REGISTRO EN SKEE VA PRIMERO, ANTES DE BORRAR. Con el default [Overlays] bPlayerOnly=1
     ; (verificado en skee64.ini) skee sólo construye nodos de overlay para un actor que HasOverlays(), y
     ; AddOverlays() es lo que mete al actor en ese set. Estaba DENTRO de ApplyOverlays(), o sea DESPUÉS de
@@ -375,6 +427,26 @@ Event OnLoad()
     ; Es idempotente y barato, así que va incondicional: el barrido tiene que poder correr aunque el payload
     ; nuevo esté vacío, que es justamente el caso de una limpieza.
     NiOverride.AddOverlays(self)
+
+    ; ⛔⛔ MIGRACION: BARRER TAMBIEN EL STORE DEL SEXO QUE AUTORO LA APP.
+    ; Si una version anterior aplico con la constante y esta aplica con el sexo real, el barrido del
+    ; sexo real NO alcanza lo que quedo escrito bajo el otro: skee no deshace nada por su cuenta y todo
+    ; entro con persist=true, o sea al co-save. Sin esto, el arreglo dejaria residuo PARA SIEMPRE.
+    ; Es barato: con el sexo ajeno el `AddNodeOverride*` de ClearOverlayGroup no recorre el 3D (lo corta
+    ; el mismo gate de PapyrusNiOverride.cpp:300-301) y va con persist=false, asi que no escribe nada;
+    ; lo que si corre son los `Remove*`, que son la llamada barata. Y solo corre cuando los dos difieren.
+    ; ⚠️ HUECO DECLARADO, y es PREVIO a este cambio: si la constante cambio de valor ENTRE dos versiones
+    ;   publicadas (el usuario le cambio el sexo al NPC, o la plantilla), el residuo de esa version vieja
+    ;   tampoco se barre hoy. Un bool tiene dos valores, asi que barrer los dos SIEMPRE lo cerraria --
+    ;   pero le duplicaria el barrido a todo el mundo para cubrir un caso que nadie midio. No se hace.
+    if sexoReal != IsFemale_G0000010000
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] MISMATCH de sexo: barriendo tambien el store " + SexoTexto(IsFemale_G0000010000))
+        endif
+        femaleActivo = IsFemale_G0000010000
+        RemovePrevious()
+        femaleActivo = sexoReal
+    endif
 
     RemovePrevious()
     ApplyOverlays()
@@ -407,6 +479,31 @@ EndEvent
 ; altos) eso es CORRECTO. Con otro mod, es un conflicto de mods.
 ; (No puede ser una variable llamada `key`: `Key` es un tipo real de Skyrim — `Key
 ; extends MiscObject` — y Papyrus rechaza una variable con nombre de tipo conocido.)
+; ⭐ EL SEXO DEL ACTOR EN RUNTIME, CON LA PROPERTY DEL VMAD COMO FALLBACK.
+; `GetSex()` devuelve -1 cuando el sexo es None (ActorBase.psc:22-25 en FO4, la misma nativa en SSE), y el base puede no resolver: en los dos
+; casos se cae a lo que autoro la app, que es exactamente lo que habia antes de este cambio.
+; ⚠️ Comparar un OBJETO contra None es legal y es lo que hace vanilla; lo prohibido (regla 2 de la
+; cabecera) es comparar un ARRAY contra None. Aca es un ActorBase.
+bool Function SexoDelActor()
+    ActorBase b = self.GetActorBase()
+    if b == None
+        return IsFemale_G0000010000
+    endif
+    int s = b.GetSex()
+    if s < 0
+        return IsFemale_G0000010000
+    endif
+    return s == 1
+EndFunction
+
+; Solo para la traza: "female"/"male" se lee en el log sin tener que acordarse de que lado es true.
+string Function SexoTexto(bool female)
+    if female
+        return "female"
+    endif
+    return "male"
+EndFunction
+
 string Function XformKey()
     return "NPCM_Manolov"
 EndFunction
@@ -506,9 +603,9 @@ Function RemovePrevious()
     int mask = 1
     int b = 0
     while b < 32
-        NiOverride.RemoveSkinOverride(self, IsFemale_G0000010000, false, mask, KEY_TEXTURE, IDX_DIFFUSE)
-        NiOverride.RemoveSkinOverride(self, IsFemale_G0000010000, false, mask, KEY_TEXTURE, IDX_NORMAL)
-        NiOverride.RemoveSkinOverride(self, IsFemale_G0000010000, false, mask, KEY_TINT, -1)
+        NiOverride.RemoveSkinOverride(self, femaleActivo, false, mask, KEY_TEXTURE, IDX_DIFFUSE)
+        NiOverride.RemoveSkinOverride(self, femaleActivo, false, mask, KEY_TEXTURE, IDX_NORMAL)
+        NiOverride.RemoveSkinOverride(self, femaleActivo, false, mask, KEY_TINT, -1)
         mask = mask * 2
         b += 1
     endwhile
@@ -543,7 +640,7 @@ Function RemovePrevious()
     ; QUEDAN. Si no queda ninguna, el nodo vuelve a su base. Es lo contrario de los overlays, donde
     ; ApplyNodeOverrides solo empuja lo que quedo y nunca resetea.
     string ovrKey = XformKey()
-    string[] xnodes = NiOverride.GetNodeTransformNames(self, false, IsFemale_G0000010000)
+    string[] xnodes = NiOverride.GetNodeTransformNames(self, false, femaleActivo)
     if Verbose_G0000010000
         Debug.Trace("[NPCM] xforms previos=" + xnodes.Length)
     endif
@@ -551,11 +648,11 @@ Function RemovePrevious()
     while i < xnodes.Length
         string node = xnodes[i]
         if node != ""
-            NiOverride.RemoveNodeTransformScale(self, false, IsFemale_G0000010000, node, ovrKey)
-            NiOverride.RemoveNodeTransformPosition(self, false, IsFemale_G0000010000, node, ovrKey)
-            NiOverride.RemoveNodeTransformRotation(self, false, IsFemale_G0000010000, node, ovrKey)
-            NiOverride.RemoveNodeTransformScaleMode(self, false, IsFemale_G0000010000, node, ovrKey)
-            NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
+            NiOverride.RemoveNodeTransformScale(self, false, femaleActivo, node, ovrKey)
+            NiOverride.RemoveNodeTransformPosition(self, false, femaleActivo, node, ovrKey)
+            NiOverride.RemoveNodeTransformRotation(self, false, femaleActivo, node, ovrKey)
+            NiOverride.RemoveNodeTransformScaleMode(self, false, femaleActivo, node, ovrKey)
+            NiOverride.UpdateNodeTransform(self, false, femaleActivo, node)
         endif
         i += 1
     endwhile
@@ -693,21 +790,21 @@ Function ClearOverlayGroup(string prefix, int n)
         ; ya es lo mas caro del script; no se le suma el costo de medirlo cuando nadie va a leer el log.
         bool wasThere = false
         if Verbose_G0000010000
-            wasThere = NiOverride.GetNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE) != ""
+            wasThere = NiOverride.GetNodeOverrideString(self, femaleActivo, node, KEY_TEXTURE, IDX_DIFFUSE) != ""
             if wasThere
                 had += 1
             endif
         endif
         ; 1) apagar el nodo (visual, sin persistir)
-        NiOverride.AddNodeOverrideFloat(self, IsFemale_G0000010000, node, KEY_ALPHA, -1, 0.0, false)
-        NiOverride.AddNodeOverrideInt(self, IsFemale_G0000010000, node, KEY_TINT, -1, 0, false)
+        NiOverride.AddNodeOverrideFloat(self, femaleActivo, node, KEY_ALPHA, -1, 0.0, false)
+        NiOverride.AddNodeOverrideInt(self, femaleActivo, node, KEY_TINT, -1, 0, false)
         ; 2) sacar del store lo que hubiera guardado
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TINT, -1)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_ALPHA, -1)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_TEXTURE, IDX_DIFFUSE)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_TEXTURE, IDX_NORMAL)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_TINT, -1)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_ALPHA, -1)
         if Verbose_G0000010000 && wasThere
-            if NiOverride.GetNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE) != ""
+            if NiOverride.GetNodeOverrideString(self, femaleActivo, node, KEY_TEXTURE, IDX_DIFFUSE) != ""
                 left += 1
             endif
         endif
@@ -786,10 +883,10 @@ Function PurgeOverlayGroup(string prefix, int from, int to)
     int i = from
     while i < to
         string node = prefix + i + "]"
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TINT, -1)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_ALPHA, -1)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_TEXTURE, IDX_DIFFUSE)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_TEXTURE, IDX_NORMAL)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_TINT, -1)
+        NiOverride.RemoveNodeOverride(self, femaleActivo, node, KEY_ALPHA, -1)
         i += 1
     endwhile
 EndFunction
@@ -818,18 +915,18 @@ Function ApplyOverlays()
             ; (PapyrusNiOverride.cpp:503-514).
             if i < OvlDiffuse_G0000010000.Length
                 if OvlDiffuse_G0000010000[i] != ""
-                    NiOverride.AddNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE, OvlDiffuse_G0000010000[i], true)
+                    NiOverride.AddNodeOverrideString(self, femaleActivo, node, KEY_TEXTURE, IDX_DIFFUSE, OvlDiffuse_G0000010000[i], true)
                 endif
             endif
             if i < OvlNormal_G0000010000.Length
                 if OvlNormal_G0000010000[i] != ""
-                    NiOverride.AddNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL, OvlNormal_G0000010000[i], true)
+                    NiOverride.AddNodeOverrideString(self, femaleActivo, node, KEY_TEXTURE, IDX_NORMAL, OvlNormal_G0000010000[i], true)
                 endif
             endif
             if i < OvlHasTint_G0000010000.Length
                 if OvlHasTint_G0000010000[i]
                     if i < OvlTint_G0000010000.Length
-                        NiOverride.AddNodeOverrideInt(self, IsFemale_G0000010000, node, KEY_TINT, -1, OvlTint_G0000010000[i], true)
+                        NiOverride.AddNodeOverrideInt(self, femaleActivo, node, KEY_TINT, -1, OvlTint_G0000010000[i], true)
                     endif
                 endif
             endif
@@ -839,7 +936,7 @@ Function ApplyOverlays()
             ; INVISIBLE. El emisor ya manda 1.0 cuando el overlay no define alpha, así que el valor es válido
             ; siempre. (OvlHasAlpha_G0000010000 sigue declarada y emitida —la garantía 1:1 con el .psc— sin decidir nada.)
             if i < OvlAlpha_G0000010000.Length
-                NiOverride.AddNodeOverrideFloat(self, IsFemale_G0000010000, node, KEY_ALPHA, -1, OvlAlpha_G0000010000[i], true)
+                NiOverride.AddNodeOverrideFloat(self, femaleActivo, node, KEY_ALPHA, -1, OvlAlpha_G0000010000[i], true)
             endif
         endif
         i += 1
@@ -861,18 +958,18 @@ Function ApplySkin()
             ; firstPerson = false: los NPC no tienen esqueleto de primera persona.
             if i < SkinDiffuse_G0000010000.Length
                 if SkinDiffuse_G0000010000[i] != ""
-                    NiOverride.AddSkinOverrideString(self, IsFemale_G0000010000, false, slot, KEY_TEXTURE, IDX_DIFFUSE, SkinDiffuse_G0000010000[i], true)
+                    NiOverride.AddSkinOverrideString(self, femaleActivo, false, slot, KEY_TEXTURE, IDX_DIFFUSE, SkinDiffuse_G0000010000[i], true)
                 endif
             endif
             if i < SkinNormal_G0000010000.Length
                 if SkinNormal_G0000010000[i] != ""
-                    NiOverride.AddSkinOverrideString(self, IsFemale_G0000010000, false, slot, KEY_TEXTURE, IDX_NORMAL, SkinNormal_G0000010000[i], true)
+                    NiOverride.AddSkinOverrideString(self, femaleActivo, false, slot, KEY_TEXTURE, IDX_NORMAL, SkinNormal_G0000010000[i], true)
                 endif
             endif
             if i < SkinHasTint_G0000010000.Length
                 if SkinHasTint_G0000010000[i]
                     if i < SkinTint_G0000010000.Length
-                        NiOverride.AddSkinOverrideInt(self, IsFemale_G0000010000, false, slot, KEY_TINT, -1, SkinTint_G0000010000[i], true)
+                        NiOverride.AddSkinOverrideInt(self, femaleActivo, false, slot, KEY_TINT, -1, SkinTint_G0000010000[i], true)
                     endif
                 endif
             endif
@@ -931,17 +1028,17 @@ Function NeutralizeCollapsedLayers()
         string node = NodeNeutralNode_G0000010000[i]
         string other = NodeNeutralName_G0000010000[i]
         if node != "" && other != "" && other != XformKey()
-            NiOverride.AddNodeTransformScale(self, false, IsFemale_G0000010000, node, other, 1.0)
-            NiOverride.AddNodeTransformPosition(self, false, IsFemale_G0000010000, node, other, zero)
-            NiOverride.AddNodeTransformRotation(self, false, IsFemale_G0000010000, node, other, ident)
-            NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
+            NiOverride.AddNodeTransformScale(self, false, femaleActivo, node, other, 1.0)
+            NiOverride.AddNodeTransformPosition(self, false, femaleActivo, node, other, zero)
+            NiOverride.AddNodeTransformRotation(self, false, femaleActivo, node, other, ident)
+            NiOverride.UpdateNodeTransform(self, false, femaleActivo, node)
             if Verbose_G0000010000
                 ; **SE LEE DE VUELTA**, no se afirma. Escribir y trazar "lo escribi" no prueba nada: prueba que se
                 ; llamo a la funcion. `GetNodeTransformScale` esta expuesto a Papyrus y es NoWait
                 ; (PapyrusNiOverride.cpp:1110 / :2312), asi que se puede preguntar QUE QUEDO bajo ese nombre.
                 ; Nacio de una limitacion real del test: el usuario no tenia forma de saber si el hueso habia
                 ; quedado en 1.32 o en 1.74 mirando el NPC. Un numero en el log lo contesta; un pecho no.
-                float back = NiOverride.GetNodeTransformScale(self, false, IsFemale_G0000010000, node, other)
+                float back = NiOverride.GetNodeTransformScale(self, false, femaleActivo, node, other)
                 Debug.Trace("[NPCM] xform NEUTRAL " + node + ": '" + other + "' -> leido de vuelta scale=" + back +                             " (tiene que ser 1.0; su aporte ya esta en el nuestro)")
             endif
         endif
@@ -1005,7 +1102,7 @@ Function ApplyNodeTransforms()
             if i < NodeHasScale_G0000010000.Length
                 if NodeHasScale_G0000010000[i]
                     if i < NodeScale_G0000010000.Length
-                        NiOverride.AddNodeTransformScale(self, false, IsFemale_G0000010000, node, ovrKey, NodeScale_G0000010000[i])
+                        NiOverride.AddNodeTransformScale(self, false, femaleActivo, node, ovrKey, NodeScale_G0000010000[i])
                     endif
                 endif
             endif
@@ -1018,7 +1115,7 @@ Function ApplyNodeTransforms()
                         pos[0] = NodePosX_G0000010000[i]
                         pos[1] = NodePosY_G0000010000[i]
                         pos[2] = NodePosZ_G0000010000[i]
-                        NiOverride.AddNodeTransformPosition(self, false, IsFemale_G0000010000, node, ovrKey, pos)
+                        NiOverride.AddNodeTransformPosition(self, false, femaleActivo, node, ovrKey, pos)
                     endif
                 endif
             endif
@@ -1037,7 +1134,7 @@ Function ApplyNodeTransforms()
                         rot[6] = NodeRotM6_G0000010000[i]
                         rot[7] = NodeRotM7_G0000010000[i]
                         rot[8] = NodeRotM8_G0000010000[i]
-                        NiOverride.AddNodeTransformRotation(self, false, IsFemale_G0000010000, node, ovrKey, rot)
+                        NiOverride.AddNodeTransformRotation(self, false, femaleActivo, node, ovrKey, rot)
                     endif
                 endif
             endif
@@ -1045,18 +1142,18 @@ Function ApplyNodeTransforms()
             ; --- scale mode
             if i < NodeScaleMode_G0000010000.Length
                 if NodeScaleMode_G0000010000[i] >= 0
-                    NiOverride.AddNodeTransformScaleMode(self, false, IsFemale_G0000010000, node, ovrKey, NodeScaleMode_G0000010000[i])
+                    NiOverride.AddNodeTransformScaleMode(self, false, femaleActivo, node, ovrKey, NodeScaleMode_G0000010000[i])
                 endif
             endif
 
-            ; ⛔⛔ ESTA LLAMADA NO HACE NADA, EN SILENCIO, SI IsFemale NO COINCIDE CON EL SEXO DEL ACTOR BASE:
-            ; UpdateNodeTransform compara `isFemale` contra `actorBase->GetSex()` y hace `return` sin tocar nada
-            ; ni loguear (PapyrusNiOverride.cpp:1286-1293). Y es la unica cosa que recompone el nodo, asi que un
-            ; IsFemale_G<n> equivocado deja los Add* en el store y NADA visible en el 3D — el sintoma seria "el
-            ; NPC no cambia" sin ningun error. El mismo gate corre en el UpdateNodeTransform de RemovePrevious,
-            ; o sea que tampoco se veria el deshacer. Es diagnostico futuro, no una guarda que agregar aca: el
-            ; sexo sale del record en el emisor.
-            NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
+            ; ⭐ ESTA LLAMADA ES LA UNICA QUE RECOMPONE EL NODO, y hace `return` sin tocar nada ni loguear si el
+            ; `isFemale` que le pasamos no coincide con `actorBase->GetSex()` (PapyrusNiOverride.cpp:1286-1293).
+            ; El mismo gate corre en el UpdateNodeTransform de RemovePrevious, o sea que con el sexo equivocado
+            ; tampoco se veria el deshacer: los Add* quedaban en el store y NADA visible en el 3D, con el sintoma
+            ; "el NPC no cambia" y sin un solo error.
+            ; ⇒ POR ESO `femaleActivo` SALE DEL ACTOR: es el mismo `actorBase->GetSex()` contra el que compara
+            ;   este gate, asi que la comparacion no puede fallar. Ver el bloque de `femaleActivo`.
+            NiOverride.UpdateNodeTransform(self, false, femaleActivo, node)
 
             ; **EL VALOR NUESTRO, LEIDO DE VUELTA.** Es el numero que decide si el hueso quedo como la app dice o
             ; al doble, y mirando el NPC no se puede saber. Ojo con lo que este numero ES y lo que NO es:
@@ -1075,8 +1172,8 @@ Function ApplyNodeTransforms()
             ; ⇒ `GetNodeTransformKeys` usa `Impl_VisitNodes`, que recorre el MAPA del store y NO mira el 3D
             ; (PapyrusNiOverride.cpp:1402). Con las dos juntas el log distingue los tres casos.
             if Verbose_G0000010000
-                float mine = NiOverride.GetNodeTransformScale(self, false, IsFemale_G0000010000, node, ovrKey)
-                string[] stored = NiOverride.GetNodeTransformKeys(self, false, IsFemale_G0000010000, node)
+                float mine = NiOverride.GetNodeTransformScale(self, false, femaleActivo, node, ovrKey)
+                string[] stored = NiOverride.GetNodeTransformKeys(self, false, femaleActivo, node)
                 bool inStore = false
                 int k = 0
                 while k < stored.Length

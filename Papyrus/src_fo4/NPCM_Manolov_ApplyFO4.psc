@@ -33,6 +33,9 @@ Scriptname NPCM_Manolov_ApplyFO4 extends Actor
 }
 
 bool Property IsFemale_G0000010000 = false Auto
+{⭐ FALLBACK. YA NO ES LO QUE SE USA: el sexo con el que se escribe y se barre lo resuelve
+ `SexoDelActor()` contra el actor, en runtime (ver el bloque de `femaleActivo`). Esta property sigue
+ viajando en el VMAD y es lo que se usa SOLO si el actor no tiene base o su GetSex() da -1 (None).}
 
 bool Property Verbose_G0000010000 = false Auto
 {DIAGNOSTICO. false (default, y lo que se publica) = el script NO traza NADA. La app lo pone en true
@@ -111,6 +114,45 @@ float[]  Property MorphValue_G0000010000 Auto
 ;-- per-instance state (persists in the savegame, like vanilla TeleportActorScript) -------------
 int appliedVersion = -1
 
+;-- ⭐⭐⭐ EL SEXO CON EL QUE SE ESCRIBE Y SE BARRE SALE DEL ACTOR, NO DEL VMAD --------------------
+;
+; TODO consumidor del extender lee el sexo del MISMO lugar: `refr->baseForm->GetSex()`. No hay un solo
+; camino que use otra fuente -- censado sobre la fuente, no de memoria:
+;   OverlayInterface.cpp:71-76 (el camino de DIBUJO)   ActorUpdateManager.cpp:34-39, :89-90
+;   PapyrusBodyGen.cpp:77-84 (RegenerateMorphs), :101-108 (SetSkinOverride), :119-126
+;   BodyMorphInterface.cpp:1825-1826   BodyGenInterface.cpp:505-517
+;
+; ⇒ CONSECUENCIA DE PASARLE UN SEXO QUE NO ES EL DEL ACTOR: no se aplica NADA y no se loguea nada.
+;   Los dos mapas de f4ee son POR GENERO -- `m_overlays[isFemale]` (OverlayInterface.cpp:78) y
+;   `m_morphMap[isFemale]` (BodyMorphInterface.cpp:927-937) -- y el camino de dibujo los busca con
+;   el sexo REAL del actor. Con el sexo equivocado: lo escrito queda en el OTRO mapa ⇒ INVISIBLE,
+;   y el RemoveAll del sexo real tampoco lo encuentra ⇒ pegado al co-save. Ademas los TEMPLATES de
+;   overlay estan registrados por sexo (`m_overlayTemplates[isFemale]`, :237-241), asi que un Add
+;   con el sexo que no es ni siquiera encuentra el template y devuelve 0: no corrompe, no hace nada.
+;   (El skin es inmune: `BodyGen.SetSkinOverride` ni acepta isFemale, lo resuelve f4ee solo.)
+;
+; LA LLAMADA CORRECTA ES `GetActorBase()`, NO `GetLeveledActorBase()`:
+;   `ActorBase Function GetActorBase()` es literalmente `return GetBaseObject() as ActorBase`
+;   (Actor.psc:159-160) ⇒ es el MISMO `refr->baseForm` que lee el extender. Matchea al CONSUMIDOR por
+;   construccion, sin depender de como el motor resuelva un leveled. `GetLeveledActorBase()` es OTRA
+;   nativa (la "fake base" del leveled, Actor.psc:256-260) y puede devolver algo distinto de lo que el
+;   consumidor lee: elegirla seria elegir una fuente que nadie usa.
+;
+; QUE ARREGLA, EXACTAMENTE -- y que NO. El emisor ya manda el sexo EFECTIVO (fusiona el bit 0 de la
+; plantilla Traits: NpcTemplateMaterializer.SexoEfectivo), asi que la constante ya era correcta para
+; toda cadena de plantillas FIJA. Lo que una constante NO puede seguir es una cadena por LISTA (LVLN)
+; de sexos mezclados, donde la hoja la elige cada spawn -- el hueco que el propio emisor declara en el
+; docstring de `isFemaleEfectivo`. Ese es el caso que esto cubre.
+; ⚠️ Y NO arregla el DATO: el payload sigue autorado para el sexo que vio la app (los ids de template
+;   y los nombres de morph son especificos del sexo). Si los dos no coinciden, esto hace que el CANAL
+;   sea el correcto; que el CONTENIDO lo sea es del emisor. Por eso el mismatch se TRAZA.
+;
+; ⚠️ INVARIANTE: `femaleActivo` es una variable de script, o sea que PERSISTE en el savegame (igual que
+;   appliedVersion) y NO lleva sufijo de generacion. Es seguro porque OnLoad la asigna ANTES de que la
+;   lea nadie, y todo lector cuelga de OnLoad. Si algun dia se agrega un evento nuevo que llame a un
+;   Apply*/Remove*, tiene que asignarla el tambien.
+bool femaleActivo = false
+
 Event OnLoad()
     ; TRAZA: misma instrumentacion que el script de SSE, a proposito -- sin ella no se puede distinguir
     ; tres causas que dan el MISMO sintoma ("el NPC no cambia"): (a) OnLoad no se dispara en esa
@@ -174,6 +216,38 @@ Event OnLoad()
     endif
     appliedVersion = SchemaVersion_G0000010000
 
+    ; ⭐⭐⭐ EL SEXO, ANTES DE TOCAR NADA: lo usan el BARRIDO y el APPLY, y tienen que usar el mismo.
+    ; Va DESPUES del sello a proposito: el camino caliente (actor que ya aplico y saltea) no paga las
+    ; dos nativas. Ver el bloque de `femaleActivo` arriba.
+    bool sexoReal = SexoDelActor()
+    femaleActivo = sexoReal
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] sexo VMAD=" + SexoTexto(IsFemale_G0000010000) + " runtime=" + SexoTexto(sexoReal))
+    endif
+
+    ; ⛔⛔ MIGRACION: BARRER TAMBIEN EL STORE DEL SEXO QUE AUTORO LA APP.
+    ; Si una version anterior aplico con la constante y esta aplica con el sexo real, el RemoveAll del
+    ; sexo real NO alcanza lo que quedo en el OTRO mapa (los dos mapas de f4ee son por genero). Sin esto,
+    ; el arreglo dejaria residuo en el co-save PARA SIEMPRE.
+    ; Son dos nativas de store y solo corren cuando los dos difieren. No hace falta Update aca: el
+    ; `Overlays.Update` de ApplyOverlays y el `BodyGen.UpdateMorphs` de ApplyBodyMorphs reconstruyen
+    ; desde el mapa ya barrido, y los dos leen el sexo real por su cuenta.
+    ; ⚠️ Los morphs SOLO si somos el dueño, igual que el barrido normal: con el modo .ini nunca fueron
+    ;   nuestros y borrarlos le sacaria al actor lo que BodyGen le acaba de poner (ver MorphsOwned).
+    ; ⚠️ HUECO DECLARADO, y es PREVIO a este cambio: si la constante cambio de valor ENTRE dos versiones
+    ;   publicadas, el residuo de esa version vieja tampoco se barre hoy. Barrer los dos sexos SIEMPRE lo
+    ;   cerraria, pero le sumaria el costo a todo el mundo por un caso que nadie midio. No se hace.
+    if sexoReal != IsFemale_G0000010000
+        Actor aMig = self as Actor
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] MISMATCH de sexo: barriendo tambien el store " + SexoTexto(IsFemale_G0000010000))
+        endif
+        Overlays.RemoveAll(aMig, IsFemale_G0000010000)
+        if MorphsOwned_G0000010000
+            BodyGen.RemoveAllMorphs(aMig, IsFemale_G0000010000)
+        endif
+    endif
+
     ApplyOverlays()
     ApplySkin()
     ; ⭐ VA DESPUES DE ApplyOverlays A PROPOSITO, y el orden importa. Overlays.Update solo destruye y
@@ -195,6 +269,31 @@ int Function RealLen(string[] a) global
         return 0
     endif
     return a.Length
+EndFunction
+
+; ⭐ EL SEXO DEL ACTOR EN RUNTIME, CON LA PROPERTY DEL VMAD COMO FALLBACK.
+; `GetSex()` devuelve -1 cuando el sexo es None (ActorBase.psc:22-25), y el base puede no resolver: en los dos
+; casos se cae a lo que autoro la app, que es exactamente lo que habia antes de este cambio.
+; ⚠️ Comparar un OBJETO contra None es legal y es lo que hace vanilla; lo prohibido (regla 2 de la
+; cabecera) es comparar un ARRAY contra None. Aca es un ActorBase.
+bool Function SexoDelActor()
+    ActorBase b = self.GetActorBase()
+    if b == None
+        return IsFemale_G0000010000
+    endif
+    int s = b.GetSex()
+    if s < 0
+        return IsFemale_G0000010000
+    endif
+    return s == 1
+EndFunction
+
+; Solo para la traza: "female"/"male" se lee en el log sin tener que acordarse de que lado es true.
+string Function SexoTexto(bool female)
+    if female
+        return "female"
+    endif
+    return "male"
 EndFunction
 
 Function ApplyOverlays()
@@ -222,7 +321,7 @@ Function ApplyOverlays()
     ; ⚠️ RemoveAll se lleva TAMBIEN los overlays que otro mod le haya puesto a este actor. Es la
     ; MISMA decision de producto que en SSE, tomada a proposito: el NPC muestra exactamente lo que
     ; muestra la app. f4ee no guarda dueño (su mapa es actor+prioridad+uid).
-    Overlays.RemoveAll(a, IsFemale_G0000010000)
+    Overlays.RemoveAll(a, femaleActivo)
 
     int n = OvlTemplate_G0000010000.Length
     if n == 0
@@ -293,7 +392,7 @@ Function ApplyOverlays()
                     e.scale_v = OvlScaleV_G0000010000[i]
             endif
 
-            Overlays.Add(a, IsFemale_G0000010000, e)
+            Overlays.Add(a, femaleActivo, e)
         endif
         i += 1
     endwhile
@@ -367,14 +466,14 @@ Function ApplyBodyMorphs()
     ; ⭐ BLOQUE DE SONDA COMPLETO bajo Verbose: GetMorphs / GetMorph / GetKeywords existen SOLO para
     ; trazar, y en FO4 cada nativa hace ceder la VM (BodyGen no tiene NoWait). Es el ahorro que importa.
     if Verbose_G0000010000
-        string[] pre = BodyGen.GetMorphs(a, IsFemale_G0000010000)
+        string[] pre = BodyGen.GetMorphs(a, femaleActivo)
         Debug.Trace("[NPCM] BM morphs previos=" + pre.Length)
         if pre.Length > 0
             string pname = pre[0]
             Debug.Trace("[NPCM] BM morph previo[0]=" + pname)
-            float pval = BodyGen.GetMorph(a, IsFemale_G0000010000, pname, None)
+            float pval = BodyGen.GetMorph(a, femaleActivo, pname, None)
             Debug.Trace("[NPCM] BM morph previo[0] slot None = " + pval)
-            Keyword[] pkw = BodyGen.GetKeywords(a, IsFemale_G0000010000, pname)
+            Keyword[] pkw = BodyGen.GetKeywords(a, femaleActivo, pname)
             Debug.Trace("[NPCM] BM morph previo[0] keywords=" + pkw.Length)
         endif
     endif
@@ -385,9 +484,10 @@ Function ApplyBodyMorphs()
     ;
     ; ⚠️⚠️ NO ES LO MISMO QUE EN SSE, Y HAY QUE SABERLO: aca el mapa es POR GENERO, asi que el clear solo
     ; alcanza al genero que le pasamos. En SSE el store no tiene esa dimension (la clave es solo el formID)
-    ; y el clear se lleva todo. Consecuencia practica: si IsFemale_G<n> (bit 0 de ACBS) no coincidiera con
-    ; el GetSex() que usa f4ee para guardar, los morphs quedarian en el OTRO mapa, invisibles para nosotros
-    ; y sin barrer. Es el mismo IsFemale que ya usan los overlays, asi que la exposicion no es nueva.
+    ; y el clear se lleva todo. Consecuencia practica: con un sexo que no sea el del actor, los morphs
+    ; quedarian en el OTRO mapa, invisibles para nosotros y sin barrer.
+    ; ⇒ POR ESO `femaleActivo` SALE DEL ACTOR (`GetActorBase().GetSex()`): es el MISMO valor con el que
+    ;   f4ee indexa el mapa al guardar y al dibujar, asi que no puede no coincidir. Ver su bloque arriba.
     ;
     ; POR QUE PODA TOTAL Y NO POR KEYWORD. Antes se barria RemoveMorphsByKeyword(None). Funcionaba, pero
     ; ese camino borra la KEYWORD y DEJA el NOMBRE del morph con el mapa vacio (MorphValueMap::RemoveMorphs-
@@ -402,7 +502,7 @@ Function ApplyBodyMorphs()
     ; es por-actor.
     ;
     ; Incondicional: con payload vacio tambien, que es el caso de limpieza (cuerpo base).
-    BodyGen.RemoveAllMorphs(a, IsFemale_G0000010000)
+    BodyGen.RemoveAllMorphs(a, femaleActivo)
 
     ; ⭐ SONDA DE CONTROL POST-PODA, gemela de la de SSE. Gateada por Verbose porque GetMorphs es una
     ; nativa que existe SOLO para mirar (y en FO4 cada nativa hace ceder la VM).
@@ -410,16 +510,17 @@ Function ApplyBodyMorphs()
     ; como el viejo RemoveMorphsByKeyword, que borraba la keyword y dejaba el NOMBRE con el mapa vacio.
     ; Y GetMorphs NO filtra nombres vacios (:885-899), asi que si quedara alguno lo veriamos.
     ; ⚠️ ATENCION AL LEERLO: el mapa de FO4 es POR GENERO, asi que este 0 sólo dice que quedo limpio el
-    ; genero que le pasamos (IsFemale). En SSE el 0 es absoluto porque alla el store no tiene esa dimension.
+    ; genero que le pasamos (femaleActivo, el del actor). En SSE el 0 es absoluto porque alla el store no
+    ; tiene esa dimension.
     if Verbose_G0000010000
-        string[] post = BodyGen.GetMorphs(a, IsFemale_G0000010000)
+        string[] post = BodyGen.GetMorphs(a, femaleActivo)
         Debug.Trace("[NPCM] BM RemoveAllMorphs (poda total del actor) hecho")
         Debug.Trace("[NPCM] BM morphs tras barrido=" + post.Length)
         ; Segundo nivel, gemelo del de SSE: SOLO dispara si la poda fallo, y entonces dice QUE sobrevivio.
         ; Con la poda funcionando este bloque no corre nunca, asi que no cuesta nada.
         if post.Length > 0
             string qname = post[0]
-            Keyword[] qkw = BodyGen.GetKeywords(a, IsFemale_G0000010000, qname)
+            Keyword[] qkw = BodyGen.GetKeywords(a, femaleActivo, qname)
             Debug.Trace("[NPCM] BM tras barrido " + qname + " keywords=" + qkw.Length)
         endif
     endif
@@ -433,7 +534,7 @@ Function ApplyBodyMorphs()
             ; Guarda INLINE por .Length, jamas contra None y jamas pasando el array a un helper.
             if i < MorphValue_G0000010000.Length
                 float mval = MorphValue_G0000010000[i]
-                BodyGen.SetMorph(a, IsFemale_G0000010000, mname, None, mval)
+                BodyGen.SetMorph(a, femaleActivo, mname, None, mval)
                 applied += 1
             endif
         endif
@@ -451,7 +552,7 @@ Function ApplyBodyMorphs()
             if m0 != ""
                 ; Read-back: si no devuelve lo que acabamos de escribir, la nativa no tomo el valor (o f4ee
                 ; no esta cargado) y el problema esta ahi, no en el emisor.
-                float back = BodyGen.GetMorph(a, IsFemale_G0000010000, m0, None)
+                float back = BodyGen.GetMorph(a, femaleActivo, m0, None)
                 Debug.Trace("[NPCM] BM readback " + m0 + " = " + back)
             endif
         endif

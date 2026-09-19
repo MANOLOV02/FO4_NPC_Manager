@@ -253,9 +253,17 @@ Public Module NpcApplyScriptEmitter
     ''' <param name="isFemaleEfectivo">⛔ PUNTO 4 (DECISIONES 14-sep): el sexo EFECTIVO (el de la base viva), no el
     ''' bit crudo del record. El bit 0 fusiona el 0x1 desde la plantilla (SSE 0x1403C20E3, FO4 0x1406582C5) y
     ''' skee/f4ee aplican con `GetSex` de la base del actor. Lo calcula el llamador con la sede
-    ''' (`NpcOverrideSaver.SexoEfectivoParaGuardado`). Es SOLO el VALOR de la property `IsFemale`: el `.psc`/`.pex`
-    ''' no se toca. ⚠ PARCIAL: en una cadena por lista de sexos mezclados el sexo lo decide la hoja de cada
-    ''' spawn, y una constante no puede seguirla.</param>
+    ''' (`NpcOverrideSaver.SexoEfectivoParaGuardado`).
+    ''' <para>⭐ DESDE LA REVISION 11 DEL .psc ESTO ES EL <b>FALLBACK</b>, NO LO QUE SE APLICA. Los dos
+    ''' apply-scripts resuelven el sexo contra el ACTOR (`GetActorBase().GetSex()`, el mismo
+    ''' `refr-&gt;baseForm-&gt;GetSex()` que leen skee y f4ee en TODOS sus caminos) y usan este valor solo si el
+    ''' actor no tiene base o su `GetSex()` da -1 (None). Eso cierra el PARCIAL que decia aca: en una cadena
+    ''' por lista de sexos mezclados el sexo lo decide la hoja de cada spawn, y una constante no puede
+    ''' seguirla — el actor si.</para>
+    ''' <para>⚠ Lo que sigue saliendo de este valor es el <b>DATO</b>: el payload (ids de template de overlay,
+    ''' nombres de morph) se autora para ESTE sexo. Si el runtime dice otra cosa, el script aplica por el canal
+    ''' correcto un payload del otro sexo y lo TRAZA como MISMATCH; que el contenido sea el que va es de
+    ''' acá.</para></param>
     Public Function ApplyToNpc(npcSpec As NPC_Data,
                                preset As LooksmenuLoader.LooksmenuPreset,
                                game As Config_App.Game_Enum,
@@ -372,7 +380,11 @@ Public Module NpcApplyScriptEmitter
     ''' property Verbose Â· 8 poda TOTAL del actor antes de aplicar morphs, en vez del barrido por key Â·
     ''' 9 paridad de instrumentacion entre los dos .psc Â·
     ''' 10 SSE: PurgeOverlayGroup barre los overlays de indice &gt;= iNumOverlays (hasta el tope del motor, 127),
-    ''' que el barrido viejo no alcanzaba y quedaban clavados en el co-save para siempre.</para>
+    ''' que el barrido viejo no alcanzaba y quedaban clavados en el co-save para siempre Â·
+    ''' 11 el sexo con el que los dos .psc escriben Y barren sale del ACTOR en runtime
+    ''' (<c>GetActorBase().GetSex()</c>, que es el mismo <c>refr-&gt;baseForm-&gt;GetSex()</c> que leen skee y f4ee),
+    ''' con esta property como FALLBACK; mas un barrido de MIGRACION del store del otro sexo cuando los dos
+    ''' no coinciden. Sin esta revision el arreglo no llegaria a ningun actor ya aplicado.</para>
     ''' <para>⛔⛔ OJO, LA JUSTIFICACION DE ARRIBA YA NO SE SOSTIENE CON ESTE CODIGO. Dice que el sello "se
     ''' calculaba SOLO sobre el payload" y que un NPC sin cambios "ni siquiera re-aplica". Hoy es FALSO:
     ''' <see cref="NpcVmadBuilder.StablePayloadHash"/> mezcla el NOMBRE de cada property (<c>mix(p.Name)</c>), y
@@ -383,7 +395,7 @@ Public Module NpcApplyScriptEmitter
     ''' <para>Probablemente era cierto antes de la revision 3 ("payload con sufijo de generacion") y quedo sin
     ''' actualizar. Se conserva el contador igual: es el registro de QUE cambio en cada version del .psc, y es la
     ''' red si algun dia el salt deja de entrar al hash. Pero NO es lo que dispara el re-apply.</para></summary>
-    Private Const ScriptLogicRevision As String = "10"
+    Private Const ScriptLogicRevision As String = "11"
 
     ''' <summary>Spec de LIMPIEZA: el NPC se quedo sin overlays/skin/transforms pero YA tenia script nuestro,
     ''' asi que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.
