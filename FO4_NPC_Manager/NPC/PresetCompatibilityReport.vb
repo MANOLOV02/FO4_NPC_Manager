@@ -103,7 +103,9 @@ Public Module PresetCompatibilityReport
         Public RaceDisplayName As String = ""
         Public IsFemale As Boolean
         Public RaceDefaults As HashSet(Of UInteger)
-        Public FlstCache As Dictionary(Of UInteger, Canon.IFlst)
+        ''' <summary>⛔ Reemplazó al <c>FlstCache</c> que este contexto llevaba: la caché de FLST vive
+        ''' adentro de la sede, que consulta el borrador primero y no memoiza el fracaso.</summary>
+        Public Res As ResolucionDeHeadParts
         Public NpcHasBodyTri As Boolean = True
         ''' <summary>Ids of the F4SE overlay templates loaded for this NPC's gender (FO4). Nothing = the caller
         ''' couldn't supply the catalog, so overlay ids are reported as "not checked" instead of "missing".</summary>
@@ -122,8 +124,16 @@ Public Module PresetCompatibilityReport
         If ctx Is Nothing OrElse ctx.Preset Is Nothing Then Return r
         Dim p = ctx.Preset
         Dim pm = ctx.PluginManager
-        ' IsHdptValidForRace indexes the FLST cache unconditionally — never hand it Nothing.
-        If ctx.FlstCache Is Nothing Then ctx.FlstCache = New Dictionary(Of UInteger, Canon.IFlst)
+        ' ⛔ Acá se creaba el diccionario de FLST si el caller no lo traía («IsHdptValidForRace indexes
+        ' the FLST cache unconditionally»). Ya no hay diccionario: la caché vive en la sede. Lo que sí
+        ' hay que exigir es la SEDE, y con nombre: sin ella este reporte no puede resolver un head part,
+        ' y un reporte que resuelve Nothing dice «incompatible» sobre todo.
+        If ctx.Res Is Nothing Then
+            Throw New ArgumentException(
+                "PresetAuditContext.Res (ResolucionDeHeadParts) es obligatoria: el reporte resuelve head " &
+                "parts y sin la sede los daría todos por no resueltos. En la app es MainForm.HeadPartsResolution; " &
+                "en un camino sin editores, ResolucionDeHeadParts.SinBorradores(plugins).", NameOf(ctx))
+        End If
 
         r.Header.Add("Preset : " & DisplaySourcePath(p.SourcePath, ctx.DataPath))
         r.Header.Add($"NPC    : race {If(String.IsNullOrEmpty(ctx.RaceDisplayName), $"0x{ctx.RaceFormID:X8}", ctx.RaceDisplayName)} (0x{ctx.RaceFormID:X8})  •  {If(ctx.IsFemale, "Female", "Male")}")
@@ -222,11 +232,14 @@ Public Module PresetCompatibilityReport
             If fid = 0UI OrElse pm Is Nothing Then Continue For
             Dim recF = pm.GetRecord(fid)
             Dim hdF As Canon.IHdpt = Nothing
-            If recF IsNot Nothing AndAlso recF.Header.Signature = "HDPT" Then hdF = Canon.CanonRecords.Hdpt(recF, pm)
+            ' ⛔ Por la SEDE, la MISMA que decide la validez unas lineas abajo. Cuando la etiqueta
+            ' salia del archivo y la validez de la sede, el reporte podia decir «OK» sobre la vista del
+            ' borrador y describir la del archivo: dos cosas a la vez sobre el mismo head part.
+            hdF = ctx.Res.Hdpt(fid)
             Dim labelF = DescribeHdpt(fid, hdF, pm)
             ' El motivo sale de la MISMA función que decidió el filtro en el mapper (una ley, un lugar).
             Dim reasonF As String = ""
-            If RaceMenuPresetMapper.MotorAplicaHeadPart(fid, ctx.RaceFormID, ctx.IsFemale, pm, ctx.FlstCache, reasonF) Then
+            If RaceMenuPresetMapper.MotorAplicaHeadPart(fid, ctx.RaceFormID, ctx.IsFemale, ctx.Res, reasonF) Then
                 reasonF = "the mapper filtered it for a different race/sex than this dialog's."
             End If
             Dim consequenceF As String = ""
@@ -245,19 +258,29 @@ Public Module PresetCompatibilityReport
         Dim okCount As Integer = 0
         For Each fid In p.HeadPartFormIDs
             If fid = 0UI Then Continue For
-            Dim rec = pm?.GetRecord(fid)
-            If rec Is Nothing Then
-                r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Head parts", $"HDPT 0x{fid:X8} not found",
-                                       "No record with this FormID in the current load order — the part is dropped."))
+            ' ⛔⛔ POR LA SEDE, Y ESTE ERA EL PEOR SITIO DE TODOS: veinte líneas ARRIBA, en el mismo
+            ' archivo, el bucle gemelo ya estaba invertido a propósito y con el porqué escrito. Acá el
+            ' `pm.GetRecord(fid)` mandaba a «HDPT no encontrado — the part is dropped» a cualquier head
+            ' part BORRADOR, o sea que el informe de compatibilidad le decía al usuario que su propio
+            ' record no existía y que el preset iba a perderlo. Y las dos ramas que se van con esto
+            ' no se pierden: la sede devuelve Nothing tanto si no hay record como si la firma no es
+            ' HDPT, así que «no resuelve» las cubre a las dos — lo que se pierde es la distinción en el
+            ' TEXTO, y para eso se consulta el plugin SÓLO cuando ya se sabe que no resolvió.
+            Dim hd = ctx.Res.Hdpt(fid)
+            If hd Is Nothing Then
+                Dim otro = pm?.GetRecord(fid)
+                If otro IsNot Nothing AndAlso otro.Header.Signature <> "HDPT" Then
+                    r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Head parts",
+                                           $"0x{fid:X8} is a {otro.Header.Signature}, not a HDPT",
+                                           "The FormID resolves to a different record type — the part is dropped."))
+                Else
+                    r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Head parts",
+                                           $"HDPT 0x{fid:X8} not found",
+                                           "No record with this FormID in the current load order, and no draft of " &
+                                           "yours under it — the part is dropped."))
+                End If
                 Continue For
             End If
-            If rec.Header.Signature <> "HDPT" Then
-                r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Head parts", $"0x{fid:X8} is a {rec.Header.Signature}, not a HDPT",
-                                       "The FormID resolves to a different record type — the part is dropped."))
-                Continue For
-            End If
-
-            Dim hd = Canon.CanonRecords.Hdpt(rec, pm)
             Dim label = DescribeHdpt(fid, hd, pm)
             If noRaceInfo Then
                 ' Existence is all we can assert here — the note above says so.
@@ -265,7 +288,7 @@ Public Module PresetCompatibilityReport
                 Continue For
             End If
 
-            If HeadPartResolver.IsHdptValidForRace(fid, ctx.RaceFormID, ctx.IsFemale, pm, ctx.FlstCache, ctx.RaceDefaults) Then
+            If HeadPartResolver.IsHdptValidForRace(fid, ctx.RaceFormID, ctx.IsFemale, ctx.Res, ctx.RaceDefaults) Then
                 okCount += 1
                 Continue For
             End If

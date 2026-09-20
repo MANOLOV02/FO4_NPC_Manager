@@ -158,6 +158,19 @@ Public Class MainForm
     ''' <see cref="_outfitDrafts"/>. Pulled into a save (saver Phase 2g) when a needed ARMO/ARMA draft
     ''' references them via a material-swap FormID.</summary>
     Private ReadOnly _mswpDrafts As New List(Of MswpDraft)
+    ''' <summary>Head parts propias (HDPT drafts) — misma vida y mismo contador de FormID provisional que
+    ''' <see cref="_outfitDrafts"/>. Entran a un guardado por la clausura de la fase de HDPT: las
+    ''' referenciadas por el <c>PNAM</c> de un NPC guardado, más las que otro HDPT emitido declare en su
+    ''' <c>HNAM</c> (⛔ arista de una clase a SÍ MISMA — la SEGUNDA del árbol: la primera es LVLI, y su
+    ''' clausura con visitados de <c>NpcOverrideSaver.vb:891-899</c> es el molde. 89 % de los HDPT de FO4
+    ''' declaran extras).</summary>
+    Private ReadOnly _hdptDrafts As New List(Of HdptDraft)
+    ''' <summary>Conjuntos de texturas propios (TXST drafts). Los referencia el <c>TNAM</c> de un HDPT
+    ''' —que en los ojos ES la diffuse— y los dos campos de skin texture de un ARMA.</summary>
+    Private ReadOnly _txstDrafts As New List(Of TxstDraft)
+    ''' <summary>Listas de formularios propias (FLST drafts). Las referencia el <c>RNAM</c> de un HDPT
+    ''' («en qué razas es válido») y el swap-list de skin de un ARMA.</summary>
+    Private ReadOnly _flstDrafts As New List(Of FlstDraft)
     ''' <summary>Next object index (low 3 bytes, ≥0x800 by the FO4 new-record convention) for
     ''' a provisional draft FormID. SHARED across ALL draft kinds (OTFT/LVLI/ARMA/ARMO/MSWP) so the
     ''' provisional sentinels are globally unique and cross-references between drafts never collide.</summary>
@@ -402,7 +415,10 @@ Public Class MainForm
     ''' positional array). Set on HDPTs that are
     ''' addons referenced via another HDPT's HNAM (eyelashes, hairlines, etc.) rather than
     ''' standalone parts. CharGenInterface.cpp:96 filters these out when serializing a preset.</summary>
-    Private Const HeadPartFlagIsExtra As Byte = &H8
+    ' ⛔ ACÁ HABÍA `HeadPartFlagIsExtra As Byte = &H8`, la TERCERA copia del mismo bit. El
+    ' esquema lo declara con nombre — `IHdpt.FlagsIsExtraPart`, «Bit 3 de DATA\Flags» — y el resto
+    ' del árbol lo usa así. Una constante a mano que repite lo que el formato declara es
+    ' duplicación CON EL ESQUEMA: el día que el esquema cambie, la copia contesta el valor viejo.
     Private Const HeadPartTypeFace As Integer = 1
     Private Const HeadPartTypeEyes As Integer = 2
     Friend Const HeadPartTypeHair As Integer = 3
@@ -2412,7 +2428,20 @@ Public Class MainForm
         ' already exist. The Func delegates below are lazy (not invoked here); _appliedPresets and
         ' _lvlnDataCache are field initializers (already set before the ctor body runs).
         _pluginManager = pluginManager
-        _ctx = New NpcRenderContext(pluginManager)
+        ' ⛔ LAS FOTOS Y LA SEDE, ANTES DEL CONTEXTO. El contexto recibe la sede por constructor (ver
+        ' NpcRenderContext.HeadParts), así que tiene que existir antes. Las otras cinco fotos siguen
+        ' armándose más abajo, donde estaban, porque sus resolvedores se cablean por campo.
+        _fotosHdpt = New FotosDeBorrador(Of Canon.IHdpt)(Function(v) Canon.CanonInterpretacion.Copia(v))
+        _fotosTxst = New FotosDeBorrador(Of Canon.ITxst)(Function(v) Canon.CanonInterpretacion.Copia(v))
+        _fotosFlst = New FotosDeBorrador(Of Canon.IFlst)(Function(v) Canon.CanonInterpretacion.Copia(v))
+        ' Por la FOTO y no el árbol vivo: el render corre en Task.Run y recorrer un árbol que el hilo de
+        ' UI muta tira y cae en un catch mudo. Misma razón que ARMO/ARMA/MSWP, y acá vale igual porque
+        ' de esta sede lee también el bake. `ConBorradores` TIRA si alguno viniera Nothing.
+        _resHeadParts = ResolucionDeHeadParts.ConBorradores(pluginManager,
+                                                            AddressOf _fotosHdpt.ParaRender,
+                                                            AddressOf _fotosTxst.ParaRender,
+                                                            AddressOf _fotosFlst.ParaRender)
+        _ctx = New NpcRenderContext(pluginManager, _resHeadParts)
         ' El armador del panel de detalle. Vive afuera de MainForm porque es el único lugar de la app
         ' que enumera el record NPC_ entero, y así lo puede construir un arnés contra el corpus para
         ' afirmar su cobertura — ver RecordDetailsTree.Cobertura y Tools/DetalleDelRecordGate.
@@ -3861,6 +3890,17 @@ Public Class MainForm
     Private _fotosLvli As FotosDeBorrador(Of Canon.ILvli)
     Private _fotosArma As FotosDeBorrador(Of Canon.IArma)
     Private _fotosMswp As FotosDeBorrador(Of Canon.IMswp)
+    ''' <summary>Las fotos de las tres clases nuevas. Verificado antes de agregarlas —la lección de la
+    ''' foto de atuendo—: ninguno de los tres borradores lleva estado FUERA del record, así que el
+    ''' clonador canónico alcanza y la foto es el borrador entero.</summary>
+    Private _fotosHdpt As FotosDeBorrador(Of Canon.IHdpt)
+    Private _fotosTxst As FotosDeBorrador(Of Canon.ITxst)
+    Private _fotosFlst As FotosDeBorrador(Of Canon.IFlst)
+
+    ''' <summary>LA SEDE de resolución de head parts de esta sesión. Se construye UNA vez y la comparten
+    ''' el render (por <c>NpcRenderContext.HeadParts</c>) y el BAKE (por parámetro, porque no tiene
+    ''' contexto). Ver <see cref="ResolucionDeHeadParts"/>.</summary>
+    Private _resHeadParts As ResolucionDeHeadParts
 
     ''' <summary>La vista de borrador que el RENDER puede recorrer sin carrera: la foto si existe, y el
     ''' borrador vivo si no. Ver <see cref="FotosDeBorrador(Of TVista).ParaRender"/>.</summary>
@@ -3882,6 +3922,119 @@ Public Class MainForm
         ' Idem. `BuildMswpDataFromDraft` decia que copiaba las sustituciones y devolvia el arbol vivo.
         RegistrarConFoto(_mswpDrafts, _fotosMswp, d, d.FormID, d.Record, Function(x) x.FormID)
     End Sub
+
+    ''' <summary>Register/replace an HDPT draft (by FormID). Lo ve la SEDE de resolución
+    ''' (<see cref="ResolucionDeHeadParts"/> → la FOTO), y por ella el render, el bake, el guardado, el
+    ''' picker y el filtro. Mismo gesto que <see cref="RegisterArmoDraft"/>.</summary>
+    Friend Sub RegisterHdptDraft(d As HdptDraft)
+        If d Is Nothing Then Return
+        RegistrarConFoto(_hdptDrafts, _fotosHdpt, d, d.FormID, d.Record, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Register/replace a TXST draft (by FormID). Espejo de <see cref="RegisterHdptDraft"/>.</summary>
+    Friend Sub RegisterTxstDraft(d As TxstDraft)
+        If d Is Nothing Then Return
+        RegistrarConFoto(_txstDrafts, _fotosTxst, d, d.FormID, d.Record, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Register/replace an FLST draft (by FormID). Espejo de <see cref="RegisterHdptDraft"/>.</summary>
+    Friend Sub RegisterFlstDraft(d As FlstDraft)
+        If d Is Nothing Then Return
+        RegistrarConFoto(_flstDrafts, _fotosFlst, d, d.FormID, d.Record, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Drop an HDPT draft (by FormID). Used by "Delete draft".</summary>
+    Friend Sub UnregisterHdptDraft(formID As UInteger)
+        BajarConFoto(_hdptDrafts, _fotosHdpt, formID, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Drop a TXST draft (by FormID).</summary>
+    Friend Sub UnregisterTxstDraft(formID As UInteger)
+        BajarConFoto(_txstDrafts, _fotosTxst, formID, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>Drop an FLST draft (by FormID).</summary>
+    Friend Sub UnregisterFlstDraft(formID As UInteger)
+        BajarConFoto(_flstDrafts, _fotosFlst, formID, Function(x) x.FormID)
+    End Sub
+
+    ''' <summary>El borrador de HDPT de ese FormID, o Nothing.</summary>
+    Friend Function HdptDraftPorFormId(fid As UInteger) As HdptDraft
+        If fid = 0UI Then Return Nothing
+        For Each d In _hdptDrafts
+            If d IsNot Nothing AndAlso d.FormID = fid Then Return d
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>El borrador de TXST de ese FormID, o Nothing.</summary>
+    Friend Function TxstDraftPorFormId(fid As UInteger) As TxstDraft
+        If fid = 0UI Then Return Nothing
+        For Each d In _txstDrafts
+            If d IsNot Nothing AndAlso d.FormID = fid Then Return d
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>El borrador de FLST de ese FormID, o Nothing.</summary>
+    Friend Function FlstDraftPorFormId(fid As UInteger) As FlstDraft
+        If fid = 0UI Then Return Nothing
+        For Each d In _flstDrafts
+            If d IsNot Nothing AndAlso d.FormID = fid Then Return d
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Si <paramref name="fid"/> es un TXST REAL, arma y registra un borrador OVERRIDE sobre
+    ''' una COPIA de su record, para que «New / Edit TXST…» edite EL QUE ESTÁ en vez de abrir uno vacío.
+    ''' Nothing si no resuelve a TXST o ya es un borrador. Gemela de
+    ''' <see cref="BuildMswpOverrideDraftFromReal"/>.</summary>
+    Friend Function BuildTxstOverrideDraftFromReal(fid As UInteger) As TxstDraft
+        If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return Nothing
+        Dim rec = _pluginManager.GetRecord(fid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then Return Nothing
+        Dim d = TxstDraft.Edicion(rec, _pluginManager)
+        If d Is Nothing Then Return Nothing
+        RegisterTxstDraft(d)
+        Return d
+    End Function
+
+    ''' <summary>Idem para FLST. Ver <see cref="BuildTxstOverrideDraftFromReal"/>.</summary>
+    Friend Function BuildFlstOverrideDraftFromReal(fid As UInteger) As FlstDraft
+        If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return Nothing
+        Dim rec = _pluginManager.GetRecord(fid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "FLST" Then Return Nothing
+        Dim d = FlstDraft.Edicion(rec, _pluginManager)
+        If d Is Nothing Then Return Nothing
+        RegisterFlstDraft(d)
+        Return d
+    End Function
+
+    ''' <summary>Snapshot (copia) de los borradores de HDPT. La lista VIVA es el orden del guardado y
+    ''' vive en el hilo de UI; esto es lo que leen los editores.</summary>
+    Friend Function HdptDrafts() As List(Of HdptDraft)
+        Return New List(Of HdptDraft)(_hdptDrafts)
+    End Function
+
+    ''' <summary>Snapshot (copia) de los borradores de TXST.</summary>
+    Friend Function TxstDrafts() As List(Of TxstDraft)
+        Return New List(Of TxstDraft)(_txstDrafts)
+    End Function
+
+    ''' <summary>Snapshot (copia) de los borradores de FLST.</summary>
+    Friend Function FlstDrafts() As List(Of FlstDraft)
+        Return New List(Of FlstDraft)(_flstDrafts)
+    End Function
+
+    ''' <summary>La SEDE de resolución de head parts de esta sesión, para quien no tiene el
+    ''' <c>NpcRenderContext</c> — el BAKE, y los editores. ⛔ Se EXPONE la misma instancia a propósito:
+    ''' dos instancias serían dos cachés y dos respuestas posibles para el mismo FormID, que es
+    ''' exactamente la divergencia RENDER≠BAKE que esta sede vino a cerrar.</summary>
+    Friend ReadOnly Property HeadPartsResolution As ResolucionDeHeadParts
+        Get
+            Return _resHeadParts
+        End Get
+    End Property
 
     ''' <summary>Drop an ARMO draft (by FormID). Used by "Delete draft".</summary>
     Friend Sub UnregisterArmoDraft(formID As UInteger)
@@ -3944,7 +4097,8 @@ Public Class MainForm
         '      el censo miraba SOLO el record y un ARMO apuntado solo por una realizacion sorteada salia
         '      «no lo referencia nadie». Alla el gate LLAMA al sujeto.
         refs.AddRange(Borradores.CensarReferrers(formID, _outfitDrafts, lvliVivas,
-                                                 _armoDrafts, _armaDrafts, _mswpDrafts))
+                                                 _armoDrafts, _armaDrafts, _mswpDrafts,
+                                                 _hdptDrafts, _txstDrafts, _flstDrafts))
 
         ' Las asignaciones POR NPC se agregan ACA y no alla: no son de un borrador a otro sino de un NPC a
         ' un borrador, y necesitan el catalogo de presets y el resolvedor de nombres de esta ventana.
@@ -3956,6 +4110,28 @@ Public Class MainForm
             End If
             If p.DefaultOutfitFormIDOverride.HasValue AndAlso p.DefaultOutfitFormIDOverride.Value = formID Then
                 refs.Add($"NPC outfit — {GetRecordDisplayNameForEditor(kv.Key)}")
+            End If
+            ' ⛔⛔ LAS HEAD PARTS ASIGNADAS FALTABAN, y es el MISMO defecto que el comentario de arriba
+            ' dice que ya costó una vez: «el censo miraba SOLO el record y un ARMO apuntado sólo por una
+            ' realización sorteada salía ‘no lo referencia nadie’». Reapareció por la puerta de al lado:
+            ' un head part que el usuario le asignó a un NPC vive en `p.HeadPartFormIDs` (es donde lo
+            ' guarda Edit Face), y este censo no lo miraba. Consecuencia: «Delete draft» decía que nadie
+            ' lo referenciaba, lo borraba, y el NPC PERDÍA LA PARTE EN SILENCIO — la fase 1c la descarta
+            ' porque la sede dejó de resolverla. Destruía trabajo del usuario. Lo levantó [rev-53].
+            '   «¿Quién REFERENCIA el record?» no es «¿quién lo LLEVA PUESTO?»: las dos cuentan.
+            If p.HeadPartFormIDs IsNot Nothing AndAlso p.HeadPartFormIDs.Contains(formID) Then
+                refs.Add($"NPC head part — {GetRecordDisplayNameForEditor(kv.Key)}")
+            End If
+            ' ⛔ ESTA RAMA ESTÁ MUERTA POR FORMATO, y queda escrito que lo está. Un head part
+            ' «suprimido» es uno que el preset SACÓ de la lista del NPC, así que por construcción el
+            ' preset no lo referencia — está en el conjunto justamente porque NO lo lleva puesto.
+            ' NO HAY CASO MEDIDO que la ejercite: no se está cubriendo un defecto observado.
+            ' Se deja porque el conjunto es una lista de FormID como cualquier otra y el día que
+            ' alguien la use para otra cosa (reponer, o una cascada) la referencia pasa a ser real;
+            ' sacarla sería apostar a que eso no pasa. Lo que NO hace es cubrir algo hoy.
+            If p.SuppressedRawHeadPartFormIDs IsNot Nothing AndAlso
+               p.SuppressedRawHeadPartFormIDs.Contains(formID) Then
+                refs.Add($"NPC suppressed head part — {GetRecordDisplayNameForEditor(kv.Key)}")
             End If
         Next
         Return refs
@@ -4041,6 +4217,22 @@ Public Class MainForm
             If d Is exceptoEsteBorrador Then Continue For
             If String.Equals(d.Record.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
+        ' ⛔ LAS TRES CLASES DE LA OLA DE HEAD PARTS FALTABAN. No es un problema de costo — esto
+        ' recorre listas de borradores, no el orden de carga — sino de CORRECCIÓN: dos head parts
+        ' propios podían quedar con el MISMO EditorID y el chequeo no lo veía, y el EditorID es por
+        ' donde el horneado indexa su mapa de shapes permitidos.
+        For Each d In _hdptDrafts
+            If d Is exceptoEsteBorrador Then Continue For
+            If String.Equals(d.Record.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
+        Next
+        For Each d In _txstDrafts
+            If d Is exceptoEsteBorrador Then Continue For
+            If String.Equals(d.Record.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
+        Next
+        For Each d In _flstDrafts
+            If d Is exceptoEsteBorrador Then Continue For
+            If String.Equals(d.Record.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
+        Next
         Return IsOutfitEditorIdAvailable(edid)
     End Function
 
@@ -4092,9 +4284,14 @@ Public Class MainForm
         Return sb.ToString()
     End Function
 
-    ''' <summary>Allocate a fresh provisional FormID for a NEW outfit draft (0xFF high byte +
-    ''' object index ≥0x800, the FO4 new-record convention). The writer rewrites it to the real
-    ''' plugin self-index FormID at save time.</summary>
+    ''' <summary>Allocate a fresh provisional FormID for ANY new draft (0xFF high byte + object
+    ''' index ≥0x800, the FO4 new-record convention). The writer rewrites it to the real plugin
+    ''' self-index FormID at save time.
+    ''' <para>⛔ SEDE ÚNICA del contador, y el contador es UNO para las SIETE clases de borrador — por
+    ''' eso no puede haber dos: si cada clase tuviera el suyo, dos borradores de clases distintas
+    ''' nacerán con el MISMO FormID provisional y el que se guardara segundo pisaría la referencia del
+    ''' primero. Hubo un envoltorio (`AllocateDraftFormIDForEditor`) que sólo reenviaba acá: se
+    ''' eliminó.</para></summary>
     Friend Function AllocateDraftFormID() As UInteger
         Dim fid As UInteger = Borradores.FormIdAltoDeBorrador Or _nextDraftObjIndex
         _nextDraftObjIndex += 1UI
@@ -8387,10 +8584,14 @@ Public Class MainForm
         ' root-- y lo que hace distinto al horneado es la BASE sobre la que se compone, no el overlay.
         ' El resolvedor de hoja ya no hace falta aca porque no hay cadena que recorrer: la hoja la eligio
         ' la resolucion del estado, que es la que el usuario esta viendo.
+        ' ⛔ LA SEDE DE HEAD PARTS VA SIEMPRE QUE VAYA EL RESOLVEDOR DE LA PLANTILLA DE PIEL: los
+        ' dos sirven a la MISMA rama y no sirven por separado. Acá faltaba — era el segundo de tres
+        ' sitios que la omitían, junto con `AplicarOverlayDeDibujo` y `BakeAllRunner`.
         Dim npcData = NpcRecordOverlay.ComponerAutoriaSobre(state.RecordBase, state.RootNpcFormID,
                                                             _appliedPresets, _ctx.PluginManager,
                                                             AddressOf ResolveLmSkinTemplate,
-                                                            AddressOf _ctx.ParseRaceCanonCached)
+                                                            AddressOf _ctx.ParseRaceCanonCached,
+                                                            _resHeadParts)
         If npcData Is Nothing Then Return False
 
         ' FMRS OFF ⇒ BakeState sin regiones faciales ⇒ FmrsPose = Nothing ⇒ la base sale en bind pose,
@@ -8882,7 +9083,7 @@ Public Class MainForm
     ''' load-order change and by InvalidateNpcState after an NPC save.</summary>
     Private Function EnsureFilterIndex() As NpcFilterIndex
         If _filterIndex Is Nothing Then
-            _filterIndex = New NpcFilterIndex(_pluginManager,
+            _filterIndex = New NpcFilterIndex(_pluginManager, _resHeadParts,
                                               Function(fid As UInteger) As NPC_Data
                                                   Dim npc As NPC_Data = Nothing
                                                   If _ctx IsNot Nothing AndAlso _ctx.NpcCache IsNot Nothing AndAlso
@@ -9530,7 +9731,7 @@ Public Class MainForm
         ' The two F4SE catalogs feed the dialog's "Show incompatible" audit: an overlay/skin-template id the
         ' preset names but no installed mod registers applies NOTHING in-game (engine parity: GetTemplateByName
         ' → null → skipped). Passing the ids lets the report say "not installed" instead of "not checked".
-        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
+        Using dlg As New LooksmenuLoad_Form(_pluginManager, _resHeadParts, _dataPath, gender, raceDisplay, npcHasBodyTri,
                                             raceFormID, race, raceDefaultsForLm,
                                             knownOverlayTemplateIds:=GetOverlayTemplateCandidates(gender = 1).Select(Function(t) t.Id),
                                             knownLmSkinTemplateIds:=GetLmSkinTemplateCandidates(gender = 1).Select(Function(t) t.Id))
@@ -9691,7 +9892,7 @@ Public Class MainForm
         Dim npcHasBodyTri = NpcHasAnyBodyTri()
         Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
         Dim dialogResult As DialogResult
-        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
+        Using dlg As New LooksmenuLoad_Form(_pluginManager, _resHeadParts, _dataPath, gender, raceDisplay, npcHasBodyTri,
                                             raceFormID, race, raceDefaultsForLm,
                                             isSse:=True, ssePresetsDir:=presetsDir, sseMapper:=mapper)
             ' Same baseline rule as the FO4 path: preserve from the PRE-DIALOG overlay, not from the one
@@ -9817,9 +10018,9 @@ Public Class MainForm
     Private Function ResolveHdptForOrphanCascade() As Func(Of UInteger, Canon.IHdpt)
         Return Function(fid As UInteger) As Canon.IHdpt
                    If fid = 0UI Then Return Nothing
-                   Dim r = _pluginManager.GetRecord(fid)
-                   If r IsNot Nothing AndAlso r.Header.Signature = "HDPT" Then Return _ctx.ParseHdptCached(r)
-                   Return Nothing
+                   ' ⛔ Por la SEDE: con el `GetRecord` que había acá, un head part BORRADOR daba Nothing y
+                   ' la cascada de huérfanos no lo veía. Ver el ⛔ de `NpcMeshCollector`.
+                   Return _ctx.GetParsedHdpt(fid)
                End Function
     End Function
 
@@ -9986,10 +10187,13 @@ Public Class MainForm
         ' y aun asi diferian: uno estampaba la raza efectiva sin preset y el otro no. Yo mismo defendi
         ' que eran distintos ("uno compone el overlay del TERMINAL") y era FALSO: repeti un modelo viejo
         ' en vez de leer la funcion.
+        ' ⛔ Y LA SEDE, por lo mismo que en `TryApplyFaceTints`: el resolvedor de la plantilla de
+        ' piel y la sede de head parts sirven a la misma rama. Este era el TERCERO que la omitía.
         Return NpcRecordOverlay.ComponerAutoriaSobre(state.RecordBase, state.RootNpcFormID,
                                                      _appliedPresets, _pluginManager,
                                                      AddressOf ResolveLmSkinTemplate,
-                                                     AddressOf _ctx.ParseRaceCanonCached)
+                                                     AddressOf _ctx.ParseRaceCanonCached,
+                                                     _resHeadParts)
     End Function
 
 
@@ -10799,7 +11003,8 @@ Public Class MainForm
     Friend Function SombraDelTerminal(terminal As NPC_Data) As NPC_Data
         Return NpcRecordOverlay.SombraDelTerminal(terminal, _appliedPresets, _pluginManager,
                                                   AddressOf ResolveLmSkinTemplate,
-                                                  AddressOf _ctx.ParseRaceCanonCached)
+                                                  AddressOf _ctx.ParseRaceCanonCached,
+                                                  _resHeadParts)
     End Function
 
     ''' <summary>⛔ Envoltorio. Ver `NpcRecordOverlay.BaseDeDibujo`.</summary>
@@ -10955,10 +11160,12 @@ Public Class MainForm
         Dim merged = _meshCollector.MergeHeadPartsWithRaceDefaults(state)
         For Each fid In merged
             If fid = 0UI Then Continue For
-            Dim rec = _pluginManager.GetRecord(fid)
-            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
-            Dim hd = _ctx.ParseHdptCached(rec)
-            If (hd.Flags And HeadPartFlagIsExtra) <> 0 Then Continue For
+            ' ⛔ Por la SEDE, sin guarda previa: con el `GetRecord` que había acá, un head part
+            ' BORRADOR se caía del preset que se arma desde el estado — o sea que el gesto de
+            ' «fotografiar lo que se está viendo» perdía justo lo que el usuario acababa de crear.
+            Dim hd = _ctx.GetParsedHdpt(fid)
+            If hd Is Nothing Then Continue For
+            If hd.FlagsIsExtraPart Then Continue For
             preset.HeadPartFormIDs.Add(fid)
         Next
 
@@ -11839,6 +12046,61 @@ Public Class MainForm
         End If
     End Sub
 
+    ''' <summary>Abre el editor de head parts. ⛔ NO exige NPC seleccionado —crear un record no lo
+    ''' necesita— y por eso es la excepción de esta barra: si no hay sujeto, el editor abre igual y su
+    ''' preview y su panel de validez quedan apagados con el motivo escrito. Decisión F del usuario
+    ''' (20-sep): el botón va acá, al lado de <c>Outfit</c>, y separado de Edit Face.
+    ''' <para>El contexto (NPC / raza / género) sale del ÚLTIMO estado renderizado, que es la misma
+    ''' fuente que usan Edit Face y Edit Outfit: así los tres hablan del mismo sujeto.</para></summary>
+    Private Async Sub ButtonEditHeadParts_Click(sender As Object, e As EventArgs) Handles ButtonEditHeadParts.Click
+        ' ⛔⛔ EL SUJETO ES EL DEL ÚLTIMO RENDER, que es la LEY DE LA CASA: `ButtonEditFace_Click` hace
+        ' exactamente esto (`If _renderHost.LastRenderedState Is Nothing Then Return`) y `EditBody_Form`
+        ' también. El sujeto de un editor es EL QUE ESTÁ EN PANTALLA, y eso es coherente: el preview
+        ' principal no se limpia al deseleccionar, así que si el editor dijera «no hay NPC» mientras la
+        ' ventana muestra a Piper, estaría contradiciendo lo que el usuario ve.
+        '
+        ' ⛔ ACÁ HABÍA UN CHEQUEO CONTRA `_selectedNpcFormIDs` Y LO SAQUÉ. Lo puse para arreglar «me
+        ' aparece el NPC viejo» y lo que hice fue introducir un defecto INTERMITENTE —el usuario lo
+        ' reportó como «a veces dice NO HAY NPC cuando sí lo hay»—, porque ese conjunto lo llena OTRO
+        ' manejador (`TreeViewNPCs_SeleccionCambiada`) y el doc de `TreeViewNPCs_FilaEnfocada` dice,
+        ' textual, que «el orden entre "cambió el foco" y "cambió la selección" no está garantizado».
+        ' O sea: una segunda noción de «sujeto actual», en carrera con la del render. Una ley, una sede.
+        Dim npcFid As UInteger = 0UI, raceFid As UInteger = 0UI, esFem As Boolean = False
+        Dim st = _renderHost?.LastRenderedState
+        If st IsNot Nothing Then
+            npcFid = st.RootNpcFormID
+            raceFid = st.RaceFormID
+            esFem = st.IsFemale
+        End If
+        Dim huboCambios As Boolean = False
+        Using dlg As New HeadPartEditor_Form(Me, npcFid, raceFid, esFem)
+            dlg.ShowDialog(Me)
+            ' ⛔⛔ LA RECARGA ES CONDICIONAL, igual que en `EditBody_Form` y `EditFace_Form`, y su
+            ' comentario dice por qué: «Cancel already rolled back the overlay; without an explicit
+            ' MainForm render during the modal session, our preview is still in the pre-edit state — no
+            ' reload needed». Acá se recargaba SIEMPRE, también con Cancel: un re-render que los otros
+            ' editores NO hacen, sobre un preview que ya estaba bien.
+            huboCambios = (dlg.DialogResult = DialogResult.OK) AndAlso dlg.HuboCambios
+        End Using
+        ' El editor commitea vivo, así que al cerrar puede haber un borrador nuevo o editado: se invalida
+        ' el estado por NPC del filtro (su faceta pudo cambiar) y se RECARGA EL RENDER.
+        '
+        ' ⛔⛔ SE RECARGA COMO LO HACE `EditBody_Form`: `Await RenderInHostAsync(_renderHost, <npc>)`.
+        ' Acá había `RenderFromCurrentSelection()` y está MAL: ése es el camino completo de la SELECCIÓN
+        ' —hace `ClearPreviewImmediate()`, vuelve a resolver el nodo del árbol y re-sortea las listas
+        ' niveladas—, o sea que no recarga el NPC que se estaba editando: rearma el contexto desde cero.
+        ' El usuario lo vio como «el loading se ve chiquito» y «estás mezclando contextos», y tenía razón.
+        ' `RenderInHostAsync` recarga EL MISMO NPC en EL MISMO host, que es lo que hace falta.
+        _filterIndex?.InvalidateNpcState()
+        If huboCambios AndAlso npcFid <> 0UI AndAlso _renderHost IsNot Nothing Then
+            Try
+                Await RenderInHostAsync(_renderHost, npcFid)
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[HDPT] recarga del render principal falló: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        End If
+    End Sub
+
     Private Async Sub ButtonEditFace_Click(sender As Object, e As EventArgs) Handles ButtonEditFace.Click
         ' Game-gated inside EditFace_Form (_isSSE): SSE drives the NAM9/NAMA + sculpt + tint + .jslot path,
         ' FO4 the LooksMenu path. No blocking gate — the editor is game-aware.
@@ -11942,9 +12204,9 @@ Public Class MainForm
             ' ⛔ RONDA 20b (D2): la lectura se arma ACA, en el hilo de UI, antes del Task.Run.
             Dim lecturaL = LecturaDeHorneado()
             If FaceGenBuilder.WriteGPUSandboxOutput Then
-                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _resHeadParts, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
             Else
-                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _resHeadParts, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
             End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
@@ -12039,9 +12301,9 @@ Public Class MainForm
                                 Dim lecturaL = LecturaDeHorneado()
                                 Dim r As FaceGenBuilder.BuildResult
                                 If FaceGenBuilder.WriteGPUSandboxOutput Then
-                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _resHeadParts, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
                                 Else
-                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _resHeadParts, lecturaL, _appliedPresets, _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
                                 End If
                                 If r.Skipped Then
                                     skipped += 1
@@ -12675,6 +12937,10 @@ Public Class MainForm
 
     Private Function NuevoContextoDeGuardado() As NpcOverrideSaver.SaveContext
         Threading.Interlocked.Increment(ContextosDeGuardadoArmadosParaArnes)
+        ' ⛔ `.HeadParts` = LA MISMA INSTANCIA que el render y el bake, no una nueva: la Fase 1c compone
+        ' el PNAM y la composición descarta lo que no resuelve, así que una sede sin borradores dejaría
+        ' caer el head part propio del usuario sin un error. (El comentario va ACÁ y no adentro del
+        ' inicializador: VB no acepta una línea de comentario donde espera el próximo miembro.)
         Return New NpcOverrideSaver.SaveContext With {
             .PluginManager = _pluginManager,
             .AppliedPresets = _appliedPresets,
@@ -12702,6 +12968,10 @@ Public Class MainForm
             .ArmoDrafts = New List(Of ArmoDraft)(_armoDrafts),
             .ArmaDrafts = New List(Of ArmaDraft)(_armaDrafts),
             .MswpDrafts = New List(Of MswpDraft)(_mswpDrafts),
+            .HdptDrafts = New List(Of HdptDraft)(_hdptDrafts),
+            .TxstDrafts = New List(Of TxstDraft)(_txstDrafts),
+            .FlstDrafts = New List(Of FlstDraft)(_flstDrafts),
+            .HeadParts = _resHeadParts,
             .RecordsToRemove = New HashSet(Of UInteger)(_recordsToRemove),
             .AllocateDraftFormID = AddressOf AllocateDraftFormID
         }
@@ -12902,6 +13172,30 @@ Public Class MainForm
         ' BuildOutfitUniverse (which also invalidates), but a Save with no drafts to promote returns early
         ' from PromoteSavedDrafts before that — so this guarantees no stale picker rows after any save.
         FormIdPicker_Form.InvalidateSignatureCache()
+
+        ' ⛔⛔ INVALIDACIÓN POR CLASE, y va ACÁ —al lado de la del picker— y NO adentro de
+        ' `PromoteSavedDrafts`. Ahí estaba, y estaba MAL: esa función retorna temprano dos veces
+        ' (`draftFormIdMap.Count = 0` y `realGlobal.Count = 0`) y **un OVERRIDE no aporta ninguna entrada
+        ' al mapa** —el writer saltea los overrides en las diez vueltas que lo llenan, `If oe.IsOverride
+        ' Then Continue For`—, así que un guardado que tocó sólo overrides no invalidaba nada. Medido:
+        ' 447 overrides de HDPT en Fallout 4 y 135 en Skyrim. El síntoma era el que el propio comentario
+        ' de la invalidación describía: editar un HDPT que ya existe, guardar, y seguir viendo el viejo
+        ' hasta recargar el orden de carga. Lo levantó la revisión adversarial [rev-21].
+        '
+        ' Y la condición correcta no es «promovió provisionales» ni «emitió borradores» sino la que el
+        ' comentario de arriba ya usa para el picker: **el merge acaba de cambiar el universo de
+        ' records**, así que toda vista REAL cacheada quedó vieja, venga de un record nuevo, de un
+        ' override o de una preservación. Mismo alcance y mismo costo que la del picker.
+        '
+        ' Dos dueños:
+        '   · la sede de head parts cachea las vistas REALES por FormID. El `_hdptCache` que había antes
+        '     tenía la MISMA ventana, así que esto también cierra un defecto anterior a la ola.
+        '   · `NpcFilterIndex` declara que sobrevive a un guardado de NPC porque «an NPC_ save cannot
+        '     change an HDPT/ARMO/RACE» — y con borradores de ARMO eso YA era falso antes de esta ola.
+        ' Se invalida POR CLASE y no por firma: así queda UNA ley y de paso se cierra el de ARMO, que
+        ' estaba roto. Decisión J del usuario (20-sep).
+        _resHeadParts.InvalidarTodo()
+        _filterIndex?.InvalidateAll()
 
         ' Promote the just-written OTFT/LVLI drafts to real records BEFORE re-rendering: remap any overlay /
         ' remaining-draft reference that still points at a provisional FormID to the real record, drop the
@@ -13120,9 +13414,10 @@ Public Class MainForm
         ' vale para cualquier borrador y porque adentro de este formulario no habia testigo que la
         ' pudiera correr — ver el doc de `Borradores.RemapearSupervivientes`.
         Borradores.RemapearSupervivientes(_outfitDrafts, _leveledListDrafts, _armoDrafts, _armaDrafts,
-                                          _mswpDrafts, realGlobal, _fotosArmo, _fotosArma, _fotosMswp,
-                                          _fotosOtft, _fotosLvli)
-
+                                          _mswpDrafts, _hdptDrafts, _txstDrafts, _flstDrafts,
+                                          realGlobal, _fotosArmo, _fotosArma, _fotosMswp,
+                                          _fotosOtft, _fotosLvli,
+                                          _fotosHdpt, _fotosTxst, _fotosFlst)
         ' (4) Refresh the affected universes so the newly-real records surface in the editor: the outfit
         ' universe (OTFT/LVLI/ARMO items) and the skin-ARMO universe (so a promoted skin ARMO appears in the
         ' WNAM combo). BuildSkinArmoUniverse runs first (it scans the load order incl. the just-mounted plugin),
@@ -13404,11 +13699,11 @@ Public Class MainForm
             ' ⛔ RONDA 20b (D2): la lectura se arma ACA, en el hilo de UI (tras el Yield seguimos en el), antes del Task.Run.
             Dim lecturaL = LecturaDeHorneado()
             If FaceGenBuilder.WriteGPUSandboxOutput Then
-                bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets,
+                bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _resHeadParts, lecturaL, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
                                                          willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
             Else
-                bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, lecturaL, _appliedPresets,
+                bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _resHeadParts, lecturaL, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
                                                          willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
             End If

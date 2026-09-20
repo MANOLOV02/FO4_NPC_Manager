@@ -714,15 +714,19 @@ Module Program
                 Catch : noRef += 1 : Continue For
                 End Try
                 ' NUESTRO orden, de records: misma cadena que BuildAllowedShapeMap + el sort de :478.
-                Dim roots = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(npc.Record.Race, npc.Record.ConfigurationFlagsFemale, npc.Record.PartesDeCabeza(), pm)
+                ' SIN BORRADORES en todo el CLI: es headless y no tiene editores. Cada sitio lo declara.
+                Dim resHp = FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm)
+                Dim roots = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(npc.Record.Race, npc.Record.ConfigurationFlagsFemale, npc.Record.PartesDeCabeza(), resHp)
                 Dim mine As New List(Of Tuple(Of Integer, String))
                 Dim mineFid As New List(Of Tuple(Of UInteger, Integer, String))
                 Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-                For Each e In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(roots, pm)
+                For Each e In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(roots, resHp)
                     Dim eid = If(e.Hdpt.EditorID, "")
                     If eid = "" OrElse Not seen.Add(eid) Then Continue For
                     mine.Add(Tuple.Create(CInt(e.Hdpt.TipoDeParte()), CStr(eid)))
-                    mineFid.Add(Tuple.Create(e.Hdpt.FormID, CInt(e.Hdpt.TipoDeParte()), CStr(eid)))
+                    ' Por `e.Fid` — el FormID que el recorrido caminó — y no por el del encabezado del
+                    ' record, que para un borrador nuevo es CERO. Ver el ⛔ de `HdptChainEntry.Fid`.
+                    mineFid.Add(Tuple.Create(e.Fid, CInt(e.Hdpt.TipoDeParte()), CStr(eid)))
                 Next
                 Dim mineSorted = mine.OrderBy(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item2).ToList()
                 ' HIPOTESIS B: el orden del motor = la lista del NPC en orden, con las extra parts expandidas
@@ -1508,10 +1512,11 @@ Module Program
             Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
             ' Resolver de materiales por-shape = el MISMO que el render (texture-paths/BGSM/tints fieles a CK).
             ' NpcRenderContext solo necesita el PluginManager (sin GL). overlay = identidad (sin presets LM).
-            Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, dataPath)
+            ' SIN BORRADORES: el CLI es headless. Declarado en el propio constructor.
+            Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm), dataPath)
             Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st As FO4_NPC_Manager.MainForm.NPCVisualState) st.RecordBase)
             Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(
-                npcFormID, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing,
+                npcFormID, pm, ctx.HeadParts, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing,
                 AddressOf mres.ApplyShapeMaterialOverrides,
                 willBePacked:=False,
                 lutDataPath:=dataPath)
@@ -2434,7 +2439,8 @@ Module Program
         Dim noopExample As New Dictionary(Of String, String)(StringComparer.Ordinal)
         Dim okCount = 0, failCount = 0, processed = 0
         Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
-        Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
+        ' SIN BORRADORES: headless.
+        Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm))
         Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st As FO4_NPC_Manager.MainForm.NPCVisualState) st.RecordBase)
         Dim savedOut = Console.Out
         ' FALLOS NUNCA SILENCIOSOS: cada fallo registra NPC + ruta + causa (nunca `failCount += 1` a
@@ -2492,7 +2498,7 @@ Module Program
                         Continue For
                     End If
                 Else
-                    Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                    Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm), New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
                     ' Skipped: el bake decidio a proposito no emitir NIF (raza sin FaceGen / sin head parts).
                     ' Se contabiliza aparte ANTES del chequeo de Success — si no, cae en la rama de fallo.
                     If res IsNot Nothing AndAlso res.Skipped Then
@@ -2848,9 +2854,12 @@ Module Program
                 ' Resolver FRESCO por NPC: reusar un NpcMaterialResolver/NpcRenderContext entre bakes acumula
                 ' estado y CORROMPE la geometría de NPCs posteriores (medido: outlier 0x1995C daba 3.46 en batch
                 ' compartido vs 0.033 con resolver fresco). El path --list ya crea uno por NPC — lo replicamos.
-                Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
+                ' SIN BORRADORES: headless. Y la MISMA instancia para el contexto y el bake de este NPC,
+                ' que es la ley que la sede hace cumplir (render y bake resuelven igual por construcción).
+                Dim ctxHp = FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm)
+                Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, ctxHp)
                 Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st2 As FO4_NPC_Manager.MainForm.NPCVisualState) st2.RecordBase)
-                Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, ctxHp, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm}, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
                 Console.SetOut(savedOut)
                 Dim origin = pm.GetOriginatingPluginName(fid)
                 If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) OrElse Not File.Exists(res.OutputPath) Then
@@ -5231,7 +5240,8 @@ persist:
                                                                         Nothing, datosCli)
             If st Is Nothing Then bakeFail += 1 : Continue For
 
-            Dim merged = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(r.RaceFid, r.IsFemale, st.NpcData.Record.PartesDeCabeza(), pm)
+            Dim resHp2 = FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm)
+            Dim merged = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(r.RaceFid, r.IsFemale, st.NpcData.Record.PartesDeCabeza(), resHp2)
             Dim sw = System.Diagnostics.Stopwatch.StartNew()
             Dim msAdded As Double = 0
             Dim meshesWithFbns As Integer = 0
@@ -5242,7 +5252,7 @@ persist:
 
             Dim verbose As Boolean = False   ' poner True para trazar el apareo shape↔_faceBones
             If verbose Then Console.WriteLine($"   [traza 0x{r.SrcFid:X8}] headParts={merged.Count}")
-            For Each entry In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(merged, pm)
+            For Each entry In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(merged, resHp2)
                 Dim hd = entry.Hdpt
                 If hd Is Nothing OrElse String.IsNullOrEmpty(hd.ModelFileName) Then Continue For
                 Dim flatKey = FO4_NPC_Manager.NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hd.ModelFileName)
@@ -8900,15 +8910,17 @@ persist:
 
             ' Efecto real en el filtro de los catálogos: HDPT válidos con y sin la reconstrucción.
             Dim withCat = 0, withoutCat = 0
-            Dim cacheA As New Dictionary(Of UInteger, Canon.IFlst)
-            Dim cacheB As New Dictionary(Of UInteger, Canon.IFlst)
+            ' Dos sedes SEPARADAS a proposito: cada una lleva su propia cache, igual que los dos
+            ' diccionarios que habia antes, asi que la medicion con y sin catalogo no se contamina.
+            Dim resA = FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm)
+            Dim resB = FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm)
             Dim saved = FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog
             For Each hdptRec In pm.GetRecordsOfType("HDPT")
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
                 FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = Nothing
-                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cacheA, Nothing, True) Then withoutCat += 1
+                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, resA, Nothing, True) Then withoutCat += 1
                 FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = cat
-                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cacheB, Nothing, True) Then withCat += 1
+                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, resB, Nothing, True) Then withCat += 1
             Next
             FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = saved
             Console.WriteLine($"   race {edid,-28} 0x{rfid:X8}: valid HDPT WITHOUT reconstruction={withoutCat}  WITH reconstruction={withCat}  (+{withCat - withoutCat})")
@@ -8923,11 +8935,11 @@ persist:
             If r Is Nothing Then Continue For
             If r.EditorID <> "NordRace" AndAlso r.EditorID <> "BretonRace" AndAlso r.EditorID <> "OrcRace" AndAlso r.EditorID <> "NordRaceVampire" Then Continue For
             Dim rfid = pm.ResolveReferencedFormID(raceRec.SourcePluginName, raceRec.Header.FormID)
-            Dim cache As New Dictionary(Of UInteger, Canon.IFlst)
+            Dim resC = FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm)
             Dim n = 0
             For Each hdptRec In pm.GetRecordsOfType("HDPT")
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
-                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cache, Nothing, True) Then n += 1
+                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, resC, Nothing, True) Then n += 1
             Next
             Console.WriteLine($"   race {r.EditorID,-28} 0x{rfid:X8}: valid HDPT={n}")
         Next

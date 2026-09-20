@@ -498,16 +498,28 @@ Public Class SaveEsp_Form
         ' an outfit draft would leave the box disabled+unchecked and silently drop those drafts (and dangle any
         ' NPC.WNAM skin pointing at the dropped ARMO). Auto-check + enable when any kind is dirty. (The transient
         ' outfit preview sentinel is excluded.)
+        ' ⛔⛔ LAS TRES CLASES DE LA OLA DE HEAD PARTS FALTABAN EN ESTA CUENTA, y el check no es
+        ' cosmetico: es el que prende `target.SaveNewOutfits`, que es el GATE de la emision de
+        ' borradores en el saver. Sin contar HDPT/TXST/FLST, un usuario con un head part propio
+        ' pendiente veia «Save new records (none pending)» en gris y NO PODIA GUARDARLO -- con el saver
+        ' y el writer ya sabiendo hacerlo. Es el ultimo tramo de la cadena y el unico sin testigo,
+        ' porque vive en el dialogo. Lo encontro el usuario probando.
+        '
+        ' ⛔ Y el comentario va ACA y no adentro de la expresion: VB no admite una linea de comentario
+        ' en medio de una expresion continuada con `OrElse`, da BC30201.
         Dim hasDirtyDrafts As Boolean = _saveCtx IsNot Nothing AndAlso (
             (_saveCtx.OutfitDrafts IsNot Nothing AndAlso _saveCtx.OutfitDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty AndAlso d.FormID <> OutfitDraft.PreviewDraftFormID)) OrElse
             (_saveCtx.ArmoDrafts IsNot Nothing AndAlso _saveCtx.ArmoDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
             (_saveCtx.ArmaDrafts IsNot Nothing AndAlso _saveCtx.ArmaDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
             (_saveCtx.MswpDrafts IsNot Nothing AndAlso _saveCtx.MswpDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
-            (_saveCtx.LeveledListDrafts IsNot Nothing AndAlso _saveCtx.LeveledListDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)))
+            (_saveCtx.LeveledListDrafts IsNot Nothing AndAlso _saveCtx.LeveledListDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
+            (_saveCtx.HdptDrafts IsNot Nothing AndAlso _saveCtx.HdptDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
+            (_saveCtx.TxstDrafts IsNot Nothing AndAlso _saveCtx.TxstDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
+            (_saveCtx.FlstDrafts IsNot Nothing AndAlso _saveCtx.FlstDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)))
         CheckBoxSaveNewOutfits.Enabled = hasDirtyDrafts
         CheckBoxSaveNewOutfits.Checked = hasDirtyDrafts
         CheckBoxSaveNewOutfits.Text = If(hasDirtyDrafts,
-            "Save new records (outfits, armor, materials, leveled lists)",
+            "Save new records (outfits, armors, head parts, etc.)",
             "Save new records  (none pending)")
 
         AddHandler RadioScopeAllChanged.CheckedChanged, AddressOf OnScopeChanged

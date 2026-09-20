@@ -68,6 +68,8 @@
          la superficie publica. -->
     <InternalsVisibleTo Include="BucketTraitsGate" />
     <InternalsVisibleTo Include="EstadoAbGate" />
+    <InternalsVisibleTo Include="HdptBorradorRenderGate" />
+    <InternalsVisibleTo Include="CondicionesGate" />
     <!-- ChargenFlagSaveGate: `NpcRecordOverride.MaterializedSources` es un
          `Dictionary(Of ..., NpcTemplateMaterializer.TraitsResolution)` y `TraitsResolution` es Friend, asi
          que sin IVT el arnes no puede ARMAR el fixture "hereda la categoria, la edito, y SI hay snapshot",

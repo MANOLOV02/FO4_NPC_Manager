@@ -143,6 +143,134 @@ Public Module Borradores
         v.Context.EsVistaEfectiva = False
     End Sub
 
+    ''' <summary>LA LEY DE UN CAMPO OPCIONAL EN UN EDITOR: con valor se escribe; vacío y el
+    ''' subrecord ESTABA ⇒ se QUITA; vacío y no estaba ⇒ NO SE TOCA.
+    '''
+    ''' <para>⛔⛔ El tercer caso es el que faltaba, y es el que el usuario vio en xEdit: un
+    ''' override de `FemaleHeadHuman` de `Fallout4.esm` salió con `TNAM - Null Reference
+    ''' [00000000]`, `CNAM` igual y después `MODS` igual, y el original no trae ninguno de los
+    ''' tres. El contrato del árbol lo dice textual: «Escribir un campo que no está LO CREA,
+    ''' cualquiera sea el valor. … Que un editor no reescriba lo que no tocó es problema del
+    ''' editor, no de acá» (`CanonView.Escribir`). Esto es ese problema, resuelto una vez.</para>
+    '''
+    ''' <para>⛔⛔ Y QUITA POR LA RUTA DEL ESQUEMA, NO POR LA FIRMA: el llamador pasa
+    ''' `<c>…Presente = False</c>`, que es el setter generado de la vista. Ese setter va a
+    ''' `CanonView.PonerPresencia(ruta, False)` → `WbEdit.QuitarCampo`, que resuelve la hoja por la
+    ''' ruta, SUBE hasta el nodo cuyo `Def` es `WbSubrecordDef` y lo saca de SU PROPIO PADRE. Y
+    ''' `QuitarCampo` se declara, textual, «una sola implementacion de sacar».</para>
+    '''
+    ''' <para>⛔ Mi primera versión recibía la FIRMA y quitaba con `QuitarSubrecordEnTodoElArbol`.
+    ''' Andaba, pero abría una SEGUNDA sede de «sacar» al lado de la que ya existe, y con una clase
+    ''' de colisión propia: el doc de esa función trae su contraejemplo — una firma que aparece en
+    ''' dos ramas del mismo record (el `FULL` de la raíz y el de cada `Combination` de un ARMO) se
+    ''' saca en LAS DOS. Mi censo de unicidad era correcto para HDPT/TXST/FLST, pero era un censo
+    ''' que había que sostener A MANO para siempre. Por ruta no hay nada que sostener.</para>
+    '''
+    ''' <para>⛔⛔ LA INVARIANTE DEL LLAMADOR NO DESAPARECIÓ: SE MUDÓ, y ésta es peor de detectar.
+    ''' `quitar` termina en `WbEdit.QuitarCampo`, que <b>sube hasta el SUBRECORD que contiene al
+    ''' campo y se lleva el subrecord ENTERO</b> (su propio doc lo dice, `WbEdit.vb:611-618`). Con la
+    ''' versión por firma la invariante era «la firma aparece una vez en el record»; ahora es <b>«el
+    ''' campo ES su propio subrecord»</b>. Los nueve de hoy la cumplen — `MODL`, `MODT`, `MODC`,
+    ''' `MODS`, `MODF`, `TNAM`, `CNAM`, `RNAM`, `FULL`, `MNAM` y cada `TX0n` son subrecords de UN
+    ''' solo miembro —, pero si alguien la usa sobre un campo que comparte subrecord con hermanos
+    ''' —cualquier miembro de un `StructV` bajo un `Sub_`— se lleva a los hermanos EN SILENCIO, y sin
+    ''' la nota de advertencia que sí tenía `RemoveSubrecordEnTodoElArbol`. Queda escrita acá para
+    ''' que sea una invariante DECLARADA y no una heredada.</para>
+    ''' <para>⛔ Por eso tampoco hace falta un parámetro «¿estaba?»: `QuitarCampo` devuelve False sin
+    ''' tocar nada cuando la ruta no resuelve — `ByFieldPath` es una BÚSQUEDA pura, no un
+    ''' `Asegurar` —, así que quitar lo que no está es un no-op. Un parámetro que no puede cambiar
+    ''' el resultado es un parámetro que algún llamador va a pasar mal.</para>
+    '''
+    ''' <para>Las dos van como `Action` sin argumentos para que la misma ley sirva a un campo de
+    ''' texto, a uno de FormID y a un float: el llamador ya tiene el valor tipado y lo único que
+    ''' esto decide es SI se escribe o se quita. Y el «quitar» es una acción y no una ruta porque
+    ''' hay un campo que arrastra a otro: el `MODL` del HDPT se va con su `MODT`.</para></summary>
+    ''' <param name="hayValor">El usuario dejó algo en el control.</param>
+    ''' <param name="quitar">Normalmente `Sub() vista.XxxPresente = False`.</param>
+    Public Sub EscribirCampoOQuitar(hayValor As Boolean, escribir As Action, quitar As Action)
+        If hayValor Then escribir() Else quitar()
+    End Sub
+
+    ''' <summary>Reidentifica un record RECIÉN CLONADO como el OVERRIDE que el destino ya era.
+    ''' Es la gemela de <see cref="ReidentificarComoClon"/> para el otro gesto: «llená mi record con
+    ''' el contenido de ese otro», que NO es «haceme un record nuevo a partir de ese otro».
+    '''
+    ''' <para>⛔⛔ EXISTE PORQUE FALTABA Y SE PERDÍA LA IDENTIDAD DEL DESTINO. El «Start from an
+    ''' existing list…» del editor de FLST clonaba con <c>FlstDraft.Clon</c> y le pisaba el record al
+    ''' borrador. Y <c>Clon</c> aplica la ley de un record NUEVO: apaga <c>Deleted</c>, apaga
+    ''' <c>EsVistaEfectiva</c> y <b>borra el <c>EditorId</c> del contexto</b>. Sobre un borrador que era
+    ''' OVERRIDE de un FLST existente, eso lo dejaba sin su EditorID — y el emisor reporta sus avisos
+    ''' con el <c>EditorId</c> del CONTEXTO, así que además los publicaba con la identidad de otro.
+    ''' Lo levantó la revisión adversarial y el usuario eligió esta opción entre las dos que había.</para>
+    '''
+    ''' <para>⛔ LAS BANDERAS DEL DESTINO, NO LAS DEL ORIGEN, y por el mismo motivo que un clon no
+    ''' hereda <c>Deleted</c>: las banderas del encabezado son de la IDENTIDAD, no del contenido. Un
+    ''' override que traiga las del origen puede nacer marcado <c>Deleted</c> — o dejar de estarlo —
+    ''' sin que el usuario haya pedido ninguna de las dos cosas.</para>
+    '''
+    ''' <para>⛔ Y <c>EsVistaEfectiva</c> queda APAGADA igual que en el clon: lo que se va a escribir al
+    ''' .esp es un record del usuario, y el saver rechaza a propósito una vista efectiva.</para>
+    ''' <para>Toma <c>Object</c> por lo mismo que su gemela, y TIRA por lo mismo: pasarle el borrador
+    ''' en vez de su <c>.Record</c> compila, y con un <c>Return</c> mudo el destino se quedaría con la
+    ''' identidad del origen — el defecto que esto vino a cerrar, por la puerta de al lado.</para></summary>
+    Public Sub ReidentificarComoOverride(record As Object, formIDDestino As UInteger,
+                                         edidDestino As String, flagsDestino As UInteger)
+        Dim v = TryCast(record, Canon.CanonRecordView)
+        If v Is Nothing OrElse v.Context Is Nothing Then
+            Throw New ArgumentException(
+                "ReidentificarComoOverride necesita el RECORD (una vista canónica), no el borrador que lo " &
+                "contiene ni Nothing: sin él no hay contexto que reidentificar y el destino se quedaría con " &
+                "la identidad —y las banderas— del record del que se copió.", NameOf(record))
+        End If
+        v.Context.FormID = formIDDestino
+        v.Context.EditorId = If(edidDestino, "")
+        v.Context.RecordFlags = flagsDestino
+        v.Context.EsVistaEfectiva = False
+    End Sub
+
+    ''' <summary>LOS FormID QUE ALGÚN EDITOR TIENE TOMADOS AHORA MISMO.
+    '''
+    ''' <para>⛔⛔ Existe porque el editor de head parts es RECURSIVO — el extra de un head part es un
+    ''' head part, así que el editor abre otra instancia de sí mismo — y sin esto DOS editores pueden
+    ''' tener el MISMO borrador. No es una copia cada uno: el borrador ES el record y se comparte por
+    ''' referencia, así que el anidado muta el árbol que el padre está mostrando. El Cancel del anidado
+    ''' queda en un no-op mudo (el padre re-registra el objeto mutado con la próxima tecla) y su OK se
+    ''' pierde (el `CommitVivo` del padre vuelca su formulario viejo encima). Las dos direcciones
+    ''' destruyen trabajo del usuario sin un aviso.</para>
+    '''
+    ''' <para>⛔ ES UN CONJUNTO DE PROCESO y no de instancia, a propósito: la pregunta es «¿lo tiene
+    ''' ALGUIEN?», y quien la hace es un editor que todavía no abrió — no tiene forma de ver las tomas
+    ''' de los otros. Vive al lado de las otras tres leyes del registro por lo mismo que ellas: sin UI
+    ''' y sin `MainForm`, para que un testigo pueda recorrerla.</para>
+    '''
+    ''' <para>⛔ Se marca en <c>TomaDeBorrador.Tomar</c> y se libera en <c>Soltar</c> y en
+    ''' <c>Abandonar</c> — en las TRES, y en `Abandonar` cualquiera sea la rama de la ley: una marca
+    ''' que sobrevive al abandono deja el FormID inaccesible por el resto de la sesión, que es un
+    ''' defecto peor que el que esto cierra.</para></summary>
+    Private ReadOnly _tomados As New HashSet(Of UInteger)
+
+    ''' <summary>Algún editor abierto tiene tomado este FormID. Se pregunta ANTES de abrir otro.</summary>
+    Public Function EstaTomado(formID As UInteger) As Boolean
+        If formID = 0UI Then Return False
+        SyncLock _tomados
+            Return _tomados.Contains(formID)
+        End SyncLock
+    End Function
+
+    Public Sub MarcarTomado(formID As UInteger)
+        If formID = 0UI Then Return
+        SyncLock _tomados
+            _tomados.Add(formID)
+        End SyncLock
+    End Sub
+
+    Public Sub DesmarcarTomado(formID As UInteger)
+        If formID = 0UI Then Return
+        SyncLock _tomados
+            _tomados.Remove(formID)
+        End SyncLock
+    End Sub
+
     '==============================================================================================
     ' ABRIR, ENSUCIAR y ABANDONAR: las tres leyes que un editor de borrador aplica sobre el REGISTRO.
     '
@@ -290,17 +418,28 @@ Public Module Borradores
     ''' referencia 0xFF que estas mismas líneas acaban de matar y la prenda superviviente se dibuja
     ''' VACÍA hasta el commit siguiente del editor. Corre en el hilo de UI —el mismo que muta—, así que
     ''' publicar acá cumple el contrato de la foto sin un solo cruce de hilos.</para></summary>
+    ''' <param name="hdptDrafts">Head parts propias. ⛔ Las tres listas y las tres fotos de la ola de
+    ''' head parts entran OBLIGATORIAS y no <c>Optional</c>: la que falte deja sus referencias apuntando
+    ''' al centinela <c>0xFF</c> que este mismo remapeo acaba de matar, y su foto se queda con la vista
+    ''' vieja — o sea el head part superviviente se dibuja VACÍO hasta el commit siguiente. Es el mismo
+    ''' modo de falla que este módulo ya pagó con los cuatro material swap del ARMA.</param>
     Friend Sub RemapearSupervivientes(outfitDrafts As List(Of OutfitDraft),
                                       leveledListDrafts As List(Of LeveledListDraft),
                                       armoDrafts As List(Of ArmoDraft),
                                       armaDrafts As List(Of ArmaDraft),
                                       mswpDrafts As List(Of MswpDraft),
+                                      hdptDrafts As List(Of HdptDraft),
+                                      txstDrafts As List(Of TxstDraft),
+                                      flstDrafts As List(Of FlstDraft),
                                       realGlobal As Dictionary(Of UInteger, UInteger),
                                       fotosArmo As FotosDeBorrador(Of Canon.IArmo),
                                       fotosArma As FotosDeBorrador(Of Canon.IArma),
                                       fotosMswp As FotosDeBorrador(Of Canon.IMswp),
                                       fotosOtft As FotosDeBorrador(Of OutfitDraft),
-                                      fotosLvli As FotosDeBorrador(Of Canon.ILvli))
+                                      fotosLvli As FotosDeBorrador(Of Canon.ILvli),
+                                      fotosHdpt As FotosDeBorrador(Of Canon.IHdpt),
+                                      fotosTxst As FotosDeBorrador(Of Canon.ITxst),
+                                      fotosFlst As FotosDeBorrador(Of Canon.IFlst))
         If realGlobal Is Nothing OrElse realGlobal.Count = 0 Then Return
 
         ' ⛔ Se publica SÓLO el que se escribió, y sólo si SOBREVIVE. `Publicar` clona el árbol entero
@@ -338,6 +477,20 @@ Public Module Borradores
             ' mismo que `TemplateArmor` entra al censo: el dia que el formato agregue uno, ya esta.
             If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
         Next
+        ' Las TRES clases de la ola de head parts. HDPT rinde cinco campos -uno de ellos a su PROPIA
+        ' clase-, FLST rinde sus miembros, y TXST no rinde nada y se recorre igual (ver MSWP).
+        For Each d In hdptDrafts
+            If d Is Nothing Then Continue For
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
+        Next
+        For Each d In txstDrafts
+            If d Is Nothing Then Continue For
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
+        Next
+        For Each d In flstDrafts
+            If d Is Nothing Then Continue For
+            If RemapearUno(d.Record, realGlobal) Then tocados.Add(d.FormID)
+        Next
 
         ' ⛔ Drop de los promovidos + retiro de sus fotos. El centinela de previsualizacion nunca esta en
         ' el mapa, asi que sobrevive.
@@ -346,12 +499,20 @@ Public Module Borradores
         armoDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         armaDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         mswpDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        hdptDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        txstDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        flstDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
         For Each fidYaReal In realGlobal.Keys
             fotosArmo?.Retirar(fidYaReal)
             fotosArma?.Retirar(fidYaReal)
             fotosMswp?.Retirar(fidYaReal)
             fotosOtft?.Retirar(fidYaReal)
             fotosLvli?.Retirar(fidYaReal)
+            ' ⛔ Y las tres nuevas: sin esto la foto le SOBREVIVE al borrador promovido y `ParaRender`
+            ' -que la consulta PRIMERO- le seguiria ganando al record real que acaba de nacer.
+            fotosHdpt?.Retirar(fidYaReal)
+            fotosTxst?.Retirar(fidYaReal)
+            fotosFlst?.Retirar(fidYaReal)
         Next
 
         ' ⛔ Y recien ahora las fotos de los SUPERVIVIENTES que quedaron tocados. `Publicar` clona el arbol
@@ -370,6 +531,15 @@ Public Module Borradores
         Next
         For Each d In mswpDrafts
             If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosMswp?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In hdptDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosHdpt?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In txstDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosTxst?.Publicar(d.FormID, d.Record)
+        Next
+        For Each d In flstDrafts
+            If d IsNot Nothing AndAlso tocados.Contains(d.FormID) Then fotosFlst?.Publicar(d.FormID, d.Record)
         Next
     End Sub
 
@@ -404,7 +574,10 @@ Public Module Borradores
                                     leveledListDrafts As List(Of LeveledListDraft),
                                     armoDrafts As List(Of ArmoDraft),
                                     armaDrafts As List(Of ArmaDraft),
-                                    mswpDrafts As List(Of MswpDraft)) As List(Of String)
+                                    mswpDrafts As List(Of MswpDraft),
+                                    hdptDrafts As List(Of HdptDraft),
+                                    txstDrafts As List(Of TxstDraft),
+                                    flstDrafts As List(Of FlstDraft)) As List(Of String)
         Dim refs As New List(Of String)
         If formID = 0UI Then Return refs
 
@@ -452,6 +625,28 @@ Public Module Borradores
                 ' Hoy no rinde nada (un MSWP no declara campos de referencia), pero se recorre igual: si el
                 ' dia de manana declara uno, el censo ya lo ve. Ver `CensoDeReferencias.DeBorrador`.
                 censar("MSWP", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        ' HDPT es el que MAS rinde de las tres clases nuevas -cinco campos- y uno de ellos, `HNAM`,
+        ' apunta a su PROPIA clase: un head part puede ser referrer de otro head part.
+        If hdptDrafts IsNot Nothing Then
+            For Each d In hdptDrafts
+                If d Is Nothing Then Continue For
+                censar("HDPT", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        ' FLST: sus miembros (`LNAM`) son FormID sin firma declarada, asi que pueden apuntar a cualquier
+        ' borrador. TXST no rinde nada y se recorre igual, por lo mismo que MSWP.
+        If flstDrafts IsNot Nothing Then
+            For Each d In flstDrafts
+                If d Is Nothing Then Continue For
+                censar("FLST", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
+            Next
+        End If
+        If txstDrafts IsNot Nothing Then
+            For Each d In txstDrafts
+                If d Is Nothing Then Continue For
+                censar("TXST", d.Record.EditorID, CensoDeReferencias.DeBorrador(d.Record))
             Next
         End If
         Return refs

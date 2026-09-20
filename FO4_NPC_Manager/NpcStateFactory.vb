@@ -212,7 +212,8 @@ Friend NotInheritable Class NpcStateFactory
                                              pluginManager As PluginManager,
                                              lectura As LecturaDeCadena,
                                              appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                             Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) _
+                                             Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
+                                             Optional resHeadParts As ResolucionDeHeadParts = Nothing) _
                                              As (Datos As NPC_Data,
                                                  Estado As MainForm.NPCVisualState,
                                                  Traits As MainForm.TraitsState)
@@ -220,7 +221,8 @@ Friend NotInheritable Class NpcStateFactory
         Dim terminalDelHorneado As UInteger = 0UI
         Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, lectura, appliedPresets,
                                                               lmSkinTemplateResolver,
-                                                              baseDelHorneado, terminalDelHorneado)
+                                                              baseDelHorneado, terminalDelHorneado,
+                                                              resHeadParts)
         If npcData Is Nothing Then Return (Nothing, Nothing, Nothing)
         ' ⛔ SIN FECHA A PROPOSITO, y es seguro por construccion: el estado del horneado NO se publica en
         ' `LastRenderedState`, asi que nadie lo usa como cache de la base; y si algun dia se publicara, `Nothing`

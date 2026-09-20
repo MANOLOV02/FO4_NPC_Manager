@@ -105,8 +105,11 @@ Public Module SseMorphReverseEngineer
     ''' predicción y el residual saldría ~0 (auto-confirmación circular).</param>
     ''' <param name="lectura">⛔ RONDA 20b (D2): la lectura de la cadena (records y hoja) con la que se resuelve el NPC; la
     ''' del horneado de la sesion (`MainForm.LecturaDeHorneado`). OBLIGATORIA.</param>
+    ''' <param name="resHeadParts">La sede de resolución de head parts, por lo mismo que en el bake:
+    ''' este barrido recorre la cadena de HDPT y sin ella resolvería sin borradores.</param>
     Public Function Build(npcFormID As UInteger,
                           pluginManager As PluginManager,
+                          resHeadParts As ResolucionDeHeadParts,
                           lectura As LecturaDeCadena,
                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                           Optional sculptThreshold As Single = DefaultSculptThreshold) As Result
@@ -171,7 +174,7 @@ Public Module SseMorphReverseEngineer
 
         ' ---- 3) Recorrer los head parts igual que el bake ------------------------------------
         Dim mergedRoots = HeadPartResolver.MergeHeadPartsWithRaceDefaults(
-            state.NpcData.Record.Race, state.NpcData.Record.ConfigurationFlagsFemale, state.NpcData.Record.PartesDeCabeza(), pluginManager)
+            state.NpcData.Record.Race, state.NpcData.Record.ConfigurationFlagsFemale, state.NpcData.Record.PartesDeCabeza(), resHeadParts)
 
         ' Caché local de conteos de vértices por .tri para el redirect High Poly Head (mismo resolver
         ' que usan render y bake — no se replica la regla, se llama).
@@ -199,7 +202,7 @@ Public Module SseMorphReverseEngineer
         Dim jobs As New List(Of ShapeJob)()
         Dim usedBaked As New HashSet(Of INiShape)()
 
-        For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
+        For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, resHeadParts)
             Dim hdpt = entry.Hdpt
             If hdpt Is Nothing OrElse String.IsNullOrEmpty(hdpt.ModelFileName) Then Continue For
 

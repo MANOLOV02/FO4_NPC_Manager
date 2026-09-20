@@ -665,8 +665,10 @@ Module Program
             '        -> 100% CPU, escribe el <id>.NIF canonico. ---
             Console.WriteLine("[bake] BuildCharGen (CPU)...")
             Dim emptyPresets As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)()
+            ' SIN BORRADORES: este subcomando es headless y no tiene editores. Declarado, no supuesto.
             Dim result = FaceGenBuilder.BuildCharGen(npcFormID,
                                                      pm,
+                                                     ResolucionDeHeadParts.SinBorradores(pm),
                                                      New LecturaDeCadena With {.PluginManager = pm},
                                                      emptyPresets,
                                                      host:=Nothing,

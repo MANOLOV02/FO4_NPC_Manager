@@ -70,13 +70,24 @@ Friend NotInheritable Class TomaDeBorrador(Of TD As Class)
     ''' del disco, eso puede tirar, esto corre desde manejadores sin <c>Try</c> y la app usa
     ''' <c>UnhandledExceptionMode.ThrowException</c> — un throw acá CIERRA la app. Sin base se marca sucio,
     ''' que es la dirección segura.</para></summary>
+    ''' <para>⛔⛔ Y MARCA EL FormID COMO TOMADO, que es lo que faltaba. La recursión del editor de
+    ''' head parts —el extra de un head part ES un head part— permite que DOS editores tengan el
+    ''' MISMO borrador: los dos apuntan al mismo objeto, porque el borrador ES el record y se comparte
+    ''' por referencia. Consecuencia medida por lectura: el Cancel del anidado es un no-op mudo (el
+    ''' padre re-registra el objeto mutado con la próxima tecla) y su OK se pierde (el `CommitVivo`
+    ''' del padre vuelca su formulario viejo encima). La marca vive ACÁ y no en el formulario porque
+    ''' la toma es quién sabe qué está tomado — en el formulario habría que repetirla en los OCHO
+    ''' editores y ningún testigo la alcanzaría.</para></summary>
     Friend Sub Tomar(actual As TD, snapshotDeApertura As TD)
+        ' La toma anterior de ESTA instancia se libera: cambiar de objetivo no deja el viejo tomado.
+        If _actual IsNot Nothing Then Borradores.DesmarcarTomado(_idDe(_actual))
         _actual = actual
         _snapshot = snapshotDeApertura
         _registroPrevio = Nothing
         _base = Nothing
         If actual Is Nothing Then Return
         Dim fid = _idDe(actual)
+        Borradores.MarcarTomado(fid)
         _registroPrevio = _buscar(fid)
         Try
             _base = _construirBase(fid)
@@ -101,6 +112,7 @@ Friend NotInheritable Class TomaDeBorrador(Of TD As Class)
     ''' emitiría. Soltar y abandonar son gestos distintos y por eso son dos métodos.</para>
     ''' <para>Después de esto, <see cref="Abandonar"/> es un no-op hasta la próxima <see cref="Tomar"/>.</para></summary>
     Friend Sub Soltar()
+        If _actual IsNot Nothing Then Borradores.DesmarcarTomado(_idDe(_actual))
         _actual = Nothing
         _snapshot = Nothing
         _registroPrevio = Nothing
@@ -110,6 +122,9 @@ Friend NotInheritable Class TomaDeBorrador(Of TD As Class)
     ''' <summary>Abandonar sin aceptar: aplica <see cref="Borradores.QueHacerAlAbandonar"/>.</summary>
     Friend Sub Abandonar()
         If _actual Is Nothing Then Return
+        ' La marca se libera SIEMPRE, cualquiera sea la rama de la ley: si no, un abandono dejaría el
+        ' FormID tomado para siempre y el editor no podría volver a abrirlo en toda la sesión.
+        Borradores.DesmarcarTomado(_idDe(_actual))
         Dim aRestaurar As TD = Nothing
         Select Case Borradores.QueHacerAlAbandonar(_registroPrevio, _actual, _snapshot, aRestaurar)
             Case Borradores.AccionAlAbandonar.DarDeBaja

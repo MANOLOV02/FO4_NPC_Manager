@@ -32,7 +32,12 @@ Partial Class HeadPartPicker_Form
         ColumnPlugin = New ColumnHeader()
         ColumnFormID = New ColumnHeader()
         PreviewControlPanel = New Panel()
-        BottomLayout = New FlowLayoutPanel()
+        BottomLayout = New TableLayoutPanel()
+        MineLayout = New FlowLayoutPanel()
+        ButtonNewHdpt = New Button()
+        ButtonOverrideHdpt = New Button()
+        ButtonEditHdpt = New Button()
+        OkCancelLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         RootLayout.SuspendLayout()
@@ -146,29 +151,68 @@ Partial Class HeadPartPicker_Form
         ' 
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
-        BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.ColumnCount = 2
+        BottomLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        BottomLayout.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        BottomLayout.Controls.Add(MineLayout, 0, 0)
+        BottomLayout.Controls.Add(OkCancelLayout, 1, 0)
         BottomLayout.Dock = DockStyle.Fill
-        BottomLayout.FlowDirection = FlowDirection.RightToLeft
-        BottomLayout.Location = New Point(11, 494)
         BottomLayout.Name = "BottomLayout"
         BottomLayout.Padding = New Padding(0, 6, 0, 0)
-        BottomLayout.Size = New Size(938, 35)
+        BottomLayout.RowCount = 1
+        BottomLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         BottomLayout.TabIndex = 3
-        ' 
-        ' ButtonOk
-        ' 
+        '
+        ' MineLayout -- las acciones de "mis records", a la IZQUIERDA. BottomLayout paso de
+        ' FlowLayoutPanel derecha-a-izquierda a TableLayoutPanel de dos columnas: en un solo flow las dos
+        ' barras se pisan.
+        '
+        MineLayout.AutoSize = True
+        MineLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        MineLayout.Controls.Add(ButtonNewHdpt)
+        MineLayout.Controls.Add(ButtonOverrideHdpt)
+        MineLayout.Controls.Add(ButtonEditHdpt)
+        MineLayout.Dock = DockStyle.Fill
+        MineLayout.Margin = New Padding(0)
+        MineLayout.Name = "MineLayout"
+        MineLayout.TabIndex = 0
+        MineLayout.WrapContents = False
+        '
+        ButtonNewHdpt.AutoSize = True
+        ButtonNewHdpt.Name = "ButtonNewHdpt"
+        ButtonNewHdpt.TabIndex = 0
+        ButtonNewHdpt.Text = "New..."
+        '
+        ButtonOverrideHdpt.AutoSize = True
+        ButtonOverrideHdpt.Name = "ButtonOverrideHdpt"
+        ButtonOverrideHdpt.TabIndex = 1
+        ButtonOverrideHdpt.Text = "Override selected..."
+        '
+        ButtonEditHdpt.AutoSize = True
+        ButtonEditHdpt.Name = "ButtonEditHdpt"
+        ButtonEditHdpt.TabIndex = 2
+        ButtonEditHdpt.Text = "Edit selected..."
+        '
+        OkCancelLayout.AutoSize = True
+        OkCancelLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        OkCancelLayout.Controls.Add(ButtonOk)
+        OkCancelLayout.Controls.Add(ButtonCancel)
+        OkCancelLayout.Dock = DockStyle.Fill
+        OkCancelLayout.FlowDirection = FlowDirection.RightToLeft
+        OkCancelLayout.Margin = New Padding(0)
+        OkCancelLayout.Name = "OkCancelLayout"
+        OkCancelLayout.TabIndex = 1
+        OkCancelLayout.WrapContents = False
+        '
+        ButtonOk.AutoSize = True
         ButtonOk.DialogResult = DialogResult.OK
-        ButtonOk.Location = New Point(855, 9)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(80, 23)
         ButtonOk.TabIndex = 0
         ButtonOk.Text = "OK"
-        ' 
-        ' ButtonCancel
-        ' 
+        '
+        ButtonCancel.AutoSize = True
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(769, 9)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(80, 23)
         ButtonCancel.TabIndex = 1
@@ -207,5 +251,10 @@ Partial Class HeadPartPicker_Form
     Friend WithEvents PreviewControlPanel As System.Windows.Forms.Panel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
-    Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents BottomLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents MineLayout As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonNewHdpt As System.Windows.Forms.Button
+    Friend WithEvents ButtonOverrideHdpt As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditHdpt As System.Windows.Forms.Button
+    Friend WithEvents OkCancelLayout As System.Windows.Forms.FlowLayoutPanel
 End Class

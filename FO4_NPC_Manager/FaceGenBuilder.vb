@@ -760,8 +760,15 @@ Public Module FaceGenBuilder
     ''' plantillas, y la hoja de lista). OBLIGATORIA: la app pasa una lectura CONGELADA de la sesion armada en el hilo de UI
     ''' (`MainForm.LecturaDeHorneado`); Bake All y la CLI, el parse de su orden de carga. Reemplaza al `resolveLvlnPick`
     ''' suelto, que ahora viaja adentro (`HojaPara`).</param>
+    ''' <param name="resHeadParts">LA SEDE de resolución de head parts. ⛔ OBLIGATORIA y no opcional: el
+    ''' bake NO tiene <c>NpcRenderContext</c> (ver <c>ResolveOutfitHeadwearSlots</c> más abajo), así que
+    ''' si esto fuera <c>Optional … = Nothing</c> con un fallback interno, un head part BORRADOR se vería
+    ''' en el preview y el FaceGeom saldría sin él, en silencio. El llamador de la app pasa la MISMA
+    ''' instancia que el render (<c>MainForm.HeadPartsResolution</c>); un camino sin editores pasa
+    ''' <c>ResolucionDeHeadParts.SinBorradores(pm)</c>, que lo declara.</param>
     Friend Function BuildCharGen(npcFormID As UInteger,
                                  pluginManager As PluginManager,
+                                 resHeadParts As ResolucionDeHeadParts,
                                  lectura As LecturaDeCadena,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
@@ -819,7 +826,7 @@ Public Module FaceGenBuilder
         ' ⛔ Con `npcData` en Nothing, `state` queda en Nothing y la funcion SIGUE: hay camino aguas
         ' abajo que contempla los dos casos, y cortar aca cambiaria el mensaje que ve el usuario.
         Dim horneado = NpcStateFactory.EstadoDelHorneado(npcFormID, pluginManager, lectura, appliedPresets,
-                                                        lmSkinTemplateResolver)
+                                                        lmSkinTemplateResolver, resHeadParts)
         Dim npcData = horneado.Datos
         Dim state As MainForm.NPCVisualState = horneado.Estado
         Dim result As New BuildResult()
@@ -886,7 +893,7 @@ Public Module FaceGenBuilder
         ' the shapes that come out of these sources. Seeded from `state` (= overlaid npcData +
         ' ApplyRaceFallbacks), the SAME list the live render walks — so a modified chargen bakes
         ' the head parts the preview shows, not the raw record's.
-        Dim hdptMap = BuildAllowedShapeMap(state, pluginManager)
+        Dim hdptMap = BuildAllowedShapeMap(state, resHeadParts)
 
         ' No FaceGen-eligible head parts (non-human race, robot, turret, creature, …) → nothing to
         ' bake. This is a SKIP, not a failure: don't write an empty NIF, and let the caller count it
@@ -2111,7 +2118,7 @@ Public Module FaceGenBuilder
     ''' <para>Devuelve el Canon.IHdpt y no solo el nombre porque aguas abajo hacen falta MeshPath, los dos paths de
     ''' .tri y el PartType para construir cada shape.</para></summary>
     Private Function BuildAllowedShapeMap(state As MainForm.NPCVisualState,
-                                          pluginManager As PluginManager) As Dictionary(Of String, HeadPartResolver.HdptChainEntry)
+                                          resHeadParts As ResolucionDeHeadParts) As Dictionary(Of String, HeadPartResolver.HdptChainEntry)
         Dim allowed As New Dictionary(Of String, HeadPartResolver.HdptChainEntry)(StringComparer.OrdinalIgnoreCase)
         If state Is Nothing Then Return allowed
 
@@ -2123,14 +2130,17 @@ Public Module FaceGenBuilder
         ' diffuse), hair, brows, FacialHair, scars, LM SkinTemplate head/headRear swaps — baked
         ' vanilla while the material `state` honoured the overlay → bake diverged from the render.
         ' Same function + same inputs as the render = bake == render by construction.
+        ' ⛔ Y por la MISMA SEDE que el render: `resHeadParts` es la instancia que MainForm le pasa a
+        ' los dos. Acá antes entraba el `pluginManager` pelado, o sea que el bake resolvía sin
+        ' borradores mientras el preview sí los veía.
         Dim mergedRoots = HeadPartResolver.MergeHeadPartsWithRaceDefaults(
-            state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, pluginManager)
+            state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, resHeadParts)
 
         ' Walk the chain via the shared HNAM-expanding iterator (cycles guarded inside). Each
         ' entry carries the EFFECTIVE part type (Misc hairline under hair → Hair=3), the single
         ' source of truth shared with the render walk — so the bake colors sub-parts like the
         ' render does. First-write wins on EditorID collisions.
-        For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
+        For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, resHeadParts)
             If String.IsNullOrEmpty(entry.Hdpt.EditorID) Then Continue For
             If Not allowed.ContainsKey(entry.Hdpt.EditorID) Then allowed(entry.Hdpt.EditorID) = entry
         Next

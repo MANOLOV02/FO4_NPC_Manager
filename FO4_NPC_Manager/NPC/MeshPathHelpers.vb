@@ -18,6 +18,19 @@ Public Module MeshPathHelpers
     ''' e.g. Far Harbor's VRRetriever ARMA ships MOD2 as
     ''' "c:\projects\fallout4\build\pc\data\meshes\actors\dlc03\vrretriever\...", which must resolve
     ''' to "meshes\actors\dlc03\vrretriever\...". Empty/whitespace input returns "".</summary>
+    ''' <summary>Una ruta ABSOLUTA del disco a la ruta RELATIVA que el record lleva: lo que va en un
+    ''' <c>MODL</c>/<c>NAM1</c> es relativo a <c>Data\Meshes</c>. Si la ruta no pasa por una carpeta
+    ''' <c>meshes</c>, se devuelve el nombre del archivo — mejor eso que una ruta absoluta escrita en un
+    ''' record, que en la máquina de otro no existe.</summary>
+    Public Function RelativaAMeshes(rutaAbsoluta As String) As String
+        If String.IsNullOrWhiteSpace(rutaAbsoluta) Then Return ""
+        Dim p = rutaAbsoluta.Replace("/"c, "\"c)
+        Dim marca = "\meshes\"
+        Dim i = p.ToLowerInvariant().LastIndexOf(marca)
+        If i >= 0 Then Return p.Substring(i + marca.Length)
+        Return IO.Path.GetFileName(p)
+    End Function
+
     Public Function NormalizeMeshKey(rawPath As String) As String
         Return FO4UnifiedMaterial_Class.CorrectMeshPath(rawPath)
     End Function

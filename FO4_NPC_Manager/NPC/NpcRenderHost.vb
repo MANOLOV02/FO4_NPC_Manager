@@ -235,6 +235,16 @@ Friend Class NpcRenderHost
     ''' in the picker leaves the main render's committed state untouched. Honoured only when
     ''' <see cref="OutfitPreviewActive"/> is True (the main host leaves it False, so the main render path
     ''' is inert). Value: Nothing → raw record DOFT · Some(0) → naked · Some(fid) → OTFT / draft.</summary>
+    ''' <summary>Head parts EXTRA que este host suma al estado, sólo para previsualizar.
+    ''' <para>⛔⛔ Existe porque <see cref="AppliedPresets"/> NO sirve para esto: el
+    ''' <c>NpcStateResolver</c> recibe el diccionario de presets de <c>MainForm</c> POR REFERENCIA en su
+    ''' constructor y resuelve el estado con <b>ese</b>, no con el del host. Pasarle una copia por el
+    ''' host no hace nada — el editor de head parts lo hacía y su preview «sobre el actor» salía vacío.</para>
+    ''' <para>Alcance: igual que <see cref="OutfitPreviewOverride"/>, se aplica AL FINAL y sólo al host
+    ''' que se está renderizando, así que NUNCA toca el overlay compartido: cancelar el editor no puede
+    ''' dejarle el head part puesto al NPC. Inerte en el host principal (Nothing o vacía).</para></summary>
+    Public Property PreviewExtraHeadPartFormIDs As List(Of UInteger) = Nothing
+
     Public Property OutfitPreviewActive As Boolean = False
     Public Property OutfitPreviewOverride As UInteger?
 

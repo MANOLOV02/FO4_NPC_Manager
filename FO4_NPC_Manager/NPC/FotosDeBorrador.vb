@@ -23,9 +23,14 @@
 ''' que tenía foto; ARMA y MSWP servían el árbol VIVO al hilo del render —<c>ArmaDraftResolver</c> y
 ''' <c>BuildMswpDataFromDraft</c>— o sea la MISMA carrera, sin la foto. Copiar la clase dos veces
 ''' habría dejado tres leyes que se separan al primer arreglo; con el parámetro de tipo hay una sola
-''' y CINCO instancias —ARMO, ARMA, MSWP, OTFT y LVLI—. Las cinco vistas NO comparten interfaz, así que se publica por
-''' <c>(formID, vista)</c> y no por el borrador: no hay tipo común del que colgar
-''' <c>.FormID</c>/<c>.Record</c>.</para>
+''' y OCHO instancias: <b>ARMO, ARMA, MSWP, OTFT, LVLI, HDPT, TXST y FLST</b>. Las ocho vistas NO
+''' comparten interfaz, así que se publica por <c>(formID, vista)</c> y no por el borrador: no hay tipo
+''' común del que colgar <c>.FormID</c>/<c>.Record</c>.</para>
+'''
+''' <para>⛔ Acá el numeral decía OCHO y la lista enumeraba CINCO, en la misma oración: se había
+''' actualizado la cuenta y no el CENSO, que es el defecto de clase que este árbol tiene fichado
+''' («censar los campos de la clase, no la lista de cosas que se me ocurrieron»). Si mañana entra una
+''' novena, la lista es lo que hay que tocar.</para>
 '''
 ''' <para>⛔ <b>Esto NO es una clase «de la app» ni un caché nuevo</b>: es el mismo diccionario que
 ''' vivía suelto en <c>MainForm</c>, mudado junto con sus tres operaciones. Estaba suelto y la ley se
@@ -35,8 +40,9 @@
 ''' commit siguiente del editor. Con la ley en un solo objeto, el productor que falte no tiene dónde
 ''' escribir sin pasar por acá.</para></summary>
 ''' <typeparam name="TVista">Lo que se fotografía: la vista canónica del record —<c>Canon.IArmo</c>,
-''' <c>Canon.IArma</c>, <c>Canon.IMswp</c>, <c>Canon.ILvli</c>— o el BORRADOR entero
-''' (<c>OutfitDraft</c>), que lleva estado fuera del record y por eso pasa su propio clonador.</typeparam>
+''' <c>Canon.IArma</c>, <c>Canon.IMswp</c>, <c>Canon.ILvli</c>, <c>Canon.IHdpt</c>, <c>Canon.ITxst</c>,
+''' <c>Canon.IFlst</c>— o el BORRADOR entero (<c>OutfitDraft</c>), que lleva estado fuera del record y
+''' por eso pasa su propio clonador.</typeparam>
 Friend NotInheritable Class FotosDeBorrador(Of TVista As Class)
 
     ''' <summary>La foto por FormID de borrador. Concurrente porque la ESCRIBE el hilo de UI (el commit

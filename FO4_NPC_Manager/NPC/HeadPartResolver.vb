@@ -20,6 +20,14 @@ Public Module HeadPartResolver
     ''' NOT used by the render or the bake: the engine does not filter worn head parts by RNAM at all.</summary>
     Public Property RaceCompatCatalog As RaceCompatibilityCatalog
 
+    ''' <summary>El mensaje de las guardas de <c>res</c>. Una sola redacción para las cinco, porque el
+    ''' motivo es el mismo y estaba por escribirse cinco veces.</summary>
+    Private Const SinSede As String =
+        "Sin ResolucionDeHeadParts no hay resolución: este módulo dejó de aceptar un " &
+        "'pluginManager + Optional parseHdpt' justamente porque el delegado opcional resolvía sin " &
+        "borradores en silencio. Para un camino sin borradores, la puerta es " &
+        "ResolucionDeHeadParts.SinBorradores(plugins), que lo DECLARA." 
+
     ''' <summary>Merge NPC.PNAM head parts with RACE.HeadParts defaults per vanilla CK semantics.
     ''' Main types (1=Face, 2=Eyes, 3=Hair, 4=FacialHair, 5=Scar, 6=Eyebrows, 7=Meatcaps, 8=Teeth, 9=HeadRear):
     ''' NPC override wins; fall back to RACE default per type (gender-specific).
@@ -27,21 +35,26 @@ Public Module HeadPartResolver
     ''' type=0 entries (rare/undocumented in vanilla) are preserved as additive to avoid data loss.
     ''' RACE.HeadParts per gender: Head Part\HEAD (con su propio INDX), declarado en la interfaz de cada
     ''' juego con su propia colección — RaceFO4.MaleHeadParts/FemaleHeadParts, RaceSSE.HeadParts/HeadParts2.</summary>
-    ''' <param name="parseRace">Optional cached RACE parser. <param name="parseHdpt">Optional cached
-    ''' HDPT parser. Both fall back to direct <c>Canon.CanonRecords.Race</c> when Nothing (offline bake path).</param>
+    ''' <param name="res">LA SEDE de resolución de head parts (<see cref="ResolucionDeHeadParts"/>), que
+    ''' trae el orden de carga Y los borradores. ⛔ Es OBLIGATORIA y reemplazó al par
+    ''' <c>pluginManager + Optional parseHdpt</c>: con el delegado opcional, un llamador que se olvidaba
+    ''' de pasarlo resolvía sin borradores y el head part del usuario desaparecía sin un error. Además
+    ''' el par permitía pasar un <c>pluginManager</c> y un parser cerrado sobre OTRO.</param>
+    ''' <param name="parseRace">Parser de RACE cacheado, opcional. La RACE no es un head part: su caché
+    ''' vive en <c>NpcRenderContext</c>, no en la sede de head parts.</param>
     Public Function MergeHeadPartsWithRaceDefaults(raceFormID As UInteger,
                                                    isFemale As Boolean,
                                                    npcHeadPartFormIDs As IReadOnlyList(Of UInteger),
-                                                   pluginManager As PluginManager,
-                                                   Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
-                                                   Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As List(Of UInteger)
+                                                   res As ResolucionDeHeadParts,
+                                                   Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing) As List(Of UInteger)
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res), SinSede)
         Dim safeNpcParts As IReadOnlyList(Of UInteger) = If(npcHeadPartFormIDs, CType(New List(Of UInteger)(), IReadOnlyList(Of UInteger)))
         If raceFormID = 0UI Then Return safeNpcParts.ToList()
-        Dim raceRec = pluginManager.GetRecord(raceFormID)
+        Dim raceRec = res.Plugins.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then
             Return safeNpcParts.ToList()
         End If
-        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, pluginManager))
+        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), Canon.CanonRecords.Race(raceRec, res.Plugins))
         ' La ley de "que head parts trae la raza para este genero" vive en UN solo lugar
         ' (CanonInterpretacion.HeadPartsDe): contempla los dos juegos y sus nombres propios. Aca estaba
         ' copiada a mano, asi que el dia que se corrija alla esta copia se queda vieja en silencio.
@@ -51,13 +64,9 @@ Public Module HeadPartResolver
                 New Canon.FuenteDePartes("raza", raceDefaults, False),
                 New Canon.FuenteDePartes("npc", safeNpcParts, False)
             }
-            Return Canon.ResolverPartesDeCabeza(
-                fuentes,
-                Function(fid As UInteger) As Canon.IHdpt
-                    Dim rec = pluginManager.GetRecord(fid)
-                    If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Return Nothing
-                    Return If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
-                End Function)
+            ' La resolución va por la SEDE: así el render, el bake, el guardado y el picker ven lo mismo,
+            ' incluidos los borradores. Antes esto era un lambda local que iba derecho al PluginManager.
+            Return Canon.ResolverPartesDeCabeza(fuentes, AddressOf res.Hdpt)
     End Function
 
     ''' <summary>Si <paramref name="hdptFormID"/> es valido para un NPC de <paramref name="raceFormID"/>. Pasa
@@ -66,20 +75,43 @@ Public Module HeadPartResolver
     ''' <para>El camino (a) exige que la RACE tenga head parts porque RNAM=0 no es un pase universal: hay NPCs no
     ''' humanoides (perros) cuyo PNAM lista head parts humanas con RNAM=0 que el motor no dibuja, justamente
     ''' porque su raza declara cero head parts.</para>
-    ''' <para><paramref name="raceHasAnyHeadParts"/> lo provee el caller. <paramref name="flstCache"/> se
-    ''' comparte entre llamadas para que un lote contra la misma raza parsee cada FLST una sola vez.</para></summary>
+    ''' <para><paramref name="raceHasAnyHeadParts"/> lo provee el caller.</para>
+    ''' <para>⛔ Acá vivía un parámetro <c>flstCache As Dictionary(...)</c> que el caller tenía que
+    ''' compartir entre llamadas, y <b>memoizaba el FRACASO</b>: <c>flstCache(hdpt.ValidRaces) = flst</c>
+    ''' se ejecutaba también cuando la FLST no resolvía. Con un <c>RNAM</c> apuntando a una FLST
+    ''' BORRADOR eso guardaba <c>Nothing</c>, el head part se filtraba, y <b>seguía filtrándose aunque
+    ''' el usuario guardara la FLST</b>, porque esa caché no se invalidaba nunca. La caché se mudó
+    ''' adentro de <see cref="ResolucionDeHeadParts"/>, donde el borrador se consulta ANTES y donde hay
+    ''' una invalidación con dueño.</para></summary>
     Public Function IsHdptValidForRace(hdptFormID As UInteger,
                                        raceFormID As UInteger,
                                        isFemale As Boolean,
-                                       pluginManager As PluginManager,
-                                       flstCache As Dictionary(Of UInteger, Canon.IFlst),
+                                       res As ResolucionDeHeadParts,
                                        Optional raceDefaults As HashSet(Of UInteger) = Nothing,
-                                       Optional raceHasAnyHeadParts As Boolean = True,
-                                       Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As Boolean
-        If hdptFormID = 0UI OrElse pluginManager Is Nothing Then Return False
-        Dim rec = pluginManager.GetRecord(hdptFormID)
-        If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Return False
-        Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
+                                       Optional raceHasAnyHeadParts As Boolean = True) As Boolean
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res), SinSede)
+        If hdptFormID = 0UI Then Return False
+        Dim hdpt = res.Hdpt(hdptFormID)
+        If hdpt Is Nothing Then Return False
+        Return IsHdptValidForRace(hdpt, hdptFormID, raceFormID, isFemale, res, raceDefaults, raceHasAnyHeadParts)
+    End Function
+
+    ''' <summary>La MISMA ley, para quien YA TIENE la vista del record en la mano.
+    ''' <para>⛔ Existe porque preguntar por FormID obliga a que el record esté RESUELTO, y el editor de
+    ''' head parts tiene casos donde no lo está: un «New (blank)» no se registra hasta que el usuario
+    ''' escribe algo —a propósito, para no dejar borradores basura—, así que la sede devolvía Nothing y el
+    ''' panel de validez informaba «RNAM includes race ....... NO» sobre un record cuyo RNAM es 0, que
+    ''' PASA. Con la vista en la mano no hay resolución que pueda fallar.</para>
+    ''' <para>El FormID sigue haciendo falta: el camino (c) pregunta si la RACE lo declara como default
+    ''' de género, y eso se contesta por identidad, no por contenido.</para></summary>
+    Public Function IsHdptValidForRace(hdpt As Canon.IHdpt,
+                                       hdptFormID As UInteger,
+                                       raceFormID As UInteger,
+                                       isFemale As Boolean,
+                                       res As ResolucionDeHeadParts,
+                                       Optional raceDefaults As HashSet(Of UInteger) = Nothing,
+                                       Optional raceHasAnyHeadParts As Boolean = True) As Boolean
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res), SinSede)
         If hdpt Is Nothing Then Return False
 
         ' Path (a): no race restriction declared. Pass only if the RACE itself uses head parts
@@ -87,15 +119,9 @@ Public Module HeadPartResolver
         ' a buggy NPC.PNAM might list one — engine-faithful behavior.
         If hdpt.ValidRaces = 0UI Then Return raceHasAnyHeadParts
 
-        ' Path (b): RNAM points to a FLST and the FLST contains the target race.
-        Dim flst As Canon.IFlst = Nothing
-        If Not flstCache.TryGetValue(hdpt.ValidRaces, flst) Then
-            Dim flstRec = pluginManager.GetRecord(hdpt.ValidRaces)
-            If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
-                flst = Canon.CanonRecords.Flst(flstRec, pluginManager)
-            End If
-            flstCache(hdpt.ValidRaces) = flst
-        End If
+        ' Path (b): RNAM points to a FLST and the FLST contains the target race. La FLST la resuelve la
+        ' SEDE (borrador primero, caché adentro): ver el ⛔ del sumario sobre el fracaso memoizado.
+        Dim flst As Canon.IFlst = res.Flst(hdpt.ValidRaces)
         If flst IsNot Nothing AndAlso flst.Miembros().Contains(raceFormID) Then Return True
 
         ' Path (b'): the FormList as the GAME would have it. RaceCompatibility's proxyRaces script INSERTS a mod's
@@ -127,12 +153,12 @@ Public Module HeadPartResolver
     Public Function IsPresetCompatibleWithRace(preset As LooksmenuLoader.LooksmenuPreset,
                                                raceFormID As UInteger,
                                                isFemale As Boolean,
-                                               pluginManager As PluginManager,
+                                               res As ResolucionDeHeadParts,
                                                race As Canon.IRace,
-                                               flstCache As Dictionary(Of UInteger, Canon.IFlst),
                                                raceDefaults As HashSet(Of UInteger),
                                                Optional ignoreFaceBaseHeadPart As Boolean = False) As Boolean
-        If preset Is Nothing OrElse pluginManager Is Nothing Then Return False
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res), SinSede)
+        If preset Is Nothing Then Return False
 
         ' Diagnostic: when the logger is on, record the concrete reason a preset is judged
         ' race-incompatible (which HDPT). Gated + lazy so it's a no-op with logging off.
@@ -154,17 +180,16 @@ Public Module HeadPartResolver
                 If fid = 0UI Then Continue For
                 ' SSE: don't let the race-specific base HEAD (Face, PartType=1) gate the preset.
                 If ignoreFaceBaseHeadPart Then
-                    Dim hrec = pluginManager.GetRecord(fid)
-                    If hrec IsNot Nothing AndAlso hrec.Header.Signature = "HDPT" Then
-                        Dim hd = Canon.CanonRecords.Hdpt(hrec, pluginManager)
-                        If hd IsNot Nothing AndAlso hd.TipoDeParte() = 1 Then
+                    Dim hd = res.Hdpt(fid)
+                    If hd IsNot Nothing Then
+                        If hd.TipoDeParte() = 1 Then
                             Dim fidFace = fid
                             Logger.LogLazy(Function() $"[LMLoad] '{presetName}': skipping base-head (Face) HDPT 0x{fidFace:X8} from race-compat gate (SSE — skee applies the preset sculpt over the NPC's own base head).")
                             Continue For
                         End If
                     End If
                 End If
-                If Not IsHdptValidForRace(fid, raceFormID, isFemale, pluginManager, flstCache, raceDefaults) Then
+                If Not IsHdptValidForRace(fid, raceFormID, isFemale, res, raceDefaults) Then
                     Dim fidLocal = fid
                     Logger.LogLazy(Function() $"[LMLoad] DROP '{presetName}' as race-incompatible: HDPT 0x{fidLocal:X8} not valid for race 0x{raceFormID:X8} (gender={If(isFemale, "F", "M")}). HDPT's RACE/FLST does not list this race and it is not a race gender-default.")
                     Return False
@@ -182,15 +207,15 @@ Public Module HeadPartResolver
     ''' Single source of truth shared by the render candidate walk (MainForm.CollectHeadPartCandidates)
     ''' and <see cref="EnumerateHdptChain"/>.</summary>
     Public Function BuildMiscToParentEffective(rootFormIDs As IEnumerable(Of UInteger),
-                                               pluginManager As PluginManager,
-                                               Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As Dictionary(Of UInteger, Integer)
+                                               res As ResolucionDeHeadParts) As Dictionary(Of UInteger, Integer)
         Dim result As New Dictionary(Of UInteger, Integer)
-        If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return result
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res), SinSede)
+        If rootFormIDs Is Nothing Then Return result
         Dim parsed As New Dictionary(Of UInteger, Canon.IHdpt)
         For Each fid In rootFormIDs
             If fid = 0UI OrElse parsed.ContainsKey(fid) Then Continue For
-            Dim rec = pluginManager.GetRecord(fid)
-            If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then parsed(fid) = If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
+            Dim hd = res.Hdpt(fid)
+            If hd IsNot Nothing Then parsed(fid) = hd
         Next
         For Each parentKv In parsed
             Dim parentEff = parentKv.Value.TipoDeParte()
@@ -306,6 +331,72 @@ Public Module HeadPartResolver
             Return result
     End Function
 
+    ''' <summary>LOS CUATRO FILTROS DEL SELECTOR, en un solo lugar y devueltos por separado.
+    '''
+    ''' <para>⛔⛔ Estaban escritos TRES veces: la vuelta del orden de carga y la de los borradores
+    ''' en <c>HeadPartPicker_Form.BuildCandidates</c>, y una tercera en el panel de validez del
+    ''' editor de head parts. Y las tres NO decían lo mismo: el panel no contaba el filtro del TIPO
+    ''' y aplicaba el de «es un extra» SIN la excepción de Misc, así que podía prometer que un
+    ''' record iba a aparecer en un selector que lo filtraba, y al revés. El usuario no tiene forma
+    ''' de saber cuál de las tres le está hablando.</para>
+    '''
+    ''' <para>⛔ DEVUELVE LOS CUATRO, no un «sirve / no sirve». El panel existe para decir CUÁL falla
+    ''' — pinta una línea por filtro —, así que colapsarlos en un booleano obligaría al panel a
+    ''' recalcular por su cuenta y volvería la divergencia por la puerta de al lado. El selector, que
+    ''' sólo necesita el «Y», usa <see cref="FiltrosDePicker.Pasa"/>.</para>
+    '''
+    ''' <para>⛔ EL FILTRO DE «ES UN EXTRA» NO APLICA A MISC, y eso no es una excepción cómoda: Misc
+    ''' es exactamente donde viven los HDPT de tipo agregado en vanilla (pestañas, AO, wet, hairlines,
+    ''' sombra de boca), y el usuario que abrió «+Misc» pidió esa lista. Para los tipos con slot, el
+    ''' usuario elige el PADRE y el motor arrastra sus <c>HNAM</c>.</para></summary>
+    Public Structure FiltrosDePicker
+        ''' <summary><c>HDPT.PartType</c> coincide con el tipo pedido.</summary>
+        Public TipoOk As Boolean
+        ''' <summary>No es un extra <c>HNAM</c>. Siempre True para el tipo 0 (Misc).</summary>
+        Public NoEsExtraOk As Boolean
+        ''' <summary>Declara el bit del género pedido, o no declara ninguno (universal).</summary>
+        Public GeneroOk As Boolean
+        ''' <summary>La raza le entra por <c>RNAM</c> o por los defaults de la RACE.</summary>
+        Public RazaOk As Boolean
+        ''' <summary>Los cuatro. Es lo que usa el selector.</summary>
+        Public ReadOnly Property Pasa As Boolean
+            Get
+                Return TipoOk AndAlso NoEsExtraOk AndAlso GeneroOk AndAlso RazaOk
+            End Get
+        End Property
+    End Structure
+
+    ' ⛔⛔ ACÁ HABÍA TRES CONSTANTES CON LOS BITS DE `DATA` — `BitMacho`, `BitHembra`,
+    ' `BitEsExtra` — y el comentario decía «escritos una vez». Era falso y lo escribí yo: saqué la
+    ' copia que vivía en el formulario del selector y CREÉ OTRA acá, mientras una tercera seguía
+    ' viva en `MainForm`. Tres deletreos del mismo bit.
+    '   Y sobraban las tres: **el esquema los declara con nombre** — `FlagsMale`, `FlagsFemale`,
+    ' `FlagsIsExtraPart` en la interfaz generada, con su doc «Bit 3 de DATA\Flags: Is Extra Part» —
+    ' y todo el resto del árbol los usa así. Una tabla a mano que repite lo que el formato declara
+    ' es duplicación CON EL ESQUEMA, que es la peor de las tres: el día que el esquema cambie, la
+    ' copia sigue contestando el valor viejo y nadie se entera.
+
+    ''' <summary>Los cuatro filtros para un head part concreto. <paramref name="tipoPedido"/> es el
+    ''' slot que el usuario abrió (0 = el balde Misc).</summary>
+    ''' <param name="hdptFormID">La identidad con la que preguntar por la raza. Va aparte de
+    ''' <paramref name="hdpt"/> porque un borrador nuevo tiene el encabezado del record en CERO y la
+    ''' sede lo indexa por el FormID del borrador.</param>
+    Public Function FiltrarParaPicker(hdpt As Canon.IHdpt, hdptFormID As UInteger,
+                                      tipoPedido As Integer, raceFormID As UInteger,
+                                      isFemale As Boolean, res As ResolucionDeHeadParts,
+                                      Optional raceDefaults As HashSet(Of UInteger) = Nothing) As FiltrosDePicker
+        Dim f As New FiltrosDePicker()
+        If hdpt Is Nothing Then Return f
+        f.TipoOk = (hdpt.TipoDeParte() = tipoPedido)
+        f.NoEsExtraOk = (tipoPedido = 0) OrElse Not hdpt.FlagsIsExtraPart
+        Dim hayMacho = hdpt.FlagsMale
+        Dim hayHembra = hdpt.FlagsFemale
+        ' Sin ningún bit se trata como universal: hay mods que los dejan los dos en cero.
+        f.GeneroOk = (Not hayMacho AndAlso Not hayHembra) OrElse If(isFemale, hayHembra, hayMacho)
+        f.RazaOk = IsHdptValidForRace(hdpt, hdptFormID, raceFormID, isFemale, res, raceDefaults)
+        Return f
+    End Function
+
     ''' <summary>One yielded entry of <see cref="EnumerateHdptChain"/>: the parsed HDPT plus the
     ''' EFFECTIVE part type. Effective type = the HDPT's own PartType, except a Misc(0) sub-part
     ''' reached through a parent's HNAM inherits the parent's type (a hair Hairline, HDPT
@@ -316,6 +407,19 @@ Public Module HeadPartResolver
     Public Class HdptChainEntry
         Public Property Hdpt As Canon.IHdpt
         Public Property EffectivePartType As Integer
+        ''' <summary>El FormID que el recorrido CAMINO para llegar a este nodo.
+        ''' <para>⛔⛔ NO usar <c>Hdpt.FormID</c> para identificar la entrada: el FormID del ENCABEZADO de
+        ''' un borrador NUEVO es <b>CERO</b>. Es el contrato compartido por las SIETE clases de borrador
+        ''' —<c>Draft.FormID</c> es la identidad y el writer estampa el real al emitir—, no una
+        ''' particularidad de HDPT.</para>
+        ''' <para>⛔ EL DOC DECÍA «hoy ningún consumidor de la app lo lee» Y ERA FALSO. El censo: el
+        ''' horneado indexa por <c>EditorID</c> y el de morphs por clave de malla, pero
+        ''' <c>FO4_FaceTint_CLI</c> identificaba cada entrada por el FormID del encabezado, y tres
+        ''' arneses también (<c>HairlineDupProbe</c> ×2, su <c>SelfTest</c>, <c>HairTintGateProbe</c>).
+        ''' Los cinco pasaron a <c>Fid</c>. La divergencia era LATENTE — ninguno de esos caminos ve
+        ''' borradores de sesión —, pero «nadie lo lee» era una afirmación sin censo. El primer intento de <c>Tools\HdptBorradorRenderGate</c> se la comió y
+        ''' reportó «la cadena no recorre el borrador» cuando sí lo recorría, con FormID 0.</para></summary>
+        Public Property Fid As UInteger
     End Class
 
     ''' <summary>Expansion BFS de una cadena de HDPT por <c>ExtraPartFormIDs</c> (extras HNAM). Devuelve cada
@@ -328,13 +432,13 @@ Public Module HeadPartResolver
     ''' del padre que lo alcanzo por HNAM, y un Misc de primer nivel que ADEMAS es extra HNAM de otro root se
     ''' promueve al tipo de ese padre, asi que el resultado no depende del orden.</para></summary>
     Public Iterator Function EnumerateHdptChain(rootFormIDs As IEnumerable(Of UInteger),
-                                                pluginManager As PluginManager,
-                                                Optional parseHdpt As Func(Of PluginRecord, Canon.IHdpt) = Nothing) As IEnumerable(Of HdptChainEntry)
-        If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return
+                                                res As ResolucionDeHeadParts) As IEnumerable(Of HdptChainEntry)
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res), SinSede)
+        If rootFormIDs Is Nothing Then Return
         Dim roots = rootFormIDs.Where(Function(f) f <> 0UI).ToList()
 
         ' Shared precompute (also used by the render walk) so the effective-type rule lives once.
-        Dim miscToParentEffective = BuildMiscToParentEffective(roots, pluginManager, parseHdpt)
+        Dim miscToParentEffective = BuildMiscToParentEffective(roots, res)
 
         Dim visited As New HashSet(Of UInteger)
         ' Queue of (FormID, parent effective type). Roots carry parentEff = -1.
@@ -346,15 +450,13 @@ Public Module HeadPartResolver
             Dim item = queue.Dequeue()
             Dim fid = item.Fid
             If Not visited.Add(fid) Then Continue While
-            Dim rec = pluginManager.GetRecord(fid)
-            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue While
-            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), Canon.CanonRecords.Hdpt(rec, pluginManager))
+            Dim hdpt = res.Hdpt(fid)
             If hdpt Is Nothing Then Continue While
 
             ' Effective type via the shared rule (same one the render walk uses).
             Dim effectiveType = ResolveEffectivePartType(hdpt.TipoDeParte(), item.ParentEff, fid, miscToParentEffective)
 
-            Yield New HdptChainEntry With {.Hdpt = hdpt, .EffectivePartType = effectiveType}
+            Yield New HdptChainEntry With {.Hdpt = hdpt, .EffectivePartType = effectiveType, .Fid = fid}
 
             ' Children inherit this node's effective type (so a hairline under hair stays Hair).
             Dim childParentEff = If(effectiveType <> 0, effectiveType, item.ParentEff)

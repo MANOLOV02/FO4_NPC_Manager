@@ -1196,7 +1196,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                                                _ctx.PluginManager,
                                                New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
                                                    AddressOf ResolverLmSkinTemplate),
-                                               AddressOf _ctx.ParseRaceCanonCached)
+                                               AddressOf _ctx.ParseRaceCanonCached,
+                                               resHeadParts:=_ctx.HeadParts)
     End Function
 
     ''' <summary>Envoltorio del resolvedor de plantillas de piel de LooksMenu. Existe porque VB no convierte

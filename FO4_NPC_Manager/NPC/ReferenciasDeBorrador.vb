@@ -1,4 +1,4 @@
-''' <summary>EL CENSO de los campos por los que un borrador puede apuntar a OTRO borrador, y la única
+﻿''' <summary>EL CENSO de los campos por los que un borrador puede apuntar a OTRO borrador, y la única
 ''' lista que consumen sus DOS lectores: el remapeo de la promoción
 ''' (<see cref="Borradores.RemapearSupervivientes"/>) y el censo de referrers que decide si un borrador
 ''' se puede borrar (<c>MainForm.GetDraftReferrers</c>).
@@ -82,13 +82,30 @@ Public Module CensoDeReferencias
     ''' MSWP adentro. O sea: la referencia quedaba muerta tras guardar, Y «Delete draft» le decía al
     ''' usuario que a ese MSWP no lo apuntaba nadie. Dos listas se separan; ésta no puede.</para>
     '''
-    ''' <para><b>Sólo entran las cinco clases que TIENEN borrador</b> —OTFT, LVLI, ARMO, ARMA, MSWP—:
-    ''' un identificador provisional (byte alto 0xFF) no puede llegar a un campo que apunta a RACE,
-    ''' ENCH, SNDR, TXST o KYWD, porque de esos no hay borrador que crear. Por eso quedan afuera, y no
-    ''' por olvido: <c>Race</c>, <c>Enchantment</c>, <c>SoundPickUp/PutDown</c>, <c>EquipmentType</c>,
-    ''' <c>BlockBashImpactDataSet</c>, <c>AlternateBlockMaterial</c>, <c>PreviewTransform</c>,
-    ''' <c>InstanceNaming</c>, <c>Male/FemaleSkinTexture</c>, <c>*SkinTextureSwapList</c>,
-    ''' <c>FootstepSound</c>, <c>ArtObject</c> y las keywords.</para>
+    ''' <para><b>Sólo entran las clases que TIENEN borrador</b> — hoy son OCHO: OTFT, LVLI, ARMO,
+    ''' ARMA, MSWP y, desde la ola de head parts, <b>HDPT, TXST y FLST</b>.</para>
+    '''
+    ''' <para>⚠️ <b>ACÁ HABÍA UNA RAZÓN QUE DEJÓ DE SER VERDAD, y por eso queda escrita.</b> Este párrafo
+    ''' decía que <c>Male/FemaleSkinTexture</c> y <c>*SkinTextureSwapList</c> quedaban afuera «porque de
+    ''' esos no hay borrador que crear» — o sea que la exclusión no era un olvido sino una consecuencia
+    ''' de que TXST y FLST no tuvieran borrador. <b>Ahora lo tienen</b> (decisión del usuario, 20-sep),
+    ''' así que la consecuencia se dio vuelta y los cuatro campos ENTRAN. El resto sigue afuera por la
+    ''' razón original, que no cambió: <c>Race</c>, <c>Enchantment</c>, <c>SoundPickUp/PutDown</c>,
+    ''' <c>EquipmentType</c>, <c>BlockBashImpactDataSet</c>, <c>AlternateBlockMaterial</c>,
+    ''' <c>PreviewTransform</c>, <c>InstanceNaming</c>, <c>FootstepSound</c>, <c>ArtObject</c> y las
+    ''' keywords — de ninguno de esos records hay borrador.</para>
+    '''
+    ''' <para><b>Y entran también las <i>Alternate Textures</i> de Skyrim</b> (<c>MODS</c> de ARMA y de
+    ''' ARMO: <c>Alternate Texture\New Texture → TXST</c>). Hoy <b>ningún selector las escribe</b>, igual
+    ''' que <c>TemplateArmor</c>: van por el mismo criterio declarado arriba —qué campo PUEDE apuntar a un
+    ''' borrador <b>según el formato</b>, no qué camino de la interfaz existe— así que el día que aparezca
+    ''' el selector, el remapeo y el censo ya lo cubren. En Fallout 4 ese campo es un material swap (otra
+    ''' cosa) y ya estaba.</para>
+    '''
+    ''' <para><b>ARMO no apunta a TXST en Fallout 4.</b> Medido sobre el esquema: el <c>TNAM</c> de un ARMO
+    ''' es la PLANTILLA (otro ARMO), no un conjunto de texturas, y las tres referencias a TXST que declara
+    ''' el ARMO de Skyrim son las de <i>Alternate Textures</i> del párrafo anterior. Queda escrito porque
+    ''' es fácil suponer la arista por analogía con ARMA, que sí la tiene.</para>
     '''
     ''' <para><b>MSWP no rinde NADA, y es correcto.</b> Un material swap no declara ni un campo de
     ''' referencia: sus sustituciones son tres cadenas y un índice de color
@@ -150,10 +167,35 @@ Public Module CensoDeReferencias
                     Yield RefDe(mdl, Function(x) x.ModelFilename,
                                 Sub(x, v) x.ModelFilename = v, "addon")
                 Next
+                ' Alternate Textures (MODS) → TXST. Ningún selector las escribe hoy; entran por formato.
+                For Each at In armoSse.AlternateTextures
+                    Yield RefDe(at, Function(x) x.AlternateTextureNewTexture,
+                                Sub(x, v) x.AlternateTextureNewTexture = v, "textura alternativa")
+                Next
             End If
             ' La plantilla está en la interfaz común: la declaran los dos juegos.
             Yield RefDe(armo, Function(x) x.TemplateArmor, Sub(x, v) x.TemplateArmor = v, "plantilla")
             Return
+        End If
+
+        ' ARMA — las texturas de skin y sus swap-list están en la interfaz COMÚN: las declaran los dos
+        ' juegos, y desde la ola de head parts TXST y FLST tienen borrador, así que son aristas reales.
+        Dim arma = TryCast(record, Canon.IArma)
+        If arma IsNot Nothing Then
+            Yield RefDe(arma, Function(x) x.MaleSkinTexture, Sub(x, v) x.MaleSkinTexture = v, "textura de piel")
+            Yield RefDe(arma, Function(x) x.FemaleSkinTexture, Sub(x, v) x.FemaleSkinTexture = v, "textura de piel")
+            Yield RefDe(arma, Function(x) x.MaleSkinTextureSwapList,
+                        Sub(x, v) x.MaleSkinTextureSwapList = v, "lista de swap de piel")
+            Yield RefDe(arma, Function(x) x.FemaleSkinTextureSwapList,
+                        Sub(x, v) x.FemaleSkinTextureSwapList = v, "lista de swap de piel")
+            Dim armaSse = TryCast(record, Canon.ArmaSSE)
+            If armaSse IsNot Nothing Then
+                ' Idem ARMO: por formato, sin selector todavía.
+                For Each at In armaSse.AlternateTextures
+                    Yield RefDe(at, Function(x) x.AlternateTextureNewTexture,
+                                Sub(x, v) x.AlternateTextureNewTexture = v, "textura alternativa")
+                Next
+            End If
         End If
 
         ' ARMA: los CUATRO material swap, que sólo existen en Fallout 4. Skyrim no declara MSWP.
@@ -168,6 +210,61 @@ Public Module CensoDeReferencias
             Yield RefDe(armaFo4, Function(x) x.FemaleMaterialSwap2,
                         Sub(x, v) x.FemaleMaterialSwap2 = v, "material swap 1ra persona")
         End If
+
+        ' ============================================================================
+        ' HDPT — la ola de head parts. Cinco campos de referencia, y uno de ellos apunta a su PROPIA
+        ' clase: ⛔ <c>HNAM</c> (Extra Parts) es HDPT→HDPT, UNA arista de este censo que puede
+        ' (⚠️ no la primera: <c>LVLI</c> ya la tenia por su <c>LVLO\Item</c>, declarado sin firma, y su
+        ' clausura con visitados de NpcOverrideSaver.vb:891-899 es el molde a copiar)
+        ' formar un ciclo. Medido (`Tools\censo_hdpt.py`): 2.254 de los 2.546 HDPT de Fallout 4 (89 %) declaran al menos un
+        ' extra, hasta 5. Quien recorra estas referencias para hacer una CLAUSURA tiene que llevar
+        ' conjunto de visitados — el recorrido de la armadura no lo necesitaba y lo dice en su propio
+        ' comentario («no ARMO→ARMO edge exists»).
+        ' ============================================================================
+        Dim hdpt = TryCast(record, Canon.IHdpt)
+        If hdpt IsNot Nothing Then
+            For Each ex In hdpt.ExtraParts
+                Yield RefDe(ex, Function(x) x.Part, Sub(x, v) x.Part = v, "parte extra")
+            Next
+            Yield RefDe(hdpt, Function(x) x.TextureSet, Sub(x, v) x.TextureSet = v, "conjunto de texturas")
+            Yield RefDe(hdpt, Function(x) x.ValidRaces, Sub(x, v) x.ValidRaces = v, "razas válidas")
+            Yield RefDe(hdpt, Function(x) x.Color, Sub(x, v) x.Color = v, "color")
+            ' El material swap del modelo sólo existe en Fallout 4 (en Skyrim ese MODS es un arreglo de
+            ' texturas alternativas, que se enumera abajo).
+            Dim hdptFo4 = TryCast(record, Canon.HdptFO4)
+            If hdptFo4 IsNot Nothing Then
+                Yield RefDe(hdptFo4, Function(x) x.ModelMaterialSwap,
+                            Sub(x, v) x.ModelMaterialSwap = v, "material swap")
+            End If
+            Dim hdptSse = TryCast(record, Canon.HdptSSE)
+            If hdptSse IsNot Nothing Then
+                For Each at In hdptSse.AlternateTextures
+                    Yield RefDe(at, Function(x) x.AlternateTextureNewTexture,
+                                Sub(x, v) x.AlternateTextureNewTexture = v, "textura alternativa")
+                Next
+            End If
+            Return
+        End If
+
+        ' FLST — <c>LNAM</c> es un arreglo de FormID SIN firma declarada en el esquema
+        ' (<c>Wb.Fid("FormID")</c>): la lista puede contener CUALQUIER record, así que por el criterio de
+        ' este censo —qué puede apuntar a un borrador según el formato— entra entera. El uso que trae
+        ' esta ola son razas (el <c>RNAM</c> de un head part) y de RACE no hay borrador, pero el filtro a
+        ' RACE es de la UI y no del record.
+        Dim flst = TryCast(record, Canon.IFlst)
+        If flst IsNot Nothing Then
+            For Each en In flst.FormIDs
+                Yield RefDe(en, Function(x) x.FormID, Sub(x, v) x.FormID = v, "miembro de la lista")
+            Next
+            Return
+        End If
+
+        ' TXST no rinde NADA, y es correcto: sus campos son ocho rutas de textura, el bloque de decal,
+        ' las banderas, el material y OBND — ni un FormID. ⛔ Queda escrito por lo mismo que MSWP: que el
+        ' remapeo no toque los TXST no es un hueco, es que no hay nada que remapear.
+        Dim txst = TryCast(record, Canon.ITxst)
+        If txst IsNot Nothing Then Return
+
         ' MSWP no rinde nada. Ver el párrafo del doc: no es un hueco.
     End Function
 

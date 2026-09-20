@@ -184,6 +184,25 @@ Public Module NpcOverrideSaver
         ''' <summary>All Material Swap (MSWP) drafts from MainForm's <c>_mswpDrafts</c>. Emitted (Phase 2g) for the
         ''' subset reachable from the needed ARMO/ARMA drafts' material-swap FormIDs. Nothing = none.</summary>
         Public MswpDrafts As List(Of MswpDraft) = Nothing
+        ''' <summary>Head parts propias (HDPT). Se emite la CLAUSURA: las sucias, mas las que otro HDPT
+        ''' emitido declare en su <c>HNAM</c> — una arista de una clase a SI MISMA (89 % de los HDPT de
+        ''' FO4 declaran extras), asi que el recorrido lleva visitados.
+        ''' <para>⚠️ NO es la primera del grafo: LVLI ya la tenia y su clausura con visitados
+        ''' (<c>:891-899</c>) es el molde que este recorrido copia.</para></summary>
+        Public HdptDrafts As List(Of HdptDraft) = Nothing
+        ''' <summary>Conjuntos de texturas propios (TXST). Los tiran el <c>TNAM</c> de un HDPT emitido y
+        ''' los dos campos de skin texture de un ARMA/ARMO emitido.</summary>
+        Public TxstDrafts As List(Of TxstDraft) = Nothing
+        ''' <summary>Listas de formularios propias (FLST). Las tiran el <c>RNAM</c> de un HDPT emitido y
+        ''' el swap-list de skin de un ARMA emitido.</summary>
+        Public FlstDrafts As List(Of FlstDraft) = Nothing
+
+        ''' <summary>LA SEDE de resolución de head parts (la MISMA instancia que el render y el bake).
+        ''' ⛔ Sin ella, la Fase 1c resuelve contra el <c>PluginManager</c> pelado y
+        ''' <c>ResolverPartesDeCabeza</c> DESCARTA lo que no resuelve
+        ''' (<c>CanonInterpretacion.vb:1007</c>, <c>If hd Is Nothing Then Continue For</c>): un head part
+        ''' propio asignado a un NPC desaparecería del <c>PNAM</c> al guardar, sin un error.</summary>
+        Public HeadParts As ResolucionDeHeadParts = Nothing
         ''' <summary>GLOBAL FormIDs the user marked for REMOVAL from their plugin (Delete of a saved NEW record /
         ''' Revert of a saved OVERRIDE). Records with these FormIDs are NOT preserved in Phase 2a, so on re-save a
         ''' new record vanishes and an override is dropped (the base/original record wins again). Nothing = none.</summary>
@@ -463,6 +482,9 @@ Public Module NpcOverrideSaver
         ' CLFM colour records: preserved ones from a prior save (Phase 2a) + the ones materialized for the SSE
         ' RaceMenu hair tint (Phase 2h). SKYRIM-ONLY by construction — see MaterializeSseHairColors.
         Dim clfmEntries As New List(Of SaveNpcEspWriter.ClfmRecordEntry)
+        Dim hdptEntries As New List(Of SaveNpcEspWriter.HdptRecordEntry)
+        Dim txstEntries As New List(Of SaveNpcEspWriter.TxstRecordEntry)
+        Dim flstEntries As New List(Of SaveNpcEspWriter.FlstRecordEntry)
         ' HEDR.NextObjectID of the on-disk plugin (0 when creating fresh). Forwarded to the writer
         ' so re-save doesn't roll back the dispense counter and accidentally re-issue an ID that
         ' CK already consumed between saves.
@@ -615,6 +637,43 @@ Public Module NpcOverrideSaver
                     Dim parsedArma = Canon.CanonRecords.Arma(rec, ctx.PluginManager)
                     If parsedArma Is Nothing Then Throw NoSePudoPreservar(rec)
                     armaEntries.Add(BuildArmaEntryFromParsed(parsedArma, rec, ctx))
+                    Continue For
+                End If
+                ' HDPT / TXST / FLST autorados por un guardado ANTERIOR de este plugin. Misma ley que
+                ' ARMO/ARMA/MSWP: se preservan como ficha OVERRIDE. ⛔ Sin esto caen en `existingRecords`
+                ' y `SerializeExistingRecord` -que solo sabe NPC_- TIRA, asi que el SEGUNDO guardado
+                ' sobre el mismo ESP revienta.
+                If rec.Header.Signature = "HDPT" Then
+                    Dim parsedHdpt = Canon.CanonRecords.Hdpt(rec, ctx.PluginManager)
+                    If parsedHdpt Is Nothing Then Throw NoSePudoPreservar(rec)
+                    hdptEntries.Add(New SaveNpcEspWriter.HdptRecordEntry(CType(parsedHdpt, Canon.CanonView)) With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedHdpt.EditorID,
+                        .IsOverride = True,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2})
+                    Continue For
+                End If
+                If rec.Header.Signature = "TXST" Then
+                    Dim parsedTxst = Canon.CanonRecords.Txst(rec, ctx.PluginManager)
+                    If parsedTxst Is Nothing Then Throw NoSePudoPreservar(rec)
+                    txstEntries.Add(New SaveNpcEspWriter.TxstRecordEntry(CType(parsedTxst, Canon.CanonView)) With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedTxst.EditorID,
+                        .IsOverride = True,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2})
+                    Continue For
+                End If
+                If rec.Header.Signature = "FLST" Then
+                    Dim parsedFlst = Canon.CanonRecords.Flst(rec, ctx.PluginManager)
+                    If parsedFlst Is Nothing Then Throw NoSePudoPreservar(rec)
+                    flstEntries.Add(New SaveNpcEspWriter.FlstRecordEntry(CType(parsedFlst, Canon.CanonView)) With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedFlst.EditorID,
+                        .IsOverride = True,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2})
                     Continue For
                 End If
                 If rec.Header.Signature = "MSWP" Then
@@ -938,6 +997,11 @@ Public Module NpcOverrideSaver
         ' signature), sembrado con los OVERRIDE preservados de ese tipo para que un draft NUEVO no colisione con
         ' un record preservado. Los drafts override conservan su EDID verbatim.
         If target.SaveNewOutfits Then
+            ' ⛔ `registrados` vive ACA y no adentro del bloque de ARMO: lo usan las dos clausuras -- la
+            ' de ARMO/ARMA/MSWP y la de HDPT/TXST/FLST -- y tenerlo adentro de una era parte de por que la
+            ' otra estaba anidada. Solo depende de `ctx`.
+            Dim registrados = BorradoresRegistrados(ctx)
+
             ' Index every draft kind by FormID for O(1) closure lookups.
             Dim armoByFid As New Dictionary(Of UInteger, ArmoDraft)
             If ctx.ArmoDrafts IsNot Nothing Then
@@ -959,7 +1023,61 @@ Public Module NpcOverrideSaver
             End If
 
             ' Only do the walk when at least one of the three kinds has drafts.
-            If armoByFid.Count > 0 OrElse armaByFid.Count > 0 OrElse mswpByFid.Count > 0 Then
+
+                ' ============================================================================
+                ' Fases 2j / 2k / 2l — HDPT, TXST y FLST.
+                '
+                ' ⛔ LA ARISTA NUEVA DE CLASE: `HDPT.HNAM` apunta a otro HDPT. El comentario de la
+                ' clausura de arriba dice, textual, «no ARMO→ARMO edge exists, so the queue drains
+                ' without re-enqueuing ARMOs» — eso deja de valer acá, y medido no es un caso raro:
+                ' 2.254 de los 2.546 HDPT de Fallout 4 (89 %) declaran al menos un extra, con hasta 5.
+                ' Por eso este recorrido SI re-encola su propia clase y se cierra con el conjunto de
+                ' visitados (`neededHdpt`), que es lo único que impide un ciclo A→B→A.
+                '
+                ' Las aristas que salen de un HDPT: HNAM (→HDPT), TNAM (→TXST), RNAM (→FLST),
+                ' CNAM (→CLFM) y, sólo en Fallout 4, el material swap del modelo (→MSWP).
+                ' Y las que entran: el PNAM de un NPC guardado.
+                ' ============================================================================
+                Dim hdptByFid As New Dictionary(Of UInteger, HdptDraft)
+                If ctx.HdptDrafts IsNot Nothing Then
+                    For Each d In ctx.HdptDrafts
+                        If d IsNot Nothing Then hdptByFid(d.FormID) = d
+                    Next
+                End If
+                Dim txstByFid As New Dictionary(Of UInteger, TxstDraft)
+                If ctx.TxstDrafts IsNot Nothing Then
+                    For Each d In ctx.TxstDrafts
+                        If d IsNot Nothing Then txstByFid(d.FormID) = d
+                    Next
+                End If
+                Dim flstByFid As New Dictionary(Of UInteger, FlstDraft)
+                If ctx.FlstDrafts IsNot Nothing Then
+                    For Each d In ctx.FlstDrafts
+                        If d IsNot Nothing Then flstByFid(d.FormID) = d
+                    Next
+                End If
+
+            ' ⛔⛔ EL ORDEN DE ESTE BLOQUE ES LA LEY, y lo fijaron DOS defectos que el gate
+            ' `HeadPartSaveGate --borrador` cazo uno detras del otro:
+            '
+            '   1. Las fases 2j/2k/2l estaban ANIDADAS dentro de `If armoByFid.Count > 0 OrElse ...`,
+            '      asi que un guardado con un head part borrador y NINGUN borrador de prenda no entraba
+            '      nunca: el HDPT no se emitia y, como el PNAM del NPC si le apuntaba,
+            '      `ExigirReferenciasSinColgar` RECHAZABA el guardado entero. O sea que crear un pelo
+            '      propio y guardar rompia el guardado salvo que ademas hubiera una prenda nueva. Ese es
+            '      el caso NORMAL de toda esta ola.
+            '
+            '   2. Al desanidarlas aparecio la dependencia que el anidamiento tapaba: la clausura de
+            '      head parts alimenta `neededMswp` -- un HDPT de Fallout 4 apunta a un material swap
+            '      por el MODS de su modelo -- y la emision de MSWP corria ANTES. Un MSWP que SOLO un
+            '      head part referencia se pedia despues de que su vuelta de emision ya habia pasado:
+            '      no se emitia nunca. Era latente antes, no imposible: el anidamiento no lo protegia,
+            '      lo escondia.
+            '
+            ' Por eso: LAS DOS CLAUSURAS PRIMERO, TODAS LAS EMISIONES DESPUES. Cualquier reordenamiento
+            ' que vuelva a poner una emision antes de una clausura reabre el 2.
+
+            If armoByFid.Count > 0 OrElse armaByFid.Count > 0 OrElse mswpByFid.Count > 0 OrElse hdptByFid.Count > 0 OrElse txstByFid.Count > 0 OrElse flstByFid.Count > 0 Then
                 Dim neededArmo As New HashSet(Of UInteger)
                 Dim neededArma As New HashSet(Of UInteger)
                 Dim neededMswp As New HashSet(Of UInteger)
@@ -1063,12 +1181,116 @@ Public Module NpcOverrideSaver
                 ' master original, or this plugin's own copy preserved in Phase 2a), so a reference never dangles.
                 ' Emitting it would just re-write an identical override. NEW drafts are always dirty (IsNew) so they
                 ' are never skipped. Mirror of the ArmA/ArmO/MSWP editor "dirty only on real change" gate.
+                Dim neededHdpt As New HashSet(Of UInteger)
+                Dim neededTxst As New HashSet(Of UInteger)
+                Dim neededFlst As New HashSet(Of UInteger)
+                Dim hdptToVisit As New Queue(Of UInteger)
+                Dim hdptAlreadyEmitted As New HashSet(Of UInteger)(hdptEntries.Select(Function(x) x.FormID))
+                Dim txstAlreadyEmitted As New HashSet(Of UInteger)(txstEntries.Select(Function(x) x.FormID))
+                Dim flstAlreadyEmitted As New HashSet(Of UInteger)(flstEntries.Select(Function(x) x.FormID))
+
+                ' Todo borrador SUCIO se emite, referenciado o no — misma regla que ARMO/ARMA/MSWP
+                ' («if they're saved they may just not be referenced», decisión del usuario).
+                ' ⛔⛔ DECLARADO, porque un gate que prometa «la clausura cierra el ciclo HDPT→FLST→HDPT» va a
+' PASAR EN VACÍO: la regla de abajo —«todo borrador SUCIO se emite, referenciado o no»— corre ANTES
+' del recorrido cruzado, y todo borrador recién creado nace `IsNew` ⇒ `IsDirty`. O sea que las tres
+' siembras ya traen TODOS los borradores de las tres clases y el recorrido no puede agregar un
+' FormID que no estuviera. Verificado con la mutación que lo mataría: sacándole las tres líneas de
+' encolado cruzado, ningún caso cambia. El único que no entra por acá es un OVERRIDE sin cambios, y
+' ése a propósito no se emite porque su FormID ya resuelve al record real.
+'   NO es código muerto: el día que «todo sucio se emite» cambie —por ejemplo si se decide emitir
+' sólo lo referenciado— el recorrido pasa a ser LA ley. Por eso queda, y por eso queda declarado:
+' existe por el contrato, no por cobertura medida. Lo levantó la revisión adversarial [rev-30].
+For Each d In hdptByFid.Values
+                    If d.IsDirty AndAlso neededHdpt.Add(d.FormID) Then hdptToVisit.Enqueue(d.FormID)
+                Next
+                For Each d In txstByFid.Values
+                    If d.IsDirty Then neededTxst.Add(d.FormID)
+                Next
+                For Each d In flstByFid.Values
+                    If d.IsDirty Then neededFlst.Add(d.FormID)
+                Next
+
+                ' --- Siembra: los HDPT que el PNAM de un NPC guardado referencia. La lista ya pasó
+                ' por la Fase 1c (overlay + defaults de raza), así que un head part propio asignado
+                ' en Edit Face entra por acá.
+                For Each entry In entries
+                    If entry.Npc Is Nothing Then Continue For
+                    For Each hpFid In entry.Npc.Record.PartesDeCabeza()
+                        If hdptByFid.ContainsKey(hpFid) AndAlso neededHdpt.Add(hpFid) Then hdptToVisit.Enqueue(hpFid)
+                    Next
+                Next
+
+                ' --- El recorrido. ⛔ CRUZA CLASES, y eso no es una precaución sino una medición:
+                ' `FLST.LNAM` se declara SIN firma en el esquema (`Wb.Fid("FormID")`), así que una
+                ' FLST puede contener un HDPT — medido, 384 aristas FLST→HDPT en Fallout 4 y 3 en
+                ' Skyrim, más 60/149 de FLST→FLST. Con borradores de las dos clases,
+                ' `HDPT →(RNAM)→ FLST →(LNAM)→ HDPT` es un ciclo REPRESENTABLE, así que una cola por
+                ' clase con visitados sólo dentro de la clase no lo cierra. El molde es la clausura
+                ' anidada de LVLI (`:891-899`), que ya resolvió esto para su propia arista.
+                ' ⛔ LAS ARISTAS SALEN DEL CENSO (`CensoDeReferencias.DeBorrador`), no de una lista de
+                ' campos escrita acá. Es la misma enumeración que usan el censo de referrers y el
+                ' remapeo de la promoción, y su propio doc-comment cuenta por qué no puede haber dos:
+                ' cuando eran dos listas a mano ya habían derivado —cubrían dos de los cuatro material
+                ' swap del ARMA— y la referencia quedaba muerta tras guardar mientras «Delete draft»
+                ' le decía al usuario que nadie la apuntaba.
+                ' Las tres semillas ya están en sus `needed*`; la cola arranca con TODAS.
+                For Each f In neededTxst : hdptToVisit.Enqueue(f) : Next
+                For Each f In neededFlst : hdptToVisit.Enqueue(f) : Next
+                While hdptToVisit.Count > 0
+                    Dim fid = hdptToVisit.Dequeue()
+                    ' El árbol del borrador, de la clase que sea. Un FormID que no es de ninguna de
+                    ' las tres no aporta aristas nuevas y se saltea.
+                    Dim arbol As Object = Nothing
+                    If hdptByFid.ContainsKey(fid) Then
+                        arbol = hdptByFid(fid).Record
+                    ElseIf txstByFid.ContainsKey(fid) Then
+                        arbol = txstByFid(fid).Record
+                    ElseIf flstByFid.ContainsKey(fid) Then
+                        arbol = flstByFid(fid).Record
+                    End If
+                    If arbol Is Nothing Then Continue While
+                    For Each r In CensoDeReferencias.DeBorrador(arbol)
+                        If r.Valor = 0UI Then Continue For
+                        If hdptByFid.ContainsKey(r.Valor) AndAlso neededHdpt.Add(r.Valor) Then hdptToVisit.Enqueue(r.Valor)
+                        If txstByFid.ContainsKey(r.Valor) AndAlso neededTxst.Add(r.Valor) Then hdptToVisit.Enqueue(r.Valor)
+                        If flstByFid.ContainsKey(r.Valor) AndAlso neededFlst.Add(r.Valor) Then hdptToVisit.Enqueue(r.Valor)
+                        If mswpByFid.ContainsKey(r.Valor) Then neededMswp.Add(r.Valor)
+                        ' ⛔ Un miembro de FLST puede ser un ARMO/ARMA borrador, y sus fases (2e/2f) ya
+                        ' corrieron: agregarlos acá llegaría tarde. No hace falta, y el porqué es la
+                        ' regla que ya gobierna esas fases — TODO borrador SUCIO se emite, referenciado
+                        ' o no— así que el único caso que quedaría afuera es un OVERRIDE sin cambios,
+                        ' que a propósito NO se emite porque su FormID ya resuelve al record real.
+                    Next
+                End While
+
+                ' --- Las aristas NUEVAS desde la armadura (decisión H del usuario: los borradores de
+                ' TXST y FLST se pueden usar desde ARMA). Sin esto se puede guardar un ARMA apuntando
+                ' a un TXST que el usuario canceló. Por el CENSO, igual que arriba.
+                ' ⚠️ Son DOS clases de arista y no tres: ARMA→TXST (las dos texturas de piel) y
+                ' ARMA→FLST (sus dos swap-list). ARMO **no** apunta a TXST en Fallout 4 —su `TNAM` es
+                ' la plantilla, otro ARMO—; en Skyrim sí, por las texturas alternativas, y el censo las
+                ' trae aunque hoy ningún selector las escriba.
+                For Each fid In neededArma
+                    For Each r In CensoDeReferencias.DeBorrador(armaByFid(fid).Record)
+                        If r.Valor = 0UI Then Continue For
+                        If txstByFid.ContainsKey(r.Valor) Then neededTxst.Add(r.Valor)
+                        If flstByFid.ContainsKey(r.Valor) Then neededFlst.Add(r.Valor)
+                    Next
+                Next
+                For Each fid In neededArmo
+                    For Each r In CensoDeReferencias.DeBorrador(armoByFid(fid).Record)
+                        If r.Valor = 0UI Then Continue For
+                        If txstByFid.ContainsKey(r.Valor) Then neededTxst.Add(r.Valor)
+                        If flstByFid.ContainsKey(r.Valor) Then neededFlst.Add(r.Valor)
+                    Next
+                Next
+
                 ' --- Phase 2e: build ArmoRecordEntry for each needed ARMO draft. ---
                 ' ⛔ LA MISMA LEY para las tres fases que siguen: un ARMO propio apunta a ARMA y a MSWP
                 ' propios, y un ARMA a MSWP. Si alguno de esos se cancelo, la referencia queda colgada igual
                 ' que en un INAM o en una entrada LVLO. El censo es el mismo (`CensoDeReferencias`), asi que
                 ' no hay una segunda lista que se pueda separar de la primera.
-                Dim registrados = BorradoresRegistrados(ctx)
                 Dim usedArmoEdids As New HashSet(Of String)(armoEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededArmo
                     Dim d = armoByFid(fid)
@@ -1095,8 +1317,51 @@ Public Module NpcOverrideSaver
                     If mswpAlreadyEmitted.Contains(d.FormID) Then mswpEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     mswpEntries.Add(BuildMswpEntry(d, ctx, espNameNoExt, usedMswpEdids, target))
                 Next
+
+                ' --- Fase 2j: TXST. Van primeras porque son terminales del grafo.
+                Dim usedTxstEdids As New HashSet(Of String)(txstEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
+                For Each fid In neededTxst
+                    Dim d = txstByFid(fid)
+                    If d.IsOverride AndAlso Not d.IsDirty Then Continue For
+                    ExigirReferenciasSinColgar("TXST", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    If txstAlreadyEmitted.Contains(d.FormID) Then txstEntries.RemoveAll(Function(x) x.FormID = d.FormID)
+                    txstEntries.Add(BuildTxstEntry(d, ctx, espNameNoExt, usedTxstEdids, target))
+                Next
+                ' --- Fase 2k: FLST.
+                Dim usedFlstEdids As New HashSet(Of String)(flstEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
+                For Each fid In neededFlst
+                    Dim d = flstByFid(fid)
+                    If d.IsOverride AndAlso Not d.IsDirty Then Continue For
+                    ExigirReferenciasSinColgar("FLST", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    If flstAlreadyEmitted.Contains(d.FormID) Then flstEntries.RemoveAll(Function(x) x.FormID = d.FormID)
+                    flstEntries.Add(BuildFlstEntry(d, ctx, espNameNoExt, usedFlstEdids, target))
+                Next
+                ' --- Fase 2l: HDPT.
+                Dim usedHdptEdids As New HashSet(Of String)(hdptEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
+                For Each fid In neededHdpt
+                    Dim d = hdptByFid(fid)
+                    If d.IsOverride AndAlso Not d.IsDirty Then Continue For
+                    ExigirReferenciasSinColgar("HDPT", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    If hdptAlreadyEmitted.Contains(d.FormID) Then hdptEntries.RemoveAll(Function(x) x.FormID = d.FormID)
+                    hdptEntries.Add(BuildHdptEntry(d, ctx, espNameNoExt, usedHdptEdids, target))
+                Next
             End If
         End If
+
+        ' ⛔⛔ Y SI EL CHECK ESTÁ APAGADO, LOS OVERRIDE SUCIOS SE DESCARTAN — PERO NO EN SILENCIO.
+        ' Todo el bloque de arriba vive dentro de `If target.SaveNewOutfits Then`, y la fase 1f —la
+        ' que avisa— sólo mira FormID PROVISIONALES. Un borrador OVERRIDE conserva su FormID REAL,
+        ' así que no se emite, no deja ninguna referencia colgada —por eso `ExigirReferenciasSinColgar`
+        ' no se queja— y no generaba UN SOLO aviso: el usuario editaba un HDPT vanilla, lo veía
+        ' aplicado en el preview, destildaba el check, guardaba, y el .esp no tenía su edición ni una
+        ' línea que lo explicara. Y el rótulo del check dice «Save NEW records», cuando un override no
+        ' es un record nuevo: el nombre promete lo contrario de lo que hace.
+        '   ⛔ ESTO ARREGLA EL SILENCIO, NO LA CONDUCTA. Que el check gatee también los override es
+        ' una decisión de producto y de BYTES, y la toma el usuario. Lo que no se discute es que
+        ' descartar trabajo suyo no puede ser mudo.
+        '   Vale para las OCHO clases y no sólo para las tres de esta ola: el mismo `If` las gatea a
+        ' todas, así que avisar por tres sería dejar el mismo defecto en cinco.
+        If Not target.SaveNewOutfits Then AvisarOverridesDescartados(ctx)
 
         ' Phase 2h: add the saved NPCs to a Leveled NPC list (LVLN) when requested. Each saved NPC's
         ' GLOBAL FormID (inputs(i).NpcFormID is global — GetRecord-keyed) becomes one LVLO entry. We pass
@@ -1123,7 +1388,8 @@ Public Module NpcOverrideSaver
             entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries, leveledEntries,
             existingNextObjectId,
             armoEntries:=armoEntries, armaEntries:=armaEntries, mswpEntries:=mswpEntries,
-            clfmEntries:=clfmEntries)
+            clfmEntries:=clfmEntries,
+            hdptEntries:=hdptEntries, txstEntries:=txstEntries, flstEntries:=flstEntries)
 
         result.WriterResult = writeRes
         result.DraftFormIdMap = writeRes.DraftFormIdMap
@@ -1472,10 +1738,38 @@ Public Module NpcOverrideSaver
         ' `HasHeadPartFormIDs` en True, y el NPC seleccionado se guarda siempre.
         Dim esSseGuardado As Boolean = (Config_App.Current IsNot Nothing AndAlso
                                         Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim autoriaCruda = NpcRecordOverlay.OverlayDeAutoria(npcFormID, ctx.AppliedPresets)
         Dim overlay As LooksmenuLoader.LooksmenuPreset =
-            NpcRecordOverlay.AutoriaParaGuardado(
-                NpcRecordOverlay.OverlayDeAutoria(npcFormID, ctx.AppliedPresets),
-                baseMaterializada, esSseGuardado)
+            NpcRecordOverlay.AutoriaParaGuardado(autoriaCruda, baseMaterializada, esSseGuardado)
+        ' ⛔⛔ EL DESCARTE POR HERENCIA ERA MUDO. `AutoriaParaGuardado` vacía los canales que este NPC
+        ' HEREDA, y para un heredero eso se lleva la lista de head parts que el usuario authoréó —
+        ' correctamente, porque el motor le lee la cara al TERMINAL y su PNAM propio no manda. Pero
+        ' nadie se lo decía: el head part propio se escribe al .esp como record, el NPC no lo lleva, y
+        ' en el juego no aparece. El usuario ve su record en xEdit y al NPC sin la parte, sin una sola
+        ' línea que explique por qué.
+        '   Lo cazó el eje del heredero de `Tools\HeadPartSaveGate`, que nació justamente de convertir
+        ' en EJE la exclusión de ese sujeto: el gate afirmaba que no llega (la ley) y encontró que
+        ' tampoco se avisa (el hueco).
+        '   UN aviso por NPC, no uno por parte: para un heredero se cae la lista ENTERA, y N avisos
+        ' diciendo lo mismo es ruido que se lee como N problemas distintos.
+        If autoriaCruda IsNot Nothing AndAlso autoriaCruda.HasHeadPartFormIDs AndAlso
+           autoriaCruda.HeadPartFormIDs IsNot Nothing AndAlso autoriaCruda.HeadPartFormIDs.Count > 0 AndAlso
+           (overlay Is Nothing OrElse Not overlay.HasHeadPartFormIDs OrElse
+            overlay.HeadPartFormIDs Is Nothing OrElse overlay.HeadPartFormIDs.Count = 0) Then
+            Dim sedeAviso = ctx.HeadParts
+            Dim nombres As New List(Of String)
+            For Each f In autoriaCruda.HeadPartFormIDs
+                If f = 0UI Then Continue For
+                Dim hv As Canon.IHdpt = Nothing
+                If sedeAviso IsNot Nothing Then hv = sedeAviso.Hdpt(f)
+                nombres.Add(If(hv Is Nothing OrElse String.IsNullOrEmpty(hv.EditorID),
+                               $"0x{f:X8}", hv.EditorID))
+            Next
+            ctx.PayloadWarnings.Add(
+                $"{npcSpec.Record.EditorID} INHERITS its face from its template, so its own head parts are " &
+                $"ignored by the game and were not written: {String.Join(", ", nombres)}. To give this NPC " &
+                "its own face, detach it first (Edit Face says so), or edit the template instead.")
+        End If
 
         ' ⛔ Aca vivia la "fase 1b", que detectaba una edicion de MWGT en el overlay y escribia los tres
         ' pesos. Era un SEGUNDO ESCRITOR REDUNDANTE, no un lector con ley propia, y se borro entera:
@@ -1502,13 +1796,13 @@ Public Module NpcOverrideSaver
         If presetHasHeadParts Then
             Dim presetParts = overlay.HeadPartFormIDs
             Dim presetIsCompleteSuperset As Boolean = overlay.HeadPartFormIDsIncludeRawExtras
-            Dim resolverHdpt = Function(fid As UInteger) As Canon.IHdpt
-                                   ' Misma resolucion que hacia el `classifyHeadPart` que este hunk
-                                   ' reemplaza (NpcOverrideSaver.vb:1278-1280).
-                                   Dim hpRec = ctx.PluginManager.GetRecord(fid)
-                                   If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Return Nothing
-                                   Return Canon.CanonRecords.Hdpt(hpRec, ctx.PluginManager)
-                               End Function
+            ' ⛔ POR LA SEDE, no por el PluginManager pelado. Acá había un lambda que hacía
+            ' `GetRecord` + `CanonRecords.Hdpt`, o sea que un FormID de BORRADOR resolvía a Nothing —y
+            ' `ResolverPartesDeCabeza` descarta lo que no resuelve (CanonInterpretacion.vb:1007)—, así
+            ' que el head part propio que el usuario acababa de asignar se caía del PNAM en silencio.
+            ' Es la MISMA instancia que usan el render y el bake: una resolución, una respuesta.
+            Dim sedeHp = ExigirSedeDeHeadParts(ctx)
+            Dim resolverHdpt = New Func(Of UInteger, Canon.IHdpt)(AddressOf sedeHp.Hdpt)
             Dim fuentes As New List(Of Canon.FuenteDePartes)
             If Not presetIsCompleteSuperset Then
                 Dim suppressedRaw = overlay.SuppressedRawHeadPartFormIDs
@@ -1554,6 +1848,151 @@ Public Module NpcOverrideSaver
                 npcSpec.Record.DefaultOutfit = baseMaterializada.Record.DefaultOutfit
             Else
                 npcSpec.Record.QuitarSubrecord("DOFT")
+            End If
+        End If
+
+        ' ============================================================================================
+        ' Phase 1f: fallback del PNAM cuando el usuario NO guarda records nuevos. ES POR SLOT, y eso es
+        ' una DECISIÓN DEL USUARIO (delegada: «lo que consideres mejor práctica», 20-sep).
+        '
+        ' ⛔ NO se generaliza el fallback de DOFT (1d) ni el de WNAM (1e): ésos son campos ÚNICOS y
+        ' revertirlos es asignar un valor. El PNAM es un ARRAY donde unas entradas son borradores y otras
+        ' son ediciones REALES del usuario en Edit Face, así que las dos salidas obvias son malas:
+        '   (a) revertir el PNAM entero a la base ⇒ se pierden las ediciones reales de la sesión;
+        '   (b) sacar sólo las entradas de borrador ⇒ el slot queda vacío y el NPC sale SIN esa parte.
+        '
+        ' ⛔⛔ ACÁ HABÍA UNA TERCERA OPCIÓN MÍA —«reversión POR SLOT»— Y SE DESCARTÓ. Queda escrita para
+        ' que no se re-proponga: reponer, por cada entrada de borrador, la que la base tenía para ESE
+        ' PartType. La refutación (revisión adversarial, 20-sep) es que NO era la composición de dos
+        ' leyes citadas sino una ley nueva, y por cuatro motivos que verifiqué: (1) cambia la CLAVE del
+        ' revert, de «subrecord» a «clasificación DERIVADA del record resuelto», y 1d/1e no resuelven
+        ' nada; (2) `ResolverPartesDeCabeza` es un COMPOSITOR, no un reversor — prestarle la
+        ' clasificación es usar una ley para un gesto que no es el suyo; (3) tiene un caso INDEFINIDO que
+        ' el corpus trae: si la base tiene DOS del mismo tipo que no acumula, no dice cuál vuelve (y
+        ' elegir «la primera» es reusar `ganador(0)`, que es composición); (4) su mitad «las Misc se
+        ' caen» no es un revert sino PÉRDIDA de datos de la base, y los Misc son donde viven los extras
+        ' (2.272 de 2.369 NPC de FO4 llevan uno).
+        '
+        ' ⛔⛔ SEGUNDA CORRECCIÓN, y ésta es DEL USUARIO (20-sep). La versión anterior sólo QUITABA las
+        ' entradas no escribibles y dejaba el slot vacío, apoyada en que la composición lo rellena con el
+        ' DEFAULT DE LA RAZA. La revisión adversarial [rev-29] mostró que eso es falso en el caso NORMAL,
+        ' y lo verifiqué siguiendo el orden de las fases: la 1c ya compuso la lista, así que para cuando
+        ' llega acá el default de la raza fue EVICTADO por el borrador que ganó el slot, y si el usuario
+        ' REEMPLAZÓ el pelo en Edit Face el pelo original del NPC está además en
+        ' `SuppressedRawHeadPartFormIDs`. Nada re-compone después. O sea que lo que se veía no era «lo que
+        ' se vería sin el record que el usuario decidió no guardar» —que es el pelo propio del NPC— sino
+        ' el pelo por defecto de su raza, que para la mayoría de los NPC es OTRO: apagar «guardar records
+        ' nuevos» le CAMBIABA el pelo al NPC.
+        '
+        ' LO QUE SE HACE AHORA: se quitan las entradas no escribibles y el hueco se rellena con LA BASE
+        ' MATERIALIZADA, que es exactamente de donde restauran 1d (`DefaultOutfitPresente`) y 1e
+        ' (`SkinPresente`). Ésta era la asimetría que hacía que 1f no fuera el espejo que decía ser.
+        '
+        ' ⛔ Y se rellena LLAMANDO AL COMPOSITOR con dos fuentes —la base primero, la lista viva
+        ' sobreviviente después— en vez de escribir acá un «buscá el de este tipo y devolvelo». Eso
+        ' importa, porque es la objeción que ya me aceptaron una vez: un revert que clasifica por
+        ' `PartType` sería una ley NUEVA, con un caso indefinido que el corpus trae (base con dos del
+        ' mismo tipo que no acumula). Pasándoselo al compositor no hay ley nueva ni caso indefinido:
+        '   · el slot que la lista viva TODAVÍA reclama se queda con la entrada del usuario (la fuente de
+        '     mayor prioridad se lleva el tipo entero);
+        '   · el slot que quedó sin dueño lo toma la base, con el `ganador(0)` que la ley ya define;
+        '   · los Misc de la base VUELVEN, porque Misc es aditivo — y ahí viven los extras, que era la
+        '     otra mitad de la refutación (2.272 de 2.369 NPC de FO4 llevan un `IsExtraPart` propio).
+        '
+        ' ⛔⛔ Y LA BASE ENTRA **SIN FILTRAR** por `SuppressedRawHeadPartFormIDs`. Lo probé al revés
+        ' primero —filtrada, «igual que el crudo vivo de la fase 1c»— y el gate `--borrador` lo puso en
+        ' ROJO con el caso del gesto normal: REEMPLAZAR una parte IMPLICA suprimir la vieja, así que
+        ' filtrar la base deja afuera justo la entrada que hay que restituir y el slot queda vacío otra
+        ' vez. Medido en el gate: PNAM crudo 13, escrito 12, y «la parte vieja sigue=False».
+        '   La decisión del usuario, textual, es «a lo que tenía la base del NPC … es lo que verías si no
+        ' hubieras tocado nada». La base SIN filtrar es exactamente eso, y la supresión es parte de «lo
+        ' que tocaste». La consecuencia que esto acepta, dicha: si en la MISMA sesión el usuario además
+        ' borró a propósito otra parte, ésa también vuelve — pero sólo en el guardado donde un borrador
+        ' tuvo que descartarse, que es el guardado en el que el usuario pidió volver al punto de partida.
+        '
+        ' Y NO se hace en silencio: cada entrada descartada entra en `ctx.PayloadWarnings`, que es el
+        ' canal que el guardado ya usa para lo que no pudo escribir sin que el .esp falle.
+        '
+        ' Sólo mira FormID PROVISIONALES (`EsFormIdDeBorrador`): un borrador OVERRIDE conserva su FormID
+        ' REAL, que resuelve al record del archivo, así que no hay nada que quitar — mismo criterio que
+        ' usan 1d y 1e.
+        ' ============================================================================================
+        If Not target.SaveNewOutfits Then
+            Dim partesActuales = npcSpec.Record.PartesDeCabeza()
+            Dim hayBorrador As Boolean = False
+            For Each f In partesActuales
+                If Borradores.EsFormIdDeBorrador(f) Then hayBorrador = True : Exit For
+            Next
+            If hayBorrador Then
+                Dim sedeHp1f = ExigirSedeDeHeadParts(ctx)
+                ' Los avisos se JUNTAN y se emiten al final: el texto necesita la lista restituida, que
+                ' todavía no existe mientras se recorren los descartados.
+                Dim avisos1f As New List(Of (String, Integer))
+                Dim sinBorradores As New List(Of UInteger)
+                For Each f In partesActuales
+                    If Not Borradores.EsFormIdDeBorrador(f) Then
+                        If Not sinBorradores.Contains(f) Then sinBorradores.Add(f)
+                        Continue For
+                    End If
+                    ' El aviso nombra el head part por su EditorID cuando se puede resolver: un FormID
+                    ' provisional no le dice nada al usuario.
+                    Dim hd = sedeHp1f.Hdpt(f)
+                    Dim comoSeLlama As String = If(hd Is Nothing OrElse String.IsNullOrEmpty(hd.EditorID),
+                                                   $"0x{f:X8}", hd.EditorID)
+                    ' ⛔ EL AVISO DICE LAS DOS COSAS. Antes decía «ese slot volvió a lo que tenía el
+                    ' record base» y el usuario no tenía forma de saber A QUÉ: para decidir si eso le sirve
+                    ' o si mejor prende «save new records» necesita el nombre de lo que quedó puesto.
+                    '   Y el MOTIVO sale del TIPO, que es quien lo decide — no de una frase igual para
+                    ' todos: con tipo 0 la parte es ADITIVA y no ocupaba slot, así que se va y NADA la
+                    ' reemplaza; con tipo > 0 el slot se quedó sin dueño y lo toma lo que traiga la base.
+                    Dim tipoPerdido As Integer = If(hd Is Nothing, -1, CInt(hd.TipoDeParte()))
+                    avisos1f.Add((comoSeLlama, tipoPerdido))
+                Next
+                ' La base MATERIALIZADA, TAL CUAL: ver el ⛔ de arriba sobre por qué no se la filtra por
+                ' lo suprimido.
+                Dim baseViva1f As New List(Of UInteger)
+                For Each f In baseMaterializada.Record.PartesDeCabeza()
+                    ' Lo único que se saca es un provisional: restituirlo sería volver a poner la
+                    ' referencia colgada que esta fase existe para sacar.
+                    If Borradores.EsFormIdDeBorrador(f) Then Continue For
+                    baseViva1f.Add(f)
+                Next
+                Dim fuentes1f As New List(Of Canon.FuenteDePartes)
+                fuentes1f.Add(New Canon.FuenteDePartes("base", baseViva1f, False))
+                fuentes1f.Add(New Canon.FuenteDePartes("vivo", sinBorradores, False))
+                Dim restituida = Canon.ResolverPartesDeCabeza(fuentes1f,
+                                                              New Func(Of UInteger, Canon.IHdpt)(AddressOf sedeHp1f.Hdpt))
+                If Not MismaListaDeIdentificadores(restituida, partesActuales) Then
+                    npcSpec.Record.PonerPartesDeCabeza(restituida)
+                End If
+                ' ⛔ Recién ACÁ se puede decir qué volvió: la lista restituida no existía cuando se
+                ' recorrieron los borradores descartados. Se descuenta lo que YA estaba puesto sin
+                ' contar los provisionales, así que lo que queda es exactamente lo que ENTRÓ por el
+                ' descarte — no toda la lista, que no le dice nada al usuario.
+                Dim volvieron As New List(Of String)
+                For Each f In restituida
+                    If sinBorradores.Contains(f) Then Continue For
+                    Dim hv = sedeHp1f.Hdpt(f)
+                    volvieron.Add(If(hv Is Nothing OrElse String.IsNullOrEmpty(hv.EditorID),
+                                     $"0x{f:X8}", hv.EditorID))
+                Next
+                Dim loQueVolvio As String = If(volvieron.Count = 0, "nothing", String.Join(", ", volvieron))
+                For Each av In avisos1f
+                    Dim comoSeLlama1f = av.Item1
+                    Dim motivo As String
+                    If av.Item2 = 0 Then
+                        motivo = "It is a Misc part, which does not fill a slot, so nothing replaces it."
+                    ElseIf av.Item2 > 0 Then
+                        motivo = $"Its slot (part type {av.Item2}) was left with no owner, so the base record's " &
+                                 $"part took it: {loQueVolvio}."
+                    Else
+                        motivo = $"Its part type could not be read, so the base record's parts took over: " &
+                                 $"{loQueVolvio}."
+                    End If
+                    ctx.PayloadWarnings.Add(
+                        $"Head part '{comoSeLlama1f}' was NOT written to {npcSpec.Record.EditorID}: it is a " &
+                        $"new record and 'save new records' is off. {motivo}")
+                Next
             End If
         End If
 
@@ -1780,6 +2219,105 @@ Public Module NpcOverrideSaver
         Return e
     End Function
 
+
+    ''' <summary>Build a <see cref="SaveNpcEspWriter.HdptRecordEntry"/> from a <see cref="HdptDraft"/>
+    ''' (Fase 2l). Mismo contrato NEW/OVERRIDE que <see cref="BuildArmoEntry"/>: el identificador final
+    ''' va EN el árbol y sólo en la rama NUEVA, sobre una COPIA — un guardado fallido no puede renombrar el
+    ''' borrador del usuario, y un OVERRIDE no puede ganar un EDID que el original no traía.</summary>
+    Private Function BuildHdptEntry(d As HdptDraft, ctx As SaveContext, espNameNoExt As String,
+                                    usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.HdptRecordEntry
+        Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
+        Dim vcs1 As UInteger, vcs2 As UShort
+        Dim rec As Canon.IHdpt = d.Record
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, rec.EditorID, "HDPT", espNameNoExt,
+                                usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        If Not d.IsOverride Then
+            rec = rec.Copia()
+            If rec Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"HDPT draft {d.FormID:X8}: could not copy the record to write it.")
+            End If
+            rec.EditorID = finalEdid
+        End If
+        Return New SaveNpcEspWriter.HdptRecordEntry(CType(rec, Canon.CanonView)) With {
+            .FormID = d.FormID,
+            .EditorID = finalEdid,
+            .IsOverride = d.IsOverride,
+            .OriginalVcs1 = vcs1,
+            .OriginalVcs2 = vcs2
+        }
+    End Function
+
+    ''' <summary>Build a <see cref="SaveNpcEspWriter.TxstRecordEntry"/> from a <see cref="TxstDraft"/>
+    ''' (Fase 2j). Mismo contrato NEW/OVERRIDE que <see cref="BuildArmoEntry"/>: el identificador final
+    ''' va EN el árbol y sólo en la rama NUEVA, sobre una COPIA — un guardado fallido no puede renombrar el
+    ''' borrador del usuario, y un OVERRIDE no puede ganar un EDID que el original no traía.</summary>
+    Private Function BuildTxstEntry(d As TxstDraft, ctx As SaveContext, espNameNoExt As String,
+                                    usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.TxstRecordEntry
+        Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
+        Dim vcs1 As UInteger, vcs2 As UShort
+        Dim rec As Canon.ITxst = d.Record
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, rec.EditorID, "TXST", espNameNoExt,
+                                usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        If Not d.IsOverride Then
+            rec = rec.Copia()
+            If rec Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"TXST draft {d.FormID:X8}: could not copy the record to write it.")
+            End If
+            rec.EditorID = finalEdid
+        End If
+        Return New SaveNpcEspWriter.TxstRecordEntry(CType(rec, Canon.CanonView)) With {
+            .FormID = d.FormID,
+            .EditorID = finalEdid,
+            .IsOverride = d.IsOverride,
+            .OriginalVcs1 = vcs1,
+            .OriginalVcs2 = vcs2
+        }
+    End Function
+
+    ''' <summary>Build a <see cref="SaveNpcEspWriter.FlstRecordEntry"/> from a <see cref="FlstDraft"/>
+    ''' (Fase 2k). Mismo contrato NEW/OVERRIDE que <see cref="BuildArmoEntry"/>: el identificador final
+    ''' va EN el árbol y sólo en la rama NUEVA, sobre una COPIA — un guardado fallido no puede renombrar el
+    ''' borrador del usuario, y un OVERRIDE no puede ganar un EDID que el original no traía.</summary>
+    Private Function BuildFlstEntry(d As FlstDraft, ctx As SaveContext, espNameNoExt As String,
+                                    usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.FlstRecordEntry
+        Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
+        Dim vcs1 As UInteger, vcs2 As UShort
+        Dim rec As Canon.IFlst = d.Record
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, rec.EditorID, "FLST", espNameNoExt,
+                                usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        If Not d.IsOverride Then
+            rec = rec.Copia()
+            If rec Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"FLST draft {d.FormID:X8}: could not copy the record to write it.")
+            End If
+            rec.EditorID = finalEdid
+        End If
+        Return New SaveNpcEspWriter.FlstRecordEntry(CType(rec, Canon.CanonView)) With {
+            .FormID = d.FormID,
+            .EditorID = finalEdid,
+            .IsOverride = d.IsOverride,
+            .OriginalVcs1 = vcs1,
+            .OriginalVcs2 = vcs2
+        }
+    End Function
+
+    ''' <summary>La sede de resolución de head parts del guardado, o un error que dice quién no la
+    ''' cableó. ⛔ NUNCA construye una al vuelo: una sede improvisada acá no vería los borradores, que es
+    ''' justo el defecto que el guardado tiene que evitar — un head part propio se caería del PNAM.</summary>
+    Private Function ExigirSedeDeHeadParts(ctx As SaveContext) As ResolucionDeHeadParts
+        If ctx Is Nothing OrElse ctx.HeadParts Is Nothing Then
+            Throw New InvalidOperationException(
+                "SaveContext.HeadParts (ResolucionDeHeadParts) es obligatoria: la Fase 1c compone el PNAM " &
+                "y la composición DESCARTA lo que el resolvedor no resuelve, así que sin la sede un head " &
+                "part borrador desaparecería del record guardado sin un error. La arma MainForm " &
+                "(HeadPartsResolution) y la pasa NuevoContextoDeGuardado.")
+        End If
+        Return ctx.HeadParts
+    End Function
+
     ''' <summary>Order-sensitive equality of two OTFT item (INAM) FormID lists. The engine equips items in
     ''' INAM order, and the writer emits them in list order, so a reorder IS a content change.</summary>
     Private Function OutfitItemsEqual(a As List(Of UInteger), b As List(Of UInteger)) As Boolean
@@ -1951,6 +2489,60 @@ Public Module NpcOverrideSaver
     ''' <para>Un provisional que está acá va a ser emitido por alguna de las fases 2c-2g (o ya lo fue), así
     ''' que la referencia resuelve. Uno que NO está no lo emite nadie: el writer no le va a poder dar
     ''' FormID real.</para></summary>
+    ''' <summary>Avisa, UNA línea por clase, de los borradores OVERRIDE sucios que el guardado va a
+    ''' descartar por tener «Save new records» apagado. Ver el ⛔⛔ del llamador.
+    ''' <para>Sólo los SUCIOS: un override limpio no tiene nada que perder, y avisar por él sería
+    ''' ruido que enseña a ignorar los avisos. Y sólo los OVERRIDE: los nuevos ya los cubre la fase
+    ''' 1f con su propio texto, que además dice a qué volvió el slot.</para></summary>
+    Private Sub AvisarOverridesDescartados(ctx As SaveContext)
+        If ctx Is Nothing Then Return
+        Dim decir = Sub(clase As String, nombres As List(Of String))
+                        If nombres Is Nothing OrElse nombres.Count = 0 Then Return
+                        ctx.PayloadWarnings.Add(
+                            $"{nombres.Count} edited {clase} record(s) were NOT written because 'save new " &
+                            $"records' is off: {String.Join(", ", nombres)}. They are overrides of existing " &
+                            $"records, not new ones — turn the option on to write them.")
+                    End Sub
+        decir("head part", NombresDeOverridesSucios(ctx.HdptDrafts))
+        decir("texture set", NombresDeOverridesSucios(ctx.TxstDrafts))
+        decir("form list", NombresDeOverridesSucios(ctx.FlstDrafts))
+        decir("armor", NombresDeOverridesSucios(ctx.ArmoDrafts))
+        decir("armor addon", NombresDeOverridesSucios(ctx.ArmaDrafts))
+        decir("material swap", NombresDeOverridesSucios(ctx.MswpDrafts))
+        decir("outfit", NombresDeOverridesSucios(ctx.OutfitDrafts))
+        decir("leveled list", NombresDeOverridesSucios(ctx.LeveledListDrafts))
+    End Sub
+
+    ''' <summary>Los EditorID de los borradores OVERRIDE que están sucios. Genérica por reflexión
+    ''' tardía sobre las ocho clases de borrador: no comparten interfaz — es el mismo motivo por el
+    ''' que `Borradores.ReidentificarComoClon` toma <c>Object</c> — y escribir ocho bucles idénticos
+    ''' sería ocho lugares donde olvidarse de una clase, que es exactamente el defecto que ya pagó
+    ''' esta ola con <see cref="BorradoresRegistrados"/>.</summary>
+    Private Function NombresDeOverridesSucios(lista As IEnumerable) As List(Of String)
+        Dim r As New List(Of String)
+        If lista Is Nothing Then Return r
+        For Each d As Object In lista
+            If d Is Nothing Then Continue For
+            Try
+                Dim t = d.GetType()
+                Dim esOv = CBool(t.GetProperty("IsOverride").GetValue(d))
+                Dim sucio = CBool(t.GetProperty("IsDirty").GetValue(d))
+                If Not esOv OrElse Not sucio Then Continue For
+                Dim rec = t.GetProperty("Record").GetValue(d)
+                Dim eid As String = Nothing
+                If rec IsNot Nothing Then
+                    Dim pe = rec.GetType().GetProperty("EditorID")
+                    If pe IsNot Nothing Then eid = TryCast(pe.GetValue(rec), String)
+                End If
+                Dim fid = CUInt(t.GetProperty("FormID").GetValue(d))
+                r.Add(If(String.IsNullOrEmpty(eid), $"0x{fid:X8}", eid))
+            Catch
+                ' Una clase sin alguna de las cuatro propiedades no rompe el guardado por un AVISO.
+            End Try
+        Next
+        Return r
+    End Function
+
     Private Function BorradoresRegistrados(ctx As SaveContext) As HashSet(Of UInteger)
         Dim r As New HashSet(Of UInteger)
         If ctx Is Nothing Then Return r
@@ -1976,6 +2568,32 @@ Public Module NpcOverrideSaver
         End If
         If ctx.OutfitDrafts IsNot Nothing Then
             For Each dd In ctx.OutfitDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        ' ⛔⛔ LAS TRES CLASES DE LA OLA DE HEAD PARTS FALTABAN ACÁ, y el efecto era el peor posible:
+        ' este censo es lo que `ExigirReferenciasSinColgar` consulta para decidir si una referencia
+        ' provisional tiene dueño. Sin HDPT/TXST/FLST, CUALQUIER referencia a un head part borrador
+        ' —perfectamente registrado, visible en el render, nunca borrado— le parecía COLGADA, y el
+        ' guardado se negaba con «provisional reference FF…801 with no draft — the ESP would come out
+        ' corrupt» y le decía al usuario que el record había sido cancelado o borrado. Era falso: el
+        ' borrador estaba ahí. El usuario lo reportó así, textual: «NUNCA BORRÉ ESE BORRADOR», «LO VEÍA
+        ' EN EL RENDER ANTES DE GRABAR».
+        '   Agregué las tres clases al writer, al saver, a la clausura, al censo de referencias, a la
+        ' promoción, a las fotos y al diálogo de guardado — y me salté ESTE censo, que es justo el que
+        ' decide si el guardado arranca. Un solo lugar sin las tres clases bloquea la ola entera.
+        If ctx.HdptDrafts IsNot Nothing Then
+            For Each dd In ctx.HdptDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        If ctx.TxstDrafts IsNot Nothing Then
+            For Each dd In ctx.TxstDrafts
+                If dd IsNot Nothing Then r.Add(dd.FormID)
+            Next
+        End If
+        If ctx.FlstDrafts IsNot Nothing Then
+            For Each dd In ctx.FlstDrafts
                 If dd IsNot Nothing Then r.Add(dd.FormID)
             Next
         End If

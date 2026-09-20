@@ -177,7 +177,8 @@ Friend NotInheritable Class NpcStateResolver
                                terminalDeLaBase,
                                _appliedPresets, _ctx.PluginManager,
                                New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(AddressOf ResolverLmSkinTemplate),
-                               AddressOf _ctx.ParseRaceCanonCached))
+                               AddressOf _ctx.ParseRaceCanonCached,
+                               _ctx.HeadParts))
         ' ⛔ Bajo override de genero se dibuja la MISMA base, sin overlay -- no el terminal pelado, que
         ' seria una segunda base para el mismo NPC.
         Dim shadow = If(genderOverrideActive, laBase,
@@ -185,7 +186,8 @@ Friend NotInheritable Class NpcStateResolver
                                                         _ctx.PluginManager,
                                                         New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
                                                             AddressOf ResolverLmSkinTemplate),
-                                                        AddressOf _ctx.ParseRaceCanonCached))
+                                                        AddressOf _ctx.ParseRaceCanonCached,
+                                                        resHeadParts:=_ctx.HeadParts))
 
         ' ⛔ El terminal se lo pasa EL QUE LO CAMINO. Ver el parametro.
         Dim proy = NpcStateFactory.ProyectarEstado(shadow, npc, inventory, presetDeDibujo,
@@ -385,8 +387,8 @@ Friend NotInheritable Class NpcStateResolver
                     End If
                     ' HDPT replacements — the helper reads each new HDPT's own PartType to
                     ' decide which slot to replace, engine-faithful per SkinInterface.cpp:292.
-                    NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadHdptFormID(genderIdx), _ctx.PluginManager)
-                    NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadRearHdptFormID(genderIdx), _ctx.PluginManager)
+                    NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadHdptFormID(genderIdx), _ctx.HeadParts)
+                    NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadRearHdptFormID(genderIdx), _ctx.HeadParts)
                 End If
             End If
 
@@ -446,6 +448,60 @@ Friend NotInheritable Class NpcStateResolver
         ' (OutfitPreviewActive=False). Value: Nothing → raw record DOFT · 0 → naked · fid → OTFT/draft.
         If host IsNot Nothing AndAlso host.OutfitPreviewActive Then
             state.DefaultOutfitFormID = If(host.OutfitPreviewOverride, inventory.DefaultOutfitFormID)
+        End If
+
+        ' Head parts EXTRA del preview (editor de head parts) — mismo alcance y mismo lugar que el
+        ' preview de atuendos de arriba: AL FINAL y scopeado al host, así que no toca el overlay
+        ' compartido. Inerte en el host principal.
+        ' ⛔⛔ SE COMPONE CON LA LEY, no se agrega a la lista. `ResolverPartesDeCabeza` decide el slot:
+        ' así sale gratis que un Misc sea aditivo, que el tipo 5 acumule, y que un head part de un tipo
+        ' que el NPC ya tiene REEMPLACE en vez de duplicar — que es lo que el usuario espera ver. Un
+        ' `AddRange` dejaría dos del mismo tipo y `ganador(0)` se quedaría con el viejo: el preview no
+        ' mostraría el cambio y parecería que el editor no hace nada.
+        If host IsNot Nothing AndAlso host.PreviewExtraHeadPartFormIDs IsNot Nothing AndAlso
+           host.PreviewExtraHeadPartFormIDs.Count > 0 Then
+            Dim fuentesPv As New List(Of Canon.FuenteDePartes)
+            fuentesPv.Add(New Canon.FuenteDePartes("estado", New List(Of UInteger)(state.HeadPartFormIDs), False))
+            fuentesPv.Add(New Canon.FuenteDePartes("previewExtra",
+                                                   New List(Of UInteger)(host.PreviewExtraHeadPartFormIDs), False))
+            state.HeadPartFormIDs = Canon.ResolverPartesDeCabeza(
+                fuentesPv, Function(f) _ctx.HeadParts.Hdpt(f))
+            ' ⛔⛔ Y SE VERIFICA QUE EL PEDIDO SOBREVIVIÓ A LA COMPOSICIÓN. Sin esto, los dos modos de
+            ' fracaso son MUDOS y se ven iguales entre sí y iguales a «no pasó nada»:
+            '   (a) la sede no resuelve el FormID ⇒ `ResolverPartesDeCabeza` lo DESCARTA en silencio,
+            '       que es lo que su propia ley declara;
+            '   (b) resuelve pero es de un tipo CON SLOT que ya está ocupado por lo que el estado trae
+            '       ⇒ pierde la disputa y gana el del estado, porque la fuente de más prioridad se
+            '       queda con el slot ENTERO.
+            ' En los dos casos el usuario ve el preview igual que antes de pedir el extra, sin un solo
+            ' aviso — y es exactamente el síntoma que reportó siete veces. El log no lo arregla, pero
+            ' deja de ser invisible: quien mire el log sabe CUÁL de los dos pasó.
+            For Each pedido In host.PreviewExtraHeadPartFormIDs
+                If pedido = 0UI OrElse state.HeadPartFormIDs.Contains(pedido) Then Continue For
+                Dim vistaPedida = _ctx.HeadParts.Hdpt(pedido)
+                If vistaPedida Is Nothing Then
+                    Logger.LogLazy(Function() $"[PREVIEW-EXTRA] 0x{pedido:X8} NO entró al estado: la sede no lo " &
+                                              $"resuelve (ni borrador ni record), así que la composición lo descartó.")
+                Else
+                    ' ⛔⛔ ACÁ DECÍA «ese slot ya lo ocupa lo que el NPC trae — la fuente de más
+                    ' prioridad se queda con el slot entero», Y ESO ES IMPOSIBLE POR LA LEY. `previewExtra`
+                    ' ES la fuente de más prioridad — se agrega ÚLTIMA y `ResolverPartesDeCabeza` barre las
+                    ' fuentes al revés (`For i = fuentes.Count - 1 To 0 Step -1`) —, o sea que NUNCA puede
+                    ' perder contra `estado`. Escribí el motivo sin medirlo contra la ley que ya estaba en
+                    ' el árbol, en el mismo diagnóstico que agregué para que el fracaso dejara de ser
+                    ' invisible: un aviso con la causa equivocada es peor que no tenerlo, porque manda a
+                    ' buscar donde no está.
+                    '   El ÚNICO camino real a este `Else` es que la clasificación lo DESCARTE, y eso pasa
+                    ' cuando el record no declara `PNAM` ⇒ `TipoDeParte()` da **-1**. Por eso el texto dice
+                    ' eso y no otra cosa, y por eso imprime el tipo: si alguna vez sale distinto de -1, la
+                    ' ley cambió y este mensaje es el primero que hay que releer.
+                    Dim tipoPedido = Canon.CanonInterpretacion.TipoDeParte(vistaPedida)
+                    Logger.LogLazy(Function() $"[PREVIEW-EXTRA] 0x{pedido:X8} ('{If(vistaPedida.EditorID, """")}') " &
+                                              $"resuelve pero NO entró al estado: tipo de parte {tipoPedido}. Con -1 el " &
+                                              $"record NO declara PNAM y la composición lo DESCARTA; con cualquier otro " &
+                                              $"valor la ley de prioridad cambió y hay que releerla.")
+                End If
+            Next
         End If
 
         Return state

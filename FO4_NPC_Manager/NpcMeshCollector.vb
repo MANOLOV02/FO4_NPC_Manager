@@ -352,12 +352,13 @@ Friend NotInheritable Class NpcMeshCollector
     End Function
 
     ''' <summary>Thin instance wrapper over the shared <see cref="HeadPartResolver.MergeHeadPartsWithRaceDefaults"/>;
-    ''' threads <see cref="_ctx.PluginManager"/> through and unpacks the render-side state into the
-    ''' helper's primitive parameter list. Real implementation + logging lives in the helper module.</summary>
+    ''' threads the head-part RESOLUTION SEAT through (<see cref="ResolucionDeHeadParts"/>, la misma
+    ''' instancia que usa el bake) and unpacks the render-side state into the helper's primitive
+    ''' parameter list. Real implementation + logging lives in the helper module.</summary>
     Friend Function MergeHeadPartsWithRaceDefaults(state As MainForm.NPCVisualState) As List(Of UInteger)
         If state Is Nothing Then Return New List(Of UInteger)
-        Return HeadPartResolver.MergeHeadPartsWithRaceDefaults(state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, _ctx.PluginManager,
-                                                               AddressOf _ctx.ParseRaceCanonCached, AddressOf _ctx.ParseHdptCached)
+        Return HeadPartResolver.MergeHeadPartsWithRaceDefaults(state.RaceFormID, state.IsFemale, state.HeadPartFormIDs,
+                                                               _ctx.SedeDeHeadParts(), AddressOf _ctx.ParseRaceCanonCached)
     End Function
 
     ''' <param name="raceFilterBypassArmaFormID">Preview-only: the ONE ARMA (the ARMA editor's "Only Model"
@@ -653,11 +654,10 @@ Friend NotInheritable Class NpcMeshCollector
             ' El índice masculino es el del motor, no una elección de acá.
             Dim swapDePiel As Boolean = False
             If arma.MaleSkinTextureSwapListPresente AndAlso arma.MaleSkinTextureSwapList <> 0UI Then
-                Dim flstRec = _ctx.PluginManager.GetRecord(arma.MaleSkinTextureSwapList)
-                If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
-                    Dim flst = Canon.CanonRecords.Flst(flstRec, _ctx.PluginManager)
-                    swapDePiel = flst IsNot Nothing AndAlso flst.FormIDs IsNot Nothing AndAlso flst.FormIDs.Count > 0
-                End If
+                ' Por la SEDE y SIN guarda previa: la lista de swap de piel de un ARMA puede ser una FLST
+                ' BORRADOR (decisión H del usuario), y el `GetRecord` que había acá antes la descartaba.
+                Dim flst = _ctx.HeadParts.Flst(arma.MaleSkinTextureSwapList)
+                swapDePiel = flst IsNot Nothing AndAlso flst.FormIDs IsNot Nothing AndAlso flst.FormIDs.Count > 0
             End If
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = armaDictKey,
@@ -1149,7 +1149,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' vanilla NPC.PNAM often lists a hairline both in the hair's HNAM and standalone in PNAM;
         ' without this map the cascade depended on visit order. Shared helper = single source of
         ' truth with the bake's EnumerateHdptChain (no duplicated rule).
-        Dim miscToParentEffective = HeadPartResolver.BuildMiscToParentEffective(headPartFormIDs, _ctx.PluginManager, AddressOf _ctx.ParseHdptCached)
+        Dim miscToParentEffective = HeadPartResolver.BuildMiscToParentEffective(headPartFormIDs, _ctx.SedeDeHeadParts())
 
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
             CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen, miscToParentEffective)
@@ -1169,10 +1169,15 @@ Friend NotInheritable Class NpcMeshCollector
         If visited.Contains(hdptFormID) Then Return
         visited.Add(hdptFormID)
 
-        Dim hdptRec = _ctx.PluginManager.GetRecord(hdptFormID)
-        If hdptRec Is Nothing OrElse hdptRec.Header.Signature <> "HDPT" Then Return
-
-        Dim hdpt = _ctx.ParseHdptCached(hdptRec)
+        ' ⛔⛔ LA SEDE ES LA QUE SABE SI UN FormID RESUELVE. Acá había un `GetRecord` + chequeo de firma
+        ' ANTES de preguntarle a la sede, o sea el filtro que la sede vino a sacar, puesto de nuevo una
+        ' línea antes: un FormID de BORRADOR no tiene record en ningún plugin, se iba por el `Return` y
+        ' nunca llegaba a la sede. Peor que no haber convertido nada, porque el archivo parece convertido.
+        ' Y este sitio era el que el usuario veía: un head part propio asignado al NPC apareció en la
+        ' lista de Edit Face, resuelto y con su tipo, y NO SE DIBUJÓ — ni en el editor ni en el preview
+        ' principal — porque el colector de mallas lo descartaba antes de mirarlo.
+        Dim hdpt = _ctx.GetParsedHdpt(hdptFormID)
+        If hdpt Is Nothing Then Return
 
         ' Extra parts (type=0/Misc) inherit the parent's type for color treatment.
         ' E.g. a hair extra part mesh needs the same hair palette remap as the main hair.
@@ -1219,7 +1224,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' Trace del candidato HeadPart: qué HDPT, tipo raw/effective, mesh, el TXST (TNAM) y color.
             ' Se dibuja SIEMPRE la malla plana (head-bake); el `_faceBones` es insumo, no se dibuja.
             If Logger.Enabled Then
-                Dim hdptEidC = If(hdptRec.EditorID, "")
+                Dim hdptEidC = If(hdpt.EditorID, "")
                 Dim rawTypeC = hdpt.TipoDeParte()
                 Dim effTypeC = effectivePartType
                 Dim origMeshC = If(hdpt.ModelFileName, "")

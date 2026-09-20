@@ -31,7 +31,6 @@ Friend NotInheritable Class NpcRenderContext
     ''' existía antes ya no hace falta: LmCustomTintLoader arma la lista de tinte fusionada aparte
     ''' (sin mutar el record) y RaceUtil ya trabaja sobre esta misma vista canónica.</summary>
     Private ReadOnly _raceCanonCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IRace)()
-    Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Canon.IHdpt)()
     Private ReadOnly _armorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HashSet(Of UInteger))()
 
     ''' <summary>Bytes del esqueleto extra de una RAZA (<c>RACE.GNAM</c> → <c>BPTD.MODL</c>), keyed por
@@ -87,6 +86,33 @@ Friend NotInheritable Class NpcRenderContext
     Public RaceIsPowerArmor As Func(Of UInteger, Boolean) = Nothing
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
     Public ArmaDraftResolver As Func(Of UInteger, Canon.IArma) = Nothing
+    ''' <summary>LA SEDE de resolución de head parts —<c>HDPT</c> y los dos records a los que apunta,
+    ''' <c>TXST</c> y <c>FLST</c>— con los BORRADORES adentro. La setea <c>MainForm</c> y la comparte con
+    ''' el BAKE, que no tiene este contexto.
+    ''' <para>⛔ Es un objeto y no tres <c>Func</c> como los de ARMO/ARMA/MSWP, y la diferencia importa:
+    ''' esos tres hooks los consume código que YA tiene el contexto, mientras que el bake
+    ''' (<c>FaceGenBuilder</c>) explícitamente NO lo tiene. Un head part borrador que se resolviera acá
+    ''' adentro se vería en el preview y sería invisible para el FaceGeom. Ver
+    ''' <see cref="ResolucionDeHeadParts"/>.</para>
+    ''' <para>⛔ Entra por CONSTRUCTOR y es <c>ReadOnly</c>. No es un campo público que se cablea
+    ''' después, como los tres <c>Func</c> de ARMO/ARMA/MSWP: ésos son opcionales de verdad (un contexto
+    ''' que no edita armadura no los necesita) mientras que head parts los resuelve cualquier render de
+    ''' cara. Con un campo asignable, el que se olvidara de cablearlo tiraría en tiempo de EJECUCIÓN la
+    ''' primera vez que alguien resolviera un head part — y en el CLI o en un arnés eso es un rojo sin
+    ''' causa aparente. Por constructor, el que falta no compila.</para></summary>
+    Public ReadOnly HeadParts As ResolucionDeHeadParts
+
+    ''' <summary>La sede, con nombre propio para los call sites.
+    ''' <para>⛔ NO se llama <c>ExigirHeadParts</c>. En este árbol el prefijo <c>Exigir*</c> significa
+    ''' <b>tira si falta</b> —<see cref="Borradores.ExigirRecord"/>,
+    ''' <see cref="Borradores.ExigirPluginsNormalizados"/>, las cinco guardas de
+    ''' <see cref="HeadPartResolver"/>— y ésta no puede faltar, porque la guarda vive en el CONSTRUCTOR.
+    ''' Un <c>Exigir*</c> que devuelve el campo le daría un segundo significado al prefijo en el archivo
+    ''' más leído de los dos caminos.</para></summary>
+    Public Function SedeDeHeadParts() As ResolucionDeHeadParts
+        Return HeadParts
+    End Function
+
     ''' <summary>Optional draft-resolver hook for MSWP drafts. Given a FormID, returns a synthesized
     ''' <see cref="Canon.IMswp"/> when the FormID is an in-memory MSWP draft, or Nothing when it is not.
     ''' Consumed by the material-override pipeline (NpcMaterialResolver) so an UNSAVED draft material-swap
@@ -104,8 +130,20 @@ Friend NotInheritable Class NpcRenderContext
     ''' <para>Vacío ⇒ el global, que es lo correcto para la app (donde son el mismo valor).</para></summary>
     Public ReadOnly DataPath As String
 
-    Public Sub New(pluginManager As PluginManager, Optional dataPath As String = Nothing)
+    ''' <param name="headParts">LA SEDE de resolución de head parts (ver <see cref="HeadParts"/>).
+    ''' La app pasa la instancia compartida con el bake; un camino sin editores pasa
+    ''' <c>ResolucionDeHeadParts.SinBorradores(pluginManager)</c>, que lo declara.</param>
+    Public Sub New(pluginManager As PluginManager, headParts As ResolucionDeHeadParts,
+                   Optional dataPath As String = Nothing)
+        If headParts Is Nothing Then
+            Throw New ArgumentNullException(NameOf(headParts),
+                "La resolución de head parts (HDPT/TXST/FLST) vive en ResolucionDeHeadParts para que el " &
+                "render, el bake, el guardado y los pickers vean LOS MISMOS borradores. Un contexto sin " &
+                "ella no puede resolver head parts. Si este camino no tiene editores abiertos, la puerta " &
+                "es ResolucionDeHeadParts.SinBorradores(pluginManager) — que lo DICE.")
+        End If
         Me.PluginManager = pluginManager
+        Me.HeadParts = headParts
         Me.DataPath = If(String.IsNullOrWhiteSpace(dataPath), If(Config_App.Current?.DataPath, ""), dataPath)
     End Sub
 
@@ -271,10 +309,21 @@ Friend NotInheritable Class NpcRenderContext
         Return races
     End Function
 
-    ''' <summary>Parse (and cache) an HDPT from an already-fetched record, keyed by its FormID.</summary>
+    ''' <summary>El HDPT de un record YA buscado. ⛔ Delega en <see cref="HeadParts"/>: la caché propia
+    ''' (<c>_hdptCache</c>) se fue de acá porque era una SEGUNDA sede —resolvía por record y sin
+    ''' borradores— al lado de la que el bake también usa. El parámetro sigue siendo el record y no el
+    ''' FormID sólo para no tocar a los cuatro llamadores que ya lo tienen en la mano.
+    ''' <para>Un record que no sea HDPT devuelve Nothing, igual que antes.</para></summary>
     Public Function ParseHdptCached(hRec As PluginRecord) As Canon.IHdpt
         If hRec Is Nothing Then Return Nothing
-        Return _hdptCache.GetOrAdd(hRec.Header.FormID, Function(fid) Canon.CanonRecords.Hdpt(hRec, PluginManager))
+        Return SedeDeHeadParts().Hdpt(hRec.Header.FormID)
+    End Function
+
+    ''' <summary>El HDPT de un FormID, por la sede única (borrador primero). Es la puerta que deberían
+    ''' usar los llamadores nuevos: <see cref="ParseHdptCached"/> existe sólo por los que ya tenían el
+    ''' record.</summary>
+    Public Function GetParsedHdpt(formID As UInteger) As Canon.IHdpt
+        Return SedeDeHeadParts().Hdpt(formID)
     End Function
 
     ''' <summary>Los bytes del esqueleto extra de una raza (<c>RACE.GNAM</c> → <c>BPTD.MODL</c>), UNA vez
@@ -332,7 +381,10 @@ Friend NotInheritable Class NpcRenderContext
         _armoCache.Clear()
         _armaCache.Clear()
         _raceCanonCache.Clear()
-        _hdptCache.Clear()
+        ' Los head parts ya no tienen caché ACÁ: la tiene la sede compartida, que es quien la invalida.
+        ' ⛔ Y se invalida IGUAL desde acá, porque este método es el del cambio de orden de carga y la
+        ' sede vive más que él: si sobrevive, un FormID reciclado devuelve el head part del orden anterior.
+        HeadParts.InvalidarTodo()
         _armorRaceCache.Clear()
         ' Derivadas del MISMO orden de carga (bytes del BPTD.MODL y los sockets del actor): si sobreviven
         ' a un cambio del set de plugins, un FormID de raza reciclado devuelve el esqueleto del anterior.
@@ -351,5 +403,13 @@ Friend NotInheritable Class NpcRenderContext
         If fid = 0UI Then Return
         Dim armo As Canon.IArmo = Nothing : _armoCache.TryRemove(fid, armo)
         Dim arma As Canon.IArma = Nothing : _armaCache.TryRemove(fid, arma)
+        ' Y las tres firmas de head part, por la misma razón y con la misma granularidad: por clave.
+        ' ⛔ El motivo es de ALCANCE, no de rendimiento: lo que cambió es UN record, y vaciar la caché
+        ' entera obliga a re-resolver todo lo demás, que no cambió. Acá decía además que un `Clear()`
+        ' «a mitad de sesión compite con los renders de fondo»: eso NO ESTÁ MEDIDO y queda como lo que
+        ' es, una sospecha. La MISMA frase se retiró de `ResolucionDeHeadParts.Invalidar` en esta ola y
+        ' había quedado viva acá — retirar una afirmación en una sede y dejarla en la de al lado no es
+        ' retirarla, es mudarla.
+        HeadParts.Invalidar(fid)
     End Sub
 End Class

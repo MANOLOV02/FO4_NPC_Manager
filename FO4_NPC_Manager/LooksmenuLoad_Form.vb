@@ -86,7 +86,9 @@ Public Class LooksmenuLoad_Form
     Private ReadOnly _raceDisplayName As String = ""
     Private ReadOnly _raceDefaults As HashSet(Of UInteger)
     ' FLST cache reused across IsHdptValidForRace calls so each FLST is parsed once per session.
-    Private ReadOnly _flstCache As New Dictionary(Of UInteger, Canon.IFlst)
+    ''' <summary>La sede de resolución de head parts. ⛔ Reemplazó a <c>_flstCache</c>, que era un
+    ''' diccionario compartido entre llamadas y memoizaba el fracaso.</summary>
+    Private ReadOnly _res As ResolucionDeHeadParts
     ' Compatibility memoization — preset → bool. Each preset is checked once even if the
     ' user toggles the checkbox / re-runs ApplyFilter via the text-filter handler.
     Private ReadOnly _compatibilityCache As New Dictionary(Of LooksmenuLoader.LooksmenuPreset, Boolean)
@@ -117,7 +119,9 @@ Public Class LooksmenuLoad_Form
         End Sub
     End Class
 
+    ''' <param name="res">La sede de resolución de head parts, para el gate de compatibilidad por raza.</param>
     Public Sub New(pluginManager As PluginManager,
+                   res As ResolucionDeHeadParts,
                    dataPath As String,
                    gender As Byte,
                    raceDisplayName As String,
@@ -132,6 +136,14 @@ Public Class LooksmenuLoad_Form
                    Optional knownLmSkinTemplateIds As IEnumerable(Of String) = Nothing)
         InitializeComponent()
         _pluginManager = pluginManager
+        ' ⛔ TIRA, no sustituye — ver la nota gemela en HeadPartPicker_Form: un `If(res, SinBorradores…)`
+        ' es «Nothing = resolvé sin borradores», y acá decide qué presets se declaran compatibles.
+        If res Is Nothing Then Throw New ArgumentNullException(NameOf(res),
+                "La sede de resolución de head parts es OBLIGATORIA: sin ella este formulario enumeraría " &
+                "sólo los records del ORDEN DE CARGA y un head part propio no aparecería en la lista " &
+                "de la que salió. En la app es MainForm.HeadPartsResolution; en un camino sin " &
+                "editores, ResolucionDeHeadParts.SinBorradores(plugins) — que lo DECLARA.")
+        _res = res
         _dataPath = dataPath
         _gender = gender
         _isSse = isSse
@@ -334,7 +346,7 @@ Public Class LooksmenuLoad_Form
         ' verdict about the NPC, not about the preset. (Same list whenever the .jslot does declare parts — the
         ' mapper replaces the whole list then — so this doesn't change which presets are listed today.)
         Dim result = HeadPartResolver.IsPresetCompatibleWithRace(
-            FileView(preset), _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults)
+            FileView(preset), _raceFormID, _gender = 1, _res, _race, _raceDefaults)
         _compatibilityCache(preset) = result
         Return result
     End Function
@@ -413,7 +425,7 @@ Public Class LooksmenuLoad_Form
             .RaceDisplayName = _raceDisplayName,
             .IsFemale = (_gender = 1),
             .RaceDefaults = _raceDefaults,
-            .FlstCache = _flstCache,
+            .Res = _res,
             .NpcHasBodyTri = _npcHasBodyTri,
             .KnownOverlayTemplateIds = _knownOverlayTemplateIds,
             .KnownLmSkinTemplateIds = _knownLmSkinTemplateIds}

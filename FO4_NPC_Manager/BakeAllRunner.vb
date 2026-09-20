@@ -308,6 +308,11 @@ Friend Module BakeAllRunner
                 End Sub)
 
             Dim pm As New PluginManager()
+            ' ⛔ SIN BORRADORES, y DECLARADO. Este barrido arma su propio PluginManager y corre sin
+            ' editores abiertos (lo lanza la consola o el diálogo de progreso), así que no hay borrador
+            ' que ver. La puerta explícita es lo que impide que mañana alguien crea que «resuelve como
+            ' la app» — no resuelve igual, y ahora se lee en el código.
+            Dim resHeadParts = ResolucionDeHeadParts.SinBorradores(pm)
             log("Parsing plugins…")
             pm.LoadAllPlugins(dataPath, effectiveLoadList, pluginProgress)
             log($"  → {pm.Plugins.Count} plugin(s) parsed")
@@ -401,7 +406,7 @@ Friend Module BakeAllRunner
             '    NpcMaterialResolver over the preset overlay), so per-shape materials, texture sets,
             '    hair palettes and skin overrides resolve exactly as they do in the app.
             ' ---------------------------------------------------------------------------------
-            Dim ctx As New NpcRenderContext(pm)
+            Dim ctx As New NpcRenderContext(pm, resHeadParts)
             Dim resolveLmSkin = LmSkinTemplateLoader.Resolvedor(lmTemplates)
             ' ⛔⛔ POR LA SEDE, no a mano. Aca habia una copia de `ComponerAutoriaSobre` --daba
             ' identico, pero era el TERCER dueño de la misma composicion-- y este es el horneado masivo
@@ -415,10 +420,19 @@ Friend Module BakeAllRunner
             ' `state.RecordBase` -- la MISMA base que el render. Es la opcion (a) que decidio el usuario:
             ' render y horneado arrancan del mismo record, asi que el `.dds` de un heredero sale con la
             ' cara que el juego le va a dar. Lo que distingue hornear de dibujar es la BASE, no el overlay.
+            ' ⛔⛔ LA SEDE DE HEAD PARTS VA, Y SU AUSENCIA ERA UNA REGRESIÓN DE ESTA OLA. Como
+            ' `resolveLmSkin` NO es nulo, `AplicarOverlay` puede entrar a la rama de la plantilla de
+            ' piel de LooksMenu — donde esta ola agregó un `Throw` si la sede es Nothing. O sea que
+            ' **`Bake All` tiraba** `InvalidOperationException` para cualquier NPC con plantilla de
+            ' piel LM aplicada, y antes de la ola ese camino andaba. Lo dejó pasar el
+            ' `Optional … = Nothing` del parámetro: el sitio compiló sin la sede. Lo levantó la
+            ' revisión adversarial censando los LLAMADORES, no midiendo el bake.
+            '   `ctx` es un `NpcRenderContext`, así que la sede está a mano y es la MISMA que usa el
+            ' render: una ley, una sede.
             Dim overlayResolver As Func(Of MainForm.NPCVisualState, NPC_Data) =
                 Function(st As MainForm.NPCVisualState) NpcRecordOverlay.ComponerAutoriaSobre(
                     st.RecordBase, st.RootNpcFormID, appliedPresets, pm, resolveLmSkin,
-                    AddressOf ctx.ParseRaceCanonCached)
+                    AddressOf ctx.ParseRaceCanonCached, ctx.HeadParts)
             Dim materialResolver As New NpcMaterialResolver(ctx, overlayResolver, appliedPresets)
 
             ' ---------------------------------------------------------------------------------
@@ -995,7 +1009,7 @@ Friend Module BakeAllRunner
                         Dim buildErr As Exception = Nothing
                         Try
                             ' ⛔ RONDA 20b: sin sesion -- la lectura de SU orden de carga (defaults de `LecturaDeCadena`).
-                            r = FaceGenBuilder.BuildCharGen(t.Fid, pm, New LecturaDeCadena With {.PluginManager = pm}, appliedPresets,
+                            r = FaceGenBuilder.BuildCharGen(t.Fid, pm, resHeadParts, New LecturaDeCadena With {.PluginManager = pm}, appliedPresets,
                                                             host:=glHost,
                                                             applyMaterialOverrides:=AddressOf materialResolver.ApplyShapeMaterialOverrides,
                                                             willBePacked:=False,

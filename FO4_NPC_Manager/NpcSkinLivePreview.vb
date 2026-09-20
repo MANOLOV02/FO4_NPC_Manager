@@ -72,7 +72,8 @@ Friend NotInheritable Class NpcSkinLivePreview
         Dim sombra = NpcRecordOverlay.AplicarOverlay(raw, preset, rootNpcFormID, _ctx.PluginManager,
                                                      New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(
                                                          AddressOf ResolverLmSkinTemplate),
-                                                     AddressOf _ctx.ParseRaceCanonCached)
+                                                     AddressOf _ctx.ParseRaceCanonCached,
+                                                     resHeadParts:=_ctx.HeadParts)
         ' El root aporta la IDENTIDAD; si no se puede parsear, la sombra sirve de si misma -- el unico campo
         ' que se lee de aca es la piel, que no depende de la identidad.
         Dim root = If(_ctx.GetParsedNpc(rootNpcFormID), sombra)

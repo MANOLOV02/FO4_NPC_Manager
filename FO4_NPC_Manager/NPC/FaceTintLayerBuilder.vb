@@ -64,6 +64,14 @@ Public Module FaceTintLayerBuilder
         ' pasa la cache de la sesion; el horneado, su lectura congelada. Con el parse, un modelo editado en la sesion
         ' (la plantilla con otra raza, otra cara) se componia con el record VIEJO. La instancia que llega puede ser la
         ' de la cache: `SombraDelTerminal`/`AplicarOverlay` no la mutan (devuelven copia) y la raza se estampa sobre esa copia.
+        ' ⛔ LOS DOS `Nothing` DE ABAJO SON EL RESOLVEDOR DE LA PLANTILLA DE PIEL DE LOOKSMENU, y
+        ' están bien: sin resolvedor, `AplicarOverlay` nunca arma un `lmTemplate` y nunca entra a la
+        ' rama que reemplaza head parts por PartType, que es la ÚNICA que usa la sede de head parts
+        ' (`NpcRecordOverlay:580` — `lmTemplate` sólo se arma si el resolvedor no es Nothing). Por eso
+        ' este archivo no necesita la sede y no la lleva en la firma. Queda escrito porque la
+        ' revisión lo levantó como omisión: la diferencia con los tres sitios que sí la omitían mal
+        ' es justo ésta — ellos pasan resolvedor. Y la guarda de la entrada de `AplicarOverlay` hace
+        ' que el día que este archivo pase un resolvedor, tenga que traer la sede.
         Dim recordDelModelo = lectura.Resuelta(rootFormID).Leer(modelFormID)
         If modelFormID <> rootFormID Then
             recordDelModelo = NpcRecordOverlay.SombraDelTerminal(recordDelModelo, appliedPresets,

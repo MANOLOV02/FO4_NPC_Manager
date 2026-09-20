@@ -75,6 +75,7 @@ Partial Class MainForm
         ButtonEditFace = New Button()
         ButtonEditBody = New Button()
         ButtonEditOutfit = New Button()
+        ButtonEditHeadParts = New Button()
         ButtonEditNpc = New Button()
         SeparatorActions1 = New Label()
         LabelLooksMenu = New Label()
@@ -770,6 +771,10 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonEditFace)
         PanelActionsToolbar.Controls.Add(ButtonEditBody)
         PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
+        ' ⛔ AL LADO DE `Outfit`, y en el form PRINCIPAL: decision del usuario (20-sep). El gesto es
+        ' «estoy trabajando este NPC y quiero un head part mio», asi que va con Face/Body/Outfit/NPC y
+        ' no en un menu aparte ni dentro de Edit Face.
+        PanelActionsToolbar.Controls.Add(ButtonEditHeadParts)
         PanelActionsToolbar.Controls.Add(ButtonEditNpc)
         PanelActionsToolbar.Controls.Add(SeparatorActions1)
         PanelActionsToolbar.Controls.Add(LabelLooksMenu)
@@ -841,6 +846,16 @@ Partial Class MainForm
         ' 
         ' ButtonEditOutfit
         ' 
+        ButtonEditHeadParts.AutoSize = True
+        ' ⛔ Habilitado desde el arranque, a diferencia de los otros cuatro de esta barra: crear un
+        ' record no necesita un NPC. Sin NPC seleccionado el editor abre igual y su preview y su panel
+        ' de validez quedan apagados CON EL MOTIVO ESCRITO, en vez de mentir que el head part sirve.
+        ButtonEditHeadParts.Enabled = True
+        ButtonEditHeadParts.Margin = New Padding(2)
+        ButtonEditHeadParts.Name = "ButtonEditHeadParts"
+        ButtonEditHeadParts.Text = "Head Parts…"
+        ButtonEditHeadParts.UseVisualStyleBackColor = True
+        '
         ButtonEditOutfit.AutoSize = True
         ButtonEditOutfit.Enabled = False
         ButtonEditOutfit.Location = New Point(206, 2)
@@ -1457,6 +1472,7 @@ Partial Class MainForm
     Friend WithEvents ButtonKofi As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditHeadParts As System.Windows.Forms.Button
     Friend WithEvents ButtonEditNpc As System.Windows.Forms.Button
     Friend WithEvents SeparatorActions1 As System.Windows.Forms.Label
     Friend WithEvents LabelLooksMenu As System.Windows.Forms.Label

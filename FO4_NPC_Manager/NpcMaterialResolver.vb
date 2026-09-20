@@ -474,8 +474,12 @@ Friend NotInheritable Class NpcMaterialResolver
                 Return Nothing
             End If
 
-            Dim txstRec = _ctx.PluginManager.GetRecord(txstFID)
-            If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then
+            ' ⛔⛔ LA SEDE ES LA QUE SABE SI UN FormID RESUELVE. Acá había un `GetRecord` + chequeo de firma
+            ' ANTES de preguntarle a la sede, o sea el filtro que la sede vino a sacar, puesto de nuevo una
+            ' línea antes: un FormID de BORRADOR no tiene record en ningún plugin, se iba por el `Return` y
+            ' nunca llegaba a la sede. Peor que no haber convertido nada, porque el archivo parece convertido.
+            Dim txstDeLaSede = _ctx.HeadParts.Txst(txstFID)
+            If txstDeLaSede Is Nothing Then
                 If Logger.Enabled Then
                     Dim aEid1 = arma.EditorID, tFid1 = txstFID, regL1 = region.ToString()
                     Logger.LogLazy(Function() $"[SKINTXST-NOSLOT] region={regL1}: el armature '{aEid1}' declara skin TXST 0x{tFid1:X8} pero NO resuelve a un record TXST → SIN sustitución (misma ley que el slot null)")
@@ -487,7 +491,11 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim aEid = arma.EditorID, rFid = state.RaceFormID
                 Logger.LogLazy(Function() $"[SKINTXST-RACEFALLBACK] ninguna ARMA race-válida cubrió la región; se acepta '{aEid}' (race del actor 0x{rFid:X8}) — regla BAKETEST2 N_D1/R_D1")
             End If
-            Return Canon.CanonRecords.Txst(txstRec, _ctx.PluginManager)
+            ' Por la SEDE: el TNAM de un head part puede ser un TXST BORRADOR, y en los ojos ese TXST
+            ' ES la diffuse. Resolverlo contra el PluginManager pelado devolvia Nothing y el ojo salia
+            ' con la textura por defecto. Ya resuelto arriba: se devuelve esa MISMA vista, no se
+            ' vuelve a preguntar.
+            Return txstDeLaSede
         Next
 
         Return Nothing
@@ -675,9 +683,9 @@ Friend NotInheritable Class NpcMaterialResolver
                         auxFid = state.HeadTextureFormID : auxSource = "RACE.DFTM(Face-aux)"
                     End If
                     If auxFid <> 0UI AndAlso auxFid <> textureSetFormID Then
-                        Dim auxRec = _ctx.PluginManager.GetRecord(auxFid)
-                        If auxRec IsNot Nothing AndAlso auxRec.Header.Signature = "TXST" Then
-                            sseFaceAuxTextureSet = Canon.CanonRecords.Txst(auxRec, _ctx.PluginManager)
+                        ' Por la sede y sin guarda previa: ver el ⛔ de arriba.
+                        sseFaceAuxTextureSet = _ctx.HeadParts.Txst(auxFid)
+                        If sseFaceAuxTextureSet IsNot Nothing Then
                             If logEnabled Then
                                 Dim aSrc = auxSource, aP = sseFaceAuxTextureSet
                                 Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc} txst=0x{aP.FormID:X8} eid='{If(aP.EditorID, "")}' → capa SSE N/_sk/detail (base TNAM=diffuse-only) N='{If(aP.Ranura(1), "")}' sk='{If(aP.Ranura(3), "")}' det='{If(aP.Ranura(4), "")}'")
@@ -725,8 +733,12 @@ Friend NotInheritable Class NpcMaterialResolver
 
         If textureSetFormID = 0UI Then Return Nothing
 
-        Dim rec = _ctx.PluginManager.GetRecord(textureSetFormID)
-        If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then
+        ' ⛔⛔ LA SEDE ES LA QUE SABE SI UN FormID RESUELVE. Acá había un `GetRecord` + chequeo de firma
+        ' ANTES de preguntarle a la sede, o sea el filtro que la sede vino a sacar, puesto de nuevo una
+        ' línea antes: un FormID de BORRADOR no tiene record en ningún plugin, se iba por el `Return` y
+        ' nunca llegaba a la sede. Peor que no haber convertido nada, porque el archivo parece convertido.
+        Dim parsedDeLaSede = _ctx.HeadParts.Txst(textureSetFormID)
+        If parsedDeLaSede Is Nothing Then
             If logEnabled Then
                 Dim fidL = textureSetFormID, srcL = txstSource
                 Logger.LogLazy(Function() $"[TXST-RESOLVE] source={srcL} formID=0x{fidL:X8} → NOT-FOUND-or-not-TXST")
@@ -734,7 +746,7 @@ Friend NotInheritable Class NpcMaterialResolver
             Return Nothing
         End If
 
-        Dim parsed = Canon.CanonRecords.Txst(rec, _ctx.PluginManager)
+        Dim parsed = parsedDeLaSede
         If logEnabled Then
             Dim srcL2 = txstSource, pEid = If(parsed.EditorID, ""), pMnam = If(parsed.MaterialDe(), "")
             Dim pD = If(parsed.Ranura(0), ""), pN = If(parsed.Ranura(1), ""), pS = If(parsed.Ranura(7), ""), pW = If(parsed.Ranura(2), "")
@@ -953,7 +965,12 @@ Friend NotInheritable Class NpcMaterialResolver
         End If
         Dim total = list.Count, facegenCount = 0
         For Each rec In list
-            Dim t = Canon.CanonRecords.Txst(rec, _ctx.PluginManager)
+            Dim t = _ctx.HeadParts.Txst(rec.Header.FormID)
+            ' ⛔ GUARDA. La sede devuelve Nothing cuando el FormID no resuelve como TXST — un record
+            ' que `RecordsByType` lista y el parser rechaza —, y de acá para abajo se leen siete
+            ' propiedades suyas. Sin esto el VOLCADO tira, y como corre adentro del camino del render,
+            ' se lleva puesto el repintado que lo disparó: un diagnóstico que rompe lo que diagnostica.
+            If t Is Nothing Then Continue For
             Dim fg = (t.Flags And &H2US) <> 0US
             If fg Then facegenCount += 1
             Dim ns = (t.Flags And &H1US) <> 0US, ms = (t.Flags And &H4US) <> 0US

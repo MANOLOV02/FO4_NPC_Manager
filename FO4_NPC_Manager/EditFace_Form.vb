@@ -228,6 +228,11 @@ Public Class EditFace_Form
 
     ' Cached resolution dictionaries (built once at construction).
     Private ReadOnly _allHeadPartsByFid As New Dictionary(Of UInteger, Canon.IHdpt)
+
+    ''' <summary>La sede de resolución de head parts de la sesión (la MISMA instancia que el render y el
+    ''' bake). Se toma de <c>MainForm</c> y no se construye acá: dos instancias serían dos cachés y dos
+    ''' respuestas posibles para el mismo FormID.</summary>
+    Private ReadOnly _res As ResolucionDeHeadParts = Nothing
     Private ReadOnly _allHairColors As New List(Of Canon.IClfm)
 
     ' Hair palette LUT (HairColor_Lgrad_d.dds) decoded once and reused for swatch sampling.
@@ -321,6 +326,9 @@ Public Class EditFace_Form
         _formatNpcRef = formatNpcRef
         _priorAcbsFlagsRaw = priorAcbsFlagsRaw
         _mainForm = mainForm
+        ' LA MISMA instancia que el render y el bake. No se construye una acá: dos instancias son dos
+        ' cachés y dos respuestas posibles para el mismo FormID.
+        _res = mainForm.HeadPartsResolution
         _mainGore = mainGore
 
         ' Snapshot any existing overlay so Cancel can restore byte-equivalent.
@@ -412,14 +420,30 @@ Public Class EditFace_Form
 
     ''' <summary>Build the (FormID → Canon.IHdpt) lookup table for all loaded HDPTs. Used by:
     '''   - the HeadParts list to display each entry's name, type and plugin.
-    '''   - the HeadPart picker's RACE/gender filter (delegated to HeadPartPicker_Form).</summary>
+    '''   - the HeadPart picker's RACE/gender filter (delegated to HeadPartPicker_Form).
+    ''' <para>⛔ Es un BARRIDO por tipo (<c>GetRecordsOfType</c>), no un lookup por FormID, y corre UNA
+    ''' vez por vida del formulario. Por las dos cosas <b>no puede ver un borrador</b>: ni por
+    ''' enumeración (un borrador no es un record del orden de carga) ni por momento (uno creado con este
+    ''' formulario abierto llegaría tarde). Por eso el barrido se siembra desde la SEDE —que resuelve
+    ''' cada FormID con el borrador primero— y los borradores vivos se agregan aparte; y por eso el
+    ''' resolvedor de la cascada (<see cref="ResolveHdptForCascade"/>) pregunta a la sede ANTES que a
+    ''' este diccionario.</para></summary>
     Private Sub BuildHeadPartCache()
         Dim hdptRecords = _pluginManager.GetRecordsOfType("HDPT")
-        If hdptRecords Is Nothing Then Return
-        For Each rec In hdptRecords
-            Dim hdpt = Canon.CanonRecords.Hdpt(rec, _pluginManager)
-            If hdpt Is Nothing Then Continue For
-            _allHeadPartsByFid(hdpt.FormID) = hdpt
+        If hdptRecords IsNot Nothing Then
+            For Each rec In hdptRecords
+                ' Por la sede: si este FormID tiene un borrador OVERRIDE, lo que el usuario ve es el
+                ' borrador y no lo que dice el archivo.
+                Dim hdpt = _res.Hdpt(rec.Header.FormID)
+                If hdpt Is Nothing Then Continue For
+                _allHeadPartsByFid(hdpt.FormID) = hdpt
+            Next
+        End If
+        ' Y los borradores NUEVOS, que no tienen record que enumerar: su FormID es provisional (0xFF).
+        For Each d In _mainForm.HdptDrafts()
+            If d?.Record Is Nothing Then Continue For
+            Dim vista = _res.Hdpt(d.FormID)
+            If vista IsNot Nothing Then _allHeadPartsByFid(d.FormID) = vista
         Next
     End Sub
 
@@ -858,7 +882,7 @@ Public Class EditFace_Form
         Dim oldCursor = Cursor
         Cursor = Cursors.WaitCursor
         Try
-            res = SseMorphReverseEngineer.Build(_rootNpcFormID, _pluginManager, _mainForm.LecturaDeHorneado(), _appliedPresets)
+            res = SseMorphReverseEngineer.Build(_rootNpcFormID, _pluginManager, _res, _mainForm.LecturaDeHorneado(), _appliedPresets)
         Catch ex As Exception
             Cursor = oldCursor
             MessageBox.Show(Me, "Reconstruction failed:" & vbCrLf & vbCrLf & ex.ToString(),
@@ -2628,7 +2652,8 @@ Public Class EditFace_Form
                 fuentes,
                 Function(fid As UInteger) As Canon.IHdpt
                     Dim hd As Canon.IHdpt = Nothing
-                    If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Return Nothing
+                    hd = ResolveHdptForCascade(fid)
+                    If hd Is Nothing Then Return Nothing
                     Return hd
                 End Function))
                 ' This list is a COMPLETE superset of the raw PNAM (extras included — see the
@@ -2863,7 +2888,8 @@ Public Class EditFace_Form
             Dim overriddenTypes As New HashSet(Of Integer)
             For Each fid In p.HeadPartFormIDs
                 Dim hd As Canon.IHdpt = Nothing
-                If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso
+                hd = ResolveHdptForCascade(fid)
+                If hd IsNot Nothing AndAlso
                    hd.ClasificarHeadPart(False).Clase = Canon.ClaseDeHeadPart.Slot Then
                     overriddenTypes.Add(hd.TipoDeParte())
                     visibleParents.Add(fid)
@@ -2874,7 +2900,8 @@ Public Class EditFace_Form
             If raceDefaults IsNot Nothing Then
                 For Each fid In raceDefaults
                     Dim hd As Canon.IHdpt = Nothing
-                    If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
+                    hd = ResolveHdptForCascade(fid)
+                    If hd Is Nothing Then Continue For
                 If hd.ClasificarHeadPart(False).Clase <> Canon.ClaseDeHeadPart.Slot Then Continue For
                     If overriddenTypes.Contains(hd.TipoDeParte()) Then Continue For
                     visibleParents.Add(fid)
@@ -2888,12 +2915,14 @@ Public Class EditFace_Form
             Dim extrasByParent As New Dictionary(Of UInteger, List(Of UInteger))
             For Each parentFid In visibleParents
                 Dim hd As Canon.IHdpt = Nothing
-                If Not _allHeadPartsByFid.TryGetValue(parentFid, hd) Then Continue For
+                hd = ResolveHdptForCascade(parentFid)
+                If hd Is Nothing Then Continue For
                 If hd.PartesExtra() Is Nothing OrElse hd.PartesExtra().Count = 0 Then Continue For
                 Dim list As New List(Of UInteger)
                 For Each ex In hd.PartesExtra()
                     Dim exData As Canon.IHdpt = Nothing
-                    If Not _allHeadPartsByFid.TryGetValue(ex, exData) Then Continue For
+                    exData = ResolveHdptForCascade(ex)
+                    If exData Is Nothing Then Continue For
                     list.Add(ex)
                     claimedAsExtra.Add(ex)
                 Next
@@ -2906,7 +2935,8 @@ Public Class EditFace_Form
             ' AO/wet sueltos) salen como top-level normal.
             For Each fid In p.HeadPartFormIDs
                 Dim hd As Canon.IHdpt = Nothing
-                If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
+                hd = ResolveHdptForCascade(fid)
+                If hd Is Nothing Then
                     ' Unresolved: lo mostramos top-level para que el usuario vea el FormID roto.
                     ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
                     Continue For
@@ -2930,7 +2960,8 @@ Public Class EditFace_Form
             If raceDefaults IsNot Nothing Then
                 For Each fid In raceDefaults
                     Dim hd As Canon.IHdpt = Nothing
-                    If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
+                    hd = ResolveHdptForCascade(fid)
+                    If hd Is Nothing Then Continue For
                 If hd.ClasificarHeadPart(False).Clase <> Canon.ClaseDeHeadPart.Slot Then Continue For
                     If overriddenTypes.Contains(hd.TipoDeParte()) Then Continue For
                     ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=True))
@@ -2998,7 +3029,8 @@ Public Class EditFace_Form
         Dim hd As Canon.IHdpt = Nothing
         Dim hex = fid.ToString("X8")
         Dim indent As String = If(isHnamExtra, "    └─ ", "")
-        If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
+        hd = ResolveHdptForCascade(fid)
+        If hd Is Nothing Then
             Dim missing As New ListViewItem(indent & "(unresolved)")
             missing.SubItems.Add("")
             missing.SubItems.Add("")
@@ -3045,7 +3077,7 @@ Public Class EditFace_Form
         ' Pass the race's gender-defaults so the picker accepts them even when the HDPT's own
         ' RNAM is inconsistent (vanilla mostly clean, mods sometimes diverge).
         Dim raceDefaults = If(_isFemale, _raceFemaleHeadPartFormIDs, _raceMaleHeadPartFormIDs)
-        Using dlg As New HeadPartPicker_Form(_pluginManager, _raceFormID, raceEditorID, _isFemale, partType, partTypeLabel, raceDefaults)
+        Using dlg As New HeadPartPicker_Form(_mainForm, _pluginManager, _res, _rootNpcFormID, _raceFormID, raceEditorID, _isFemale, partType, partTypeLabel, raceDefaults)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             Dim newFid = dlg.SelectedFormID
             If newFid = 0UI Then Return
@@ -3069,7 +3101,8 @@ Public Class EditFace_Form
         Else
             Dim existingIdx = p.HeadPartFormIDs.FindIndex(Function(fid)
                                                               Dim hd As Canon.IHdpt = Nothing
-                                                              Return _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.TipoDeParte() = partType
+                                                              hd = ResolveHdptForCascade(fid)
+                                                              Return hd IsNot Nothing AndAlso hd.TipoDeParte() = partType
                                                           End Function)
             If existingIdx >= 0 Then
                 Dim oldParentFid = p.HeadPartFormIDs(existingIdx)
@@ -3128,11 +3161,25 @@ Public Class EditFace_Form
         _refresh?.Invoke(FaceRefreshScope.FullReload)
     End Sub
 
-    ''' <summary>FormID → HDPT resolvido por el cache de este form (<c>_allHeadPartsByFid</c>, que trae TODOS
+    ''' <summary>⛔⛔ <b>LA ÚNICA PUERTA de este formulario para resolver un head part.</b> Sede primero,
+    ''' barrido después. Los NUEVE lectores que iban derecho a <c>_allHeadPartsByFid</c> pasan por acá, y
+    ''' eso no es prolijidad: el diccionario es un barrido de UNA vez por vida del formulario, así que un
+    ''' borrador creado o editado con el form abierto no está. Los dos defectos que producía —medidos
+    ''' leyendo el código— eran (a) la fila del head part propio salía «(unresolved)», sin nombre ni tipo
+    ''' ni plugin, y (b) el gesto «+Hair» dejaba de REEMPLAZAR: el <c>FindIndex</c> que busca la entrada
+    ''' del mismo <c>PartType</c> no encontraba la del borrador, así que se agregaban DOS pelos al mismo
+    ''' slot y <c>ganador(0)</c> se quedaba con el viejo — o sea, el usuario elegía un pelo y no pasaba
+    ''' nada.
+    ''' <para>Lo que sigue: FormID → HDPT resolvido por el cache de este form (<c>_allHeadPartsByFid</c>, que trae TODOS
     ''' los HDPT del load order). Es el resolver que piden los helpers compartidos de
     ''' <see cref="HeadPartResolver"/>; vive en un solo sitio para que el seed y el swap decidan con el mismo
     ''' cache. Nothing para un FormID que no resuelve a HDPT.</summary>
     Private Function ResolveHdptForCascade(fid As UInteger) As Canon.IHdpt
+        ' ⛔ LA SEDE PRIMERO. El diccionario es un barrido de una vez por vida del formulario, así que
+        ' un borrador creado o editado después de abrirlo no está ahí. Preguntar al diccionario primero
+        ' devolvería la versión vieja (o Nothing) y la cascada decidiría con datos de otro momento.
+        Dim vivo = _res.Hdpt(fid)
+        If vivo IsNot Nothing Then Return vivo
         Dim hd As Canon.IHdpt = Nothing
         _allHeadPartsByFid.TryGetValue(fid, hd)
         Return hd

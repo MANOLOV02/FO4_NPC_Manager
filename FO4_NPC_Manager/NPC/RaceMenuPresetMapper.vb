@@ -64,24 +64,31 @@ Public Module RaceMenuPresetMapper
     ''' no se puede evaluar y se devuelve True: no se inventa un actor.
     ''' Hueco: RNAM apuntando a un form que NO es FLST — no sé qué carga el juego en <c>validRaces</c>; acá se
     ''' trata como nulo (no aplica).</summary>
+    ''' <param name="res">La sede de resolución (borradores incluidos). ⛔ Reemplazó al par
+    ''' <c>pm + flstCache</c>: esa caché local memoizaba el FRACASO, así que un <c>RNAM</c> a una FLST
+    ''' borrador quedaba en <c>Nothing</c> para siempre. Ver <see cref="ResolucionDeHeadParts"/>.</param>
     Public Function MotorAplicaHeadPart(fid As UInteger, raceFid As UInteger, isFemale As Boolean,
-                                        pm As PluginManager, flstCache As Dictionary(Of UInteger, Canon.IFlst),
+                                        res As ResolucionDeHeadParts,
                                         ByRef motivo As String) As Boolean
         motivo = ""
-        Dim rec = pm.GetRecord(fid)
-        If rec Is Nothing Then
-            motivo = "no record with this FormID in the load order"
-            Return False
-        End If
-        If rec.Header.Signature <> "HDPT" Then
-            motivo = $"the record is a {rec.Header.Signature}, not a HDPT"
+        ' ⛔ PRIMERO la sede y DESPUES el record para el diagnóstico: al revés, un FormID de borrador
+        ' —que no tiene record en el orden de carga— se reportaría como «no record with this FormID»
+        ' cuando en realidad resuelve perfecto.
+        Dim hd = res.Hdpt(fid)
+        If hd Is Nothing Then
+            Dim rec = res.Plugins.GetRecord(fid)
+            If rec Is Nothing Then
+                motivo = "no record with this FormID in the load order"
+            ElseIf rec.Header.Signature <> "HDPT" Then
+                motivo = $"the record is a {rec.Header.Signature}, not a HDPT"
+            Else
+                ' Es HDPT y no se pudo abrir: sin flags ni RNAM que leer no se puede evaluar ⇒ se aplica
+                ' lo resuelto, que es la conducta que ya tenía.
+                Return True
+            End If
             Return False
         End If
         If raceFid = 0UI Then Return True
-        Dim hd = Canon.CanonRecords.Hdpt(rec, pm)
-        ' Sin parser del HDPT no hay flags ni RNAM que leer: no se puede evaluar ⇒ se aplica lo resuelto (el gate
-        ' del browser, que sí lo rechaza, lo sigue viendo en HeadPartFormIDs).
-        If hd Is Nothing Then Return True
         If Not If(isFemale, hd.FlagsFemale, hd.FlagsMale) Then
             motivo = $"its DATA flags don't include {If(isFemale, "Female", "Male")}"
             Return False
@@ -90,14 +97,7 @@ Public Module RaceMenuPresetMapper
             motivo = "it declares no Valid Races (RNAM=0): the engine never applies it from a preset"
             Return False
         End If
-        Dim flst As Canon.IFlst = Nothing
-        If Not flstCache.TryGetValue(hd.ValidRaces, flst) Then
-            Dim flstRec = pm.GetRecord(hd.ValidRaces)
-            If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
-                flst = Canon.CanonRecords.Flst(flstRec, pm)
-            End If
-            flstCache(hd.ValidRaces) = flst
-        End If
+        Dim flst As Canon.IFlst = res.Flst(hd.ValidRaces)
         If flst Is Nothing Then
             motivo = $"its Valid Races FLST 0x{hd.ValidRaces:X8} doesn't exist in this load order"
             Return False
@@ -374,8 +374,15 @@ Public Module RaceMenuPresetMapper
             preset.SseUnresolvedHeadParts.Clear()
             preset.SseHeadPartsFiltradasPorMotor.Clear()
             Dim hp As New List(Of UInteger)
-            ' Una FLST de RNAM se parsea una sola vez por carga (varias partes comparten la misma lista).
-            Dim flstCache As New Dictionary(Of UInteger, Canon.IFlst)
+            ' La sede de resolución para este apply. ⛔ SIN BORRADORES, y no es una omisión: las head
+            ' parts de un .jslot son FormID que salieron de un ARCHIVO —por `formIdentifier`
+            ' («Plugin|FormID») o por formId absoluto—, y un borrador no tiene plugin ni puede tener un
+            ' FormID provisional (byte alto 0xFF) escrito en un archivo bien formado. O sea que en este
+            ' camino no hay borrador que ver, y decirlo con la puerta explícita es lo que evita que
+            ' mañana alguien lea esto como «resuelve igual que la app».
+            ' Y la caché sigue estando: vive adentro de la sede, así que una FLST compartida por varias
+            ' partes se parsea una sola vez por carga, igual que con el diccionario que había acá.
+            Dim res = ResolucionDeHeadParts.SinBorradores(pluginManager)
             For Each h In j.HeadParts
                 If h Is Nothing Then Continue For
                 Dim fid As UInteger
@@ -433,7 +440,7 @@ Public Module RaceMenuPresetMapper
                 ' reporte sigan viendo lo que el archivo declara. Sin raza conocida (raceFid=0: los probes de
                 ' Tools llaman sin ella) el filtro de :164-175 no se puede evaluar y se aplica lo resuelto.
                 Dim motivo As String = ""
-                If Not MotorAplicaHeadPart(fid, raceFid, isFemale, pluginManager, flstCache, motivo) Then
+                If Not MotorAplicaHeadPart(fid, raceFid, isFemale, res, motivo) Then
                     If Not preset.SseHeadPartsFiltradasPorMotor.Contains(fid) Then preset.SseHeadPartsFiltradasPorMotor.Add(fid)
                     If Logger.Enabled Then
                         Dim srcName3 As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))

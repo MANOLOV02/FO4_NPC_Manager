@@ -40,7 +40,10 @@ Friend NotInheritable Class NpcFilterIndex
     ' at it. Survive an NPC edit (an NPC_ save cannot change an HDPT/ARMO/RACE), cleared only on a
     ' load-order change.
     Private ReadOnly _recordLabels As New Dictionary(Of UInteger, String)()
-    Private ReadOnly _headParts As New Dictionary(Of UInteger, Canon.IHdpt)()
+    ''' <summary>⛔ ACA VIVIA `_headParts`, una SEGUNDA cache de vistas de HDPT al lado de la sede.
+    ''' Se fue: la resolucion (y su cache) es de <see cref="ResolucionDeHeadParts"/>, que ademas mira
+    ''' los borradores. Dos caches de lo mismo son dos respuestas posibles para el mismo FormID.</summary>
+    Private ReadOnly _sedeHeadParts As ResolucionDeHeadParts
 
     ' Per-NPC caches: dropped wholesale whenever any NPC record changes (an edit to a template source
     ' changes the effective values of everything downstream of it, so per-FormID eviction would be
@@ -56,8 +59,15 @@ Friend NotInheritable Class NpcFilterIndex
     ''' (`MainForm.HojaDeListaPara`). Nothing = la politica sin pantalla (`NpcTemplateHelpers.HojaSinPantalla`).</summary>
     Private ReadOnly _hojaDeListaPara As Func(Of UInteger, Func(Of UInteger, UInteger))
 
-    Public Sub New(pluginManager As PluginManager, npcLookup As Func(Of UInteger, NPC_Data),
+    ''' <param name="sedeHeadParts">La sede de resolucion de head parts. OBLIGATORIA: el filtro
+    ''' `hair:`/`eyes:`/`face:` necesita el PartType de cada HDPT, y sin la sede lo resolveria sin
+    ''' borradores — un head part propio no matchearia su propia faceta.</param>
+    Public Sub New(pluginManager As PluginManager, sedeHeadParts As ResolucionDeHeadParts,
+                   npcLookup As Func(Of UInteger, NPC_Data),
                    Optional hojaDeListaPara As Func(Of UInteger, Func(Of UInteger, UInteger)) = Nothing)
+        If sedeHeadParts Is Nothing Then Throw New ArgumentNullException(NameOf(sedeHeadParts),
+            "El filtro resuelve HDPT para decidir la faceta: sin la sede lo haria sin borradores.")
+        _sedeHeadParts = sedeHeadParts
         _pluginManager = pluginManager
         _npcLookup = npcLookup
         If hojaDeListaPara Is Nothing Then
@@ -84,7 +94,9 @@ Friend NotInheritable Class NpcFilterIndex
     ''' <summary>Load order changed: everything goes, including the record-level labels.</summary>
     Public Sub InvalidateAll()
         _recordLabels.Clear()
-        _headParts.Clear()
+        ' La cache de head parts ya no es de este objeto: la invalida su dueno (la sede), y de eso se
+        ' encarga el camino post-guardado / de cambio de orden de carga.
+
         InvalidateNpcState()
     End Sub
 
@@ -321,18 +333,13 @@ Friend NotInheritable Class NpcFilterIndex
     End Function
 
     Private Function HeadPart(hdptFormID As UInteger) As Canon.IHdpt
-        Dim hd As Canon.IHdpt = Nothing
-        If _headParts.TryGetValue(hdptFormID, hd) Then Return hd
-        Dim rec = _pluginManager.GetRecord(hdptFormID)
-        If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then
-            Try
-                hd = Canon.CanonRecords.Hdpt(rec, _pluginManager)
-            Catch
-                hd = Nothing
-            End Try
-        End If
-        _headParts(hdptFormID) = hd
-        Return hd
+        ' Por la SEDE, que ya trae cache y mira los borradores. El Try que habia aca protegia de un
+        ' record malformado; la sede no lo tiene, asi que se conserva.
+        Try
+            Return _sedeHeadParts.Hdpt(hdptFormID)
+        Catch
+            Return Nothing
+        End Try
     End Function
 
     ''' <summary>EDID + FULL (+ mesh path for head parts) of a referenced record, resolved ONCE per

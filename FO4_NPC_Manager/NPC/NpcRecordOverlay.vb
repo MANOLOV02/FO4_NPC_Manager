@@ -43,7 +43,8 @@ Public Module NpcRecordOverlay
                                            appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                            Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
                                            Optional ByRef baseUsada As NPC_Data = Nothing,
-                                           Optional ByRef terminalUsado As UInteger = 0UI) As NPC_Data
+                                           Optional ByRef terminalUsado As UInteger = 0UI,
+                                           Optional resHeadParts As ResolucionDeHeadParts = Nothing) As NPC_Data
         Dim politica = lectura.Resuelta(npcFormID)
         Dim raw = politica.Leer(npcFormID)
         If raw Is Nothing Then Return Nothing
@@ -75,7 +76,7 @@ Public Module NpcRecordOverlay
                 ' si mismo como fuente de Traits y toda ley cableada sobre ese campo se bifurcaba.
                 terminalUsado = probe.Source.Record.FormID
                 Dim sombraT = SombraDelTerminal(probe.Source, appliedPresets, pluginManager,
-                                                lmSkinTemplateResolver, Nothing)
+                                                lmSkinTemplateResolver, Nothing, resHeadParts)
                 baseHeredada = BaseDeDibujo(raw, sombraT)
             End If
         End If
@@ -86,8 +87,18 @@ Public Module NpcRecordOverlay
         ' con el nombre de la funcion `BaseDeDibujo` la TAPA, y la llamada de arriba pasa a leerse como
         ' un indexado del parametro.
         baseUsada = baseHeredada
+        ' ⛔⛔ LA SEDE DE HEAD PARTS VIAJA TAMBIEN EN ESTA COLA, Y NO VIAJABA.
+        ' Acá se pasaba el resolvedor de plantilla de piel y se SOLTABA `resHeadParts`: se reenviaba
+        ' doce lineas mas arriba, a `SombraDelTerminal`, y no en el retorno. Y esta es la cola por la
+        ' que pasa TODO el horneado -- `EstadoDelHorneado` -> `ResolveOverlaidNpcData` -> acá --, o sea
+        ' que el bake componía el reemplazo de head parts de la plantilla de piel de LooksMenu SIN la
+        ' sede: justo el agregado silencioso (dos partes del mismo tipo, y gana la primera) que la
+        ' guarda de la entrada de `AplicarOverlay` describe.
+        ' ⛔ El hueco es ANTERIOR a esa guarda y estaba MUDO; la guarda lo destapó haciendo tirar
+        ' «Build CharGen», que es como lo vio el usuario. Los dos sirven a la misma rama y por eso no
+        ' sirven por separado.
         Return ComponerAutoriaSobre(baseHeredada, npcFormID, appliedPresets, pluginManager,
-                                    lmSkinTemplateResolver)
+                                    lmSkinTemplateResolver, resHeadParts:=resHeadParts)
     End Function
 
     ''' <summary>⛔⛔ LA AUTORIA DEL NPC, COMPUESTA SOBRE UNA BASE QUE YA ESTA ARMADA. Es la cola de
@@ -108,13 +119,15 @@ Public Module NpcRecordOverlay
                                          appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                          pluginManager As PluginManager,
                                          Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
-                                         Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing) As NPC_Data
+                                         Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
+                                         Optional resHeadParts As ResolucionDeHeadParts = Nothing) As NPC_Data
         If baseHeredada Is Nothing Then Return Nothing
         ' ⛔ La pregunta es de AUTORIA y la clave es el propio NPC: escrito, no implicito.
         ' ⛔ La raza EFECTIVA ya no se estampa aca: `AplicarOverlay` la aplica en las DOS ramas. Tenerla
         ' tambien en esta cola era el tercer dueño de la misma ley.
         Return AplicarOverlay(baseHeredada, OverlayDeAutoria(npcFormID, appliedPresets), npcFormID,
-                              pluginManager, lmSkinTemplateResolver, parseRace)
+                              pluginManager, lmSkinTemplateResolver, parseRace,
+                              resHeadParts:=resHeadParts)
     End Function
 
     ''' <summary>Dos listas de identificadores con el mismo contenido y en el mismo orden.</summary>
@@ -151,9 +164,10 @@ Public Module NpcRecordOverlay
     ''' the same helper the shadow uses, ensuring identical replacement semantics across both
     ''' code paths. PartType is read from the new HDPT itself (engine-faithful per
     ''' SkinInterface.cpp:292), so callers don't pass a target — the helper figures it out.</summary>
+    ''' <param name="res">Ver <see cref="ApplyLmHdptReplacement"/>: obligatoria.</param>
     Public Sub ApplyLmHdptReplacementPublic(headParts As List(Of UInteger), newHdptFormID As UInteger,
-                                              pluginManager As PluginManager)
-        ApplyLmHdptReplacement(headParts, newHdptFormID, pluginManager)
+                                              res As ResolucionDeHeadParts)
+        ApplyLmHdptReplacement(headParts, newHdptFormID, res)
     End Sub
 
     ''' <summary>Si hay un preset de LooksMenu aplicado a <paramref name="selectedNpcFormID"/>, devuelve una
@@ -249,12 +263,14 @@ Public Module NpcRecordOverlay
                                       appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                       pluginManager As PluginManager,
                                       resolveLm As ResolveLmSkinTemplateDelegate,
-                                      parseRace As Func(Of PluginRecord, Canon.IRace)) As NPC_Data
+                                      parseRace As Func(Of PluginRecord, Canon.IRace),
+                                      Optional resHeadParts As ResolucionDeHeadParts = Nothing) As NPC_Data
         If terminal Is Nothing OrElse terminal.Record Is Nothing Then Return terminal
         Dim delTerminal = OverlayDeAutoria(terminal.Record.FormID, appliedPresets)
         If delTerminal Is Nothing Then Return terminal
         Dim conOverlay = AplicarOverlay(terminal, delTerminal, terminal.Record.FormID,
-                                        pluginManager, resolveLm, parseRace)
+                                        pluginManager, resolveLm, parseRace,
+                                        resHeadParts:=resHeadParts)
         Return If(conOverlay, terminal)
     End Function
 
@@ -426,7 +442,8 @@ Public Module NpcRecordOverlay
         Return AplicarOverlay(raw,
                               AutoriaParaGuardado(OverlayDeAutoria(selectedNpcFormID, appliedPresets), raw, esSse),
                               selectedNpcFormID, ctx.PluginManager, lmSkinTemplateResolver, parseRace,
-                              estricto:=True, sexoEfectivoFemale:=sexoEfectivoFemale)
+                              estricto:=True, sexoEfectivoFemale:=sexoEfectivoFemale,
+                              resHeadParts:=ctx.HeadParts)
     End Function
 
     ''' <param name="sexoEfectivoFemale">⛔⛔ RONDA 15: EL SEXO CON EL QUE SE ELIGE EL BUNDLE LM (face TXST y
@@ -449,8 +466,32 @@ Public Module NpcRecordOverlay
                                    Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
                                    Optional parseRace As Func(Of PluginRecord, Canon.IRace) = Nothing,
                                    Optional estricto As Boolean = False,
-                                   Optional sexoEfectivoFemale As Boolean? = Nothing) As NPC_Data
+                                   Optional sexoEfectivoFemale As Boolean? = Nothing,
+                                   Optional resHeadParts As ResolucionDeHeadParts = Nothing) As NPC_Data
         If raw Is Nothing OrElse raw.Record Is Nothing Then Return raw
+        ' ⛔⛔ LA GUARDA VA EN LA ENTRADA, NO EN EL PUNTO DE USO, y eso es lo que cierra la clase.
+        ' Estaba escrita adentro del `If lmTemplate IsNot Nothing`, o sea que sólo tiraba para el NPC
+        ' que TIENE plantilla de piel de LooksMenu aplicada. Con eso, un llamador que pasa el
+        ' resolvedor y se olvida la sede anda perfecto en todas las pruebas y explota en producción
+        ' el día que alguien abre el NPC raro. Fue exactamente lo que pasó: el censo de llamadores dio
+        ' SIETE que pasan el resolvedor y TRES estaban sin la sede — `BakeAllRunner`,
+        ' `MainForm.TryApplyFaceTints` y `MainForm.AplicarOverlayDeDibujo` — y ningún camino se quejó.
+        ' Acá arriba, en cambio, tira con el PRIMER NPC que se dibuje o se hornee.
+        '   ⛔ Y por eso NO se arregla volviendo `resHeadParts` obligatorio, que es lo primero que se
+        ' pide al ver esto: un parámetro obligatorio SE SATISFACE CON `Nothing`. Eso mueve el defecto
+        ' de «me olvidé el argumento» a «escribí Nothing para que compile», que es peor porque queda
+        ' escrito como una decisión. Lo que cierra la puerta es que los DOS viajen juntos.
+        '   Sirven a UNA rama: la plantilla de piel reemplaza head parts POR PartType, y para eso hay
+        ' que resolver las que el NPC ya tiene — que pueden ser BORRADORES.
+        If lmSkinTemplateResolver IsNot Nothing AndAlso resHeadParts Is Nothing Then
+            Throw New InvalidOperationException(
+                "AplicarOverlay recibio `lmSkinTemplateResolver` sin `resHeadParts`. Los dos sirven a la " &
+                "misma rama -la plantilla de piel de LooksMenu, que reemplaza head parts por PartType- y " &
+                "no sirven por separado: sin la sede, el reemplazo se vuelve un agregado silencioso (dos " &
+                "partes del mismo tipo, y gana la primera) para cualquier NPC con plantilla de piel " &
+                "aplicada. Todos los llamadores que pasan el resolvedor tienen la sede a mano: " &
+                "`_resHeadParts` en MainForm, `ctx.HeadParts` en el render y en el horneado.")
+        End If
         ' ⛔⛔ COPIA AUNQUE NO HAYA PRESET. Antes devolvia `raw` tal cual, y hay dos llamadores que le
         ' escriben la raza encima ("mutar es seguro porque `raw` es un parse FRESCO"). Con la base del estado
         ' como `raw`, esa premisa deja de valer: la base es COMPARTIDA -- `CloneVisualState` la pasa por
@@ -710,8 +751,11 @@ finDelSkin:
             ' The helper reads each HDPT's own PartType to decide which slot to replace,
             ' so a JSON template that puts (e.g.) a Hair HDPT in "maleHead" replaces the
             ' Hair slot, not Face. Engine-faithful per SkinInterface.cpp:292.
-            ApplyLmHdptReplacement(headParts, lmTemplate.HeadHdptFormID(genderIdx), pluginManager)
-            ApplyLmHdptReplacement(headParts, lmTemplate.HeadRearHdptFormID(genderIdx), pluginManager)
+            ' ⛔ La sede ya se exigió EN LA ENTRADA de la función, junto con el resolvedor: ver el ⛔⛔
+            ' de arriba. Acá había una guarda equivalente, y estar SÓLO acá era el defecto — esta rama
+            ' depende de los DATOS del NPC, así que dejó pasar tres llamadores mal escritos.
+            ApplyLmHdptReplacement(headParts, lmTemplate.HeadHdptFormID(genderIdx), resHeadParts)
+            ApplyLmHdptReplacement(headParts, lmTemplate.HeadRearHdptFormID(genderIdx), resHeadParts)
         End If
         ' Solo si la lista cambio: reescribirla igual daria los mismos bytes, pero un PNAM en cero -que la
         ' lectura filtra- se perderia al pasar por aca sin que nadie lo haya pedido.
@@ -1142,17 +1186,35 @@ finDelSkin:
     ''' So a JSON template that puts a Hair HDPT in "maleHead" replaces the Hair slot, not Face.
     ''' If no entry of that PartType exists in <paramref name="headParts"/>, the new HDPT is
     ''' appended (mirrors engine post-AddHeadPart fallthrough).</summary>
+    ''' <param name="res">La sede de resolución de head parts. OBLIGATORIA acá: esta función clasifica
+    ''' por <c>PartType</c> las entradas que el NPC YA tiene para encontrar la del mismo tipo y
+    ''' reemplazarla, y esas entradas pueden ser BORRADORES. Resolviéndolas contra el
+    ''' <c>PluginManager</c> pelado, un borrador daba <c>Nothing</c>, el <c>Continue For</c> lo saltaba,
+    ''' y el head part de la plantilla se AGREGABA sin reemplazar nada: dos partes del mismo tipo en la
+    ''' lista, y <c>ganador(0)</c> se queda con la primera ⇒ la plantilla no aplicaba y nada lo decía.</param>
     Private Sub ApplyLmHdptReplacement(headParts As List(Of UInteger), newHdptFormID As UInteger,
-                                        pluginManager As PluginManager)
+                                        res As ResolucionDeHeadParts)
         If newHdptFormID = 0UI Then Return
-        Dim newRec = pluginManager.GetRecord(newHdptFormID)
-        If newRec Is Nothing OrElse newRec.Header.Signature <> "HDPT" Then Return
+        If res Is Nothing Then
+            Throw New ArgumentNullException(NameOf(res),
+                "La plantilla de piel de LooksMenu reemplaza head parts POR PartType, y para eso hay que " &
+                "resolver las que el NPC ya tiene — que pueden ser borradores. Sin la sede, el reemplazo " &
+                "se convierte en un agregado silencioso.")
+        End If
+        ' ⛔ UNA SOLA PREGUNTA, A LA SEDE. Acá había tres líneas: `GetRecord`, «no resuelve por
+        ' ninguna de las dos vías» y «existe pero no es HDPT». La sede ya contesta las dos cosas
+        ' —su lector chequea la firma y devuelve Nothing—, así que las tres colapsan en una. Lo de
+        ' antes era la guarda vieja CONSERVADA al lado de la nueva: un modo legacy «para no romper»,
+        ' que es justo lo que este workspace prohíbe. Y con eso el parámetro `pluginManager` queda
+        ' sin uso en esta función, así que SE VA — dejarlo sería decirle al llamador que hace falta.
+        If res.Hdpt(newHdptFormID) Is Nothing Then Return
 
         ' Read the target PartType from the NEW HDPT — engine-faithful (engine reads
         ' headPart->type for the slot lookup, doesn't accept it as an argument).
         Dim targetPartType As Integer
         Try
-            Dim newHdpt = Canon.CanonRecords.Hdpt(newRec, pluginManager)
+            ' Por la sede: el head part que ENTRA también puede ser un borrador (un template propio).
+            Dim newHdpt = res.Hdpt(newHdptFormID)
             targetPartType = newHdpt.TipoDeParte()
         Catch ex As Exception
             Logger.LogLazy(Function() $"[LM-HDPT-REPLACE] HDPT 0x{newHdptFormID:X8} parse failed; replacement skipped: {ex.GetType().Name}: {ex.Message}")
@@ -1171,10 +1233,12 @@ finDelSkin:
         Dim replaceIdx As Integer = -1
         Dim removalIndices As New List(Of Integer)
         For i = 0 To headParts.Count - 1
-            Dim r = pluginManager.GetRecord(headParts(i))
-            If r Is Nothing OrElse r.Header.Signature <> "HDPT" Then Continue For
             Try
-                Dim hd = Canon.CanonRecords.Hdpt(r, pluginManager)
+                ' ⛔ Por la SEDE y sin el pre-chequeo del record: acá estaba el defecto. Un FormID de
+                ' BORRADOR no tiene record en el orden de carga, así que el `If r Is Nothing … Continue
+                ' For` lo saltaba y la entrada del mismo tipo no se reemplazaba nunca.
+                Dim hd = res.Hdpt(headParts(i))
+                If hd Is Nothing Then Continue For
                 If hd.TipoDeParte() = targetPartType Then
                     If replaceIdx < 0 Then
                         replaceIdx = i
