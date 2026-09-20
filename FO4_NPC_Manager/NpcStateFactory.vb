@@ -222,10 +222,17 @@ Friend NotInheritable Class NpcStateFactory
                                                               lmSkinTemplateResolver,
                                                               baseDelHorneado, terminalDelHorneado)
         If npcData Is Nothing Then Return (Nothing, Nothing, Nothing)
+        ' ⛔ SIN FECHA A PROPOSITO, y es seguro por construccion: el estado del horneado NO se publica en
+        ' `LastRenderedState`, asi que nadie lo usa como cache de la base; y si algun dia se publicara, `Nothing`
+        ' se lee como VENCIDA y el consumidor recalcula. Poner una fecha inventada aca -- `npcData`, que es el
+        ' record YA compuesto con el overlay y no el parse del que salio la base -- seria peor: diria "fresca"
+        ' sobre una instancia que no es la que la sesion tiene.
         Dim proy = ProyectarEstado(npcData, npcData,
                                    CreateOwnInventoryState(npcData),
                                    presetDeDibujo:=Nothing,
                                    recordBase:=If(baseDelHorneado, npcData),
+                                   baseArmadaDesde:=Nothing,
+                                   baseArmadaDesdeTerminal:=Nothing,
                                    traitsSourceFid:=terminalDelHorneado)
         ' `ModelSourceFormID` es dato del BAKE, no de la proyeccion: el render lo deja en 0.
         proy.Estado.ModelSourceFormID = npcFormID
@@ -235,10 +242,21 @@ Friend NotInheritable Class NpcStateFactory
         Return (npcData, proy.Estado, proy.Traits)
     End Function
 
+    ''' <param name="baseArmadaDesde">⛔⛔ LA FECHA DE LA BASE, y viaja por el MISMO camino OBLIGATORIO que la
+    ''' base por el mismo motivo: son una cosa. Es la instancia de parse del record PROPIO de la que se derivo
+    ''' <paramref name="recordBase"/>; <paramref name="baseArmadaDesdeTerminal"/> es la del TERMINAL de Traits
+    ''' cuando el NPC hereda. `Nothing` = SIN FECHA, y el consumidor
+    ''' (<c>MainForm.RecordEfectivoParaAutoria</c>) trata la base sin fecha como VENCIDA. Ver
+    ''' <c>MainForm.NPCVisualState.BaseArmadaDesde</c>.
+    ''' <para>⛔ Se sella ACA y no en el resolver: la base entra al estado en esta funcion, y con la fecha puesta
+    ''' afuera quedaban DOS dueños de la misma cosa -- el horneado, que proyecta por esta misma fabrica, nacia con
+    ''' base y sin fecha. Es el agujero que el comentario de la base dice haber cerrado a proposito.</para></param>
     Public Shared Function ProyectarEstado(npcData As NPC_Data, root As NPC_Data,
                                            inventory As MainForm.InventoryState,
                                            presetDeDibujo As LooksmenuLoader.LooksmenuPreset,
                                            recordBase As NPC_Data,
+                                           baseArmadaDesde As NPC_Data,
+                                           baseArmadaDesdeTerminal As NPC_Data,
                                            Optional traitsSourceFid As UInteger = 0UI) _
                                            As (Estado As MainForm.NPCVisualState, Traits As MainForm.TraitsState)
         Dim traits = CreateOwnTraitsState(npcData)
@@ -253,6 +271,8 @@ Friend NotInheritable Class NpcStateFactory
         Dim st As New MainForm.NPCVisualState With {
             .FormID = root.FormID,
             .RecordBase = recordBase,
+            .BaseArmadaDesde = baseArmadaDesde,
+            .BaseArmadaDesdeTerminal = baseArmadaDesdeTerminal,
             .RootNpcFormID = root.FormID,
             .IsFemale = traits.IsFemale,
             .RaceFormID = traits.RaceFormID,

@@ -1096,6 +1096,37 @@ Public Class MainForm
         ''' paralelo: escribirle es una carrera. Nadie recibe esta instancia — el que necesite componer sobre ella
         ''' recibe una copia.</para></summary>
         Public RecordBase As NPC_Data = Nothing
+
+        ''' <summary>⛔⛔ LA FECHA DE <see cref="RecordBase"/>: las instancias de parse de las que se armo. Sirve
+        ''' para UNA pregunta: ¿la base sigue describiendo los records que la sesion tiene hoy?
+        ''' <para>Existe porque `RecordEfectivoParaAutoria` usa `RecordBase` como CACHE para sembrar los editores,
+        ''' y un cache sin forma de saber si esta vencido miente en silencio. El caso medido: tras un Save, el
+        ''' readback reemplaza la instancia de la cache por el parse del plugin guardado (`_ctx.NpcCache(fid) =
+        ''' freshNpc`) y el estado publicado queda describiendo el record ANTERIOR — el usuario reabria Edit Face
+        ''' y veia los tints de antes de editar. Re-renderizar lo tapa cuando el render llega hasta el final, pero
+        ''' `PublicarEstadoMostrado` corre DESPUES de dibujar y ese camino tiene salidas tempranas (sin base,
+        ''' version de pedido vieja, plan sin mallas): con cualquiera de ellas el estado se queda viejo igual.</para>
+        ''' <para>⛔⛔ SON DOS CAMPOS PORQUE LA BASE SE DERIVA DE DOS RECORDS: el propio (`BaseArmadaDesde`) y,
+        ''' para un heredero, el TERMINAL de la cadena de Traits (`BaseArmadaDesdeTerminal`) — `BaseDeDibujo(npc,
+        ''' SombraDelTerminal(terminal))`. Con uno solo el defecto sobrevivia por la plantilla: guardar a la
+        ''' PLANTILLA reemplaza SU instancia, el heredero en pantalla no esta en los guardados (asi que no se
+        ''' re-renderiza) y su fecha propia seguia coincidiendo ⇒ se servia la base armada con la plantilla vieja.</para>
+        ''' <para>⛔ QUE CIERRA Y QUE NO. Cierra los caminos que REEMPLAZAN la instancia: el readback del Save, el
+        ''' Reset (que saca de la cache y re-parsea) y cualquier invalidacion de parse. NO cierra la MUTACION EN
+        ''' SITIO: el NPC Editor le escribe encima a la instancia cacheada, asi que la referencia sigue siendo la
+        ''' misma y el contenido cambio — ahi la frescura la da el re-render que ese camino dispara, con las mismas
+        ''' salidas tempranas. Tampoco cierra un overlay del TERMINAL editado sin guardar (misma instancia, otro
+        ''' overlay). Comparar por identidad y no por contenido es deliberado: lo que cambia en un readback es la
+        ''' INSTANCIA, y dos parses del mismo record son iguales campo a campo y aun asi uno esta vencido.</para>
+        ''' <para>⛔ `Nothing` significa SIN FECHA, y sin fecha la base NO se usa: el que proyecta un estado que no
+        ''' se publica (el horneado) pasa `Nothing` y la guarda lo trata como vencido. Es la unica forma segura de
+        ''' que "no se sabe" no se lea como "fresca".</para></summary>
+        Public BaseArmadaDesde As NPC_Data = Nothing
+
+        ''' <summary>La otra mitad de la fecha: la instancia del TERMINAL de Traits de la que se copio el bucket al
+        ''' armar <see cref="RecordBase"/>, o `Nothing` cuando el NPC no hereda. Ver
+        ''' <see cref="BaseArmadaDesde"/>.</summary>
+        Public BaseArmadaDesdeTerminal As NPC_Data = Nothing
     End Class
 
     Private ReadOnly Property CurrentPreviewMode As PreviewMode
@@ -10609,16 +10640,62 @@ Public Class MainForm
         ' ⛔⛔ SI EL ESTADO YA TIENE LA BASE, ES ESA. Re-calcularla aca vuelve a caminar la cadena, y
         ' un segundo caminante puede elegir otra hoja de una lista nivelada que la que el estado mostro:
         ' saldria la cara de un NPC sobre el cuerpo de otro. Una resolucion, una base.
-        If _renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing AndAlso
-           _renderHost.LastRenderedState.RootNpcFormID = rootFid AndAlso
-           _renderHost.LastRenderedState.RecordBase IsNot Nothing Then
+        '
+        ' ⛔⛔⛔ PERO SOLO SI LA BASE NO ESTA VENCIDA, Y ESO SE PREGUNTA POR IDENTIDAD. `RecordBase` es un CACHE:
+        ' describe el record que la sesion tenia CUANDO SE DIBUJO. El readback del Save reemplaza la instancia del
+        ' parse (`_ctx.NpcCache(fid) = freshNpc`), asi que desde ese momento la base del estado describe un record
+        ' que ya no existe. Con la rama incondicional, el usuario editaba tints, guardaba, reabria Edit Face y veia
+        ' las capas de ANTES: el seed sale de aca y el overlay ya habia soltado el canal (`StripEspFieldsFromOverlay`).
+        ' ⛔ Y NO ALCANZA CON RE-RENDERIZAR DESPUES DE GUARDAR --que ademas se hace--: `PublicarEstadoMostrado` corre
+        ' al FINAL de `RenderCurrentStateAsync`, y ese camino tiene salidas tempranas (sin `CurrentBaseState`, pedido
+        ' de version vieja, plan sin mallas => "No meshes found"). Con cualquiera de ellas el estado se queda con la
+        ' base vieja y el defecto volvia para ESE NPC. La fecha de la base cierra los caminos que REEMPLAZAN la
+        ' instancia del parse --el readback del Save, el Reset, cualquier invalidacion-- SIN depender de que el
+        ' render llegue a publicar: si las instancias de las que se armo no son las que la sesion tiene hoy, se
+        ' recalcula abajo. Lo que NO cierra, y esta dicho en el campo, es la MUTACION EN SITIO (el NPC Editor le
+        ' escribe encima a la instancia cacheada: misma referencia, otro contenido) ni un overlay del TERMINAL
+        ' editado sin guardar. Esos dos siguen apoyados en el re-render que su propio camino dispara.
+        ' ⛔ La comparacion es por REFERENCIA y no por contenido: lo que un re-parse cambia es la INSTANCIA, y dos
+        ' parses del mismo record son iguales campo a campo y aun asi uno esta vencido.
+        ' ⛔ Y no se pierde "una resolucion, una base": la rama de abajo resuelve con el MISMO ancla de hoja
+        ' (`ResolverParaDesprendimiento` -> `HojaDeListaPara` -> `ResolveLvlnPick_Friend`, que lee la hoja MOSTRADA)
+        ' y con `SombraDelTerminal`, igual que `BaseDeDibujo`. Lo unico que se pierde es el atajo.
+        ' ⛔⛔ SIN FECHA NO SE USA, y la guarda lo dice explicitamente: `Object.ReferenceEquals(Nothing, Nothing)`
+        ' es TRUE, asi que sin el `IsNot Nothing` un estado sin fecha (el del horneado, el de la piel en vivo) mas
+        ' un NPC que ya no esta en la cache -- un record nuevo borrado en la sesion, donde `GetParsedNpc` devuelve
+        ' Nothing -- daban "fresca" con dos nadas y se servia la base vieja, que es justo lo que esto evita.
+        Dim baseDelRender = If(_renderHost Is Nothing, Nothing, _renderHost.LastRenderedState)
+        If baseDelRender IsNot Nothing AndAlso baseDelRender.RootNpcFormID = rootFid AndAlso
+           baseDelRender.RecordBase IsNot Nothing AndAlso
+           baseDelRender.BaseArmadaDesde IsNot Nothing AndAlso
+           Object.ReferenceEquals(baseDelRender.BaseArmadaDesde, _ctx.GetParsedNpc(rootFid)) AndAlso
+           FechaDelTerminalVigente(baseDelRender) Then
             ' ⛔ COPIA: la base del estado es compartida y de solo lectura. El que siembra un editor o
             ' filtra un preset le escribe encima.
-            Return _renderHost.LastRenderedState.RecordBase.Copia()
+            Return baseDelRender.RecordBase.Copia()
         End If
 
-        Dim npc = If(_ctx.GetParsedNpc(rootFid), propio)
-        If npc Is Nothing OrElse npc.Record Is Nothing Then Return npc
+        ' ⛔⛔ UNA SOLA COPIA, ARRIBA, Y TODAS LAS SALIDAS DEVUELVEN ESA. `GetParsedNpc` puede devolver la
+        ' instancia VIVA de `_ctx.NpcCache` --la que la app DIBUJA y la que el NPC Editor MUTA--, asi que
+        ' entregarla es prestarle a un llamador de solo lectura el objeto del que depende el render. La rama de
+        ' arriba ya copia ("la base del estado es compartida y de solo lectura. El que siembra un editor o filtra
+        ' un preset le escribe encima"); esta no lo hacia en tres de sus cuatro salidas. Hoy ninguno de los seis
+        ' llamadores --ni los dos arneses-- le escribe: esto no arregla un sintoma, saca la posibilidad.
+        ' ⛔ COPIAR UNA VEZ Y NO EN CADA `Return`: con un `Copia()` por salida, la decision vive en cuatro
+        ' renglones y basta agregar una salida nueva para que uno entregue la instancia viva otra vez. Es lo que
+        ' acababa de pasar: el `Return` del record ausente se quedo sin copiar.
+        ' ⛔⛔ Y LA PROMESA ES SOLO SOBRE EL RECORD. `NPC_Data.Copia` CLONA el arbol del record pero COMPARTE por
+        ' referencia el estado de sesion --`SseTintTexOverride`, `SseSculptHead`, `SseSculptParts`,
+        ' `SseCustomMorphs`-- y lo dice su propio doc (`RecordParsers.vb:125-135`, "El estado de sesion se
+        ' comparte: no se edita aca"). O sea que esto protege el arbol del record, NO esos cuatro campos: quien
+        ' vaya a escribirlos tiene que clonarlos el.
+        Dim vivo = If(_ctx.GetParsedNpc(rootFid), propio)
+        ' ⛔ TAMBIEN ESTA SALIDA COPIA. `Copia()` maneja el record ausente (`RecordParsers.vb`: si `Record` es
+        ' Nothing, la copia lo deja en Nothing), asi que copiar aca es gratis -- y dejarla sin copiar era
+        ' exactamente la salida que el comentario de arriba dice venir a matar.
+        If vivo Is Nothing Then Return Nothing
+        If vivo.Record Is Nothing Then Return vivo.Copia()
+        Dim npc = vivo.Copia()
         If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags,
                                                   NPC_TemplateCategory.Traits) Then Return npc
 
@@ -10629,11 +10706,45 @@ Public Class MainForm
                                            resol, guardarResol, motivo) Then Return npc
         If resol.Source Is Nothing Then Return npc
 
-        ' ⛔ Sobre una COPIA. `GetParsedNpc` devuelve la instancia cacheada del render y esto es una
-        ' consulta de solo lectura: materializar sobre ella desprenderia al NPC sin que nadie lo haya pedido.
-        Dim copia = npc.Copia()
-        NpcTemplateMaterializer.MakeCategoryOwn(copia, NPC_TemplateCategory.Traits, resol)
-        Return copia
+        ' ⛔⛔ `soloCopiar:=True` -- ES LA MISMA LEY QUE LA RAMA DE ARRIBA, y aca faltaba. Esa rama arma la base
+        ' con `NpcRecordOverlay.BaseDeDibujo`, que copia el bucket Traits en modo `soloCopiar` porque CONSULTAR NO
+        ' DESPRENDE. Sin el flag, la MISMA pregunta contestaba distinto segun si el NPC era el de la pantalla: por
+        ' esta rama la copia salia con el bit 0 de Traits BAJADO y ademas se disparaba `[TPLT-MATERIALIZE]` --el log
+        ' del desprendimiento-- en una consulta de solo lectura. MEDIDO que hoy lo unico observable era esa linea
+        ' de log: ninguno de los seis llamadores, ni los dos arneses que la llaman (`EstadoAbGate`,
+        ' `HerenciaAlDibujarGate`), lee `ConfigurationTemplateFlags` del record devuelto. La divergencia entre las
+        ' dos ramas no era observable, y es la que se cierra.
+        ' ⛔ Se materializa SOBRE `npc`, que ya ES la copia de arriba: no hay una segunda.
+        NpcTemplateMaterializer.MakeCategoryOwn(npc, NPC_TemplateCategory.Traits, resol, soloCopiar:=True)
+        Return npc
+    End Function
+
+    ''' <summary>⛔⛔ LA OTRA MITAD DE LA FECHA DE LA BASE: si el TERMINAL del que se copio el bucket de Traits
+    ''' sigue siendo la instancia que la sesion tiene hoy.
+    ''' <para>Hace falta porque la base de un heredero se deriva de DOS records --el propio y el terminal
+    ''' (`BaseDeDibujo(npc, SombraDelTerminal(terminal))`)-- y comparando solo el propio el defecto sobrevivia por
+    ''' la plantilla: se edita y se guarda la PLANTILLA, el readback reemplaza SU instancia, el heredero que esta
+    ''' en pantalla no esta entre los guardados --asi que no se re-renderiza-- y su fecha propia seguia
+    ''' coincidiendo ⇒ se servia la base armada con la plantilla PRE-Save y Edit Face sembraba los tints viejos.
+    ''' Es el mismo defecto que reporto el usuario, por la otra punta.</para>
+    ''' <para>Un NPC que no hereda no tiene terminal sellado y no hay nada que comparar: para el, la fuente de
+    ''' Traits es el mismo root (`NpcStateFactory.CreateOwnTraitsState`) o cero.</para></summary>
+    Private Function FechaDelTerminalVigente(st As NPCVisualState) As Boolean
+        If st.BaseArmadaDesdeTerminal Is Nothing Then
+            ' Sin terminal sellado, la base no saco nada de ningun terminal. Se exige que el estado tampoco
+            ' declare uno AJENO: si declara una fuente de Traits distinta del root, la base SI se armo con ella y
+            ' la fecha falta.
+            ' ⛔⛔ HUECO DECLARADO: la cadena que NO RESOLVIO no deja rastro en el estado. `ResolveTraitsStateFromNPC`
+            ' cae a `CreateOwnTraitsState(npc)` cuando `FuenteDelRender` devuelve Nothing, y eso pone
+            ' `SourceFormID = npc.FormID` -- o sea que un heredero cuya plantilla falta es INDISTINGUIBLE de un NPC
+            ' que no hereda. Consecuencia: si esa plantilla aparece a mitad de sesion (otro orden de carga, un
+            ' plugin que se monta), esta funcion sigue diciendo "vigente" y se sirve la base armada SIN plantilla.
+            ' ⛔ Aca hubo una linea que decia cubrirlo --`Return GetParsedNpc(TraitsSourceFormID) Is Nothing`-- y era
+            ' INALCANZABLE por lo de arriba: la condicion anterior ya devolvia True. Se saco. Cubrirlo de verdad
+            ' pide sellar en el estado el FormID de la plantilla que no resolvio, y eso es `TraitsState`: otro alcance.
+            Return st.TraitsSourceFormID = 0UI OrElse st.TraitsSourceFormID = st.RootNpcFormID
+        End If
+        Return Object.ReferenceEquals(st.BaseArmadaDesdeTerminal, _ctx.GetParsedNpc(st.TraitsSourceFormID))
     End Function
 
     ''' <summary>⛔⛔ EL MISMO AVISO DE LA PUERTA, para el desprendimiento que NO pasa por el overlay.
@@ -12738,20 +12849,64 @@ Public Class MainForm
             Logger.LogLazy(Function() $"[SAVE-READBACK] MergeOverridePlugin failed for {savedPluginPath}: {ex.Message}")
         End Try
 
+        ' ⛔⛔ SIN RE-MONTAJE NO SE SUELTA NADA DE LA SESION (decision del usuario, 19-sep). El ESP en disco
+        ' quedo escrito, pero el estado GUARDADO no entro a la sesion: el overlay y el override del editor son la
+        ' UNICA copia en memoria de lo que el usuario edito. Soltarlos aca --strip del overlay, `Remove` del
+        ' override, `ClearNpcDirty`-- dejaba al NPC mostrando la cara PRE-edicion, sin negrita y sin nada que
+        ' reintentar, con el archivo en disco correcto: tres verdades incoherentes. Conservando las tres cosas el
+        ' NPC sigue sucio, el preview sigue mostrando lo editado y el Save siguiente vuelve a intentar el montaje.
+        ' ⛔ QUE DEVUELVE `GetRecord` DESPUES DE UN MONTAJE FALLADO: depende de DONDE fallo, y no es "el viejo"
+        ' siempre. `MergeOverridePlugin` (`PluginManager.vb:425-472`) hace `reader.Load(filePath)` ANTES de tomar
+        ' el write lock, asi que la falla TIPICA --archivo tomado por el juego, MO2 o un antivirus-- deja el
+        ' universo intacto con el record viejo. Pero si revienta DENTRO de la seccion critica, `PurgeRecordsOwnedBySlot`
+        ' y `Plugins(i) = reader` ya corrieron y `MergeRecords` no: un record NUEVO authoreado por la app puede
+        ' quedar en NADA (`GetRecord` devuelve Nothing). Lo que vale en los dos casos, y es lo que esta guarda
+        ' necesita, es que el estado guardado NO esta en la sesion.
+        ' ⛔ Y SALE ACA, no rama por rama: las cuatro cosas que siguen (invalidar el picker, promover borradores,
+        ' el bucle por NPC y el re-render) ya no se hacen, asi que `mergeOk` tiene UN consumidor. Gatear cada una
+        ' por separado --como estaba en dos de las cuatro-- es tener cuatro lugares donde decidir lo mismo.
+        If Not mergeOk Then
+            ' ⛔ PERO EL SIDECAR SI SE ANOTA, porque no depende del montaje: si `WriteBssliders` estaba puesto, la
+            ' fila de cada NPC YA se rehizo en disco desde este mismo overlay. La pertenencia se calcula con la
+            ' MISMA pregunta que usa el strip (`EntryFromPreset(...).HasAnything`, que es lo que
+            ' `StripEspFieldsFromOverlay` devuelve) y sin mutar nada. Sin esto, el unico consumidor
+            ' --el ruteo WYSIWYG del Reset (`MenuItemResetOverlay_Click`)-- se quedaba creyendo que el NPC no
+            ' tiene fila y el Save siguiente no la podaria.
+            If sidecarWritten Then
+                For Each fid In writtenFormIDs
+                    Dim ov = NpcRecordOverlay.OverlayDeAutoria(fid, _appliedPresets)
+                    Dim tieneFila = ov IsNot Nothing AndAlso BssliderSidecar.EntryFromPreset(ov, "", "").HasAnything
+                    If tieneFila Then _sidecarBackedNpcs.Add(fid) Else _sidecarBackedNpcs.Remove(fid)
+                Next
+            End If
+            Dim cuantos = writtenFormIDs.Count
+            Logger.LogLazy(Function() $"[SAVE-READBACK] re-mount FAILED => session state PRESERVED for {cuantos} NPC(s): " &
+                                      "overlay, record override and dirty mark kept so the next Save retries.")
+            ' ⛔⛔ AVISARLE AL USUARIO ESTA PENDIENTE Y ES DECISION SUYA, NO DE ACA. Conservar el estado sirve
+            ' para REINTENTAR, y hoy el usuario no se entera: el ultimo dialogo que ve es "Saved N NPC(s)" --
+            ' `savePartiallyFailed` sale de `execResult.Success`, que se decide ANTES de este re-montaje-- mientras
+            ' el NPC le queda en negrita y con la edicion viva.
+            ' ⛔ ACA SE PUSO UN `MessageBox` PROPIO Y SE SACO: dejaba DOS dialogos seguidos, el segundo
+            ' desmintiendo al primero, que es exactamente lo que prohibe la ley de la falla parcial unas pantallas
+            ' mas arriba ("dos dialogos seguidos, el segundo diciendo que salio todo bien, es peor que no decir
+            ' nada"). Si se decide avisar, la sede NO es esta: esta funcion tiene que DEVOLVER el fallo y el
+            ' llamador meterlo en `savePartiallyFailed`, que es la perilla que ya existe para "el ESP salio pero
+            ' una fase posterior no" y que ademas suprime el box final.
+            Return
+        End If
+
         Dim savedPluginName = IO.Path.GetFileName(savedPluginPath)
 
         ' The merge just changed the record universe the FormID picker enumerates (new/override ARMA/ARMO/
         ' MSWP/etc. from the saved plugin). Invalidate here too: the draft-promote path reaches
         ' BuildOutfitUniverse (which also invalidates), but a Save with no drafts to promote returns early
         ' from PromoteSavedDrafts before that — so this guarantees no stale picker rows after any save.
-        If mergeOk Then FormIdPicker_Form.InvalidateSignatureCache()
+        FormIdPicker_Form.InvalidateSignatureCache()
 
         ' Promote the just-written OTFT/LVLI drafts to real records BEFORE re-rendering: remap any overlay /
         ' remaining-draft reference that still points at a provisional FormID to the real record, drop the
         ' persisted drafts, and refresh the outfit universe so they reappear in the editor as real records.
-        ' Only when the re-mount succeeded — otherwise the file-local→global resolution would be wrong and
-        ' we keep the drafts so a retry still works.
-        If mergeOk Then PromoteSavedDrafts(draftFormIdMap, savedPluginName)
+        PromoteSavedDrafts(draftFormIdMap, savedPluginName)
         Dim reloadFid As UInteger = If(_renderHost?.LastRenderedState IsNot Nothing, _renderHost.LastRenderedState.RootNpcFormID, 0UI)
         Dim treeChanged = False
         Dim ordenSucio = False
@@ -12826,31 +12981,104 @@ Public Class MainForm
         ' Una sola pasada de orden para todos los NPC guardados, no una por NPC.
         If ordenSucio Then OrdenarNpcs()
 
-        ' When the tree grouping OR any saved NPC's display label changed, rebuild it and re-select the
-        ' loaded NPC — the AfterSelect handler re-renders it from the clean record. Otherwise re-render
-        ' explicitly if the loaded NPC was saved (its overlay was just stripped and needs to drop off
-        ' the preview).
+        ' When the tree grouping OR any saved NPC's display label changed, rebuild it and re-focus the
+        ' loaded NPC. El foco del arbol es COSMETICO: el re-render va SIEMPRE por el bloque de abajo.
+        '
+        ' ⛔⛔⛔ ACA HABIA UN `Return` QUE SE COMIA EL RE-RENDER, y el comentario que lo justificaba decia
+        ' "the AfterSelect handler re-renders it from the clean record". Fue cierto: hasta 1.5.7 la linea era
+        ' `TreeViewNPCs.SelectedNode = moved(0)  ' fires AfterSelect -> reload (clean state)`. Al reemplazar el
+        ' `TreeView` por el `VirtualTreeList` (551df68, 21-ago) la linea paso a `EnfocarClave` y el `Return` se
+        ' quedo, con lo cual el readback DEJO DE RE-RENDERIZAR al NPC en pantalla:
+        '   · `EnfocarClave` solo levanta `FilaEnfocada`, y ese handler (`TreeViewNPCs_FilaEnfocada`) repuebla el
+        '     panel de detalles y NADA mas;
+        '   · el render cuelga de `SeleccionCambiada` (`RestartSelectionDebounce`), que NO se levanta cuando la
+        '     fila ya estaba en la seleccion --su guarda es `Not EstaEnLaSeleccion(fila)` en
+        '     `VirtualTreeList.OnSelectedIndexChanged`, y la seleccion se guarda POR CLAVE, asi que sobrevive al
+        '     repoblado--, que es exactamente el caso del NPC que el usuario acaba de guardar.
+        ' Consecuencia: el visor se quedaba con el ULTIMO cuadro (correcto, con el overlay) y `LastRenderedState`
+        ' con el record PRE-Save. El defecto que reporto el usuario sale de ahi: `RecordEfectivoParaAutoria`
+        ' siembra los editores desde `LastRenderedState.RecordBase`, y como el Save ya le habia sacado los tints
+        ' al overlay (`StripEspFieldsFromOverlay`), Edit Face volvia a sembrarlos DEL RECORD -- del viejo. Se veian
+        ' las capas de antes de editar con el ESP en disco correcto. Igual para MSDK, FMRI/FMRS, FMIN y head parts,
+        ' y para todo el resto de los lectores de `LastRenderedState` (altura en Edit Body, piel en vivo, picker).
         If treeChanged Then
             PopulateNPCTree(_pendingTreeFilter)
             If reloadFid <> 0UI Then
                 ' Una sola llamada: busca por clave en TODO el árbol —también dentro de grupos
                 ' cerrados—, abre lo que haga falta, lo trae a la vista y lo enfoca. Antes eran cuatro
                 ' pasos y el `Find` no veía lo que no estuviera expandido.
-                If TreeViewNPCs.EnfocarClave($"NPC_{reloadFid:X8}") Then Return
+                TreeViewNPCs.EnfocarClave($"NPC_{reloadFid:X8}")
             End If
         End If
 
-        If reloadFid <> 0UI AndAlso writtenFormIDs.Contains(reloadFid) Then
+        ' ⛔ Y NO SE RENDERIZA DOS VECES. Si la fila del NPC mostrado NO estaba en la seleccion --el usuario tenia
+        ' enfocada una LVLN y el visor mostraba su tirada-- el `Clear`+`Add` de `EnfocarClave` SI pasa la guarda de
+        ' `OnSelectedIndexChanged` y levanta `SeleccionCambiada`, asi que el debounce ya va a renderizar este mismo
+        ' NPC desde la cache recien refrescada. Encimarle el render explicito tira un resolve entero y hace
+        ' parpadear el visor (`RenderFromCurrentSelection` limpia el preview antes de empezar). El cuadro final
+        ' saldria bien igual por `_previewRequestVersion`; lo que se evita es el trabajo y el parpadeo.
+        ' ⛔ EL TICK RENDERIZA ESTE MISMO NPC, no otro: `EnfocarClave` hace `_seleccionadas.Clear()` + `Add` de su
+        ' clave antes de anunciar, asi que `_selectedNpcFormIDs` queda con UN FormID, el de `reloadFid`. Y el timer
+        ' no puede venir armado de un gesto anterior al Save: entre el click del arbol y este punto hay un
+        ' `ShowDialog` que bombea mensajes, y el tick se desarma en su primera linea.
+        ' ⚠️ DOS DIFERENCIAS DECLARADAS del camino del debounce contra el explicito: (1) pasa por
+        ' `ClearPreviewImmediate`, asi que si ese render corta por "No meshes found" el visor queda VACIO --no con
+        ' el ultimo cuadro--; (2) el render NO queda `Await`-eado, asi que al volver de esta funcion
+        ' `LastRenderedState` sigue siendo el PRE-Save por ~180 ms mas lo que dure el render. Censado: ninguno de
+        ' los pasos que el llamador hace despues lo lee.
+        ' ⛔⛔ HUECO DECLARADO, Y YA NO ES EL DE LA SIEMBRA: el estado se publica al FINAL del render
+        ' (`PublicarEstadoMostrado`, llamado desde `RenderCurrentStateAsync`), y ese camino tiene salidas tempranas
+        ' --sin `CurrentBaseState`, version de pedido vieja, y plan sin mallas ("No meshes found")--. Si el render
+        ' sale por una de ellas, `LastRenderedState` SIGUE siendo el PRE-Save. La SIEMBRA de los editores ya no
+        ' depende de eso (la fecha de la base la declara vencida y `RecordEfectivoParaAutoria` recalcula), pero los
+        ' OTROS lectores del estado si: la altura de Edit Body, la piel en vivo y el picker de atuendo. Cerrarlo es
+        ' mover quien publica el estado, que es un cambio de alcance y no entra en este arreglo.
+        If reloadFid <> 0UI AndAlso writtenFormIDs.Contains(reloadFid) AndAlso Not _selectionDebounceTimer.Enabled Then
             Dim npc As NPC_Data = Nothing
             If _ctx.NpcCache.TryGetValue(reloadFid, npc) AndAlso npc IsNot Nothing Then
                 Try
-                    Dim version = Interlocked.Increment(_previewRequestVersion)
-                    Await LoadNPCOnDemandAsyncFromExisting(npc, version)
+                    ' ⛔ La costura recibe la INSTANCIA, no el FormID: lo que este bloque tiene que probar es que
+                    ' el re-render sale del parse RECIEN refrescado (`_ctx.NpcCache(fid) = freshNpc`, arriba). Con
+                    ' el FormID el arnes volveria a pedirlo por su cuenta y mediria su propia consulta.
+                    If RenderPostSaveParaArnes IsNot Nothing Then
+                        Await RenderPostSaveParaArnes(npc)
+                    Else
+                        Dim version = Interlocked.Increment(_previewRequestVersion)
+                        Await LoadNPCOnDemandAsyncFromExisting(npc, version)
+                    End If
                 Catch ex As Exception
                     Logger.LogLazy(Function() $"[SAVE-READBACK] re-render failed: {ex.Message}")
                 End Try
             End If
         End If
+    End Function
+
+    ''' <summary>⛔ Costura de arnes: el re-render del readback. Un MainForm de arnes no tiene preview --
+    ''' `LoadNPCOnDemandAsyncFromExisting` no puede correr sin control-- y sin nada en su lugar un testigo del
+    ''' readback PASARIA EN VACIO: con `_renderHost` en Nothing, `reloadFid` es 0, no hay estado publicado y
+    ''' `RecordEfectivoParaAutoria` cae a la rama del parse fresco, que contesta bien con `Return` y sin el.
+    ''' <para>El arnes la implementa publicando un estado armado desde la instancia que recibe, que es lo que el
+    ''' render hace con ella. Nothing (produccion) = el camino real, sin una sola rama de mas.</para></summary>
+    Friend RenderPostSaveParaArnes As Func(Of NPC_Data, Task) = Nothing
+
+    ''' <summary>⛔ Costura de arnes: si el debounce del render esta armado. La necesita el testigo del readback
+    ''' para NO leer un falso rojo: el re-render explicito se saltea cuando el debounce ya va a renderizar
+    ''' (arriba), y en un arnes NO HAY BOMBA DE MENSAJES, asi que si algo levanta `SeleccionCambiada` el timer
+    ''' queda armado PARA SIEMPRE y el readback deja de renderizar en todos los sujetos siguientes. Eso seria un
+    ''' rojo por el arnes, no por el codigo: el testigo lo afirma antes de cada corrida y lo declara NO MEDIDO.</summary>
+    Friend ReadOnly Property DebounceDeRenderArmadoParaArnes As Boolean
+        Get
+            Return _selectionDebounceTimer IsNot Nothing AndAlso _selectionDebounceTimer.Enabled
+        End Get
+    End Property
+
+    ''' <summary>⛔ Costura de arnes: la entrada al readback del Save, que es `Private`. Los valores por defecto
+    ''' son los de un guardado sin borradores y sin sidecar; el testigo que mide el re-render no los necesita.</summary>
+    Friend Function ReadbackParaArnes(writtenFormIDs As List(Of UInteger), savedPluginPath As String,
+                                      Optional draftFormIdMap As Dictionary(Of UInteger, UInteger) = Nothing,
+                                      Optional sidecarWritten As Boolean = False) As Task
+        Return ApplyPostSaveReadback(writtenFormIDs, savedPluginPath,
+                                     If(draftFormIdMap, New Dictionary(Of UInteger, UInteger)), sidecarWritten)
     End Function
 
     ''' <summary>Promote the OTFT/LVLI drafts just written into the saved plugin to real records. For each

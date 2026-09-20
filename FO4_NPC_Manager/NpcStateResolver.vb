@@ -162,9 +162,19 @@ Friend NotInheritable Class NpcStateResolver
         ' +0x2D8, se escribe por `sub_14065EC00`, y ninguno de sus 7 llamadores esta en ese camino.
         ' ⛔ El terminal va con SU overlay (`SombraDelTerminal`): si el usuario le cargo un preset a la
         ' plantilla, los que heredan de ella tienen que seguirla.
+        ' ⛔ EL TERMINAL QUE ALIMENTA LA BASE SE DECIDE UNA VEZ, en su propia variable: de él sale la base Y la
+        ' mitad de su FECHA (`NPCVisualState.BaseArmadaDesdeTerminal`), y con la condición escrita dos veces la
+        ' fecha podía sellar un terminal distinto del que se usó.
+        ' ⛔ NO hace falta preguntar además si `terminal` cayó a `npc` (que es lo que hace unas líneas arriba
+        ' cuando la cadena no resuelve): en ese caso `traits.SourceFormID` YA es el del propio NPC
+        ' --`ResolveTraitsStateFromNPC` cae a `CreateOwnTraitsState(npc)`--, así que la condición de acá lo excluye
+        ' sola. Se probó a agregar ese tercer término y era código muerto.
+        Dim terminalDeLaBase As NPC_Data = Nothing
+        If traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID Then
+            terminalDeLaBase = terminal
+        End If
         Dim laBase = NpcRecordOverlay.BaseDeDibujo(npc, NpcRecordOverlay.SombraDelTerminal(
-                               If(traits.SourceFormID <> 0UI AndAlso traits.SourceFormID <> npc.FormID,
-                                  terminal, Nothing),
+                               terminalDeLaBase,
                                _appliedPresets, _ctx.PluginManager,
                                New NpcRecordOverlay.ResolveLmSkinTemplateDelegate(AddressOf ResolverLmSkinTemplate),
                                AddressOf _ctx.ParseRaceCanonCached))
@@ -179,7 +189,7 @@ Friend NotInheritable Class NpcStateResolver
 
         ' ⛔ El terminal se lo pasa EL QUE LO CAMINO. Ver el parametro.
         Dim proy = NpcStateFactory.ProyectarEstado(shadow, npc, inventory, presetDeDibujo,
-                                                   laBase, traits.SourceFormID)
+                                                   laBase, npc, terminalDeLaBase, traits.SourceFormID)
         Dim state = proy.Estado
         ' ⛔ El preset de dibujo VIAJA en el estado, y SOLO cuando el NPC hereda. Asi ningun consumidor
         ' vuelve a derivar herencia por su cuenta -- con nueve derivandola cada uno por su lado, el mismo NPC
@@ -190,7 +200,11 @@ Friend NotInheritable Class NpcStateResolver
         ' ⛔ La base viaja SIEMPRE, herede o no: para un no heredero es su propio record, y tenerla
         ' igualmente evita que el consumidor tenga que preguntarse si hereda -- que es exactamente lo que
         ' hacia que once de ellos derivaran la herencia por su cuenta.
-        state.RecordBase = laBase
+        ' ⛔⛔ NI LA BASE NI SU FECHA SE SELLAN ACA: las tres las pone `ProyectarEstado` (arriba), que es la sede
+        ' donde la base entra al estado, y las pone JUNTAS. Acá había un `state.RecordBase = laBase` que era un
+        ' no-op --el 5º parámetro de la fábrica ya es `laBase`-- pero dejaba DOS dueños de la mitad del par: el día
+        ' que la fábrica reciba otra cosa en `recordBase`, el estado quedaría con la base de una y la fecha de
+        ' otra, y la fecha diría "vigente" sobre una base que no es la fechada. Sin un solo aviso.
         ' ⛔ `traits` se REASIGNA: el estado salio de la SOMBRA, y todo lo que sigue tiene que ver el
         ' mismo `traits` del que salio, o vuelve la divergencia por dos fuentes.
         traits = proy.Traits
@@ -459,6 +473,9 @@ Friend NotInheritable Class NpcStateResolver
     '''   <c>HeadTextureFormID</c> ya ES el FTST cuando el NPC tiene uno (ApplyRaceFallbacks sólo lo pisa con
     '''   DFTM si vale 0). Únicamente cambiaba la etiqueta del log.</item></list></para></summary>
     Friend Function CloneVisualState(state As MainForm.NPCVisualState) As MainForm.NPCVisualState
+        ' ⛔ `BaseArmadaDesde` viaja con `RecordBase`: son la base y su FECHA. Un clon que se lleve la base sin la
+        ' fecha le saca al consumidor la única forma de saber si está vencida (`MainForm.RecordEfectivoParaAutoria`
+        ' compara esa instancia contra la de la sesión), y el cache volvería a mentir en silencio.
         Dim clone As New MainForm.NPCVisualState With {
             .FormID = state.FormID,
             .RootNpcFormID = state.RootNpcFormID,
@@ -467,6 +484,8 @@ Friend NotInheritable Class NpcStateResolver
             .ModelSourceFormID = state.ModelSourceFormID,
             .VariantLabel = state.VariantLabel,
             .RecordBase = state.RecordBase,
+            .BaseArmadaDesde = state.BaseArmadaDesde,
+            .BaseArmadaDesdeTerminal = state.BaseArmadaDesdeTerminal,
             .IsFemale = state.IsFemale,
             .RaceFormID = state.RaceFormID,
             .SkinFormID = state.SkinFormID,

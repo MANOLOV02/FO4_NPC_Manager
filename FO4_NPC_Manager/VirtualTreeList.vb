@@ -255,9 +255,13 @@ Public Class VirtualTreeList
     ''' levantaba 1 anuncio con el foco quieto.</para>
     '''
     ''' <para>El aviso lo da EL GESTO, una sola vez, cuando terminó de mover el foco: `Refrescar` siempre
-    ''' —las filas son objetos NUEVOS con el texto nuevo, y el readback del Save depende de ese aviso para
-    ''' redibujar el panel con el record limpio (`MainForm.vb:11206-11216`)—, `AlternarFila` sólo si subió
-    ''' el foco al ancestro, y `EnfocarClave`/`EnfocarFila` al aterrizar. Lo que queda para
+    ''' —las filas son objetos NUEVOS con el texto nuevo y el panel de detalles quedó apuntando a objetos que
+    ''' ya no están en el árbol—, `AlternarFila` sólo si subió el foco al ancestro, y
+    ''' `EnfocarClave`/`EnfocarFila` al aterrizar.
+    ''' <para>⛔ Acá también decía «el readback del Save depende de ese aviso para redibujar el panel con el
+    ''' record limpio (`MainForm.vb:11206-11216`)». Era la TERCERA copia de la misma cita muerta —las otras dos
+    ''' estaban en `Refrescar` y en `EnfocarClave`—: la dependencia no existe (el readback redibuja y renderiza
+    ''' por su cuenta) y esas líneas hoy son otra función.</para> Lo que queda para
     ''' `OnSelectedIndexChanged` es exactamente lo que mueve el USUARIO: el click que pasó por
     ''' `DefWndProc`, las flechas y la búsqueda por teclado.</para>
     '''
@@ -534,9 +538,13 @@ Public Class VirtualTreeList
     Public Sub Refrescar()
         _modelo.Aplanar()
         AplicarTamanio()
-        ' ⛔ EL REPOBLADO RE-ANUNCIA EL FOCO AUNQUE LA CLAVE SEA LA MISMA: las filas son objetos NUEVOS
-        ' con el texto nuevo, y el readback del Save cuenta con este aviso para redibujar el panel con el
-        ' record limpio (MainForm.vb:11206-11216). `AnunciarFoco` se calla solo si no quedó fila.
+        ' ⛔ EL REPOBLADO RE-ANUNCIA EL FOCO AUNQUE LA CLAVE SEA LA MISMA: las filas son objetos NUEVOS con
+        ' el texto nuevo, así que el panel de detalles que las está mostrando quedó apuntando a objetos que
+        ' ya no están en el árbol. `AnunciarFoco` se calla solo si no quedó fila.
+        ' ⛔ ACÁ DECÍA «y el readback del Save cuenta con este aviso para redibujar el panel con el record
+        ' limpio (MainForm.vb:11206-11216)»: la cita apuntaba a otra función y la dependencia ya no existe —
+        ' el readback redibuja el panel por su propio camino y renderiza por su cuenta. Ver el comentario de
+        ' `EnfocarClave`: este control NO renderiza.
         AnunciarFoco()
     End Sub
 
@@ -735,8 +743,17 @@ Public Class VirtualTreeList
         ' ⛔ TODO EL GESTO VA BAJO EL CONTADOR, y de ahí sale el anidamiento REAL que obliga a que sea un
         ' contador y no una bandera: `AplicarTamanio` lo levanta otra vez adentro. Lo que se suprime son
         ' los avisos del MECANISMO; el aviso de verdad lo da esta función al final, una sola vez.
-        ' ⛔ Pero NO se toca `_reponiendoFoco`: el colapso de la selección a esta fila es justamente lo
-        ' que hace que "re-seleccionar el NPC después de guardar" funcione (MainForm.vb:11210-11216).
+        ' ⛔ Pero NO se toca `_reponiendoFoco`: pedir foco por clave es un GESTO, así que si la fila no estaba
+        ' en la selección, `OnSelectedIndexChanged` la colapsa a selección única y anuncia `SeleccionCambiada`
+        ' —lo mismo que navegar hasta ella con las flechas—. Eso se QUIERE.
+        ' ⛔⛔ LO QUE ESTA FUNCIÓN **NO** HACE ES RENDERIZAR, y acá decía que sí: *"el colapso de la selección a
+        ' esta fila es justamente lo que hace que re-seleccionar el NPC después de guardar funcione"*. Era la ley
+        ' del `TreeView` viejo, donde mover `SelectedNode` levantaba `AfterSelect` y el readback del Save
+        ' re-renderizaba por ahí. Acá el aviso es `FilaEnfocada`, que sólo repuebla el panel de detalles, y
+        ' `SeleccionCambiada` —de donde cuelga el render— NO se levanta cuando la fila YA estaba en la selección,
+        ' que es justo el caso del NPC recién guardado: la premisa era falsa desde 1.5.7 y el readback se quedaba
+        ' sin re-render. Hoy `MainForm.ApplyPostSaveReadback` renderiza por su cuenta; no volver a colgarle esa
+        ' responsabilidad a esta función.
         _focoProgramatico += 1
         Try
             If _modelo.AbrirAncestros(fila) Then
@@ -745,9 +762,11 @@ Public Class VirtualTreeList
             End If
             Dim idx = _modelo.IndiceVisible(fila)
             ' ⛔ NADA se escribe antes de este punto. Anotar `_claveEnfocada` "por adelantado" dejaba al
-            ' control apuntando a una fila que no está en `Visibles` cuando esto devuelve False —y el
-            ' llamador SIGUE por otro camino con ese False (MainForm.vb:11212-11217)—: el próximo
-            ' `AplicarTamanio` no la encontraría y el foco se perdería sin que nadie lo pidiera.
+            ' control apuntando a una fila que no está en `Visibles` cuando esto devuelve False —y hay
+            ' llamadores que SIGUEN trabajando con ese False—: el próximo `AplicarTamanio` no la
+            ' encontraría y el foco se perdería sin que nadie lo pidiera.
+            ' ⛔ La cita que había acá (MainForm.vb:11212-11217) apuntaba al readback del Save, que hoy
+            ' DESCARTA el valor de retorno: era un puntero muerto a otra función.
             If idx < 0 Then Return False
             SelectedIndices.Clear()
             SelectedIndices.Add(idx)
@@ -758,6 +777,23 @@ Public Class VirtualTreeList
         AnunciarFoco()
         Return True
     End Function
+
+    ''' <summary>⛔ Costura de arnés: deja esa clave EN LA SELECCIÓN sin tocar `SelectedIndices` y sin anunciar
+    ''' nada.
+    ''' <para>Existe por UNA razón medible: el testigo del readback del Save
+    ''' (`EstadoAbGate --readback`) necesita reproducir la precondición del defecto, que es «la fila del NPC
+    ''' guardado YA estaba en la selección». Es lo que hace que `OnSelectedIndexChanged` NO anuncie
+    ''' `SeleccionCambiada` —su guarda es `Not EstaEnLaSeleccion(fila)`— y por lo tanto que el readback se quede
+    ''' sin render si vuelve el `Return` que se le sacó. Sin esta costura el mutante queda VIVO: con el árbol
+    ''' vacío `EnfocarClave` devuelve False, el `Return` no se alcanza y el gate pasa en vacío.</para>
+    ''' <para>⛔ NO pasa por `EnfocarClave`: ese camino escribe `SelectedIndices` —que en un control sin handle no
+    ''' hace nada— y, peor, ARMA el debounce del render, que en un arnés sin bomba de mensajes no llega a
+    ''' dispararse nunca y dejaría `Enabled` en True para siempre.</para></summary>
+    Friend Sub SeleccionarParaArnes(clave As String)
+        If String.IsNullOrEmpty(clave) Then Return
+        _seleccionadas.Add(clave)
+        _claveEnfocada = clave
+    End Sub
 
     ''' <summary>Expande o colapsa una fila y deja la vista mostrando ESA fila.</summary>
     Public Sub AlternarFila(fila As FilaDeArbol)

@@ -79,9 +79,13 @@ Friend NotInheritable Class NpcSkinLivePreview
         ' ⛔ La base de este camino rapido es `raw`: el record sobre el que el llamador compuso la
         ' sombra. Se DECLARA en vez de deducirse, que es lo que hacia que este camino pintara una piel y
         ' el render completo otra.
+        ' ⛔ SIN FECHA: este estado NO se publica en `LastRenderedState` (se arma, se le lee la piel y se
+        ' descarta), asi que nadie lo va a usar como cache de la base. `Nothing` se lee como VENCIDA, que es la
+        ' respuesta correcta para un estado que ni siquiera esta en pantalla. Ver
+        ' `MainForm.NPCVisualState.BaseArmadaDesde`.
         Dim proy = NpcStateFactory.ProyectarEstado(sombra, root,
                                                    NpcStateFactory.CreateOwnInventoryState(sombra), preset,
-                                                   raw)
+                                                   raw, baseArmadaDesde:=Nothing, baseArmadaDesdeTerminal:=Nothing)
         ' La caida a RACE.WNAM es UNA rama de esto, no una ley aparte.
         NpcStateResolver.ApplyRaceFallbacks(proy.Estado, proy.Traits, _ctx.PluginManager)
         Return proy.Estado.SkinFormID

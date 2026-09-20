@@ -1008,13 +1008,56 @@ finDelSkin:
             e.IndexDataType = c.Discriminator
             e.LayerIndex = c.Index
             e.DataValue = CByte(Math.Max(0, c.Value))
-            If c.Discriminator <> 1 Then Continue For
+            If c.Discriminator <> 1 Then
+                ' ⛔⛔ EL RECORTE ES SOLO PARA EL DISCRIMINADOR 2, Y LA LEY LA PONE EL ESQUEMA, no yo: el
+                ' enumerado del `TETI` nombra los valores --`FmtFO4.F157` = {0: "", 1: "Value/Color", 2: "Value"}--,
+                ' o sea que el formato DECLARA que la capa de tipo 2 lleva unicamente la intensidad. Del 0 no
+                ' declara nada, y el discriminador no viene acotado: sale del "Type" de un .json de LooksMenu del
+                ' usuario (`LooksmenuLoader`), asi que puede llegar cualquier UInt16.
+                ' ⛔ Por eso la condicion es `= 2` y no `<> 1`: recortar todo lo que no sea paleta seria escribir
+                ' una ley mas ancha que la medicion (el censo cubre el 2: 8.444 capas en vanilla, todas de 1 byte)
+                ' y mas ancha que lo que el esquema declara. Un tipo desconocido se va como hasta ahora.
+                ' ⚠️ ANOTADO, no arreglado: ese enumerado lo DECLARA el esquema y NINGUNA sede lo consulta -- hay
+                ' 11 copias a mano del `1` y del `2` entre `FaceTintInputBuilder`, este archivo, `EditFace_Form`
+                ' (el productor) y `MainForm`. Hoy las 11 coinciden; el dia que el formato declare un tercer tipo
+                ' se tocan 11 renglones. La sede unica seria preguntarle a `FmtFO4.F157`.
+                If c.Discriminator <> 2 Then Continue For
+                ' ⛔⛔ LA CAPA DE TIPO 2 SE VA CON EL `TEND` DE UN BYTE, que es lo que trae el juego.
+                ' MEDIDO sobre el orden de carga completo (4.365 NPC_, 15.164 capas): las capas de conjunto de
+                ' texturas tienen el `TEND` de 1 byte --solo la intensidad-- en TODO vanilla (8.444), y el unico
+                ' plugin que las tiene de 7 es el que escribe esta app (110). Esos 6 bytes no son "otra cosa":
+                ' no existen en el corpus. Salian porque crear un struct lo crea con todos sus miembros, opcionales
+                ' incluidos, y el `TEND` declara `Color` y `Template Color Index` como `OptionalFrom(1)`.
+                ' ⛔ El recorte se pide EXPLICITO y solo acá: la regla de nacimiento de los structs NO se toca
+                ' --hacerlo global dejaba a las capas de PALETA sin color y a las entradas nuevas de lista nivelada
+                ' sin `Count` ni `Chance None`, las dos en silencio--. Ver `WbEdit.RecortarColaOpcional`.
+                ' ⛔ HACIA ADELANTE Y NADA MAS: los 110 layers de 7 bytes que esta app ya escribio en plugins
+                ' de terceros NO se migran. Decision del USUARIO el 20-sep ("No reparacion. Para adelante"), que
+                ' es de quien son los bytes. El unico ESP afectado del equipo --`Manolo_Replacers.esp`-- se
+                ' reparo a mano por empalme de bytes y se instalo con backup fechado; no hay --y no se pidio--
+                ' ninguna pasada automatica que abra plugins ajenos a recortarles capas. El que abra uno viejo
+                ' con xEdit y vea `TEND` de 7 bytes en una capa de tipo 2 esta viendo esto, no un defecto vivo.
+                Canon.WbEdit.RecortarColaOpcional(e.Node.ByFieldPath("Layer\TEND\Data"))
+                Continue For
+            End If
             If c.Color <> Color.Empty Then
                 e.ColorRed = c.Color.R
                 e.ColorGreen = c.Color.G
                 e.ColorBlue = c.Color.B
             End If
-            If c.TemplateColorIndex >= 0 Then e.DataTemplateColorIndex = CShort(c.TemplateColorIndex)
+            ' ⛔⛔ EL INDICE SE ESCRIBE SIEMPRE, -1 INCLUIDO. Decision del usuario (20-sep), y el defecto que
+            ' cierra estaba MEDIDO: con `If c.TemplateColorIndex >= 0` la capa de color PROPIO (indice -1) no
+            ' escribia nada y el campo quedaba en el CERO que le puso `CreateDefault` al materializar el `TEND`
+            ' --no ausente: cero--. Y cero no es neutro: con indice >= 0 el motor pinta la capa con el color de la
+            ' PLANTILLA (el CLFM de la RACE) y no con el TEND del NPC (`FaceTintPaletteResolver
+            ' .ResolvePaletteLayerEffective`, Step 1 contra Step 2), asi que la cara CAMBIABA al recargar.
+            ' ⛔ Y -1 es lo que trae el juego, no una invencion: censo del orden de carga completo (4.365 NPC_,
+            ' 15.164 capas) -- las capas de paleta traen el `TEND` de 7 bytes SIEMPRE, y el custom viaja como
+            ' `0xFFFF` en el s16. La capa 1156 del vanilla `0x00002CB2` (MoeCronin) es una de ellas.
+            ' ⛔ NO se toca la PRESENCIA de los campos: sacarla borra el subrecord ENTERO --`QuitarCampo` sube
+            ' hasta el subrecord y lo quita-- y la capa se queda sin intensidad ni color. Medido con una sonda
+            ' sobre la propia Base_Library: `TEND.bytes=-1` tras pedir "indice ausente".
+            e.DataTemplateColorIndex = CShort(c.TemplateColorIndex)
         Next
     End Sub
 
