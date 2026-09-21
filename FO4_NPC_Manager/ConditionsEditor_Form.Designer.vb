@@ -32,6 +32,11 @@ Partial Class ConditionsEditor_Form
         TextBoxParam2 = New TextBox()
         ComboParam2 = New ComboBox()
         ButtonPickParam2 = New Button()
+        LabelParam3 = New Label()
+        TextBoxParam3 = New TextBox()
+        LabelReference = New Label()
+        TextBoxReference = New TextBox()
+        ButtonPickReference = New Button()
         LabelOperator = New Label()
         ComboOperator = New ComboBox()
         LabelValue = New Label()
@@ -71,20 +76,25 @@ Partial Class ConditionsEditor_Form
         RootLayout.Controls.Add(LabelParam2, 0, 3)
         RootLayout.Controls.Add(PanelParam2, 1, 3)
         RootLayout.Controls.Add(ButtonPickParam2, 2, 3)
-        RootLayout.Controls.Add(LabelOperator, 0, 4)
-        RootLayout.Controls.Add(ComboOperator, 1, 4)
-        RootLayout.Controls.Add(LabelValue, 0, 5)
-        RootLayout.Controls.Add(TextBoxValue, 1, 5)
-        RootLayout.Controls.Add(ButtonPickGlobal, 2, 5)
-        RootLayout.Controls.Add(LabelRunOn, 0, 6)
-        RootLayout.Controls.Add(ComboRunOn, 1, 6)
-        RootLayout.Controls.Add(GroupFlags, 1, 7)
-        RootLayout.Controls.Add(BottomLayout, 1, 8)
+        RootLayout.Controls.Add(LabelParam3, 0, 4)
+        RootLayout.Controls.Add(TextBoxParam3, 1, 4)
+        RootLayout.Controls.Add(LabelOperator, 0, 5)
+        RootLayout.Controls.Add(ComboOperator, 1, 5)
+        RootLayout.Controls.Add(LabelValue, 0, 6)
+        RootLayout.Controls.Add(TextBoxValue, 1, 6)
+        RootLayout.Controls.Add(ButtonPickGlobal, 2, 6)
+        RootLayout.Controls.Add(LabelRunOn, 0, 7)
+        RootLayout.Controls.Add(ComboRunOn, 1, 7)
+        RootLayout.Controls.Add(LabelReference, 0, 8)
+        RootLayout.Controls.Add(TextBoxReference, 1, 8)
+        RootLayout.Controls.Add(ButtonPickReference, 2, 8)
+        RootLayout.Controls.Add(GroupFlags, 1, 9)
+        RootLayout.Controls.Add(BottomLayout, 1, 10)
         RootLayout.SetColumnSpan(BottomLayout, 2)
         RootLayout.Dock = DockStyle.Fill
         RootLayout.Name = "RootLayout"
         RootLayout.Padding = New Padding(8)
-        RootLayout.RowCount = 9
+        RootLayout.RowCount = 11
         RootLayout.TabIndex = 0
         '
         LabelHint.AutoSize = True
@@ -171,6 +181,37 @@ Partial Class ConditionsEditor_Form
         ButtonPickParam2.Name = "ButtonPickParam2"
         ButtonPickParam2.TabIndex = 8
         ButtonPickParam2.Text = "…"
+        '
+        LabelParam3.Anchor = AnchorStyles.Left
+        LabelParam3.AutoSize = True
+        LabelParam3.Name = "LabelParam3"
+        LabelParam3.TabIndex = 9
+        LabelParam3.Text = "Param 3:"
+        '
+        ' El `Parameter #3` lo decide el `Run On`, no la funcion: con Run On = 5 es un indice de
+        ' alias de quest y con 7 un Event Data; en los otros nueve valores es un entero con signo.
+        ' Por eso no lleva selector de record: ninguna de sus once ramas es un FormID.
+        TextBoxParam3.Dock = DockStyle.Fill
+        TextBoxParam3.Name = "TextBoxParam3"
+        TextBoxParam3.TabIndex = 10
+        '
+        LabelReference.Anchor = AnchorStyles.Left
+        LabelReference.AutoSize = True
+        LabelReference.Name = "LabelReference"
+        LabelReference.TabIndex = 11
+        LabelReference.Text = "Reference:"
+        '
+        ' El `Reference` es una referencia SOLO con Run On = 2 (`ConditionReference` devuelve 1 nada
+        ' mas en ese caso); con cualquier otro la rama es `Int("Unused", u32)` y el campo no es un
+        ' FormID. El code-behind habilita o apaga el selector por eso.
+        TextBoxReference.Dock = DockStyle.Fill
+        TextBoxReference.Name = "TextBoxReference"
+        TextBoxReference.TabIndex = 12
+        '
+        ButtonPickReference.AutoSize = True
+        ButtonPickReference.Name = "ButtonPickReference"
+        ButtonPickReference.TabIndex = 13
+        ButtonPickReference.Text = "…"
         '
         LabelOperator.Anchor = AnchorStyles.Left
         LabelOperator.AutoSize = True
@@ -310,6 +351,11 @@ Partial Class ConditionsEditor_Form
     Friend WithEvents TextBoxParam2 As TextBox
     Friend WithEvents ComboParam2 As ComboBox
     Friend WithEvents ButtonPickParam2 As Button
+    Friend WithEvents LabelParam3 As Label
+    Friend WithEvents TextBoxParam3 As TextBox
+    Friend WithEvents LabelReference As Label
+    Friend WithEvents TextBoxReference As TextBox
+    Friend WithEvents ButtonPickReference As Button
     Friend WithEvents LabelOperator As Label
     Friend WithEvents ComboOperator As ComboBox
     Friend WithEvents LabelValue As Label

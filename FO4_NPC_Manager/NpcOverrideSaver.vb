@@ -83,10 +83,36 @@ Public Module NpcOverrideSaver
     ''' <summary>Bundles the dependencies the orchestrator needs to call back into the host app.
     ''' Constructed once by MainForm and passed through. All fields are required.</summary>
     Public Class SaveContext
-        ''' <summary>Avisos del payload del apply-script acumulados durante el guardado (recortes por el tope de
-        ''' 128 elementos, VMAD cerca del techo de 64 KB). Se vuelcan al resumen post-guardado: un recorte que
-        ''' sólo va al log se ve EXACTAMENTE igual que un payload completo.</summary>
-        Public PayloadWarnings As New List(Of String)
+        ''' <summary>Avisos DEL GUARDADO que el usuario ve en el resumen post-guardado. Es el canal
+        ''' GENERAL: los recortes del payload del apply-script (el tope de 128 elementos, el VMAD cerca
+        ''' del techo de 64 KB) son UN productor entre los catorce que escriben acá — también entran los
+        ''' overrides descartados, las entradas de lista por nivel que no se agregaron y el aviso de que la
+        ''' reflexión de <see cref="NombresDeOverridesSucios"/> quedó degradada. Un aviso que sólo va al
+        ''' log se ve EXACTAMENTE igual que un guardado completo.
+        '''
+        ''' <para>⛔ Se llamaba <c>AvisosDeGuardado</c> y su doc decía «avisos del payload del
+        ''' apply-script»: catorce sitios escribían acá cosas que no eran del apply-script y el usuario las
+        ''' leía bajo un rótulo que decía otra cosa. El conteo (catorce) se vuelve a medir con un grep de
+        ''' <c>AvisosDeGuardado.Add</c>; acá NO va la lista de líneas, que se desactualiza con el primer
+        ''' hunk que entre más arriba.</para>
+        '''
+        ''' <para>⛔⛔ LO QUE SEPARA A <see cref="ModelWarnings"/> DE ÉSTE ES EL RÓTULO EN LA UI, NO EL
+        ''' PRODUCTOR — y esto hay que leerlo ANTES de fusionarlos. <c>ModelWarnings</c> nació aparte
+        ''' porque este canal se mostraba como «Apply-script payload» y un aviso de malla ahí dice algo que
+        ''' no es; ahora que éste es el canal general, ese motivo dejaría de estar escrito y el próximo
+        ''' leería dos canales generales sin razón para el segundo. Los dos son del guardado y tienen
+        ''' rótulos distintos A PROPÓSITO.</para>
+        '''
+        ''' <para><c>CollectPayloadWarnings</c> conserva su nombre: eso SÍ recoge los avisos del payload
+        ''' del apply-script (lo llaman con su etiqueta) y los vuelca acá.</para></summary>
+        Public AvisosDeGuardado As New List(Of String)
+        ''' <summary>Avisos del bloque de Model Information: la malla cambio pero no se pudo derivar el
+        ''' bloque nuevo (la malla no esta instalada, no parsea) y se conservo el de la malla ANTERIOR.
+        ''' <para>⛔ Canal PROPIO y no <see cref="AvisosDeGuardado"/>: ese se muestra bajo el rotulo
+        ''' "Apply-script payload", y un aviso de malla ahi dice algo que no es. Un bloque que describe
+        ''' la malla vieja es un dato viejo escondido — si no se muestra, esto seria el defecto de hoy
+        ''' con una capa mas de silencio encima.</para></summary>
+        Public ModelWarnings As New List(Of String)
         Public PluginManager As PluginManager
         Public AppliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
         Public RenderHost As Object  ' NpcRenderHost — typed loosely to avoid an extra import.
@@ -1297,6 +1323,7 @@ For Each d In hdptByFid.Values
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
                     ExigirReferenciasSinColgar("ARMO", d.Record.EditorID, d.FormID, d.Record, registrados)
                     If armoAlreadyEmitted.Contains(d.FormID) Then armoEntries.RemoveAll(Function(x) x.FormID = d.FormID)
+                    Canon.CanonModelInfo.Refrescar(CType(d.Record, Canon.CanonView), ctx.PluginManager, ctx.ModelWarnings)
                     armoEntries.Add(BuildArmoEntry(d, ctx, espNameNoExt, usedArmoEdids, target))
                 Next
                 ' --- Phase 2f: build ArmaRecordEntry for each needed ARMA draft. ---
@@ -1306,6 +1333,7 @@ For Each d In hdptByFid.Values
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
                     ExigirReferenciasSinColgar("ARMA", d.Record.EditorID, d.FormID, d.Record, registrados)
                     If armaAlreadyEmitted.Contains(d.FormID) Then armaEntries.RemoveAll(Function(x) x.FormID = d.FormID)
+                    Canon.CanonModelInfo.Refrescar(CType(d.Record, Canon.CanonView), ctx.PluginManager, ctx.ModelWarnings)
                     armaEntries.Add(BuildArmaEntry(d, ctx, espNameNoExt, usedArmaEdids, target))
                 Next
                 ' --- Phase 2g: build MswpRecordEntry for each needed MSWP draft. ---
@@ -1343,6 +1371,15 @@ For Each d In hdptByFid.Values
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
                     ExigirReferenciasSinColgar("HDPT", d.Record.EditorID, d.FormID, d.Record, registrados)
                     If hdptAlreadyEmitted.Contains(d.FormID) Then hdptEntries.RemoveAll(Function(x) x.FormID = d.FormID)
+                    ' ⛔ EL BLOQUE DE MODEL INFORMATION SE REFRESCA ACA, no en el editor. Los tres
+                    ' llamados (ARMO, ARMA, HDPT) son el EMBUDO: lo que llega hasta aca llego por el
+                    ' editor, por un clon, por una plantilla o adoptado de otra sesion, y todos esos
+                    ' caminos esquivan las lineas donde el editor escribe el nombre de la malla. Ademas
+                    ' el commit del editor corre POR TECLA, y derivar abre el NIF y sus materiales.
+                    ' El filtro de arriba (`If d.IsOverride AndAlso Not d.IsDirty Then Continue For`) ya
+                    ' dejo afuera lo que no se toco, y `Refrescar` no toca un grupo cuya malla no cambio
+                    ' respecto del archivo. Ver `Canon.CanonModelInfo`.
+                    Canon.CanonModelInfo.Refrescar(CType(d.Record, Canon.CanonView), ctx.PluginManager, ctx.ModelWarnings)
                     hdptEntries.Add(BuildHdptEntry(d, ctx, espNameNoExt, usedHdptEdids, target))
                 Next
             End If
@@ -1511,7 +1548,7 @@ For Each d In hdptByFid.Values
                 ' peor, restaurar un respaldo— es la que sí puede romper algo.
                 ' ⛔ CON `ex.Message`, no mudo: un aviso que dice "falló" sin decir qué falló manda al
                 ' usuario a adivinar entre permisos, ruta y disco lleno. (Censo de catch mudos abierto.)
-                ' ⛔ Y NO se toca `result.Success`: el .esp se escribió. Esto entra por `PayloadWarnings`,
+                ' ⛔ Y NO se toca `result.Success`: el .esp se escribió. Esto entra por `AvisosDeGuardado`,
                 ' que unas líneas más abajo pinta el resumen con el icono de aviso — o sea, el guardado se
                 ' reporta como lo que fue: bueno, con un pendiente en el sidecar.
                 Try
@@ -1526,16 +1563,16 @@ For Each d In hdptByFid.Values
                     ' usuario tiene que poder distinguirlas: una se arregla sola volviendo a guardar, la otra no.
                     Dim par = TryCast(exIni, EscrituraDelParBodyGen.ParDeBodyGenException)
                     If par IsNot Nothing AndAlso Not par.Consistente Then
-                        ctx.PayloadWarnings.Add(
+                        ctx.AvisosDeGuardado.Add(
                             $"BodyGen .ini de '{IO.Path.GetFileName(target.TargetPath)}': {par.Message} " &
                             "The .esp WAS saved. ⛔ Save again with BodyGen enabled to leave the pair " &
                             "consistent before entering the game.")
                     ElseIf par IsNot Nothing Then
-                        ctx.PayloadWarnings.Add(
+                        ctx.AvisosDeGuardado.Add(
                             $"BodyGen .ini de '{IO.Path.GetFileName(target.TargetPath)}': {par.Message} " &
                             "The .esp WAS saved; what did not get updated is BodyGen.")
                     Else
-                        ctx.PayloadWarnings.Add(
+                        ctx.AvisosDeGuardado.Add(
                             $"BodyGen .ini: could not write the .ini for '{IO.Path.GetFileName(target.TargetPath)}' " &
                             $"({exIni.Message}). The .esp WAS saved; what is missing is the BodyGen file, " &
                             "so the morphs may not apply in game until you save again.")
@@ -1551,13 +1588,13 @@ For Each d In hdptByFid.Values
         ' would replace RaceMenu's/LooksMenu's real implementation. See Papyrus\README.md.
         If ctx.WroteApplyScript Then
             ReportPhase(progress, "Writing helper script…", IO.Path.GetFileName(target.TargetPath))
-            ' ⛔ El emisor ANOTA lo que no pudo instalar en vez de tragarlo, y va por `ctx.PayloadWarnings`
+            ' ⛔ El emisor ANOTA lo que no pudo instalar en vez de tragarlo, y va por `ctx.AvisosDeGuardado`
             ' —el canal que ya existe para «el .esp SE ESCRIBIÓ y una pieza del payload falló», ver el ⛔ de
             ' más arriba— y no por uno propio: el .pex legado se instalaba dentro de un Catch mudo, y su
             ' ausencia le rompe la tabla de métodos del actor a CUALQUIER mod (docstring de InstallLegacyPex).
             Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game,
                                                              ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration,
-                                                             ctx.ApplyScriptSalt, ctx.PayloadWarnings)
+                                                             ctx.ApplyScriptSalt, ctx.AvisosDeGuardado)
             If installed Is Nothing Then
                 ' The VMAD references a script whose .pex we could not ship — the engine would log a missing
                 ' script and apply nothing. Loud, because the plugin is otherwise silently half-broken.
@@ -1574,12 +1611,24 @@ For Each d In hdptByFid.Values
         ' LOS RECORTES DEL PAYLOAD SE MUESTRAN, no se entierran en fo4lib.log. Un payload recortado se ve
         ' EXACTAMENTE igual que uno completo desde afuera: sin este aviso, "se aplicó todo" sería mentira y
         ' nadie se enteraría. Se listan hasta 8 y se cuenta el resto, para que el MessageBox siga siendo legible.
-        If ctx.PayloadWarnings.Count > 0 Then
-            Dim shown = ctx.PayloadWarnings.Take(8).ToList()
-            Dim extra = ctx.PayloadWarnings.Count - shown.Count
+        If ctx.AvisosDeGuardado.Count > 0 Then
+            Dim shown = ctx.AvisosDeGuardado.Take(8).ToList()
+            Dim extra = ctx.AvisosDeGuardado.Count - shown.Count
             result.VerifierSummary &= vbCrLf & vbCrLf &
                 "⚠ Apply-script payload:" & vbCrLf & "  • " & String.Join(vbCrLf & "  • ", shown) &
                 If(extra > 0, vbCrLf & $"  • (+{extra} more — see fo4lib.log)", "")
+            result.VerifierIcon = MessageBoxIcon.Warning
+        End If
+
+        ' Y LO MISMO PARA EL BLOQUE DE MODEL INFORMATION: si la malla cambio y no se pudo derivar el
+        ' bloque nuevo, lo que quedo describe la malla ANTERIOR. Eso no se entierra en el log — es
+        ' exactamente el dato viejo escondido que este trabajo vino a sacar.
+        If ctx.ModelWarnings.Count > 0 Then
+            Dim shownM = ctx.ModelWarnings.Take(8).ToList()
+            Dim extraM = ctx.ModelWarnings.Count - shownM.Count
+            result.VerifierSummary &= vbCrLf & vbCrLf &
+                "⚠ Model info:" & vbCrLf & "  • " & String.Join(vbCrLf & "  • ", shownM) &
+                If(extraM > 0, vbCrLf & $"  • (+{extraM} more — see fo4lib.log)", "")
             result.VerifierIcon = MessageBoxIcon.Warning
         End If
     End Sub
@@ -1765,7 +1814,7 @@ For Each d In hdptByFid.Values
                 nombres.Add(If(hv Is Nothing OrElse String.IsNullOrEmpty(hv.EditorID),
                                $"0x{f:X8}", hv.EditorID))
             Next
-            ctx.PayloadWarnings.Add(
+            ctx.AvisosDeGuardado.Add(
                 $"{npcSpec.Record.EditorID} INHERITS its face from its template, so its own head parts are " &
                 $"ignored by the game and were not written: {String.Join(", ", nombres)}. To give this NPC " &
                 "its own face, detach it first (Edit Face says so), or edit the template instead.")
@@ -1910,7 +1959,7 @@ For Each d In hdptByFid.Values
         ' borró a propósito otra parte, ésa también vuelve — pero sólo en el guardado donde un borrador
         ' tuvo que descartarse, que es el guardado en el que el usuario pidió volver al punto de partida.
         '
-        ' Y NO se hace en silencio: cada entrada descartada entra en `ctx.PayloadWarnings`, que es el
+        ' Y NO se hace en silencio: cada entrada descartada entra en `ctx.AvisosDeGuardado`, que es el
         ' canal que el guardado ya usa para lo que no pudo escribir sin que el .esp falle.
         '
         ' Sólo mira FormID PROVISIONALES (`EsFormIdDeBorrador`): un borrador OVERRIDE conserva su FormID
@@ -1989,7 +2038,7 @@ For Each d In hdptByFid.Values
                         motivo = $"Its part type could not be read, so the base record's parts took over: " &
                                  $"{loQueVolvio}."
                     End If
-                    ctx.PayloadWarnings.Add(
+                    ctx.AvisosDeGuardado.Add(
                         $"Head part '{comoSeLlama1f}' was NOT written to {npcSpec.Record.EditorID}: it is a " &
                         $"new record and 'save new records' is off. {motivo}")
                 Next
@@ -2498,46 +2547,81 @@ For Each d In hdptByFid.Values
         If ctx Is Nothing Then Return
         Dim decir = Sub(clase As String, nombres As List(Of String))
                         If nombres Is Nothing OrElse nombres.Count = 0 Then Return
-                        ctx.PayloadWarnings.Add(
+                        ctx.AvisosDeGuardado.Add(
                             $"{nombres.Count} edited {clase} record(s) were NOT written because 'save new " &
                             $"records' is off: {String.Join(", ", nombres)}. They are overrides of existing " &
                             $"records, not new ones — turn the option on to write them.")
                     End Sub
-        decir("head part", NombresDeOverridesSucios(ctx.HdptDrafts))
-        decir("texture set", NombresDeOverridesSucios(ctx.TxstDrafts))
-        decir("form list", NombresDeOverridesSucios(ctx.FlstDrafts))
-        decir("armor", NombresDeOverridesSucios(ctx.ArmoDrafts))
-        decir("armor addon", NombresDeOverridesSucios(ctx.ArmaDrafts))
-        decir("material swap", NombresDeOverridesSucios(ctx.MswpDrafts))
-        decir("outfit", NombresDeOverridesSucios(ctx.OutfitDrafts))
-        decir("leveled list", NombresDeOverridesSucios(ctx.LeveledListDrafts))
+        ' ⛔ LOS PROBLEMAS DE LA PROPIA REFLEXIÓN TAMBIÉN SE MUESTRAN. Ver el ⛔⛔ de
+        ' `NombresDeOverridesSucios`: con un `Catch` vacío, este aviso se apagaba solo.
+        Dim problemas As New List(Of String)
+        decir("head part", NombresDeOverridesSucios(ctx.HdptDrafts, problemas))
+        decir("texture set", NombresDeOverridesSucios(ctx.TxstDrafts, problemas))
+        decir("form list", NombresDeOverridesSucios(ctx.FlstDrafts, problemas))
+        decir("armor", NombresDeOverridesSucios(ctx.ArmoDrafts, problemas))
+        decir("armor addon", NombresDeOverridesSucios(ctx.ArmaDrafts, problemas))
+        decir("material swap", NombresDeOverridesSucios(ctx.MswpDrafts, problemas))
+        decir("outfit", NombresDeOverridesSucios(ctx.OutfitDrafts, problemas))
+        decir("leveled list", NombresDeOverridesSucios(ctx.LeveledListDrafts, problemas))
+        For Each p In problemas.Distinct()
+            ctx.AvisosDeGuardado.Add("Discarded-override notice is degraded — " & p)
+        Next
     End Sub
 
     ''' <summary>Los EditorID de los borradores OVERRIDE que están sucios. Genérica por reflexión
     ''' tardía sobre las ocho clases de borrador: no comparten interfaz — es el mismo motivo por el
     ''' que `Borradores.ReidentificarComoClon` toma <c>Object</c> — y escribir ocho bucles idénticos
     ''' sería ocho lugares donde olvidarse de una clase, que es exactamente el defecto que ya pagó
-    ''' esta ola con <see cref="BorradoresRegistrados"/>.</summary>
-    Private Function NombresDeOverridesSucios(lista As IEnumerable) As List(Of String)
+    ''' esta ola con <see cref="BorradoresRegistrados"/>.
+    '''
+    ''' <para>⛔⛔ LA REFLEXIÓN QUE FALLA SE DENUNCIA. Acá había un <c>Catch</c> VACÍO, y eso convertía
+    ''' este aviso —que existe justamente para que el descarte de overrides no sea mudo— en algo que se
+    ''' apaga solo: renombrar <c>IsDirty</c> en UNA de las ocho clases dejaba de reportar sus overrides
+    ''' <b>sin un error y sin un rojo</b>, y el usuario perdía trabajo sin enterarse. Es el mismo modo de
+    ''' falla que el aviso vino a cerrar, una capa más abajo.</para>
+    '''
+    ''' <para>Se distinguen dos cosas que el <c>Catch</c> vacío confundía: que la clase NO DECLARE una de
+    ''' las cuatro propiedades (un defecto de la app, porque las ocho las tienen) y que su lectura TIRE.
+    ''' Las dos se cuentan y salen por <paramref name="problemas"/>, que viaja al mismo resumen donde el
+    ''' usuario ya mira.</para></summary>
+    Private Function NombresDeOverridesSucios(lista As IEnumerable,
+                                              problemas As List(Of String)) As List(Of String)
         Dim r As New List(Of String)
         If lista Is Nothing Then Return r
         For Each d As Object In lista
             If d Is Nothing Then Continue For
+            Dim t = d.GetType()
+            ' ⛔ Las cuatro propiedades se resuelven ANTES de leerlas: así «no está declarada» se
+            ' distingue de «su lectura tiró», que son dos defectos distintos.
+            Dim pOv = t.GetProperty("IsOverride")
+            Dim pDirty = t.GetProperty("IsDirty")
+            Dim pRec = t.GetProperty("Record")
+            Dim pFid = t.GetProperty("FormID")
+            Dim faltan As New List(Of String)
+            If pOv Is Nothing Then faltan.Add("IsOverride")
+            If pDirty Is Nothing Then faltan.Add("IsDirty")
+            If pRec Is Nothing Then faltan.Add("Record")
+            If pFid Is Nothing Then faltan.Add("FormID")
+            If faltan.Count > 0 Then
+                problemas.Add($"{t.Name}: no declara {String.Join(", ", faltan.ToArray())} — este aviso " &
+                              "no puede saber si tiene overrides sucios, así que podrían descartarse sin " &
+                              "que se muestren.")
+                Continue For
+            End If
             Try
-                Dim t = d.GetType()
-                Dim esOv = CBool(t.GetProperty("IsOverride").GetValue(d))
-                Dim sucio = CBool(t.GetProperty("IsDirty").GetValue(d))
-                If Not esOv OrElse Not sucio Then Continue For
-                Dim rec = t.GetProperty("Record").GetValue(d)
+                If Not CBool(pOv.GetValue(d)) OrElse Not CBool(pDirty.GetValue(d)) Then Continue For
+                Dim rec = pRec.GetValue(d)
                 Dim eid As String = Nothing
                 If rec IsNot Nothing Then
                     Dim pe = rec.GetType().GetProperty("EditorID")
                     If pe IsNot Nothing Then eid = TryCast(pe.GetValue(rec), String)
                 End If
-                Dim fid = CUInt(t.GetProperty("FormID").GetValue(d))
+                Dim fid = CUInt(pFid.GetValue(d))
                 r.Add(If(String.IsNullOrEmpty(eid), $"0x{fid:X8}", eid))
-            Catch
-                ' Una clase sin alguna de las cuatro propiedades no rompe el guardado por un AVISO.
+            Catch ex As Exception
+                ' ⛔ NO se traga: un aviso que se apaga solo es peor que no tenerlo.
+                problemas.Add($"{t.Name}: la lectura de sus propiedades tiró " &
+                              $"{ex.GetType().Name} — sus overrides sucios podrían descartarse sin mostrarse.")
             End Try
         Next
         Return r
@@ -2662,7 +2746,7 @@ For Each d In hdptByFid.Values
                 ' ⛔ Y AL RESUMEN, no sólo al log: en Release el logger está apagado, así que descartar por
                 ' duplicado era invisible. El usuario pidió agregar N y se agregaron menos.
                 If skipped > 0 Then
-                    ctx.PayloadWarnings.Add(
+                    ctx.AvisosDeGuardado.Add(
                         $"Add to leveled list: {skipped} NPC(s) were not added because they were already in a " &
                         $"list of '{IO.Path.GetFileName(target.TargetPath)}' (avoid-duplicates is on).")
                 End If
@@ -2672,7 +2756,7 @@ For Each d In hdptByFid.Values
                 ' de lista NUEVA ni siquiera se llega a crear el LVLN: no queda una lista vacía, no queda
                 ' NINGUNA lista. El «Saved N» cuenta records de NPC y no se entera, así que sin este renglón el
                 ' guardado se reporta perfecto y la lista que el usuario nombró no existe.
-                ctx.PayloadWarnings.Add(
+                ctx.AvisosDeGuardado.Add(
                     "Add to leveled list: NO NPC was added — every selected one was already in " &
                     $"a list of '{IO.Path.GetFileName(target.TargetPath)}' (avoid-duplicates is on)." &
                     If(target.LvlListIsNew, " The new list you asked for was NOT created, because it would have been empty.", ""))
@@ -2750,7 +2834,7 @@ For Each d In hdptByFid.Values
                 ' que el usuario pidió no ocurre y el guardado termina diciendo que salió todo bien. No se tira
                 ' —a diferencia de aquél— porque acá el .esp queda íntegro y coherente: lo único que falta es
                 ' el agregado. Se avisa y se sigue.
-                ctx.PayloadWarnings.Add(
+                ctx.AvisosDeGuardado.Add(
                     $"Add to leveled list: list '{targetEdid}' was not found in " &
                     $"'{IO.Path.GetFileName(target.TargetPath)}', so NO NPC was added. " &
                     "The rest of the save completed normally.")
@@ -3090,9 +3174,9 @@ For Each d In hdptByFid.Values
     Private Sub CollectPayloadWarnings(ctx As SaveContext, label As String, warnings As List(Of String))
         If warnings Is Nothing OrElse warnings.Count = 0 Then Return
         For Each w In warnings
-            ctx.PayloadWarnings.Add($"{label}: {w}")
+            ctx.AvisosDeGuardado.Add($"{label}: {w}")
             ' Y AL LOG, porque el MessageBox lista sólo los primeros 8 y remite el resto a "see fo4lib.log" —
-            ' donde NO estaban: ningún uso de PayloadWarnings escribía una sola línea. Mientras los avisos eran
+            ' donde NO estaban: ningún uso de AvisosDeGuardado escribía una sola línea. Mientras los avisos eran
             ' raros (recortes por el tope de 128 elementos del VMAD) el faltante no se notaba; con el descarte de
             ' magic overlays fuera de rango, un batch de presets importados llena los 8 cupos y manda el resto a
             ' un archivo vacío. Un mensaje que promete un lugar tiene que dejar algo ahí.
@@ -3122,7 +3206,7 @@ For Each d In hdptByFid.Values
         End If
         ' Warn at 90%: leaves room to react before a save actually fails.
         If n > (NpcApplyScriptEmitter.VmadHardLimitBytes * 9) \ 10 Then
-            ctx.PayloadWarnings.Add($"{label}: VMAD is {n} bytes, close to the {NpcApplyScriptEmitter.VmadHardLimitBytes}-byte limit")
+            ctx.AvisosDeGuardado.Add($"{label}: VMAD is {n} bytes, close to the {NpcApplyScriptEmitter.VmadHardLimitBytes}-byte limit")
         End If
     End Sub
 
@@ -3159,7 +3243,7 @@ For Each d In hdptByFid.Values
             ' el payload sí llega.
             ctx.ApplyScriptGeneration = target.ScriptVersionOverride
             If target.ScriptVersionOverride <= floorGen Then
-                ctx.PayloadWarnings.Add(
+                ctx.AvisosDeGuardado.Add(
                     $"Forced script version {target.ScriptVersionOverride} does not advance past the last " &
                     $"published generation ({floorGen}). The payload still reaches actors — the random salt " &
                     "keeps the property names unique — but the version number no longer reflects publish order.")
@@ -3292,13 +3376,13 @@ For Each d In hdptByFid.Values
 
     ''' <summary>El aviso de las claves del sidecar que NO llegaron al .ini de BodyGen, en el resumen del
     ''' guardado. Cuenta + primera causa, la misma forma que el aviso de texturas del bake.
-    ''' <para>⛔ Va al canal que el usuario SÍ ve (<c>ctx.PayloadWarnings</c> → <c>VerifierSummary</c>), no al
+    ''' <para>⛔ Va al canal que el usuario SÍ ve (<c>ctx.AvisosDeGuardado</c> → <c>VerifierSummary</c>), no al
     ''' <c>Logger</c>: en Release el logger está apagado por construcción, así que un salteo contado y logueado
     ''' seguiría siendo un salteo mudo. El «Saved N» cuenta records escritos en el .esp y no sabe nada de esto,
     ''' o sea que sin este renglón el guardado se reporta perfecto mientras esos NPC se quedan sin morphs.</para></summary>
     Private Sub AvisarClavesSalteadas(ctx As SaveContext, salteadas As Integer, primera As String)
         If ctx Is Nothing OrElse salteadas <= 0 Then Return
-        ctx.PayloadWarnings.Add(
+        ctx.AvisosDeGuardado.Add(
             $"BodyGen .ini: {salteadas} sidecar row(s) with a malformed identifier were skipped — " &
             "those NPCs have body morphs saved but NO line reaches morphs.ini, so in " &
             $"game they come out without morphs. First one: '{primera}'.")

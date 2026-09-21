@@ -114,6 +114,16 @@ Public Class HeadPartEditor_Form
     ''' <param name="editDraft">Cuando viene, edita ESE borrador directo en vez de arrancar en blanco.</param>
     ''' <param name="initialOverrideFormID">Cuando viene (y no hay <paramref name="editDraft"/>), abre
     ''' como OVERRIDE de ese record real — es la puerta desde la fila de un head part que el NPC ya tiene.</param>
+    ''' <summary>La toma se rechazó porque ese borrador ya está abierto en otro editor. Lo mira el
+    ''' llamador: cerrar un formulario a medio construir dejaría al <c>ShowDialog</c> devolviendo un
+    ''' resultado que nadie decidió.</summary>
+    Friend ReadOnly Property TomaRechazada As Boolean
+        Get
+            Return _tomaRechazada
+        End Get
+    End Property
+    Private _tomaRechazada As Boolean
+
     Public Sub New(mainForm As MainForm,
                    npcFormID As UInteger,
                    raceFormID As UInteger,
@@ -677,14 +687,30 @@ Public Class HeadPartEditor_Form
             End Try
             If loApuntanOtros Then _toma.Soltar() Else _toma.Abandonar()
         End If
-        _draft = d
-        _openSnapshot = Nothing
+        Dim snapNuevo As HdptDraft = Nothing
         Try
-            _openSnapshot = d.Clone()
+            snapNuevo = d.Clone()
         Catch
             ' Sin snapshot la reversión no puede reponer: se marca y el abandono sólo da de baja.
         End Try
-        _toma.Tomar(d, _openSnapshot)
+        ' ⛔⛔ LA TOMA VA PRIMERO, Y SI SE RECHAZA EL EDITOR NO ABRE. Acá había un `_tomaRechazada =
+        ' True` que anotaba y SEGUÍA, y eso era PEOR que no tener la ley: el editor quedaba con
+        ' `_draft` apuntando a un borrador cuya toma viva es de OTRO editor, y `CommitVivo()` lo
+        ' REGISTRABA — o sea mutaba el objeto compartido y lo reponía en el mapa, que es exactamente el
+        ' daño que la ley existe para evitar.
+        ' ⛔ Y el comentario que había acá decía «no rompe bytes»: es FALSO. Un borrador registrado y
+        ' sucio lo emite la fase 2l —«todo borrador SUCIO se emite, referenciado o no»—, así que
+        ' llegaba al `.esp`. Es el mismo razonamiento con el que se cerró el OK sobre un borrador en
+        ' blanco: registrar NO es inocuo.
+        ' ⛔ Y además `Tomar` sale por su `Return False` ANTES de fijar `_actual`, con lo cual
+        ' `Abandonar`/`Soltar` al cerrar quedaban en no-ops: no había limpieza Y el FormID quedaba SIN
+        ' MARCA, así que un tercer editor también lo podía abrir.
+        If Not _toma.Tomar(d, snapNuevo) Then
+            _tomaRechazada = True
+            Return
+        End If
+        _draft = d
+        _openSnapshot = snapNuevo
         VolcarAlFormulario()
         If registrar Then CommitVivo()
         ' ⛔⛔ Y SE PIDE EL PREVIEW Y LA VALIDEZ. Esto FALTABA, y es lo que el usuario vio: cambiar de

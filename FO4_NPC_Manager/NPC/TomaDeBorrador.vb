@@ -78,14 +78,33 @@ Friend NotInheritable Class TomaDeBorrador(Of TD As Class)
     ''' del padre vuelca su formulario viejo encima). La marca vive ACÁ y no en el formulario porque
     ''' la toma es quién sabe qué está tomado — en el formulario habría que repetirla en los OCHO
     ''' editores y ningún testigo la alcanzaría.</para></summary>
-    Friend Sub Tomar(actual As TD, snapshotDeApertura As TD)
+    ''' <para>⛔⛔ DEVUELVE False SI ESE BORRADOR YA ESTÁ TOMADO POR OTRA TOMA, y ésa es LA SEDE de
+    ''' la ley «un borrador no se abre dos veces». Antes la pregunta vivía en dos call sites del
+    ''' editor de head parts y acá se marcaba igual, en silencio: la ley dependía de que cada editor
+    ''' nuevo se acordara de preguntar, y las otras nueve puertas que abren un editor sobre un
+    ''' borrador existente no lo hacían.</para>
+    ''' <para>El borrador ES el record y se comparte por REFERENCIA, así que con dos tomas sobre el
+    ''' mismo objeto el editor de adentro muta el árbol que el de afuera muestra, su Cancel queda en
+    ''' un no-op mudo y su OK se pierde. Las dos direcciones destruyen trabajo sin aviso.</para>
+    ''' <para>⛔ Devuelve False en vez de TIRAR: la app corre con
+    ''' <c>UnhandledExceptionMode.ThrowException</c> y estos gestos salen de handlers sin <c>Try</c>,
+    ''' así que una excepción cerraría la app por algo que es un «no se puede ahora». Y el llamador
+    ''' que no mire el resultado NO rompe nada: no se toma, no se edita.</para></summary>
+    Friend Function Tomar(actual As TD, snapshotDeApertura As TD) As Boolean
+        ' ⛔ La guarda va ANTES de soltar la toma anterior: si se rechaza, esta toma queda como
+        ' estaba. Soltar primero y rechazar después dejaría al editor sin su propio borrador.
+        If actual IsNot Nothing Then
+            Dim fidNuevo = _idDe(actual)
+            Dim esElMismoQueYaTengo As Boolean = (_actual IsNot Nothing AndAlso _idDe(_actual) = fidNuevo)
+            If Not esElMismoQueYaTengo AndAlso Borradores.EstaTomado(fidNuevo) Then Return False
+        End If
         ' La toma anterior de ESTA instancia se libera: cambiar de objetivo no deja el viejo tomado.
         If _actual IsNot Nothing Then Borradores.DesmarcarTomado(_idDe(_actual))
         _actual = actual
         _snapshot = snapshotDeApertura
         _registroPrevio = Nothing
         _base = Nothing
-        If actual Is Nothing Then Return
+        If actual Is Nothing Then Return True
         Dim fid = _idDe(actual)
         Borradores.MarcarTomado(fid)
         _registroPrevio = _buscar(fid)
@@ -95,7 +114,8 @@ Friend NotInheritable Class TomaDeBorrador(Of TD As Class)
             _base = Nothing
             Logger.Log("TomaDeBorrador.Tomar (línea de base): " & ex.ToString())
         End Try
-    End Sub
+        Return True
+    End Function
 
     ''' <summary>¿Quedó sucio el borrador después de volcarle los paneles? La LEY es
     ''' <see cref="Borradores.SucioContraLaBase"/>; acá sólo se le pasa si hay base, porque la comparación

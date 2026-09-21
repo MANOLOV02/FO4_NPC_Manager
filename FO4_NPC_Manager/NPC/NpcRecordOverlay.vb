@@ -94,9 +94,16 @@ Public Module NpcRecordOverlay
         ' que el bake componía el reemplazo de head parts de la plantilla de piel de LooksMenu SIN la
         ' sede: justo el agregado silencioso (dos partes del mismo tipo, y gana la primera) que la
         ' guarda de la entrada de `AplicarOverlay` describe.
-        ' ⛔ El hueco es ANTERIOR a esa guarda y estaba MUDO; la guarda lo destapó haciendo tirar
-        ' «Build CharGen», que es como lo vio el usuario. Los dos sirven a la misma rama y por eso no
-        ' sirven por separado.
+        ' ⛔ Y NO es un hueco anterior: es una REGRESION DE ESTA OLA. Acá decía que el hueco era
+        ' previo a la guarda y que estaba mudo, y es FALSO — medido con
+        ' `git show 3bcb408:...NpcRecordOverlay.vb | grep -c resHeadParts` = 0 y con que
+        ' `ResolucionDeHeadParts.vb` no existe en 2.2.0: el parámetro no existía en ningún punto
+        ' de la cadena. La regresión nació y murió dentro de la ola.
+        ' ⛔ CONSECUENCIA QUE IMPORTA: **ningún artefacto horneado por 2.2.0 o anterior está
+        ' afectado, no hay nada que re-hornear.** La frase vieja decía lo contrario y hubiera hecho
+        ' re-hornear un corpus entero de gusto.
+        ' La guarda destapó la regresión haciendo tirar «Build CharGen», que es como lo vio el
+        ' usuario. Los dos parámetros sirven a la misma rama y por eso no sirven por separado.
         Return ComponerAutoriaSobre(baseHeredada, npcFormID, appliedPresets, pluginManager,
                                     lmSkinTemplateResolver, resHeadParts:=resHeadParts)
     End Function

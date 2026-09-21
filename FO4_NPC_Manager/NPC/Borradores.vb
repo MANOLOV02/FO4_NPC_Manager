@@ -246,7 +246,26 @@ Public Module Borradores
     ''' <para>⛔ Se marca en <c>TomaDeBorrador.Tomar</c> y se libera en <c>Soltar</c> y en
     ''' <c>Abandonar</c> — en las TRES, y en `Abandonar` cualquiera sea la rama de la ley: una marca
     ''' que sobrevive al abandono deja el FormID inaccesible por el resto de la sesión, que es un
-    ''' defecto peor que el que esto cierra.</para></summary>
+    ''' defecto peor que el que esto cierra.</para>
+    '''
+    ''' <para>⛔⛔ QUE LA MARCA SEA CLASE-AGNÓSTICA NO ES UN HUECO: ES LO CORRECTO, y hay que leer
+    ''' esto antes de «mejorarlo» con una marca por clase. El conjunto se indexa por FormID solo, y
+    ''' el FormID ES el espacio de identidad: <c>MainForm.AllocateDraftFormID</c> reparte de UN pozo
+    ''' —un solo <c>_nextDraftObjIndex</c> para las ocho clases de borrador— y su propio doc explica
+    ''' por qué no puede haber uno por clase («dos borradores de clases distintas nacerían con el
+    ''' MISMO FormID provisional y el que se guardara segundo pisaría la referencia del
+    ''' primero»).</para>
+    '''
+    ''' <para>De ahí que un HDPT y un FLST <b>no puedan compartir FormID</b>, y que la cadena
+    ''' HDPT → FLST → HDPT —real para el CONTENIDO: 384 aristas medidas en el corpus— no produzca
+    ''' colisión de IDENTIDAD. Hoy esa cadena ni existe: <c>FormListEditor_Form</c> no abre ningún
+    ''' editor de head parts. Y el día que alguien le agregue el «editar este miembro», los dos
+    ''' editores caerían sobre el <b>mismo fid de la misma clase</b>, que es justo lo que la sede ya
+    ''' rechaza y lo que <c>BorradorTrasReaperturaGate</c> ya atestigua.</para>
+    '''
+    ''' <para>O sea que la protección es ESTRUCTURAL y cubre sola cualquier puerta nueva — más
+    ''' fuerte que un gate sobre un sujeto fabricado, que es lo que se estuvo por escribir acá y se
+    ''' descartó por medición.</para></summary>
     Private ReadOnly _tomados As New HashSet(Of UInteger)
 
     ''' <summary>Algún editor abierto tiene tomado este FormID. Se pregunta ANTES de abrir otro.</summary>

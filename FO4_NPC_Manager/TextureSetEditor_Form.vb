@@ -36,6 +36,16 @@ Public Class TextureSetEditor_Form
     End Property
 
     ''' <param name="draft">El borrador a editar. Nothing ⇒ se crea uno nuevo, en blanco.</param>
+    ''' <summary>La toma se rechazó porque ese borrador ya está abierto en otro editor. Lo mira el
+    ''' llamador: cerrar un formulario a medio construir dejaría al <c>ShowDialog</c> devolviendo un
+    ''' resultado que nadie decidió.</summary>
+    Friend ReadOnly Property TomaRechazada As Boolean
+        Get
+            Return _tomaRechazada
+        End Get
+    End Property
+    Private _tomaRechazada As Boolean
+
     Public Sub New(mainForm As MainForm, draft As TxstDraft)
         If mainForm Is Nothing Then Throw New ArgumentNullException(NameOf(mainForm))
         InitializeComponent()
@@ -70,7 +80,25 @@ Public Class TextureSetEditor_Form
             snap = _draft.Clone()
         Catch
         End Try
-        _toma.Tomar(_draft, snap)
+        ' ⛔⛔ LA TOMA VA PRIMERO, Y SI SE RECHAZA EL EDITOR NO ABRE. Acá había un `_tomaRechazada =
+        ' True` que anotaba y SEGUÍA, y eso era PEOR que no tener la ley: el editor quedaba con
+        ' `_draft` apuntando a un borrador cuya toma viva es de OTRO editor, y `CommitVivo()` lo
+        ' REGISTRABA — o sea mutaba el objeto compartido y lo reponía en el mapa, que es exactamente el
+        ' daño que la ley existe para evitar.
+        ' ⛔ Y el comentario que había acá decía «no rompe bytes»: es FALSO. Un borrador registrado y
+        ' sucio lo emite la fase 2l —«todo borrador SUCIO se emite, referenciado o no»—, así que
+        ' llegaba al `.esp`. Es el mismo razonamiento con el que se cerró el OK sobre un borrador en
+        ' blanco: registrar NO es inocuo.
+        ' ⛔ Y además `Tomar` sale por su `Return False` ANTES de fijar `_actual`, con lo cual
+        ' `Abandonar`/`Soltar` al cerrar quedaban en no-ops: no había limpieza Y el FormID quedaba SIN
+        ' MARCA, así que un tercer editor también lo podía abrir.
+        If Not _toma.Tomar(_draft, snap) Then
+            ' El formulario se niega a abrir por sí mismo: así el llamador no tiene que
+            ' preguntar nada y `TomaRechazada` no es un canal que nadie lee.
+            _tomaRechazada = True
+            DialogResult = DialogResult.Cancel
+            Return
+        End If
         Volcar()
         ' ⛔⛔ NO SE COMMITEA UN BORRADOR NUEVO AL ABRIR. Acá había un `Commit()` incondicional, y
         ' `Commit` REGISTRA: abrir el editor y cerrarlo dejaba un record en el registro, y un borrador
