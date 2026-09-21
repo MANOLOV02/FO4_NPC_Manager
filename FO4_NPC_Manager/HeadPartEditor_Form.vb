@@ -61,6 +61,16 @@ Public Class HeadPartEditor_Form
     Private _preview As PreviewControl
     Private _lastPreviewKey As String = Nothing
 
+    ''' <summary>Cache del aviso de precisión completa: clave = la clave normalizada del <c>MODL</c>,
+    ''' valor = el texto ya calculado (cadena vacía = la malla está bien, o no se pudo mirar).
+    ''' <para>⛔ EXISTE PORQUE EL CÁLCULO ABRE EL NIF. <c>RefrescarEstadoDelModelo</c> cuelga de
+    ''' <c>TextBoxModl.TextChanged</c>, o sea que corre en CADA TECLA; sin esto se leería el archivo
+    ''' —del disco o del BA2— carácter por carácter. Misma razón por la que el preview no redibuja
+    ''' cuando <c>_lastPreviewKey</c> no cambió.</para>
+    ''' <para>No se invalida durante la vida del diálogo: la clave ES el contenido del archivo que se
+    ''' va a mirar, y el editor no escribe mallas.</para></summary>
+    Private ReadOnly _avisoPrecisionPorMalla As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+
     ''' <summary>El anfitrion de render del modo «Over the NPC». Nothing cuando no hay NPC de contexto —
     ''' el modo entero queda deshabilitado y sobra el anfitrion. Gemelo del de <c>ArmaEditor_Form</c>.</summary>
     Private _host As NpcRenderHost
@@ -204,6 +214,10 @@ Public Class HeadPartEditor_Form
         ModelInnerLayout.Controls.Remove(TextBoxMods)
         ModelInnerLayout.Controls.Remove(ModsButtons)
         ModelLayout.Controls.Remove(GroupModelFlags)
+        ' El aviso de precisión completa es de Fallout 4: en Skyrim la posición es SIEMPRE float32
+        ' (BSVertexDataSSE no tiene campo half) y el bit 54 marca otra cosa — los BSDynamicTriShape,
+        ' que el archivo ya trae convertidos. Ver FO4_Base_Library.EngineVertexPrecision.
+        ModelLayout.Controls.Remove(LabelFullPrec)
         Tabs.TabPages.Remove(TabConditions)
     End Sub
 
@@ -980,7 +994,83 @@ Public Class HeadPartEditor_Form
         Else
             LabelModtStatus.Text = "MODT: present, empty."
         End If
+        RefrescarAvisoDePrecision()
     End Sub
+
+    '==============================================================================================
+    ' Aviso de precisión completa de los vértices
+    '==============================================================================================
+
+    ''' <summary>Avisa —sólo avisa— cuando la malla elegida guarda los vértices en precisión COMPLETA.
+    ''' El motor de Fallout 4, al armar una cabeza, convierte la geometría con skin instance a
+    ''' <c>BSDynamicTriShape</c> y al reescribir el <c>vertexDesc</c> le resta un <b>8 fijo</b> al
+    ''' tamaño del vértice (<c>0x141831EED</c>), que es lo que mide el bloque de posición en MEDIA
+    ''' precisión; en precisión completa mide 16, así que el stride y todos los offsets quedan 8 bytes
+    ''' corridos y la malla se deforma. La ley, sus citas y el censo viven en
+    ''' <see cref="FO4_Base_Library.EngineVertexPrecision"/>; acá sólo se muestra.
+    '''
+    ''' <para>⛔ NO BLOQUEA NI CORRIGE NADA. El record no se toca, el OK sigue habilitado: esto es un
+    ''' dato sobre un archivo que el editor no es dueño de reescribir. El arreglo se hace donde se
+    ''' construye la malla (Wardrobe Manager), y el rótulo dice cuál es.</para>
+    '''
+    ''' <para>⛔ Y SI NO SE PUDO MIRAR, QUEDA VACÍO — no "está bien". Un aviso ausente por no haber
+    ''' podido abrir el NIF se lee igual que una malla sana, así que el único caso en que se escribe
+    ''' texto es el que se midió.</para></summary>
+    Private Sub RefrescarAvisoDePrecision()
+        ' En Skyrim el rótulo ni existe: ConfigurarPorJuego lo saca del layout. La guarda evita
+        ' tocar un control que ya no tiene contenedor.
+        If Not _esFo4 Then Return
+        Dim modl = TextBoxModl.Text.Trim()
+        If modl.Length = 0 Then
+            LabelFullPrec.Text = ""
+            Return
+        End If
+        Dim clave = MeshPathHelpers.NormalizeMeshKey(modl)
+        Dim texto As String = Nothing
+        If Not _avisoPrecisionPorMalla.TryGetValue(clave, texto) Then
+            texto = CalcularAvisoDePrecision(clave)
+            _avisoPrecisionPorMalla(clave) = texto
+        End If
+        LabelFullPrec.Text = texto
+    End Sub
+
+    ''' <summary>Mira las DOS mallas del head part: la del <c>MODL</c> y su hermana
+    ''' <c>_facebones.nif</c> si existe. Las dos importan y por caminos distintos — la del
+    ''' <c>MODL</c> es la que el motor usa al armar la cabeza en runtime, la <c>_facebones</c> es la
+    ''' entrada del horneado (<c>FaceGenBuilder</c> la resuelve con el mismo
+    ''' <see cref="MeshPathHelpers.TryGetFaceBonesVariant"/>) — y una puede estar en precisión
+    ''' completa sin la otra. El rótulo NOMBRA cuál de las dos, porque son dos archivos que el usuario
+    ''' arregla por separado.</summary>
+    Private Function CalcularAvisoDePrecision(claveDeMalla As String) As String
+        Dim afectadas As New List(Of String)
+        If MallaEnPrecisionCompleta(claveDeMalla) Then afectadas.Add(IO.Path.GetFileName(claveDeMalla))
+        Dim claveFbns = MeshPathHelpers.TryGetFaceBonesVariant(claveDeMalla)
+        If claveFbns.Length > 0 AndAlso MallaEnPrecisionCompleta(claveFbns) Then
+            afectadas.Add(IO.Path.GetFileName(claveFbns))
+        End If
+        If afectadas.Count = 0 Then Return ""
+        Return $"⚠ Full-precision vertices: {String.Join(", ", afectadas)}." & vbCrLf &
+               "Fallout 4 renders them distorted when the mesh is used as a head part. Rebuild in half " &
+               "precision: Wardrobe Manager → Config → Build → ""Force half precision""."
+    End Function
+
+    ''' <summary>Abre el NIF por el MISMO camino que el render y el horneado
+    ''' (<c>FilesDictionary</c> ⇒ loose o BA2, lo que gane) y aplica el predicado de la librería.
+    ''' False cuando la malla no resuelve o no se deja leer: ver el ⛔ de
+    ''' <see cref="RefrescarAvisoDePrecision"/> sobre por qué eso NO es un aviso.</summary>
+    Private Function MallaEnPrecisionCompleta(clave As String) As Boolean
+        Dim bytes = MeshPathHelpers.TryLoadMeshBytes(clave)
+        If bytes Is Nothing Then Return False
+        Dim nif As New Nifcontent_Class_Manolo()
+        Try
+            nif.Load_Manolo(bytes)
+        Catch ex As Exception
+            Dim cl = clave, t = ex.GetType().Name, m = ex.Message
+            Logger.LogLazy(Function() $"[HDPT-EDITOR] no pude leer '{cl}' para el aviso de precisión: {t}: {m}")
+            Return False
+        End Try
+        Return EngineVertexPrecision.TienePrecisionCompleta(nif)
+    End Function
 
     '==============================================================================================
     ' Validez para el NPC de contexto

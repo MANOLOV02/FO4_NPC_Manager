@@ -83,6 +83,7 @@ Partial Class HeadPartEditor_Form
         CheckModcPresente = New CheckBox()
         NumericModc = New NumericUpDown()
         LabelModcHint = New Label()
+        LabelFullPrec = New Label()
         LabelMods = New Label()
         TextBoxMods = New TextBox()
         ModcLayout = New FlowLayoutPanel()
@@ -448,6 +449,9 @@ Partial Class HeadPartEditor_Form
         ModelLayout.Controls.Add(GroupAltTex, 0, 2)
         ModelLayout.Controls.Add(LabelModtStatus, 0, 3)
         ModelLayout.Controls.Add(LabelModcHint, 0, 4)
+        ' La fila 5 ya estaba declarada y vacía (RowCount = 6, seis RowStyles): el aviso de precisión
+        ' entra sin tocar el layout. Va DEBAJO de los grupos, con los otros dos rótulos de estado.
+        ModelLayout.Controls.Add(LabelFullPrec, 0, 5)
         ModelLayout.Dock = DockStyle.Fill
         ModelLayout.Name = "ModelLayout"
         ModelLayout.RowCount = 6
@@ -593,6 +597,18 @@ Partial Class HeadPartEditor_Form
         LabelModcHint.Name = "LabelModcHint"
         LabelModcHint.TabIndex = 9
         LabelModcHint.Text = "MODC: float 0-1. Leave it empty — no vanilla head part uses it."
+        '
+        ' Aviso de precisión completa. Arranca VACÍO y lo llena RefrescarEstadoDelModelo: un rótulo
+        ' con texto de fábrica mentiría hasta que se resuelva la primera malla. `Visible` se maneja
+        ' por texto (una fila AutoSize con un label vacío no ocupa alto), no con un Hide, para que el
+        ' único lugar que decide sea el que hizo la medición.
+        LabelFullPrec.AutoSize = True
+        LabelFullPrec.Dock = DockStyle.Fill
+        LabelFullPrec.ForeColor = Color.Firebrick
+        LabelFullPrec.Margin = New Padding(3, 8, 3, 2)
+        LabelFullPrec.Name = "LabelFullPrec"
+        LabelFullPrec.TabIndex = 10
+        LabelFullPrec.Text = ""
         '
         LabelMods.Anchor = AnchorStyles.Left
         LabelMods.AutoSize = True
@@ -1307,6 +1323,7 @@ Partial Class HeadPartEditor_Form
     Friend WithEvents CheckModcPresente As CheckBox
     Friend WithEvents NumericModc As NumericUpDown
     Friend WithEvents LabelModcHint As Label
+    Friend WithEvents LabelFullPrec As Label
     Friend WithEvents LabelMods As Label
     Friend WithEvents TextBoxMods As TextBox
     Friend WithEvents ModsButtons As FlowLayoutPanel

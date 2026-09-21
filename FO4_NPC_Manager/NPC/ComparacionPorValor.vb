@@ -170,7 +170,19 @@ Friend Module ComparacionPorValor
     ''' es justo lo que dice el comentario de las excepciones de mas abajo.</para>
     ''' <para>⛔ Y tiene CONTROL: si el campo desaparece del estado, `ControlarEntradas` avisa. Una
     ''' exclusion sin control es el escondite del proximo defecto.</para></summary>
-    Friend ReadOnly ENTRADAS_NO_VALORES As String() = {"RecordBase"}
+    ''' <summary>⛔⛔ `BaseArmadaDesde` y `BaseArmadaDesdeTerminal` entran por la MISMA razon que
+    ''' `RecordBase`, no por una distinta: son su FECHA y VIAJAN CON ELLA (`NpcStateResolver.vb:532`, "son la
+    ''' base y su FECHA"), son `NPC_Data` --el mismo grafo entero-- y sus consumidores las preguntan por
+    ''' REFERENCIA, no por valor: `MainForm.vb:10875` y `:10951` usan `Object.ReferenceEquals`. Con
+    ''' `entradasPorIdentidad:=True` --el CLON-- eso es justo lo que se compara, asi que ese caso deja de pasar
+    ''' POR ACCIDENTE (hoy sobrevive solo porque `IgualPorValor` corta por `ReferenceEquals` en `:71`) y pasa a
+    ''' afirmar la ley de verdad.
+    ''' <para>⛔⛔ Y NO SALEN DE <see cref="DebenDiferirEntreRenderYBake"/>: estar aca las saca del
+    ''' comparador de las dos sedes, que es una EXCLUSION, y una exclusion sin testigo vivo es el escondite del
+    ''' proximo defecto. El testigo vivo --con cuenta-- es la otra lista, y por eso los dos nombres estan en LAS
+    ''' DOS. `ControlarEntradas` de aca abajo solo verifica que el NOMBRE siga existiendo: NO es control de
+    ''' exclusion muerta y no hay que confundirlo con uno.</para></summary>
+    Friend ReadOnly ENTRADAS_NO_VALORES As String() = {"RecordBase", "BaseArmadaDesde", "BaseArmadaDesdeTerminal"}
 
     ''' <summary>Devuelve el nombre de la entrada declarada que el estado YA NO TIENE, o Nothing. Lo llama el
     ''' gate: sin esto, el dia que `RecordBase` se renombre la exclusion queda tapando un campo que no existe
@@ -227,39 +239,63 @@ Friend Module ComparacionPorValor
         Return Nothing
     End Function
 
-    ''' <summary>Los TRES campos que DEBEN diferir entre la sede del render y la del bake, y por qué. Vive acá
+    ''' <summary>Los SEIS campos que DEBEN diferir entre la sede del render y la del bake, y por qué. Vive acá
     ''' y no en cada gate porque una lista de excepciones copiada es una lista que diverge.
     ''' <list type="bullet">
     ''' <item><c>ModelSourceFormID</c> — el bake se lo asigna DESPUÉS de proyectar; el render lo deja en 0.</item>
-    ''' <item><c>DefaultOutfitFormID</c> / <c>SleepOutfitFormID</c> — el render sale de la cadena de Inventory,
-    ''' el bake de <c>CreateOwnInventoryState</c>.</item>
-    ''' <item>⛔ `TraitsSourceFormID` ESTABA aca y SALIO: que difiriera no era una ley sino el
-    ''' defecto -- un campo con dos significados segun el camino. El horneado ahora lleva el mismo
-    ''' terminal que el render.</item>
+    ''' <item><c>DefaultOutfitFormID</c> / <c>SleepOutfitFormID</c> / <c>InventorySourceFormID</c> — el render
+    ''' sale de la cadena de Inventory, el bake de <c>CreateOwnInventoryState</c> (el record propio).</item>
+    ''' <item><c>BaseArmadaDesde</c> / <c>BaseArmadaDesdeTerminal</c> — la FECHA de la base; el detalle está
+    ''' en el bloque de comentarios de abajo, que es donde vive la ley completa.</item>
     ''' </list>
-    ''' <para>⛔ <c>VariantLabel</c> e <c>InventorySourceFormID</c> estaban acá y SALIERON: están declarados y
-    ''' NUNCA ASIGNADOS — por ninguna de las dos sedes — así que no es que «deban diferir», es que valen lo
-    ''' mismo siempre. Los cazó el control de excepciones muertas del gate, y sacarlos es lo correcto: una
-    ''' excepción que no tapa nada hoy tapa algo mañana, el día que alguien asigne uno de los dos en UNA sola
-    ''' sede. Compararlos es gratis y cierra esa puerta.</para>
-    ''' <para>Las TRES que quedan difieren DE VERDAD, con su cuenta medida (sse/fo4):
-    ''' <c>ModelSourceFormID</c> 6452/3231 · <c>DefaultOutfitFormID</c> 919/84 ·
-    ''' <c>SleepOutfitFormID</c> 176/10.</para>
-    ''' <para>⛔ La cuenta de `TraitsSourceFormID` --2457/1429-- estaba aca abajo como si el campo
-    ''' siguiera en la lista, o sea que el mismo resumen decia CINCO arriba, CUATRO abajo y el arreglo
-    ''' tenia TRES. Esa cuenta ya no describe una divergencia permitida sino la que la ola CERRO: hoy
-    ''' los dos caminos llevan el mismo terminal y el gate la caza en vez de exigirla.</para></summary>
-    ' ⛔⛔ `TraitsSourceFormID` SALIO DE LA LISTA. Estaba declarado como "tiene que diferir:
-    ' render = el terminal, bake = si mismo", y esa divergencia no era una ley sino EL DEFECTO: un
-    ' campo con dos significados segun el camino. Toda ley cableada sobre el se bifurcaba sin que
-    ' ningun A/B lo viera, y el gate ademas EXIGIA la divergencia en vez de cazarla. Ahora el
-    ' horneado lleva el mismo terminal que el render.
+    ''' <para>⛔⛔ LAS CUENTAS, Y POR QUÉ ESTE PÁRRAFO SE REESCRIBE ENTERO CADA VEZ. Acá decía <b>TRES</b>
+    ''' arriba con SEIS en la lista, y publicaba seis cifras de las que <b>cinco quedaron refutadas</b> por la
+    ''' corrida del 21-sep (decía fo4 <c>ModelSourceFormID</c> 3231 / <c>DefaultOutfit</c> 84 /
+    ''' <c>SleepOutfit</c> 10 y sse <c>DefaultOutfit</c> 919 / <c>SleepOutfit</c> 176). Es EL MISMO defecto que
+    ''' este bloque narraba dos párrafos más abajo — «el mismo resumen decia CINCO arriba, CUATRO abajo y el
+    ''' arreglo tenia TRES» — repetido con otro número. Una cuenta sin fecha envejece y después miente.
+    ''' <b>MEDIDO el 21-sep</b> con <c>--g16</c> (sujetos: 4365 fo4 / 6452 sse), difiere en (fo4/sse):
+    ''' <c>ModelSourceFormID</c> 4365/6452 · <c>BaseArmadaDesde</c> 4365/6452 ·
+    ''' <c>InventorySourceFormID</c> 2567/3147 · <c>BaseArmadaDesdeTerminal</c> 2126/2457 ·
+    ''' <c>DefaultOutfitFormID</c> 64/853 · <c>SleepOutfitFormID</c> 1/175.</para>
+    ''' <para>⛔ <c>VariantLabel</c> estuvo acá y SALIÓ: está declarado y NUNCA ASIGNADO — por ninguna de las
+    ''' dos sedes — así que no es que «deba diferir», es que vale lo mismo siempre. Lo cazó el control de
+    ''' excepciones muertas del gate, y sacarlo es lo correcto: una excepción que no tapa nada hoy tapa algo
+    ''' mañana. <c>InventorySourceFormID</c> salió POR LO MISMO y <b>volvió</b>: desde que se asigna diverge de
+    ''' verdad, y hoy son 2567/3147. Los dos párrafos que decían «SALIERON» y «VOLVIO» por separado se
+    ''' contradecían; queda este.</para>
+    ''' <para>⛔ `TraitsSourceFormID` ESTABA acá —con cuenta 2457/1429— y SALIÓ: que difiriera no era una ley
+    ''' sino EL DEFECTO, un campo con dos significados según el camino. El horneado ahora lleva el mismo
+    ''' terminal que el render, y el gate la caza en vez de exigirla.</para></summary>
+    ' ⛔⛔ `BaseArmadaDesde` y `BaseArmadaDesdeTerminal`: la FECHA de la base. La ley NO es "el bake no
+    ' fecha" sino EL QUE NO PUBLICA NO FECHA -- y hoy tiene TRES productores, no dos:
+    '     `NpcStateFactory.vb:236`      el horneado, `baseArmadaDesde:=Nothing` explicito (`:227` dice por que)
+    '     `NpcSkinLivePreview.vb:87-89` la vista previa de piel, los dos en `Nothing`, con el mismo argumento
+    '     `NpcStateResolver.vb:193-194` el render, que SI publica en `LastRenderedState` y por eso SI fecha
+    ' Un estado sin fecha lo lee `MainForm.RecordEfectivoParaAutoria` como VENCIDO y recalcula; uno con fecha
+    ' inventada diria "fresca" sobre una instancia que no es la de la sesion. Por eso divergir es LA LEY.
+    ' ⛔⛔ VAN ACA ADEMAS DE EN `ENTRADAS_NO_VALORES`, y el nombre repetido es A PROPOSITO. LO QUE HACE
+    ' CADA UNO, porque es lo primero que se malinterpreta: para estos dos campos, la entrada de ESTA lista
+    ' **NO ES LA QUE SALTEA**. `PrimerCampoDistinto` recorre `ENTRADAS_NO_VALORES` PRIMERO (`:209-215`) y ahi
+    ' ya quedan en `saltear`, dos bucles antes de mirar el `excepto`. El unico papel de estos dos nombres ACA
+    ' es ser el TESTIGO VIVO de G16-c. Si alguien lee "esta en las dos listas" como redundancia y borra una,
+    ' va a borrar justo esta -- y con ella lo unico que avisa si manana alguien "arregla" el horneado
+    ' sellandole una fecha. G16-c los cuenta
+    ' con `IgualPorValor` directo (`Program.vb:2131-2137`), que con un lado en `Nothing` corta en `:62-63` y no
+    ' toca el `NPC_Data`; si dejan de diferir sale `EXCEPCION MUERTA` y el gate se pone ROJO.
+    ' MEDIDO el 21-sep (`--g16`, sujetos 4365 fo4 / 6452 sse):
+    '     `BaseArmadaDesde`          difiere en 4365/4365 (fo4) y 6452/6452 (sse) -- TODOS.
+    '     `BaseArmadaDesdeTerminal`  difiere en 2126/4365 (fo4) y 2457/6452 (sse) -- SOLO LOS HEREDEROS: el
+    '        render lo sella unicamente si `traits.SourceFormID <> 0 AndAlso <> npc.FormID`
+    '        (`NpcStateResolver.vb:172-175`), asi que para un no-heredero las dos sedes dicen `Nothing` y
+    '        COINCIDEN, legitimamente.
+    '        ⛔ ESTA CIFRA NO ES UNA TASA. `2126 de 4365` no se lee "difiere en el 48 %" ni "falla en la
+    '        mitad": se lee "difiere en LOS HEREDEROS, que son 2126". El denominador son todos los NPC y el
+    '        numerador es la POBLACION A LA QUE LA LEY APLICA. Leerla como tasa de defecto manda a alguien a
+    '        perseguir 2239 sujetos que estan bien.
     Friend ReadOnly DebenDiferirEntreRenderYBake As String() = {
         "ModelSourceFormID", "DefaultOutfitFormID", "SleepOutfitFormID",
-        "InventorySourceFormID"
+        "InventorySourceFormID", "BaseArmadaDesde", "BaseArmadaDesdeTerminal"
     }
-    ' ⛔ `InventorySourceFormID` VOLVIO, y esta vez con divergencia REAL: desde que se asigna, el render lo
-    ' saca de la cadena de Inventory y el bake de `CreateOwnInventoryState` (el record propio) -- la MISMA
-    ' razon, y los mismos sujetos, que `DefaultOutfitFormID`/`SleepOutfitFormID` una linea arriba.
 
 End Module
