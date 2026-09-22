@@ -1979,6 +1979,34 @@ Public Module FaceGenBuilder
         ' on Windows (case-insensitive FS) but removes it as a variable while we chase the loose bug.
         Dim nifFileName = FaceGenPaths.GeomNifFileName(formIdLow, If(DebugMode, "_2", ""))
         Dim outAbs = Path.Combine(dataPathForNif, FaceGenPaths.GeomDir(originPlugin), nifFileName)
+
+        ' ⛔ PRECISION DE VERTICES — ULTIMA PARADA ANTES DEL DISCO.
+        ' Lo que se escribe acá ES un head part, y una shape con el bit 54 (VF_FULLPREC) usada como
+        ' head part se DESTROZA in-game: al pasarla a BSDynamicTriShape el motor le resta 8 fijo al
+        ' tamaño del vértice (0x141831EED) y repite ese −8 en cada nibble de offset, sin mirar el
+        ' bit. En media precisión el bloque de posición mide 8; en completa mide 16 ⇒ stride y
+        ' offsets quedan 8 bytes corridos y BLENDINDICES se lee del vértice siguiente.
+        ' El bake PROPAGA lo que traiga la malla del HDPT: MEDIDO sobre el FaceGeom que esta misma
+        ' función escribió para Cait, 2 de 15 shapes salieron con FULLPREC (vsz 40) — las dos del
+        ' head part de los aros, que son exactamente las que explotaban.
+        ' ⛔ VA ACÁ Y NO EN EL CLONADO (CloneShape_Original): después de clonar vienen los MORPHS, y
+        ' convertir antes haría esa matemática sobre posiciones ya redondeadas al paso del half.
+        ' Acá ya no queda ninguna edición geométrica por delante.
+        ' El gate por juego va por la VERSIÓN DEL ARCHIVO dentro de BajarAMediaPrecision, así que el
+        ' horneado de SSE pasa de largo solo aunque la opción esté prendida.
+        ' Ley, direcciones y censo: FO4_Base_Library.EngineVertexPrecision.
+        ' ⛔ El contador se REPORTA MAS ABAJO, no acá: `result.Summary` se ASIGNA (no se concatena) en
+        ' el "Wrote ..." de después del save, así que un `&=` en este punto se perdía entero.
+        Dim shapesBajadasAHalf As Integer = 0
+        If NPC_Config.Current IsNot Nothing AndAlso NPC_Config.Current.ForceHalfPrecisionOnBakedHeads Then
+            shapesBajadasAHalf = EngineVertexPrecision.BajarAMediaPrecision(nif)
+            If shapesBajadasAHalf > 0 Then
+                Dim nBaj = shapesBajadasAHalf
+                Logger.LogLazy(Function() $"[FACEBAKE-PREC] npc=0x{npcFormID:X8}: {nBaj} shape(s) " &
+                                          "bajadas a media precisión (el motor rompe un head part en fullprec)")
+            End If
+        End If
+
         Try
             Directory.CreateDirectory(Path.GetDirectoryName(outAbs))
             Dim tWrite = Stopwatch.GetTimestamp()
@@ -2056,6 +2084,9 @@ Public Module FaceGenBuilder
         result.Success = True
         result.OutputPath = outAbs
         result.Summary = $"Wrote {outAbs} ({result.ShapesKept} shapes from {hdptProcessed} HDPTs)"
+        If shapesBajadasAHalf > 0 Then
+            result.Summary &= $" | {shapesBajadasAHalf} shape(s) lowered to half precision (a full-precision head part is rendered broken by the engine)"
+        End If
         ' Caída silenciosa del match FBNS: shapes escritas SIN morphear. Va al Summary porque si sólo
         ' vive en el log, un batch con logging apagado reporta éxito con cabezas neutras.
         If shapesFbnsUnmatched > 0 Then

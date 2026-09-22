@@ -60,10 +60,23 @@ Public Class TextureSetEditor_Form
             idDe:=Function(d) d.FormID,
             construirBase:=AddressOf ConstruirBaseDeDisco)
 
-        ArmarFilasDeTextura()
+        ' La fila del MNAM es la que sigue a las de textura, y el número sale de CUÁNTAS se armaron —no
+        ' de un 8 escrito tres veces—, que es lo mismo que declara la grilla del diseñador: las ranuras
+        ' `AutoSize` y una fila más, vacía, que se come el sobrante.
+        Dim filaMnam = ArmarFilasDeTextura()
         If _game = Canon.WbGame.Fallout4 Then
-            GridTextures.Controls.Add(LabelMnam, 0, 8)
-            GridTextures.Controls.Add(TextBoxMnam, 1, 8)
+            GridTextures.Controls.Add(LabelMnam, 0, filaMnam)
+            GridTextures.Controls.Add(TextBoxMnam, 1, filaMnam)
+            GridTextures.Controls.Add(ButtonBrowseMnam, 2, filaMnam)
+            AddHandler ButtonBrowseMnam.Click, AddressOf OnBuscarMaterial
+        Else
+            ' ⛔ En Skyrim la fila no existe, y un control que nunca entra a `Controls` tampoco lo
+            ' alcanza el `Dispose` del formulario: queda huérfano. Se sueltan los tres acá. Es seguro —
+            ' el `AddHandler` de más abajo sobre un control liberado es legal, y `Volcar`/`Commit` sólo
+            ' los tocan dentro de la rama de Fallout 4, gateada por `TryCast(r, Canon.TxstFO4)`.
+            LabelMnam.Dispose()
+            TextBoxMnam.Dispose()
+            ButtonBrowseMnam.Dispose()
         End If
 
         If draft Is Nothing Then
@@ -143,8 +156,9 @@ Public Class TextureSetEditor_Form
     End Function
 
     ''' <summary>Las ocho filas, con los rótulos DEL JUEGO de la sesión. Las tres específicas se agregan
-    ''' con su nombre propio: no son «la misma ranura con otro nombre».</summary>
-    Private Sub ArmarFilasDeTextura()
+    ''' con su nombre propio: no son «la misma ranura con otro nombre».
+    ''' <para>Devuelve el índice de la PRIMERA fila libre, que es donde va el MNAM en Fallout 4.</para></summary>
+    Private Function ArmarFilasDeTextura() As Integer
         Dim filas = If(_game = Canon.WbGame.Skyrim,
             New (Clave As String, Rotulo As String)() {
                 ("Diffuse", "TX00 — Diffuse"),
@@ -175,21 +189,38 @@ Public Class TextureSetEditor_Form
             GridTextures.Controls.Add(btn, 2, i)
             _cajas(filas(i).Clave) = tb
         Next
-    End Sub
+        Return filas.Length
+    End Function
 
+    ''' <summary>⛔⛔ EL PICKER DEL DICCIONARIO DE ARCHIVOS, NO UN DIÁLOGO DEL SISTEMA. Acá había un
+    ''' <c>OpenFileDialog</c> en las ocho ranuras, y un diálogo del sistema ve el disco y NADA MÁS: las
+    ''' texturas y los materiales vanilla viven DENTRO de los BA2 (Fallout 4) y los BSA (Skyrim), así que
+    ''' con él el usuario no podía elegir ninguno de los que el juego trae — sólo los que algún mod dejó
+    ''' sueltos en <c>Data</c>. Y el recorte a mano que venía con él —buscar <c>\textures\</c> dentro de
+    ''' la ruta absoluta y cortar; si no aparecía, dejar el NOMBRE DEL ARCHIVO SOLO— inventaba una ruta
+    ''' que el juego no resuelve.
+    ''' <para>⛔ La siembra, la guarda del diccionario vacío y el recorte del prefijo NO se escriben acá:
+    ''' son las mismas tres decisiones para todos los selectores de la app y viven en
+    ''' <see cref="PickerDeAssets"/>, que siembra con la misma normalización que usa el RENDER. Acá hubo
+    ''' una versión propia y más débil, y este bloque todavía la describía como si siguiera viva —dos
+    ''' <c>summary</c> sobre el mismo miembro, en desacuerdo entre ellos—; lo levantó la revisión.</para>
+    ''' <para>El record guarda el valor SIN el prefijo raíz: medido sobre los 845 TXST ganadores de
+    ''' Fallout 4, 0 de 654 <c>TX00</c> traen <c>textures\</c> y 0 de 186 <c>MNAM</c> traen
+    ''' <c>materials\</c>.</para></summary>
     Private Sub OnBuscarTextura(sender As Object, e As EventArgs)
         Dim btn = TryCast(sender, Button)
         Dim tb = TryCast(btn?.Tag, TextBox)
         If tb Is Nothing Then Return
-        Using dlg As New OpenFileDialog() With {.Filter = "DDS textures|*.dds|All files|*.*",
-                                                .Title = "Pick the texture"}
-            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            ' Relativa a Data\Textures, que es lo que el record lleva.
-            Dim p = dlg.FileName.Replace("/"c, "\"c)
-            Dim marca = "\textures\"
-            Dim i = p.ToLowerInvariant().LastIndexOf(marca)
-            tb.Text = If(i >= 0, p.Substring(i + marca.Length), IO.Path.GetFileName(p))
-        End Using
+        PickerDeAssets.ElegirEnCaja(Me, tb, FilesDictionary_class.TexturesDictionary_Filter)
+    End Sub
+
+    ''' <summary>El <c>MNAM</c> es un archivo de material del juego: mismo picker, raíz
+    ''' <c>Materials\</c>. Las extensiones son las del filtro de materiales que la app ya usa en el
+    ''' editor de substituciones (<c>.bgsm</c> + <c>.bgem</c>); el campo es un string libre y el motor no
+    ''' restringe la extensión, así que el filtro NO se acota a <c>.bgsm</c> por más que en el corpus los
+    ''' 186 TXST de Fallout 4 que traen MNAM lleven los 186 un <c>.bgsm</c>.</summary>
+    Private Sub OnBuscarMaterial(sender As Object, e As EventArgs)
+        PickerDeAssets.ElegirEnCaja(Me, TextBoxMnam, FilesDictionary_class.MaterialsDictionary_Filter)
     End Sub
 
     Private Sub Volcar()

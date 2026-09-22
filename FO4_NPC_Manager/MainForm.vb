@@ -12072,7 +12072,11 @@ Public Class MainForm
             raceFid = st.RaceFormID
             esFem = st.IsFemale
         End If
-        Dim huboCambios As Boolean = False
+        ' ⛔⛔ TODO ADENTRO DEL `Using`, igual que los OTROS TRES (censo: `EditFace_Form` :12155,
+        ' `EditBody_Form` y `OutfitPicker_Form` — los tres recargan antes del `End Using`). Acá la recarga
+        ' estaba DESPUÉS del `End Using`, o sea después de `dlg.Dispose()`: el render del preview principal
+        ' arrancaba con la ventana del modal ya destruida y en medio de la tormenta de activación/repaint
+        ' que eso dispara. Ninguno de los otros editores hace eso.
         Using dlg As New HeadPartEditor_Form(Me, npcFid, raceFid, esFem)
             dlg.ShowDialog(Me)
             ' ⛔⛔ LA RECARGA ES CONDICIONAL, igual que en `EditBody_Form` y `EditFace_Form`, y su
@@ -12080,25 +12084,24 @@ Public Class MainForm
             ' MainForm render during the modal session, our preview is still in the pre-edit state — no
             ' reload needed». Acá se recargaba SIEMPRE, también con Cancel: un re-render que los otros
             ' editores NO hacen, sobre un preview que ya estaba bien.
-            huboCambios = (dlg.DialogResult = DialogResult.OK) AndAlso dlg.HuboCambios
+            Dim huboCambios As Boolean = (dlg.DialogResult = DialogResult.OK) AndAlso dlg.HuboCambios
+            ' El editor commitea vivo, así que al cerrar puede haber un borrador nuevo o editado: se
+            ' invalida el estado por NPC del filtro (su faceta pudo cambiar) y se RECARGA EL RENDER.
+            '
+            ' ⛔⛔ SE RECARGA COMO LO HACE `EditBody_Form`: `Await RenderInHostAsync(_renderHost, <npc>)`.
+            ' Acá había `RenderFromCurrentSelection()` y está MAL: ése es el camino completo de la
+            ' SELECCIÓN —hace `ClearPreviewImmediate()`, vuelve a resolver el nodo del árbol y re-sortea
+            ' las listas niveladas—, o sea que no recarga el NPC que se estaba editando: rearma el
+            ' contexto desde cero. `RenderInHostAsync` recarga EL MISMO NPC en EL MISMO host.
+            _filterIndex?.InvalidateNpcState()
+            If huboCambios AndAlso npcFid <> 0UI AndAlso _renderHost IsNot Nothing Then
+                Try
+                    Await RenderInHostAsync(_renderHost, npcFid)
+                Catch ex As Exception
+                    Logger.LogLazy(Function() $"[HDPT] recarga del render principal falló: {ex.GetType().Name}: {ex.Message}")
+                End Try
+            End If
         End Using
-        ' El editor commitea vivo, así que al cerrar puede haber un borrador nuevo o editado: se invalida
-        ' el estado por NPC del filtro (su faceta pudo cambiar) y se RECARGA EL RENDER.
-        '
-        ' ⛔⛔ SE RECARGA COMO LO HACE `EditBody_Form`: `Await RenderInHostAsync(_renderHost, <npc>)`.
-        ' Acá había `RenderFromCurrentSelection()` y está MAL: ése es el camino completo de la SELECCIÓN
-        ' —hace `ClearPreviewImmediate()`, vuelve a resolver el nodo del árbol y re-sortea las listas
-        ' niveladas—, o sea que no recarga el NPC que se estaba editando: rearma el contexto desde cero.
-        ' El usuario lo vio como «el loading se ve chiquito» y «estás mezclando contextos», y tenía razón.
-        ' `RenderInHostAsync` recarga EL MISMO NPC en EL MISMO host, que es lo que hace falta.
-        _filterIndex?.InvalidateNpcState()
-        If huboCambios AndAlso npcFid <> 0UI AndAlso _renderHost IsNot Nothing Then
-            Try
-                Await RenderInHostAsync(_renderHost, npcFid)
-            Catch ex As Exception
-                Logger.LogLazy(Function() $"[HDPT] recarga del render principal falló: {ex.GetType().Name}: {ex.Message}")
-            End Try
-        End If
     End Sub
 
     Private Async Sub ButtonEditFace_Click(sender As Object, e As EventArgs) Handles ButtonEditFace.Click

@@ -31,6 +31,15 @@ A plain `.esp` fails (a) and (c). The result: the baked FaceGeom is ignored and 
 rebuilt at runtime from head parts. Measured in game: NOP out those two `je` and the baked head
 shows up.
 
+The ACBS **"Is CharGen Face Preset"** flag (bit 2 of `[npc+0x70]`, `kFlagIsPreset = 0x04` in
+F4SE's `GameFormComponents.h`) plays no part here: measured over the whole function
+`0x1406DF3A0`-`0x1406DF483`, the only NPC fields it reads are `+0x270`, `+0x14` and `+0x160`.
+A sibling gate at `0x14065DC60` does test it — a preset is rejected there — and this plugin
+does not touch that function: it rewrites three call SITES inside `0x1406DF3A0`, so the shared
+helpers keep behaving normally for every other caller. And since the Creation Kit does not bake
+preset NPCs, there is usually no FaceGeom file for one, and with no file this plugin does
+nothing.
+
 ## What this plugin does
 
 It redirects **three** `call` instructions at their call site. It does not replace the

@@ -26,19 +26,28 @@
 // returned YES.
 //
 //   STOP - WHY THE PREDICATE IS NOT WRAPPED. Its exits are not all alike: the CATEGORICAL ones
-//   -player, IsChildPlayer keyword, preset, and a face EDITED AND STORED in the save- set
-//   `dil = 0` and bail out at 0x1406DF42C, BEFORE (a) and (c). The plugin-based ones leave
-//   through a different path. Both return 0 to the caller, so from a wrapper they are
-//   INDISTINGUISHABLE, and an earlier version "rescued" the categorical ones too: the trace
-//   caught it with the player (FormID 00000007) reaching the file check. The serious case was
-//   not that one but the NPC whose face had been edited in the save, which got the stale bake
-//   forced on top of it. Redirecting the `call` sites means the categorical exits never reach
-//   us.
+//   -the player, the two player-base globals, the IsChildPlayer keyword, and a face EDITED AND
+//   STORED in the save- set `dil = 0` and bail out at 0x1406DF42C, BEFORE (a) and (c). The
+//   plugin-based ones leave through a different path. Both return 0 to the caller, so from a
+//   wrapper they are INDISTINGUISHABLE, and an earlier version "rescued" the categorical ones
+//   too: the trace caught it with the player (FormID 00000007) reaching the file check. The
+//   serious case was not that one but the NPC whose face had been edited in the save, which got
+//   the stale bake forced on top of it. Redirecting the `call` sites means the categorical
+//   exits never reach us.
 //
 //   STOP - AND THE EXISTENCE CHECK IS NOT A LUXURY: it is what prevents reproducing X-Cell's
 //   missing-head bug. That mod REPLACES the predicate, so every NPC without a FaceGeom loses
 //   its head (there are dozens of "Missing Heads with X-Cell Facegen Fix" mods on Nexus).
 //   Here, with no file, the behaviour is EXACTLY vanilla.
+//
+//   NOTE - THE ACBS "Is CharGen Face Preset" FLAG (bit 2 of [npc+0x70]; F4SE 0.7.9
+//   GameFormComponents.h kFlagIsPreset = 0x04) IS NOT READ BY THIS PREDICATE. Measured over the
+//   whole function 0x1406DF3A0-0x1406DF483: the only NPC fields it touches are +0x270 (template
+//   chain), +0x14 (FormID) and +0x160 (keyword form). The [rbx+0x70] at 0x1406DF44E is the FILE
+//   name, not the NPC - rbx was overwritten by GetFile at 0x1406DF429. A sibling gate at
+//   0x14065DC60 DOES test that bit (0x14065DD53, preset -> reject) and reads the same global
+//   0x142F25EC0 as the caller; this plugin does not touch that function, and rewriting a call
+//   SITE leaves the shared helpers untouched for every other caller.
 //
 // LOG: errors only, in Documents\My Games\Fallout4\F4SE\. If all is well the file is never
 // created. No external dependencies: the only things needed from F4SE are the version block

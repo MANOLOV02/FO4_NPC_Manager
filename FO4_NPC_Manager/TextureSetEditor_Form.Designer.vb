@@ -28,6 +28,7 @@ Partial Class TextureSetEditor_Form
         LabelDodt = New Label()
         LabelMnam = New Label()
         TextBoxMnam = New TextBox()
+        ButtonBrowseMnam = New Button()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
@@ -90,7 +91,23 @@ Partial Class TextureSetEditor_Form
         GridTextures.ColumnStyles.Add(New ColumnStyle())
         GridTextures.Dock = DockStyle.Fill
         GridTextures.Name = "GridTextures"
-        GridTextures.RowCount = 9
+        ' ⛔ LAS NUEVE FILAS CON CONTENIDO VAN `AutoSize` Y HAY UNA DÉCIMA, VACÍA, QUE SE COME EL
+        ' SOBRANTE. Sin `RowStyles` el sobrante vertical de un `Dock.Fill` se lo come la ÚLTIMA fila
+        ' CON CONTENIDO, y ahí el rótulo y la caja del MNAM dejan de estar alineados aunque compartan
+        ' la celda: la caja es de una línea, con `Dock.Fill` no puede crecer y se pega ARRIBA, y el
+        ' rótulo con `Anchor = Left` se CENTRA. Medido con un repro del mismo layout: filas 0..7 de
+        ' 30 px, fila 8 de 172 px, caja en Y=243 y rótulo en Y=317 — 74 px de desfase.
+        GridTextures.RowCount = 10
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        GridTextures.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         GridTextures.TabIndex = 1
         '
         LabelObnd.AutoSize = True
@@ -112,6 +129,14 @@ Partial Class TextureSetEditor_Form
         TextBoxMnam.Dock = DockStyle.Fill
         TextBoxMnam.Name = "TextBoxMnam"
         TextBoxMnam.TabIndex = 1
+        '
+        ' El MNAM es un archivo de material del juego, así que tiene el mismo selector que las ocho
+        ' ranuras de textura. Lo agrega a la grilla el code-behind, junto con su rótulo y su caja:
+        ' la fila entera es de Fallout 4 — Skyrim no declara MNAM en TXST (0 de 1.430 del corpus).
+        ButtonBrowseMnam.AutoSize = True
+        ButtonBrowseMnam.Name = "ButtonBrowseMnam"
+        ButtonBrowseMnam.TabIndex = 2
+        ButtonBrowseMnam.Text = "Browse…"
         '
         BottomLayout.AutoSize = True
         BottomLayout.Controls.Add(ButtonOk)
@@ -159,6 +184,7 @@ Partial Class TextureSetEditor_Form
     Friend WithEvents LabelDodt As Label
     Friend WithEvents LabelMnam As Label
     Friend WithEvents TextBoxMnam As TextBox
+    Friend WithEvents ButtonBrowseMnam As Button
     Friend WithEvents BottomLayout As FlowLayoutPanel
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button

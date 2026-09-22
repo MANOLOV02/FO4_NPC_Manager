@@ -235,6 +235,30 @@ Public Class NPC_Config
     Public Property ForceEngineBakeOnOverrides As Boolean = False
 
 
+    ''' <summary><b>Baja a media precision las shapes del FaceGeom horneado que vengan en precision
+    ''' COMPLETA.</b> Default <b>True</b>.
+    ''' <para>Una malla con el bit 54 (<c>VF_FULLPREC</c>) usada como HEAD PART se destroza in-game:
+    ''' al convertirla a <c>BSDynamicTriShape</c> el motor le resta <b>8 fijo</b> al tamano del
+    ''' vertice (<c>0x141831EED</c>) y repite ese -8 en cada nibble de offset, sin mirar el bit 54.
+    ''' El bloque de posicion en media precision mide 8; en completa mide 16 ⇒ el stride y todos los
+    ''' offsets quedan 8 bytes corridos, <c>BLENDINDICES</c> se lee del vertice siguiente y la malla
+    ''' explota. Confirmado in-game el 20-sep. Ley completa, direcciones y censo en
+    ''' <see cref="FO4_Base_Library.EngineVertexPrecision"/>.</para>
+    ''' <para><b>Por que es un default ON y no OFF:</b> lo que esta opcion toca es la salida del
+    ''' horneado, que es POR DEFINICION un head part, y ahi la precision completa siempre esta rota.
+    ''' No es una preferencia. MEDIDO sobre el bake que la app hizo de Cait antes de esto: 2 de 15
+    ''' shapes salieron con <c>FULLPREC=True</c> (vsz 40) porque la malla del head part las traia
+    ''' asi, y son exactamente las dos que explotaban. En un OUTFIT la precision completa se ve
+    ''' BIEN -medido in-game-, y por eso el equivalente de Wardrobe Manager ("Force half precision",
+    ''' en Config/Build) si es opt-in: alli la salida no es una cabeza.</para>
+    ''' <para><b>Solo FO4.</b> El gate real va por la VERSION DEL ARCHIVO
+    ''' (<c>EngineVertexPrecision.EsNifDeFallout4</c>), no por el juego activo, asi que el horneado
+    ''' de Skyrim pasa de largo solo. La casilla se deshabilita en SSE y el valor hace round-trip
+    ''' intacto, como el resto de los toggles por juego de la solapa Fixes.</para>
+    ''' Persistido en npc_config.json.</summary>
+    Public Property ForceHalfPrecisionOnBakedHeads As Boolean = True
+
+
     ''' <summary><b>Gate del camino "FaceGeom en memoria" (head-bake).</b> El preview dibuja la malla PLANA
     ''' y usa el <c>_faceBones</c> sólo como INSUMO (<see cref="HeadBakeService"/> hornea las posiciones y las
     ''' entrega como geometría base vía <c>IBaseGeometryProvider</c>). Es lo que hacen el motor y el CK:

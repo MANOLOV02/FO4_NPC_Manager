@@ -180,6 +180,7 @@ Partial Class CharGenOptionsForm
         CheckBoxReplicateEngineSkinNorm = New CheckBox()
         CheckBoxRecalcTangentSpace = New CheckBox()
         CheckBoxForceEngineBakeOnOverrides = New CheckBox()
+        CheckBoxForceHalfOnBakedHeads = New CheckBox()
         CheckBoxMatchSubsurfaceFlag = New CheckBox()
         BtnFixesRevert = New Button()
         ButtonOK = New Button()
@@ -1664,6 +1665,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxReplicateEngineSkinNorm)
         TabPageFixes.Controls.Add(CheckBoxRecalcTangentSpace)
         TabPageFixes.Controls.Add(CheckBoxForceEngineBakeOnOverrides)
+        TabPageFixes.Controls.Add(CheckBoxForceHalfOnBakedHeads)
         TabPageFixes.Controls.Add(CheckBoxMatchSubsurfaceFlag)
         TabPageFixes.Controls.Add(BtnFixesRevert)
         TabPageFixes.Location = New Point(4, 24)
@@ -1733,6 +1735,19 @@ Partial Class CharGenOptionsForm
         CheckBoxReplicateEngineSkinNorm.TabIndex = 5
         CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
         CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
+        ' 
+        ' CheckBoxForceHalfOnBakedHeads
+        ' 
+        ' Fila siguiente a 'Force engine to use bake on overrides' (y=226), mismo paso de 25.
+        ' Sufijo (FO4) y NO se oculta en Skyrim: misma convencion que el resto del tab, que
+        ' muestra las opciones del otro juego DESHABILITADAS con su sufijo.
+        CheckBoxForceHalfOnBakedHeads.AutoSize = True
+        CheckBoxForceHalfOnBakedHeads.Location = New Point(12, 251)
+        CheckBoxForceHalfOnBakedHeads.Name = "CheckBoxForceHalfOnBakedHeads"
+        CheckBoxForceHalfOnBakedHeads.Size = New Size(360, 19)
+        CheckBoxForceHalfOnBakedHeads.TabIndex = 11
+        CheckBoxForceHalfOnBakedHeads.Text = "Force half precision on baked heads (FO4)"
+        CheckBoxForceHalfOnBakedHeads.UseVisualStyleBackColor = True
         ' 
         ' CheckBoxForceEngineBakeOnOverrides
         ' 
@@ -1996,6 +2011,7 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxReplicateEngineSkinNorm As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxRecalcTangentSpace As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxForceEngineBakeOnOverrides As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxForceHalfOnBakedHeads As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxMatchSubsurfaceFlag As System.Windows.Forms.CheckBox
     Friend WithEvents BtnFixesRevert As System.Windows.Forms.Button
 End Class

@@ -121,29 +121,46 @@ Public Class MswpSubEntryEditor_Form
 
     ''' <summary>Pick a Materials\ file (loose+BA2, ext-filtered) via the library tree picker into Replacement.
     ''' Opens positioned on the current Replacement; when there's none yet, on the ORIGINAL material's folder
-    ''' (a swap usually replaces a material with one in the same directory).</summary>
+    ''' (a swap usually replaces a material with one in the same directory).
+    ''' <para>⛔⛔ EL VALOR SE GUARDA SIN EL PREFIJO <c>Materials\</c>, y eso ES un cambio de bytes —
+    ''' hecho con orden expresa del usuario (22-sep). Antes esto dejaba en la caja la CLAVE COMPLETA del
+    ''' picker y de ahí iba derecho al <c>SNAM</c> del record (<c>CanonInterpretacion:2907</c>). El
+    ''' corpus dice que esa forma no existe. Medido dos veces y por caminos distintos, con el mismo
+    ''' CERO: con el lector de la app (orden de carga real, último override gana) da <b>4.181 MSWP,
+    ''' 9.758 <c>SNAM</c> no vacíos, 0 con prefijo</b>; un censo independiente en Python sobre los
+    ''' plugins del <c>Data</c> dio <b>4.158 / 9.613 / 0</b>. Los denominadores difieren porque el
+    ''' segundo resuelve el ganador por orden alfabético y no por el orden de carga — el CERO no
+    ''' difiere. O sea que este editor escribía una forma que ningún record tiene.
+    ''' <para>Testigo: <c>Tools\MswpPrefijoGate</c>, que remide la ley en cada corrida y después pasa
+    ''' un valor CON prefijo por ESTE formulario y su botón OK.</para>
+    ''' <para>⛔ EL «Original» NO ESTABA AFECTADO, y está medido: sus ítems salen de los
+    ''' <c>BaseMaterials</c> del NIF, y ésos vienen SIN prefijo — 0 de 409 rutas de material sobre 400
+    ''' mallas de actor. Por eso el arreglo toca un solo campo y no los dos: el <c>BNAM</c> ya salía
+    ''' bien (0 de 9.637 en el corpus, que es lo mismo que escribe el editor).</para>
+    ''' <para>El recorte va en LOS DOS puntos a propósito: acá, para que la caja muestre desde el
+    ''' principio lo que se va a guardar, y en <c>OnOk</c>, que es la única puerta por la que el valor
+    ''' sale hacia el record — así un valor tipeado a mano con el prefijo, o uno que quedó guardado por
+    ''' la versión anterior de este editor, también se normaliza.</para></summary>
     Private Sub OnBrowseReplacement(sender As Object, e As EventArgs)
-        Dim current = TextBoxReplacement.Text.Trim()
-        If current.Length = 0 Then
-            ' No Replacement yet → open at the Original's folder, normalized to the picker's key format (Materials\).
-            Dim orig = ComboOriginal.Text.Trim()
-            If orig.Length > 0 Then current = MaterialsPrefix & FO4UnifiedMaterial_Class.CorrectMaterialPath(orig).StripPrefix(MaterialsPrefix)
+        Dim semilla = TextBoxReplacement.Text.Trim()
+        If semilla.Length = 0 Then
+            ' Sin Replacement todavía → abrir en la carpeta del ORIGINAL (un swap suele reemplazar un
+            ' material por otro del mismo directorio). `ElegirClave` se encarga de normalizarlo.
+            semilla = ComboOriginal.Text.Trim()
         End If
-        Dim exts As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {".bgsm", ".bgem"}
-        Dim keys = FilesDictionary_class.GetFilteredKeys(MaterialsPrefix, exts)
-        Using dlg As New DictionaryFilePicker_Form(keys, MaterialsPrefix, exts, current)
-            If dlg.ShowDialog(Me) = DialogResult.OK Then
-                Dim sel = dlg.DictionaryPicker_Control1.SelectedKey
-                If Not String.IsNullOrEmpty(sel) Then TextBoxReplacement.Text = sel
-            End If
-        End Using
+        Dim sel = PickerDeAssets.ElegirClave(Me, semilla, FilesDictionary_class.MaterialsDictionary_Filter)
+        If Not String.IsNullOrEmpty(sel) Then TextBoxReplacement.Text = sel.StripPrefix(MaterialsPrefix)
     End Sub
 
     ''' <summary>Build the result substitution. An entirely empty row (no Original AND no Replacement) is
     ''' rejected so the grid never gains a content-less row.</summary>
     Private Sub OnOk(sender As Object, e As EventArgs)
         Dim orig = ComboOriginal.Text.Trim()
-        Dim repl = TextBoxReplacement.Text.Trim()
+        ' ⛔ LA PUERTA POR LA QUE EL VALOR SALE HACIA EL RECORD: acá se saca el prefijo `Materials\`, que
+        ' el corpus no tiene en ninguno de sus 9.613 `SNAM`. Va acá y no sólo en el selector porque el
+        ' campo también se puede tipear, y porque un valor que quedó guardado con prefijo por la versión
+        ' anterior de este editor se normaliza al volver a pasar por acá. Ver el `OnBrowseReplacement`.
+        Dim repl = TextBoxReplacement.Text.Trim().StripPrefix(MaterialsPrefix)
         If orig.Length = 0 AndAlso repl.Length = 0 Then
             MessageBox.Show(Me, "Enter an Original and/or Replacement material.", "Material Substitution",
                             MessageBoxButtons.OK, MessageBoxIcon.Information)

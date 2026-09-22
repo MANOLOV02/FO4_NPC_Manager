@@ -169,7 +169,7 @@ Public Class HeadPartEditor_Form
         SembrarComboDeTipos()
         ArmarColumnas()
         ArmarColumnasDeAltTex()
-        CrearPreview()
+        ' ⛔⛔ EL PREVIEW NO SE CREA ACÁ: se crea en `Shown`. Ver el ⛔⛔ de <see cref="CrearPreview"/>.
 
         If editDraft IsNot Nothing Then
             AdoptarBorrador(editDraft)
@@ -332,7 +332,39 @@ Public Class HeadPartEditor_Form
     ''' <b>composición</b>, o sea la ley que decide qué entra al slot, que es donde el descarte silencioso
     ''' de <c>CanonInterpretacion:1007</c> vive. Un preview aislado en verde convivió con dos defectos de
     ''' cableado en la vuelta 1, así que no alcanza como testigo por sí solo.</para></summary>
+    '''
+    ''' <para>⛔⛔ <b>CORRE EN <c>Shown</c>, NO EN EL CONSTRUCTOR</b>, que es lo que hacen los SIETE previews
+    ''' restantes del proyecto (censo: <c>EditFace_Form</c>:5191, <c>EditBody_Form</c>:3649,
+    ''' <c>ArmoEditor_Form</c>:2364, <c>ArmaEditor_Form</c>:2331, <c>OutfitPicker_Form</c>:2965,
+    ''' <c>HeadPartPicker_Form</c>:422, <c>MeshPicker_Form</c>:72 — los siete en <c>Handles Me.Shown</c>).
+    ''' Éste era el ÚNICO que lo hacía en el constructor, y es la causa del «el load se ve chiquito» en el
+    ''' preview PRINCIPAL.
+    ''' <para>El mecanismo: en el constructor el formulario todavía no tiene handle, así que el
+    ''' <c>PreviewControl</c> tampoco tiene contexto GL propio. <c>ApplyResize(True)</c> llama a
+    ''' <c>EnsureContextCurrent()</c> y —hasta el arreglo gemelo en <c>Render.vb</c>— IGNORABA lo que
+    ''' devuelve: el <c>GL.Viewport(0, 0, ancho, alto)</c> que sigue se aplicaba al contexto que SÍ estaba
+    ''' current, que es el del preview principal, con el tamaño del panel de ESTE editor. Y no se recupera
+    ''' solo: el <c>lastW/lastH</c> del control principal no cambió, así que su propio <c>ApplyResize</c>
+    ''' no vuelve a emitir <c>GL.Viewport</c> nunca. De ahí en más el principal rasteriza en un viewport
+    ''' chico, y el cartel de <c>Processing_Status</c> —que pasa <c>uScreenSize</c> = el tamaño REAL— sale
+    ''' encogido.</para></para></summary>
+    Private Sub HeadPartEditor_Form_Shown(sender As Object, e As EventArgs) Handles Me.Shown
+        CrearPreview()
+        ' ⛔ EL RE-GATEO ES PARTE DEL ARREGLO, no un extra. El volcado inicial
+        ' (`EmpezarEnBlanco`/`AdoptarBorrador`/`CargarComoOverride`) corre en el CONSTRUCTOR, o sea ahora
+        ' con `_host = Nothing`: `GatearModoDePreview` ve `hayAnfitrion = False` y dejaría «Over the NPC»
+        ' deshabilitado para siempre. Se vuelve a preguntar la validez con el anfitrión ya puesto.
+        RefrescarValidez()
+        ' Y el primer dibujo: `PedirPreview` retorna temprano mientras `_preview Is Nothing`, así que el
+        ' del volcado inicial no dibujó nada. Si el re-gateo de arriba ya pidió uno, éste corta solo
+        ' (`clave = _lastPreviewKey`).
+        PedirPreview()
+    End Sub
+
+    ''' <summary>⛔ La guarda <c>_preview Is Nothing OrElse _preview.IsDisposed</c> va porque <c>Shown</c>
+    ''' puede dispararse más de una vez; es la misma que usan los otros siete.</summary>
     Private Sub CrearPreview()
+        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then Return
         ' GLControl se crea en code-behind: necesita un contexto OpenGL que el diseñador no puede dar.
         Try
             _preview = New PreviewControl() With {.Dock = DockStyle.Fill}

@@ -75,16 +75,16 @@ Public Class HeadPartFileEditor_Form
     ''' El diccionario de archivos ya indexa los dos mundos y es el mismo camino que usa el render
     ''' para abrirlos, así que lo que se elige acá es exactamente lo que el render va a encontrar.</para>
     ''' <para>La clave del picker lleva el prefijo <c>Meshes\</c> y el record lo guarda SIN él: se
-    ''' agrega para sembrar y se saca al volver, igual que en el selector de mallas.</para></summary>
+    ''' agrega para sembrar y se saca al volver, igual que en el selector de mallas.</para>
+    ''' <para>⛔⛔ Y ESO ES LO QUE ACÁ NO PASABA, aunque el párrafo de arriba lo prometía: la semilla se
+    ''' pasaba PELADA (<c>TextBoxFile.Text.Trim()</c>), o sea sin el <c>Meshes\</c>, y
+    ''' <c>SelectFileByKey</c> exige la clave COMPLETA para encontrarla en su conjunto — así que este
+    ''' picker NO preseleccionaba NUNCA y siempre abría en la raíz del árbol. Un comentario que
+    ''' describe lo que el código debería hacer es peor que ninguno: lo leí como cumplido y escribí la
+    ''' versión correcta al lado en vez de arreglar ésta. Ahora las dos son LA MISMA
+    ''' (<see cref="PickerDeAssets"/>), que es la única forma de que no vuelvan a divergir.</para></summary>
     Private Sub OnBuscar(sender As Object, e As EventArgs)
-        Dim exts As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {".tri"}
-        Dim keys = FilesDictionary_class.GetFilteredKeys(MeshesPrefix, exts)
-        Using dlg As New DictionaryFilePicker_Form(keys, MeshesPrefix, exts, TextBoxFile.Text.Trim())
-            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            Dim sel = dlg.DictionaryPicker_Control1.SelectedKey
-            If String.IsNullOrEmpty(sel) Then Return
-            TextBoxFile.Text = sel.StripPrefix(MeshesPrefix)
-        End Using
+        PickerDeAssets.ElegirEnCaja(Me, TextBoxFile, FilesDictionary_class.TriDictionary_Filter)
     End Sub
 
     Private Sub OnOk(sender As Object, e As EventArgs)

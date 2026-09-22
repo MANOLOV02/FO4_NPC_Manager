@@ -88,6 +88,12 @@ Public Class CharGenOptionsForm
         ' escritura viven en el OK.
         CheckBoxForceEngineBakeOnOverrides.Checked = NPC_Config.Current.ForceEngineBakeOnOverrides
         CheckBoxForceEngineBakeOnOverrides.Enabled = isFo4
+        ' FO4-only, DEFAULT ON. Lo consume el horneado en FaceGenBuilder, justo antes de escribir el
+        ' FaceGeom: una shape en precision COMPLETA usada como head part se destroza in-game. El gate
+        ' real va por la VERSION DEL ARCHIVO, asi que el bake de SSE pasa de largo solo; aca se
+        ' deshabilita la casilla nomas. Ver NPC_Config.ForceHalfPrecisionOnBakedHeads.
+        CheckBoxForceHalfOnBakedHeads.Checked = NPC_Config.Current.ForceHalfPrecisionOnBakedHeads
+        CheckBoxForceHalfOnBakedHeads.Enabled = isFo4
         CheckBoxReplicateEngineSkinNorm.Enabled = isFo4
         CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
@@ -330,6 +336,8 @@ Public Class CharGenOptionsForm
             ' —este botón sólo toca la UI—: el borrado lo hace el OK, con su confirmación, como cualquier
             ' otro camino que apague el toggle.
             CheckBoxForceEngineBakeOnOverrides.Checked = npcDef.ForceEngineBakeOnOverrides
+            ' Default True: el horneado sale en media precision salvo que lo apaguen a mano.
+            CheckBoxForceHalfOnBakedHeads.Checked = npcDef.ForceHalfPrecisionOnBakedHeads
         Else
             CheckBoxBakeSseRaceMenuOverlays.Checked = cfgDef.Setting_BakeSseRaceMenuOverlays
             CheckBoxResolveHphHeadTri.Checked = cfgDef.Setting_SseResolveHighPolyHeadTri
@@ -690,6 +698,9 @@ Public Class CharGenOptionsForm
             End If
         End If
         NPC_Config.Current.ForceEngineBakeOnOverrides = quiereLoadBake
+        ' No pide confirmacion ni toca el disco: lo lee el proximo horneado. Ver el docstring de la
+        ' propiedad para por que el default es ON.
+        NPC_Config.Current.ForceHalfPrecisionOnBakedHeads = CheckBoxForceHalfOnBakedHeads.Checked
         ' INCONDICIONAL, no sólo cuando el valor cambió: acá es donde se hace el CHEQUEO DE VERSIÓN. Si el
         ' archivo instalado es de un build anterior, esta llamada lo pisa aunque el usuario no haya tocado
         ' nada. No hace nada cuando el juego activo no es FO4.
