@@ -179,6 +179,7 @@ Partial Class CharGenOptionsForm
         CheckBoxResolveHphHeadTri = New CheckBox()
         CheckBoxReplicateEngineSkinNorm = New CheckBox()
         CheckBoxRecalcTangentSpace = New CheckBox()
+        CheckBoxForceEngineBakeOnOverrides = New CheckBox()
         CheckBoxMatchSubsurfaceFlag = New CheckBox()
         BtnFixesRevert = New Button()
         ButtonOK = New Button()
@@ -1662,6 +1663,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxResolveHphHeadTri)
         TabPageFixes.Controls.Add(CheckBoxReplicateEngineSkinNorm)
         TabPageFixes.Controls.Add(CheckBoxRecalcTangentSpace)
+        TabPageFixes.Controls.Add(CheckBoxForceEngineBakeOnOverrides)
         TabPageFixes.Controls.Add(CheckBoxMatchSubsurfaceFlag)
         TabPageFixes.Controls.Add(BtnFixesRevert)
         TabPageFixes.Location = New Point(4, 24)
@@ -1731,6 +1733,20 @@ Partial Class CharGenOptionsForm
         CheckBoxReplicateEngineSkinNorm.TabIndex = 5
         CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
         CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
+        ' 
+        ' CheckBoxForceEngineBakeOnOverrides
+        ' 
+        ' Fila siguiente a 'Recalculate normals...' (y=201) con el mismo paso de 25 que el resto.
+        ' ⛔ Sufijo (FO4) y NO se oculta en Skyrim: el tab ya muestra las opciones del otro juego
+        ' DESHABILITADAS con su sufijo (SSE). Esconderla romperia esa convencion y dejaria al
+        ' usuario de Skyrim sin saber por que existe la opcion en las capturas.
+        CheckBoxForceEngineBakeOnOverrides.AutoSize = True
+        CheckBoxForceEngineBakeOnOverrides.Location = New Point(12, 226)
+        CheckBoxForceEngineBakeOnOverrides.Name = "CheckBoxForceEngineBakeOnOverrides"
+        CheckBoxForceEngineBakeOnOverrides.Size = New Size(360, 19)
+        CheckBoxForceEngineBakeOnOverrides.TabIndex = 10
+        CheckBoxForceEngineBakeOnOverrides.Text = "Force engine to use bake on overrides (FO4, installs an F4SE plugin)"
+        CheckBoxForceEngineBakeOnOverrides.UseVisualStyleBackColor = True
         ' 
         ' CheckBoxRecalcTangentSpace
         ' 
@@ -1979,6 +1995,7 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxResolveHphHeadTri As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxReplicateEngineSkinNorm As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxRecalcTangentSpace As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxForceEngineBakeOnOverrides As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxMatchSubsurfaceFlag As System.Windows.Forms.CheckBox
     Friend WithEvents BtnFixesRevert As System.Windows.Forms.Button
 End Class

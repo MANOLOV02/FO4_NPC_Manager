@@ -187,6 +187,12 @@ Module Program
         NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
         NPC_Config.ApplyGlDecodeSetting()
         NPC_Config.ApplyDownsizeFromMip0Setting()
+        ' Hace valer contra el disco el toggle "Force engine to use bake on overrides": instala el plugin
+        ' de F4SE si esta ON y falta o quedo viejo, y lo borra si esta OFF. AL ARRANCAR, no solo al aceptar
+        ' CharGen Options: sin esto, una version nueva de la app dejaria corriendo el DLL del build anterior
+        ' hasta que al usuario se le ocurriera abrir el dialogo. Se repite en el OK del Preflight, que es
+        ' donde el juego queda FIJADO (aca todavia puede cambiar). Silencioso: solo escribe en el log.
+        NativePluginInstaller.Reconcile()
         ' Game is NO LONGER pinned to Fallout4 here — it comes from the persisted config (last session's
         ' choice) and is finalized by the user in Preflight_Form's game selector. The encoding init below
         ' uses this persisted default; Preflight re-initializes encoding for the chosen game before it

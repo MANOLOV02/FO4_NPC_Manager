@@ -1,4 +1,4 @@
-Option Strict On
+﻿Option Strict On
 Imports System.IO
 Imports FO4_Base_Library
 
@@ -158,6 +158,7 @@ Public Class FomodExport_Form
             Case FomodExporter.ItemKind.ApplyScript : Return "Apply script"
             Case FomodExporter.ItemKind.BodyGenIni : Return "BodyGen ini"
             Case FomodExporter.ItemKind.FaceGenLoose : Return "FaceGen (loose)"
+            Case FomodExporter.ItemKind.NativePlugin : Return "F4SE plugin"
             Case FomodExporter.ItemKind.ExtraAsset : Return "Extra asset"
             Case Else : Return kind.ToString()
         End Select

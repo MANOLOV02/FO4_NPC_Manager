@@ -82,6 +82,12 @@ Public Class CharGenOptionsForm
         ' despues de los morphs, mientras que el del dialogo gobernaba el de la carga: dos casillas que para
         ' el usuario decian lo mismo y apagaban mitades distintas.
         CheckBoxRecalcTangentSpace.Checked = Config_App.Current.Setting_RecalculateNormals
+        ' FO4-only, DEFAULT OFF. El UNICO toggle de esta solapa que ESCRIBE FUERA DE LA APP: ON instala
+        ' Data\F4SE\Plugins\NPC_Manager_FO4_LoadBake.dll y OFF lo borra (NativePluginInstaller, unica sede).
+        ' El disco no se toca aca: el Load solo refleja el valor persistido. La confirmacion Yes/No y la
+        ' escritura viven en el OK.
+        CheckBoxForceEngineBakeOnOverrides.Checked = NPC_Config.Current.ForceEngineBakeOnOverrides
+        CheckBoxForceEngineBakeOnOverrides.Enabled = isFo4
         CheckBoxReplicateEngineSkinNorm.Enabled = isFo4
         CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
@@ -320,11 +326,49 @@ Public Class CharGenOptionsForm
             CheckBoxApplyMouthVanillaFix.Checked = cfgDef.Setting_ApplyMouthVanillaFix
             ' Default True (FO4): replicar la normalización de pesos del motor. Ver EngineSkinWeightNormalization.
             CheckBoxReplicateEngineSkinNorm.Checked = npcDef.ReplicateEngineSkinWeightNormalization
+            ' Default False: no se escribe nada en el juego sin que lo pidan. Revertir NO borra el DLL acá
+            ' —este botón sólo toca la UI—: el borrado lo hace el OK, con su confirmación, como cualquier
+            ' otro camino que apague el toggle.
+            CheckBoxForceEngineBakeOnOverrides.Checked = npcDef.ForceEngineBakeOnOverrides
         Else
             CheckBoxBakeSseRaceMenuOverlays.Checked = cfgDef.Setting_BakeSseRaceMenuOverlays
             CheckBoxResolveHphHeadTri.Checked = cfgDef.Setting_SseResolveHighPolyHeadTri
         End If
     End Sub
+
+    ''' <summary>Confirmacion Yes/No del UNICO toggle de esta pantalla que escribe FUERA de la app.
+    ''' <para>Se pregunta por el CAMBIO, no por el estado: instalar y borrar dicen cosas distintas, y el
+    ''' texto nombra el archivo exacto que se va a tocar. Devuelve True si el usuario acepta.</para>
+    ''' <para>El dialogo vive aca y no en <see cref="NativePluginInstaller"/> a proposito: el instalador
+    ''' tambien corre al arrancar la app, donde no hay a quien preguntarle; alli solo hace valer lo que el
+    ''' usuario ya eligio. Preguntar dos veces por la misma decision seria peor que no preguntar.</para></summary>
+    Private Function ConfirmNativePluginChange(turningOn As Boolean) As Boolean
+        Dim ruta = "Data\F4SE\Plugins\NPC_Manager_FO4_LoadBake.dll"
+        Dim texto As String
+        Dim titulo As String
+        If turningOn Then
+            titulo = "Install F4SE plugin?"
+            texto =
+                "This writes a file OUTSIDE the app, into your game folder:" & vbCrLf & vbCrLf &
+                "    " & ruta & vbCrLf & vbCrLf &
+                "It makes Fallout 4 use the baked head (FaceGeom) of NPCs that are overridden by a plain " &
+                ".esp. Without it the engine ignores the bake and rebuilds the head from head parts at " &
+                "runtime, so the faces this app bakes are never shown." & vbCrLf & vbCrLf &
+                "It requires F4SE, and it changes nothing for an NPC that has no baked head." & vbCrLf & vbCrLf &
+                "Install it now?"
+        Else
+            titulo = "Remove F4SE plugin?"
+            texto =
+                "This deletes a file from your game folder:" & vbCrLf & vbCrLf &
+                "    " & ruta & vbCrLf & vbCrLf &
+                "NPCs overridden by a plain .esp will go back to having their head rebuilt at runtime, " &
+                "ignoring the baked face." & vbCrLf & vbCrLf &
+                "The file is deleted even if it was not written by this app: that path and that name " &
+                "belong to this option." & vbCrLf & vbCrLf &
+                "Remove it now?"
+        End If
+        Return MessageBox.Show(Me, texto, titulo, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) = DialogResult.Yes
+    End Function
 
     Private Sub BtnSortRevert_Click(sender As Object, e As EventArgs) Handles BtnSortRevert.Click
         ' GAME-AWARE: SSE → DefaultsForSse() (Race_Order/Ovl_Index = RaceMenu); FO4 → New() (defaults FO4). No cruza sets.
@@ -634,6 +678,22 @@ Public Class CharGenOptionsForm
         ' del NPC actual se rehace al volver del OK y tiene que usar ya el modo elegido (RENDER == BAKE).
         NPC_Config.Current.ReplicateEngineSkinWeightNormalization = CheckBoxReplicateEngineSkinNorm.Checked
         NPC_Config.ApplyEngineSkinWeightNormalizationGate(c.Game)
+        ' El toggle que ESCRIBE FUERA DE LA APP. Se confirma el CAMBIO (no el estado), y si el usuario dice
+        ' que no se deja el valor como estaba y la casilla vuelve sola: decir "No" tiene que significar que
+        ' no pasó nada, ni en el disco ni en el config.
+        Dim quiereLoadBake = CheckBoxForceEngineBakeOnOverrides.Checked
+        If quiereLoadBake <> NPC_Config.Current.ForceEngineBakeOnOverrides AndAlso
+           c.Game = Config_App.Game_Enum.Fallout4 Then
+            If Not ConfirmNativePluginChange(quiereLoadBake) Then
+                quiereLoadBake = NPC_Config.Current.ForceEngineBakeOnOverrides
+                CheckBoxForceEngineBakeOnOverrides.Checked = quiereLoadBake
+            End If
+        End If
+        NPC_Config.Current.ForceEngineBakeOnOverrides = quiereLoadBake
+        ' INCONDICIONAL, no sólo cuando el valor cambió: acá es donde se hace el CHEQUEO DE VERSIÓN. Si el
+        ' archivo instalado es de un build anterior, esta llamada lo pisa aunque el usuario no haya tocado
+        ' nada. No hace nada cuando el juego activo no es FO4.
+        NativePluginInstaller.Reconcile()
         ' Eyebrows fixed-color gate → Config_App (lo lee la librería). Se persiste en el SaveConfig de abajo.
         c.Setting_ApplyEyebrowsFixedColor = CheckBoxApplyEyebrowsFixedColor.Checked
         ' Mouth vanilla fix gate → Config_App. Al volver el OK, MainForm re-renderiza el NPC actual; como la

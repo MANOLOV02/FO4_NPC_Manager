@@ -127,6 +127,19 @@ Public Module CensoDeReferencias
     ''' mapa —sólo entran los identificadores reales que resolvieron—, así que esto es una reescritura de
     ''' VALOR sobre un subrecord que ya existe, otro gesto; (2) meter el caso bajo un régimen cuya
     ''' semántica no aplica sería disfrazar la ley, no cumplirla.</para></summary>
+    ''' <summary>⛔⛔ LAS CLASES QUE TIENEN BORRADOR — <b>LA SEDE</b>, y no una lista mas.
+    ''' <para>El parrafo de arriba ya declaraba la ley en PROSA («hoy son OCHO: OTFT, LVLI, ARMO, ARMA,
+    ''' MSWP y, desde la ola de head parts, HDPT, TXST y FLST») y eso no alcanzo: un gate se escribio su
+    ''' propia copia con CINCO y quedo atras cuando TXST y FLST recibieron borrador el 20-sep. MEDIDO el
+    ''' 21-sep: `OutfitDraftSaveGate` derivaba 4 campos del ARMA de Fallout contra los 8 que el censo de
+    ''' aca abajo rinde, y en Skyrim derivaba 0 contra 4. Un comentario no lo consume nadie; esto si.</para>
+    ''' <para>⛔ El que la necesite la LEE. Copiarla es volver a tener dos listas, que es el defecto que
+    ''' el propio doc de <see cref="DeBorrador"/> dice venir a cerrar: «Dos listas se separan; esta no
+    ''' puede».</para></summary>
+    Friend ReadOnly ClasesConBorrador As New HashSet(Of String)(
+        New String() {"OTFT", "LVLI", "ARMO", "ARMA", "MSWP", "HDPT", "TXST", "FLST"},
+        StringComparer.Ordinal)
+
     Friend Iterator Function DeBorrador(record As Object) As IEnumerable(Of ReferenciaDeBorrador)
         If record Is Nothing Then Return
 

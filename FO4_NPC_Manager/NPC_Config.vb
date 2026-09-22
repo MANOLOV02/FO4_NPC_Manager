@@ -219,6 +219,22 @@ Public Class NPC_Config
     Public Property ReplicateEngineSkinWeightNormalization As Boolean = True
 
 
+    ''' <summary><b>Instala el plugin de F4SE que hace que el motor USE el horneado en overrides.</b>
+    ''' <para>El motor descarta el FaceGeom horneado cuando el NPC lo gana un plugin sin pedigri: el
+    ''' predicado <c>0x1406DF3A0</c> (1.11.240) exige extension <c>.esm</c>/<c>.esl</c> o flag ESM, o
+    ''' indice de carga 0, o estar en la lista de 8 DLC + las lineas de <c>Fallout4.ccc</c>. Un
+    ''' <c>.esp</c> normal falla, y la cabeza se rearma en runtime desde los head parts — o sea que
+    ''' todo lo que esta app hornea se ignora. MEDIDO in-game: parcheando esos chequeos, la cabeza
+    ''' horneada aparece.</para>
+    ''' <para><b>Solo FO4.</b> Ese gate no existe en Skyrim: su predicado equivalente
+    ''' (<c>0x1403C3B70</c>) llama al loader sin mirar el plugin. No hay nada que arreglar alla.</para>
+    ''' <para><b>ESCRIBE FUERA DE LA APP</b>, que es lo que la hace distinta del resto de esta solapa:
+    ''' ON instala <c>Data\F4SE\Plugins\NPC_Manager_FO4_LoadBake.dll</c>, OFF lo borra. Por eso pide
+    ''' confirmacion. Default <b>False</b>: nada se escribe en el juego sin que lo pidan.</para>
+    ''' Persistido en npc_config.json.</summary>
+    Public Property ForceEngineBakeOnOverrides As Boolean = False
+
+
     ''' <summary><b>Gate del camino "FaceGeom en memoria" (head-bake).</b> El preview dibuja la malla PLANA
     ''' y usa el <c>_faceBones</c> sólo como INSUMO (<see cref="HeadBakeService"/> hornea las posiciones y las
     ''' entrega como geometría base vía <c>IBaseGeometryProvider</c>). Es lo que hacen el motor y el CK:

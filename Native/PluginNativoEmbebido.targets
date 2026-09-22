@@ -1,0 +1,109 @@
+﻿<Project>
+
+  <!-- ============================================================================================
+       CHEQUEO DEL DLL NATIVO EMBEBIDO (NPC_Manager_FO4_LoadBake).  Solo LEE: no modifica nada.
+
+       QUE DETECTA, y son TRES cosas distintas:
+         1. Que el .vbproj siga declarando el <EmbeddedResource> con su LogicalName.
+         2. Que el .dll este en disco.
+         3. Que el .dll que se va a embeber NO sea una build DE MEDICION (TRACE 1).
+
+       POR QUE (1) Y (2)
+       El DLL viaja EMBEBIDO y se extrae a Data\F4SE\Plugins\ cuando el usuario prende
+       "Force engine to use bake on overrides" (NativePluginInstaller.Reconcile), y ademas se mete en
+       el FOMOD (FomodExporter). Sin el recurso, EmbeddedBytes() devuelve Nothing: la opcion queda
+       prendida en el config y NO INSTALA NADA. El unico rastro seria una linea en el log; para el
+       usuario la app "acepta" la opcion y el juego sigue ignorando el horneado.
+
+       POR QUE (3), QUE ES EL CASO NUEVO
+       El fuente trae un instrumento de medicion gateado por `#define TRACE`. Con TRACE 1 el plugin
+       ESCRIBE EL LOG SIEMPRE y hace un fflush por llamada, al reves de su contrato ("silencioso si
+       todo anda"). Esa build existio y estuvo instalada en el rig mientras se media. Embeberla seria
+       distribuir a todos los usuarios un DLL que escribe un archivo por cada carga de NPC.
+       El chequeo es por CONTENIDO, no por una propiedad de compilacion: se busca en los bytes del
+       .dll un string que SOLO existe con TRACE 1. Es lo mismo que se verifico a mano al apagar el
+       gate (los cinco strings desaparecen del binario).
+       (*) CON SU CONTROL POSITIVO: si tampoco aparece un string que TIENE que estar siempre (uno de
+       los mensajes de error), entonces la lectura no esta viendo el contenido y el chequeo estaria
+       pasando EN VACIO; eso se avisa aparte, porque "no encontre la traza" y "no puedo leer" son
+       respuestas distintas. Ver 81-gates-que-pasaban-en-vacio.
+
+       POR QUE VIVE ACA Y NO EN EL .vbproj
+       Igual que PexEmbebido.targets: es el .vbproj lo que el disenador de VS reescribe, y ya se llevo
+       puesto una vez un ItemGroup que apunta AFUERA de la carpeta del proyecto (commit fad9589, 4 dias
+       con la app rota y el build en verde). Un guard escrito adentro del archivo que vigila se borra
+       junto con lo que vigila.
+       (*) MISMO HUECO CONOCIDO: si lo que se borra es la linea <Import> de este archivo, esto no corre.
+       Cubre el modo de falla MEDIDO, no todos los posibles.
+
+       COMO SE REGENERA EL .dll
+         msbuild FO4_NPC_Manager\Native\NPC_Manager_FO4_LoadBake\NPC_Manager_FO4_LoadBake.vcxproj ^
+                 /p:Configuration=Release /p:Platform=x64
+         copy    ...\bin\x64\Release\NPC_Manager_FO4_LoadBake.dll  FO4_NPC_Manager\Native\
+       con `#define TRACE 0` en el fuente.
+       ============================================================================================ -->
+
+  <PropertyGroup>
+    <!-- Corta SOLO en Publish, que es lo que se distribuye. En Debug y Release avisa nomas.
+         Se puede forzar con -p:PluginNativoEsError=true|false -->
+    <PluginNativoEsError Condition="'$(PluginNativoEsError)' == '' And '$(Configuration)' == 'Publish'">true</PluginNativoEsError>
+    <PluginNativoEsError Condition="'$(PluginNativoEsError)' == ''">false</PluginNativoEsError>
+  </PropertyGroup>
+
+  <!-- BeforeTargets="CoreCompile", NO AfterTargets="Build": en Publish tiene que cortar ANTES de dejar
+       un binario distribuible en bin\. Los items del proyecto ya estan evaluados en ese punto. -->
+  <Target Name="ChequearPluginNativoEmbebido" BeforeTargets="CoreCompile" Condition="'$(PluginNativoChequeo)' != 'false'">
+
+    <PropertyGroup>
+      <_LoadBakeDll>$(MSBuildThisFileDirectory)NPC_Manager_FO4_LoadBake.dll</_LoadBakeDll>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <!-- El LogicalName es la LEY: es lo que NativePluginInstaller.EmbeddedBytes le pide al assembly
+           en runtime (NativePluginInstaller.ResourceName). Se compara contra el DECLARADO, no contra la
+           ruta del Include, porque el lookup en runtime es por LogicalName. -->
+      <_NativoRequerido Include="NpcManager.Native.NPC_Manager_FO4_LoadBake.dll" />
+      <_NativoDeclarado Include="@(EmbeddedResource->'%(LogicalName)')" />
+      <_NativoFaltante Include="@(_NativoRequerido)" Exclude="@(_NativoDeclarado)" />
+    </ItemGroup>
+
+    <Warning Condition="'@(_NativoFaltante)' != '' And '$(PluginNativoEsError)' != 'true'"
+             File="$(MSBuildProjectFullPath)"
+             Text="Falta el &lt;EmbeddedResource&gt; de %(_NativoFaltante.Identity) en $(MSBuildProjectFile). La opcion 'Force engine to use bake on overrides' se va a poder prender y NO VA A INSTALAR NADA (EmbeddedBytes devuelve Nothing). Lo borra el disenador de VS al guardar un formulario. Ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets." />
+
+    <Error Condition="'@(_NativoFaltante)' != '' And '$(PluginNativoEsError)' == 'true'"
+           File="$(MSBuildProjectFullPath)"
+           Text="Falta el &lt;EmbeddedResource&gt; de %(_NativoFaltante.Identity) en $(MSBuildProjectFile) y esto es lo que se DISTRIBUYE: la opcion 'Force engine to use bake on overrides' quedaria prendida sin instalar nada. Ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets. Para compilar igual: -p:PluginNativoEsError=false" />
+
+    <Warning Condition="!Exists('$(_LoadBakeDll)') And '$(PluginNativoEsError)' != 'true'"
+             File="$(_LoadBakeDll)"
+             Text="No esta el DLL nativo compilado. Hay que compilar Native\NPC_Manager_FO4_LoadBake y copiar el .dll aca: ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets." />
+
+    <Error Condition="!Exists('$(_LoadBakeDll)') And '$(PluginNativoEsError)' == 'true'"
+           File="$(_LoadBakeDll)"
+           Text="No esta el DLL nativo compilado y esto es lo que se DISTRIBUYE. Ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets." />
+
+    <!-- (3) El contenido. Solo se mira si el archivo esta: sin esto, ReadAllText tira. -->
+    <PropertyGroup Condition="Exists('$(_LoadBakeDll)')">
+      <_LoadBakeTexto>$([System.IO.File]::ReadAllText($(_LoadBakeDll)))</_LoadBakeTexto>
+      <!-- Marca que SOLO existe con TRACE 1 (el literal del formato de [rescue]). -->
+      <_LoadBakeEsMedicion>$(_LoadBakeTexto.Contains('[rescue]'))</_LoadBakeEsMedicion>
+      <!-- Control positivo: uno de los mensajes de error, que esta en TODA build. -->
+      <_LoadBakeSeLee>$(_LoadBakeTexto.Contains('Not hooking.'))</_LoadBakeSeLee>
+    </PropertyGroup>
+
+    <Warning Condition="'$(_LoadBakeEsMedicion)' == 'true' And '$(PluginNativoEsError)' != 'true'"
+             File="$(_LoadBakeDll)"
+             Text="El DLL nativo es una build DE MEDICION (TRACE 1): escribe el log en CADA carga de NPC, con un fflush por llamada. Recompilar con '#define TRACE 0'. Ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets." />
+
+    <Error Condition="'$(_LoadBakeEsMedicion)' == 'true' And '$(PluginNativoEsError)' == 'true'"
+           File="$(_LoadBakeDll)"
+           Text="El DLL nativo es una build DE MEDICION (TRACE 1) y esto es lo que se DISTRIBUYE: escribiria un log en cada carga de NPC en la maquina de cada usuario. Recompilar con '#define TRACE 0'. Ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets." />
+
+    <Warning Condition="Exists('$(_LoadBakeDll)') And '$(_LoadBakeSeLee)' != 'true'"
+             File="$(_LoadBakeDll)"
+             Text="El chequeo de build DE MEDICION no encontro NI la traza NI el texto que esta en toda build: no esta leyendo el contenido del .dll, asi que ese chequeo estaria pasando en vacio. Ver FO4_NPC_Manager\Native\PluginNativoEmbebido.targets." />
+
+  </Target>
+
+</Project>

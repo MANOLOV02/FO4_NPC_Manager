@@ -1006,6 +1006,10 @@ Public Class Preflight_Form
         NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
         NPC_Config.ApplyGlDecodeSetting()
         NPC_Config.ApplyDownsizeFromMip0Setting()
+        ' Mismo motivo que el gate de arriba: el juego (y con el la carpeta Data) queda FIJADO aca. Si la
+        ' sesion arranco en Skyrim y el usuario elige Fallout 4, este es el primer momento en que se puede
+        ' instalar el plugin de F4SE en el Data correcto. No hace nada cuando el juego elegido es Skyrim.
+        NativePluginInstaller.Reconcile()
 
         ' Iterate _allRows (master, load-order-preserving) instead of ListViewPlugins.Items —
         ' the latter only contains rows matching the current filter, which would drop checked

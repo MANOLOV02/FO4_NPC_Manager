@@ -42,6 +42,7 @@ Public Module FomodExporter
         BodyGenIni
         FaceGenLoose
         ExtraAsset
+        NativePlugin
     End Enum
 
     ''' <summary>One file of the FOMOD package. <see cref="SourceFullPath"/> is the on-disk source
@@ -215,6 +216,27 @@ Public Module FomodExporter
                 .Exists = (legacyBytes IsNot Nothing AndAlso legacyBytes.Length > 0),
                 .SizeBytes = If(legacyBytes IsNot Nothing, CLng(legacyBytes.Length), 0L),
                 .Note = "compatibility: resolves the type in saves from the previous version (inert)"})
+        End If
+
+        ' 4b. The F4SE plugin that makes the engine USE the baked head for NPCs overridden by a plain
+        '     .esp. Goes in ONLY when the option is ON (CharGen Options -> Fixes) and the game is FO4 —
+        '     same criterion as the app's own install, so the package matches what the author is running.
+        '     Optional (Required = False): if this build has no embedded DLL the export must not be
+        '     blocked, the package just ships without it (the item still shows in the grid, with its note).
+        '     Its bytes come from the SAME embedded resource the installer uses (NativePluginInstaller),
+        '     never from the copy sitting in the author's Data folder, which may be an older build.
+        If game = Config_App.Game_Enum.Fallout4 AndAlso
+           NPC_Config.Current IsNot Nothing AndAlso NPC_Config.Current.ForceEngineBakeOnOverrides Then
+            Dim dllBytes = NativePluginInstaller.EmbeddedBytes()
+            manifest.Add(New ManifestItem With {
+                .Kind = ItemKind.NativePlugin,
+                .DataRelativePath = NativePluginInstaller.DataRelativePath,
+                .SourceBytes = dllBytes, .Required = False,
+                .Exists = (dllBytes IsNot Nothing AndAlso dllBytes.Length > 0),
+                .SizeBytes = If(dllBytes IsNot Nothing, CLng(dllBytes.Length), 0L),
+                .Note = If(dllBytes Is Nothing OrElse dllBytes.Length = 0,
+                           "not embedded in this build",
+                           "F4SE plugin: makes the engine use the baked head on .esp overrides")})
         End If
 
         ' 5. BodyGen inis, when Save ESP emitted them. Folder name uses the plugin file name WITH
@@ -481,6 +503,16 @@ Public Module FomodExporter
                 .Title = "BodyGen body morphs",
                 .Description = $"BodyGen configuration ({scriptHost}): applies each NPC's body slider values in-game on first load.",
                 .Files = bodyGen})
+        End If
+
+        Dim nativePlugin = byKind(ItemKind.NativePlugin)
+        If nativePlugin.Count > 0 Then
+            result.Add(New WizardComponent With {
+                .Title = "F4SE plugin - engine reads the baked face",
+                .Description = "Without it the engine ignores the baked FaceGen of any NPC that is overridden by a plain .esp and rebuilds the head from head parts, so these faces would not look the way the author made them." & vbCrLf &
+                               "Requires F4SE. It only ever adds a face that is already installed: an NPC with no baked head behaves exactly as in vanilla." & vbCrLf &
+                               "Fallout 4 1.11.240 / 1.10.984 / 1.10.163. On any other version F4SE refuses to load it and the game runs unchanged.",
+                .Files = nativePlugin})
         End If
 
         Dim extras = byKind(ItemKind.ExtraAsset)
