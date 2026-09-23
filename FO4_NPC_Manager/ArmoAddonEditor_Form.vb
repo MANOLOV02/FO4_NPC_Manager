@@ -1,4 +1,4 @@
-Imports System.Linq
+﻿Imports System.Linq
 Imports FO4_Base_Library
 
 ''' <summary>Modal editor for a SINGLE <see cref="ARMO_AddonEntry"/> (Addon Index + ARMA reference) of an
@@ -9,6 +9,7 @@ Imports FO4_Base_Library
 ''' mutates the caller's entry. The ARMA picker is race-filtered exactly like the ARMO Editor's "Add ARMA"
 ''' action (<see cref="MainForm.IsArmaRaceCompatible"/>) and includes the user's in-memory ARMA drafts.</summary>
 Public Class ArmoAddonEditor_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _raceFormID As UInteger
@@ -109,15 +110,50 @@ Public Class ArmoAddonEditor_Form
         If armaCommitted Then OnOk(sender, e)
     End Sub
 
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '==============================================================================================
+
+    ''' <summary>Este modal no TOMA ningún borrador: edita una fila de addons del editor de arriba.</summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return 0UI
+    End Function
+
+    ''' <summary>⛔⛔ EL BUFFER SIN VOLCAR DE ESTA OLA, y es el único que hay.
+    ''' <para><c>_armaFormID</c> NO sale de esta ventana hasta el OK: el editor de ARMO lo aplica recién
+    ''' cuando el modal devuelve <c>DialogResult.OK</c>. Mientras tanto, el ARMA que el usuario acaba de
+    ''' elegir no está en ningún record registrado, así que <c>GetDraftReferrers</c> NO lo ve y
+    ''' «Delete / Revert…» diría que no lo apunta nadie. Borrarlo dejaría la fila del addon en un 0xFF
+    ''' muerto que el remapeo de la promoción no puede resolver, y el guardado tira.</para>
+    ''' <para>⚠️ NO confundir con los buffers del editor de ARMO (<c>_addons</c>, <c>_keywords</c>): aquéllos
+    ''' SÍ llegan al record por el debounce de 400 ms. Éste no tiene debounce que lo salve.</para></summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        If formID <> 0UI AndAlso formID = _armaFormID Then Return New String() {"addon (not accepted yet)"}
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN: si dieron de baja el ARMA que este modal tiene elegido, se suelta la
+    ''' selección — aceptar con un FormID recién borrado escribiría una referencia muerta.</summary>
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        If formID = 0UI OrElse formID <> _armaFormID Then Return
+        _armaFormID = 0UI
+        RenderArma()
+    End Sub
+
     ''' <summary>ARMA picker — race-filtered (+ ARMA drafts), same contract as ArmoEditor's "Add ARMA".</summary>
     Private Sub OnPickArma(sender As Object, e As EventArgs)
         Dim drafts = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
             .FormID = d.FormID, .EditorID = d.Record.EditorID,
             .DisplayName = d.Record.EditorID, .Signature = "ARMA"}).ToList()
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMA"},
-                                           "Select Armor Addon (ARMA)", _armaFormID, allowNull:=False,
-                                           extraDraftEntries:=drafts,
-                                           formIdFilter:=Function(fid) _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
+        ' ⛔ Y LOS PROPIOS YA GUARDADOS: ver `BorradoDeBorradores.EntradasPropias`.
+        drafts.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "ARMA", drafts))
+        ' ⛔⛔ EL DUEÑO ES ESTE MODAL, NO EL EDITOR DE ARMO QUE LO ABRIÓ. Ver `ReferenciasNoVolcadas`.
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"ARMA"},
+                "Select Armor Addon (ARMA)", _armaFormID, allowNull:=False,
+                extraDraftEntries:=drafts,
+                formIdFilter:=Function(fid) _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             _armaFormID = dlg.SelectedFormID
             RenderArma()

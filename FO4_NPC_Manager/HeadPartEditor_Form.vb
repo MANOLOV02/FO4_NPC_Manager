@@ -33,6 +33,7 @@ Imports MaterialLib
 ''' <c>MODS</c> que en FO4 es un material swap, el bit 5 de <c>DATA</c> y las condiciones. Un editor
 ''' escrito sólo contra la interfaz compila, anda, y los pierde.</para></summary>
 Public Class HeadPartEditor_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _res As ResolucionDeHeadParts
@@ -646,18 +647,12 @@ Public Class HeadPartEditor_Form
                 .Signature = "HDPT",
                 .PluginName = If(d.IsOverride, "(override)", "(new)")})
         Next
-        ' ⛔ Y LOS YA GUARDADOS. Sin dedup contra los borradores: un record guardado que el usuario
-        ' está editando en esta sesión aparece UNA vez, como borrador, que es el estado más nuevo.
-        Dim yaEnLista As New HashSet(Of UInteger)(entradas.Select(Function(x) x.FormID))
-        For Each r In _mainForm.GetAuthoredRecords("HDPT")
-            If yaEnLista.Contains(r.FormID) Then Continue For
-            entradas.Add(New FormIdPickerEntry With {
-                .FormID = r.FormID,
-                .EditorID = r.EditorID,
-                .DisplayName = r.DisplayName,
-                .Signature = "HDPT",
-                .PluginName = "(saved)"})
-        Next
+        ' ⛔ Y LOS YA GUARDADOS, por la SEDE ÚNICA. Era la misma docena de líneas escrita cuatro
+        ' veces (acá, en los otros dos editores y adentro de `BorradoDeBorradores`), y no es una
+        ' duplicación decorativa: el enable de «Delete / Revert…» DELEGA en esta lista la ley de qué
+        ' fila tiene salida, así que una copia que se olvide del dedup o del `"(saved)"` deja un
+        ' record propio sin ninguna forma de sacarlo desde la app.
+        entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "HDPT", entradas))
         If entradas.Count = 0 Then
             MessageBox.Show(Me,
                             "No head parts of yours yet — neither drafts in this session nor saved ones " &
@@ -665,10 +660,10 @@ Public Class HeadPartEditor_Form
                             "Head Part Editor", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        Using dlg As New FormIdPicker_Form(_plugins, {"HDPT"}, "Edit my head part (drafts + saved)",
-                                           0UI, False, entradas,
-                                           Function(fid) entradas.Any(Function(x) x.FormID = fid),
-                                           AddressOf OnBorrarEntradaDeBorrador)
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"HDPT"}, "Edit my head part (drafts + saved)",
+                0UI, False, entradas,
+                formIdFilter:=Function(fid) entradas.Any(Function(x) x.FormID = fid))
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             ' ⛔⛔ UN BORRADOR ABIERTO EN OTRO EDITOR NO SE ABRE DOS VECES. Este editor es RECURSIVO — el
             ' extra de un head part es un head part — y el borrador ES el record, compartido por REFERENCIA:
@@ -725,6 +720,12 @@ Public Class HeadPartEditor_Form
         ' que mira las ocho clases) y se niega a borrar lo referenciado; el cambio de objetivo se la
         ' salteaba. Si algo lo apunta, se SUELTA en vez de abandonar: el borrador sobrevive y la
         ' referencia sigue siendo válida. Es el mismo par de gestos que el `Delete/Revert` usa.
+        ' ⛔⛔ rev-37 · EL CAMBIO DE OBJETIVO ES DESTRUCTIVO Y ANTES NO AVISABA: la ley y su
+        ' porqué están en `TomaDeBorrador.CambiarDestruyeTrabajo`. El predicado vive allá para que
+        ' un testigo lo corra; el cartel, en `BorradoDeBorradores`, para que los cinco editores
+        ' digan lo mismo.
+        If _toma.CambiarDestruyeTrabajo(d, _draft IsNot Nothing AndAlso _draft.IsDirty) AndAlso
+           Not BorradoDeBorradores.ConfirmarCambioDeObjetivo(Me, "head part", "Head Part Editor") Then Return
         If _draft IsNot Nothing AndAlso Not ReferenceEquals(_draft, d) Then
             Dim loApuntanOtros As Boolean = False
             Try
@@ -1220,12 +1221,11 @@ Public Class HeadPartEditor_Form
         ' en `onDeleteEntry`: el doc de `OnBorrarEntradaDeBorrador` dice que ofrecer un borrador sin su
         ' baja lo deja SIN SALIDA — el botón «Delete / Revert…» ni se ve.
         Dim entradasFit = EntradasDeBorradorFlst()
-        entradasFit.AddRange(EntradasGuardadas("FLST", entradasFit))
-        Using dlg As New FormIdPicker_Form(_plugins, {"FLST"}, "Valid-races lists that include this race",
-                                           FidDe(TextBoxRnam), True,
-                                           entradasFit,
-                                           Function(fid) candidatas.Contains(fid),
-                                           AddressOf OnBorrarEntradaDeBorrador)
+        entradasFit.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "FLST", entradasFit))
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"FLST"}, "Valid-races lists that include this race",
+                FidDe(TextBoxRnam), True, entradasFit,
+                formIdFilter:=Function(fid) candidatas.Contains(fid))
             If dlg.ShowDialog(Me) = DialogResult.OK Then PonerFidEn(TextBoxRnam, dlg.SelectedFormID)
         End Using
         CommitVivo()
@@ -1816,10 +1816,10 @@ Public Class HeadPartEditor_Form
                 .DisplayName = If(String.IsNullOrEmpty(d.Record.Name), d.Record.EditorID, d.Record.Name),
                 .Signature = "HDPT", .PluginName = If(d.IsOverride, "(override)", "(new)")})
         Next
-        ' ⛔ Y los ya guardados, por lo mismo: ver `EntradasGuardadas`.
-        entradas.AddRange(EntradasGuardadas("HDPT", entradas))
-        Using dlg As New FormIdPicker_Form(_plugins, {"HDPT"}, titulo, 0UI, False, entradas,
-                                           Nothing, AddressOf OnBorrarEntradaDeBorrador)
+        ' ⛔ Y los ya guardados, por lo mismo: ver `BorradoDeBorradores.EntradasPropias`.
+        entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "HDPT", entradas))
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"HDPT"}, titulo, 0UI, False, entradas)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
             Return dlg.SelectedFormID
         End Using
@@ -1861,17 +1861,6 @@ Public Class HeadPartEditor_Form
     ''' lo reportó por la puerta de «Edit mine…» («me dice que NO HAY!! pero si creo uno con el nombre
     ''' del que ya estaba me da error») y pasaba igual en el `TNAM`, el `RNAM` y el `MODS`.
     ''' <c>ArmaEditor_Form</c> ya lo hacía así; este editor se escribió sin esa mitad.</para></summary>
-    Private Function EntradasGuardadas(sig As String, yaEstan As IEnumerable(Of FormIdPickerEntry)) As List(Of FormIdPickerEntry)
-        Dim r As New List(Of FormIdPickerEntry)
-        Dim vistos As New HashSet(Of UInteger)(yaEstan.Select(Function(x) x.FormID))
-        For Each g In _mainForm.GetAuthoredRecords(sig)
-            If vistos.Contains(g.FormID) Then Continue For
-            r.Add(New FormIdPickerEntry With {.FormID = g.FormID, .EditorID = g.EditorID,
-                                              .DisplayName = g.DisplayName, .Signature = sig,
-                                              .PluginName = "(saved)"})
-        Next
-        Return r
-    End Function
 
     ''' <summary>Los MSWP borrador como entradas de un selector (el `MODS` de Fallout 4).</summary>
     Private Function EntradasDeBorradorMswp() As List(Of FormIdPickerEntry)
@@ -1893,13 +1882,15 @@ Public Class HeadPartEditor_Form
         If conBorradoresTxst Then entradas.AddRange(EntradasDeBorradorTxst())
         If conBorradoresFlst Then entradas.AddRange(EntradasDeBorradorFlst())
         If conBorradoresMswp Then entradas.AddRange(EntradasDeBorradorMswp())
-        ' ⛔ Y LOS YA GUARDADOS de la misma clase: ver `EntradasGuardadas`.
-        If conBorradoresTxst Then entradas.AddRange(EntradasGuardadas("TXST", entradas))
-        If conBorradoresFlst Then entradas.AddRange(EntradasGuardadas("FLST", entradas))
-        If conBorradoresMswp Then entradas.AddRange(EntradasGuardadas("MSWP", entradas))
-        Using dlg As New FormIdPicker_Form(_plugins, sigs, titulo, FidDe(destino), True,
-                                           If(entradas.Count = 0, Nothing, entradas),
-                                           Nothing, AddressOf OnBorrarEntradaDeBorrador)
+        ' ⛔ Y LOS YA GUARDADOS de la misma clase: ver `BorradoDeBorradores.EntradasPropias`.
+        If conBorradoresTxst Then entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "TXST", entradas))
+        If conBorradoresFlst Then entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "FLST", entradas))
+        If conBorradoresMswp Then entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "MSWP", entradas))
+        ' ⛔ Sin filas de borrador este selector NO ofrece baja — y no debe: es un picker de records
+        ' del orden de carga como cualquier otro. Con filas, la fabrica arma la baja con el dueño.
+        Using dlg As FormIdPicker_Form = If(entradas.Count = 0,
+                New FormIdPicker_Form(_plugins, sigs, titulo, FidDe(destino), True),
+                FormIdPicker_Form.ParaBorradores(_mainForm, Me, sigs, titulo, FidDe(destino), True, entradas))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             PonerFidEn(destino, dlg.SelectedFormID)
         End Using
@@ -1909,10 +1900,23 @@ Public Class HeadPartEditor_Form
         RefrescarValidez()
     End Sub
 
-    ''' <summary>El camino de BAJA de un borrador ofrecido en un picker. ⛔ Es la mitad obligatoria de
-    ''' ofrecerlo: sin esto el botón «Delete / Revert…» ni se ve y el borrador queda sin salida después
-    ''' del OK. Es la misma ley que <c>BorradoDeMswp</c> aplica para los material swap.</summary>
-    ''' <summary>El «Delete / Revert…» del selector de «Edit mine…».
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '==============================================================================================
+
+    ''' <summary>El FormID que este editor tiene tomado. Alimenta la precondición de `Planear`.</summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return If(_draft Is Nothing, 0UI, _draft.FormID)
+    End Function
+
+    ''' <summary>Este editor no tiene referencias SIN VOLCAR: cada campo se vuelca al record por
+    ''' <c>CommitVivo</c> apenas cambia, así que el censo de referrers ya las ve.</summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN de la baja.
     ''' <para>⛔⛔ SI LO BORRADO ERA EL OBJETIVO ACTUAL, HAY QUE SOLTAR LA TOMA. Sin esto, el borrador
     ''' se daba de baja del registro y el editor seguía con <c>_draft</c> apuntándole y la toma tomada:
     ''' el commit siguiente —cualquier tecla, o el propio cambio de objetivo— lo RE-REGISTRABA, así que
@@ -1924,21 +1928,16 @@ Public Class HeadPartEditor_Form
     ''' mismo gesto acaba de poner. Los dos métodos existen por esta diferencia.</para>
     ''' <para>El editor queda SIN OBJETIVO y el banner lo dice, en vez de crear otro borrador en blanco
     ''' —que es justo lo que acumulaba de más—.</para></summary>
-    Private Function OnBorrarEntradaDeBorrador(entry As FormIdPickerEntry) As Boolean
-        If entry Is Nothing OrElse entry.FormID = 0UI Then Return False
-        Dim eraElObjetivo As Boolean = (_draft IsNot Nothing AndAlso _draft.FormID = entry.FormID)
-        Dim ok = BorradoDeHeadParts.BorrarORevertir(_mainForm, Me, entry)
-        If ok Then _huboCambios = True
-        If ok AndAlso eraElObjetivo Then
-            _toma.Soltar()
-            _draft = Nothing
-            _openSnapshot = Nothing
-            _resultHdptFormID = 0UI
-            _lastPreviewKey = Nothing
-            ActualizarBanner()
-        End If
-        Return ok
-    End Function
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        _huboCambios = True
+        If _draft Is Nothing OrElse _draft.FormID <> formID Then Return
+        _toma.Soltar()
+        _draft = Nothing
+        _openSnapshot = Nothing
+        _resultHdptFormID = 0UI
+        _lastPreviewKey = Nothing
+        ActualizarBanner()
+    End Sub
 
     Private Sub OnNuevoOEditarTxst(sender As Object, e As EventArgs)
         Dim fid = FidDe(TextBoxTnam)
@@ -2008,13 +2007,32 @@ Public Class HeadPartEditor_Form
                 _mainForm.RegisterMswpDraft(d)
             End If
         End If
+        Dim fidElegido As UInteger = d.FormID
         Using dlg As New MswpSubEditor_Form(_mainForm, d, TextBoxModl.Text.Trim(), TextBoxModl.Text.Trim())
             If dlg.ShowDialog(Me) <> DialogResult.OK Then
                 If esNuevo Then _mainForm.UnregisterMswpDraft(d.FormID)
                 Return
             End If
+            ' ⛔ EL FormID SALE DEL DIÁLOGO: con las cuatro puertas puestas el usuario pudo entrar con
+            ' un swap y salir con OTRO, y escribir el del objeto que pasamos dejaría el campo apuntando
+            ' a un record que el usuario no aceptó.
+            ' ⛔⛔ CERO NO ES «USÁ EL QUE TE PASÉ»: ES «NO HAY OBJETIVO». Con el centinela viejo, un OK
+            ' sin objetivo —el que deja `TrasLaBaja` tras un «Delete / Revert…»— escribía en el `MODS` el
+            ' FormID que el usuario ACABA DE BORRAR. Este llamador no lo re-registra, así que el daño es el
+            ' otro: el guardado entero REBOTA en `ExigirReferenciasSinColgar` nombrando este head part.
+            '
+            ' ⛔⛔ Y EL BLANCO PROPIO SE BAJA SI EL USUARIO SALIÓ CON OTRO: `QueHacerAlAbandonar` lo
+            ' RESTAURA (registro previo === actual ⇒ rama `Restaurar`), no lo da de baja, y todo borrador
+            ' `IsNew` es `IsDirty` ⇒ la fase 2g lo emite.
+            ' ⛔ LA MISMA SEDE que los otros dos llamadores. Acá no hay `RegisterMswpDraft` —este editor no
+            ' re-registra— y por eso la decisión ya había DIVERGIDO de sus gemelos: tres copias de lo mismo,
+            ' dos iguales y una distinta.
+            fidElegido = dlg.ResultMswpFormID
         End Using
-        PonerFidEn(TextBoxMods, d.FormID)
+        Dim r = MswpSubEditor_Form.ResultadoDelModal(fidElegido, d.FormID, esNuevo)
+        If r.Poner = 0UI Then Return
+        If r.Bajar <> 0UI Then _mainForm.UnregisterMswpDraft(r.Bajar)
+        PonerFidEn(TextBoxMods, r.Poner)
         CommitVivo()
     End Sub
 

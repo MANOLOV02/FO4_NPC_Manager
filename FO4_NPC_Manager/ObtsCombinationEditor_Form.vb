@@ -17,6 +17,8 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 Public Class ObtsCombinationEditor_Form
 
     Private ReadOnly _mainForm As MainForm
+    ''' <summary>Ver el <c>param</c> del constructor. Se pasa tal cual al editor de propiedades.</summary>
+    Private ReadOnly _duenoCensado As Boolean
 
     ' La combinación de trabajo y las listas que el usuario reordena encima de ella. Los elementos de las
     ' dos listas son vistas sobre la propia combinación de trabajo: lo que el diálogo ordena y da de baja
@@ -28,7 +30,20 @@ Public Class ObtsCombinationEditor_Form
 
     ''' <param name="mainForm">Owner — supplies the PluginManager for the FormID pickers and display-name lookups.</param>
     ''' <param name="combo">La combinación DE TRABAJO, que el que llama ya creó como copia aparte.</param>
-    Public Sub New(mainForm As MainForm, combo As Canon.IBloque_Combinations)
+    ''' <param name="duenoCensado">¿El record DUEÑO de esta combinación está en el censo de
+    ''' referencias de borrador?
+    ''' <para>⛔⛔ NO es «de dónde vengo»: es la ÚNICA condición que hace seguro ofrecer borradores en
+    ''' el selector de <c>Value1</c> del editor de propiedades. Un ARMO borrador SÍ está censado — <c>CensoDeReferencias.DeBorrador</c>
+    ''' recorre sus propiedades de OBTS —; un override de record de NPC NO: es la «segunda casa» que
+    ''' <c>NPC/ReferenciasDeBorrador.vb</c> declara, y ni el censo ni el remapeo de la promoción la
+    ''' recorren. Ofrecer borradores con un dueño sin censar significa que «Delete / Revert…» diría que a
+    ''' ese borrador no lo referencia nadie, se borraría, Y el <c>.esp</c> saldría con el <c>0xFF</c>
+    ''' provisional adentro de la propiedad — un cambio de BYTES que nadie pidió.</para>
+    ''' <para>⛔ El default es la opción SEGURA y la insegura hay que ESCRIBIRLA: no es un centinela.
+    ''' Un llamador que se olvide no rompe nada — sólo no ofrece borradores.</para></param>
+    Public Sub New(mainForm As MainForm, combo As Canon.IBloque_Combinations,
+                   Optional duenoCensado As Boolean = False)
+        _duenoCensado = duenoCensado
         InitializeComponent()
         _mainForm = mainForm
         _combo = combo
@@ -258,7 +273,7 @@ Public Class ObtsCombinationEditor_Form
     ''' <summary>Agregar: el diálogo de una propiedad trabaja con el valor plano; lo que devuelve se escribe
     ''' en una Property nueva de la combinación de trabajo, por la rama de la union que le corresponde.</summary>
     Private Sub OnAddProp(sender As Object, e As EventArgs)
-        Using dlg As New ObtsPropertyEditor_Form(_mainForm, New OMOD_Property With {.ValueType = OMOD_ValueType.IntType})
+        Using dlg As New ObtsPropertyEditor_Form(_mainForm, New OMOD_Property With {.ValueType = OMOD_ValueType.IntType}, _duenoCensado)
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultProperty IsNot Nothing Then
                 Dim nueva = _combo.AgregarPropiedadDeCombinacion()
                 If nueva Is Nothing Then Return
@@ -285,7 +300,7 @@ Public Class ObtsCombinationEditor_Form
     ''' existing FormID property's Value1FormID is shown as-is — never re-resolved or overwritten on open.</summary>
     Private Sub EditPropAt(i As Integer)
         If i < 0 OrElse i >= _properties.Count Then Return
-        Using dlg As New ObtsPropertyEditor_Form(_mainForm, _properties(i).LeerPropiedad())
+        Using dlg As New ObtsPropertyEditor_Form(_mainForm, _properties(i).LeerPropiedad(), _duenoCensado)
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultProperty IsNot Nothing Then
                 _properties(i).EscribirPropiedad(dlg.ResultProperty)
                 RefreshPropertiesGrid()

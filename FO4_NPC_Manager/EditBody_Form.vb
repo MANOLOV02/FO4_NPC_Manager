@@ -469,11 +469,18 @@ Public Class EditBody_Form
         ' Nota: éste es el ÚNICO de los 14 call sites del picker que combina `formIdFilter` con
         ' `allowNull:=True`; en los demás filtrados el `allowNull:=False` ES la barrera contra esto.
         Dim picked As UInteger
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMO"},
-                                           "Select Skin Armor (ARMO) — everything that occupies the body slot",
-                                           currentFid, allowNull:=True,
-                                           extraDraftEntries:=draftEntries,
-                                           formIdFilter:=Function(fid) fid = currentFid OrElse _mainForm.ArmoHasBodyArmature(fid))
+        ' ⛔ Y LOS PROPIOS YA GUARDADOS, o el ARMO que el usuario guardó queda sin salida: ver
+        ' `BorradoDeBorradores.EntradasPropias`.
+        draftEntries.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "ARMO", draftEntries))
+        ' ⛔ SIN DUEÑO, y está MEDIDO: este formulario escribe `p.SkinFormIDOverride` apenas vuelve del
+        ' selector, así que no hay buffer sin volcar que el censo de referrers no vea, y no tiene ningún
+        ' borrador TOMADO del que recuperarse. El nombre de la fábrica obliga a decirlo.
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradoresSinDueno(
+                _mainForm, {"ARMO"},
+                "Select Skin Armor (ARMO) — everything that occupies the body slot",
+                currentFid, allowNull:=True,
+                extraDraftEntries:=draftEntries,
+                formIdFilter:=Function(fid) fid = currentFid OrElse _mainForm.ArmoHasBodyArmature(fid))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             picked = dlg.SelectedFormID
         End Using

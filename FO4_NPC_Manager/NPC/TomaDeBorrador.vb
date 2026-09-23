@@ -117,11 +117,78 @@ Friend NotInheritable Class TomaDeBorrador(Of TD As Class)
         Return True
     End Function
 
+    ''' <summary>CAMBIAR DE OBJETIVO: abandonar el anterior, tomar el nuevo y —si corresponde—
+    ''' REGISTRARLO. Es la mitad de «TomarYVolcar» que NO es de la UI, y por eso vive acá.
+    '''
+    ''' <para>⛔⛔ EXISTE PORQUE UN TESTIGO NO PUEDE MEDIRLA ADENTRO DEL FORMULARIO. Cada editor
+    ''' aceptaba con su propio OK, y todo OK corre validaciones que abren un <c>MessageBox</c>: un
+    ''' modal CUELGA a un gate sin pump de mensajes. Con la decisión acá afuera, el gate la llama
+    ''' directo — es el mismo movimiento que ya hicieron
+    ''' <c>OutfitPicker_Form.PlanDeCierreDeListas</c> y
+    ''' <c>ObtsPropertyEditor_Form.FilasPropiasDeValue1</c> por la misma razón.</para>
+    '''
+    ''' <para>⛔ Y LA MEDICIÓN QUE LO PIDIó: el editor de MSWP cambiaba de objetivo SIN registrarlo, así
+    ''' que el llamador buscaba ese FormID, no lo encontraba, re-registraba el VIEJO y escribía el
+    ''' NUEVO en su campo — el swap recién compuesto se perdía y un <c>0xFF</c> sin dueño llegaba al
+    ''' .esp. Con la ley en UNA función, esa omisión es un mutante que muere.</para>
+    '''
+    ''' <para>⛔⛔ EL ORDEN IMPORTA Y ES ÉSTE: <b>primero la guarda, después el abandono</b>. Acá
+    ''' estaba al revés y este mismo párrafo lo declaraba correcto — un rechazo devolvía False con el
+    ''' objetivo viejo ya soltado y SIN MARCA, así que el editor seguía mostrando y editando un
+    ''' borrador que otra ventana podía abrir en paralelo. Con la guarda adelante, un False significa
+    ''' que no se tocó NADA.</para></summary>
+    ''' <param name="registrar">False para un objetivo NUEVO en blanco: se toma pero NO se registra,
+    ''' porque registrar no es inocuo — todo borrador sucio se emite al .esp, referenciado o no.</param>
+    Friend Function CambiarObjetivo(nuevo As TD, snapshotDeApertura As TD, registrar As Boolean) As Boolean
+        If nuevo Is Nothing Then Return False
+        ' ⛔⛔ LA GUARDA VA ANTES DEL ABANDONO, y es la ley que `Tomar` ya trae escrita cuatro líneas
+        ' más abajo: «soltar primero y rechazar después dejaría al editor sin su propio borrador».
+        ' Acá estaba al revés, y el doc de esta función declaraba ese orden como si fuera la ley.
+        '    Con el abandono primero, un rechazo dejaba al editor mostrando un objetivo YA dado de baja
+        ' o restaurado —y, peor, SIN MARCA de tomado, porque `Abandonar` desmarca siempre—, con lo cual
+        ' otra ventana lo podía abrir sobre el MISMO objeto: exactamente lo que esta clase existe para
+        ' impedir. Ahora el rechazo es inocuo: no se tocó nada.
+        Dim fidNuevo = _idDe(nuevo)
+        If Not (_actual IsNot Nothing AndAlso _idDe(_actual) = fidNuevo) AndAlso
+           Borradores.EstaTomado(fidNuevo) Then Return False
+        Abandonar()
+        If Not Tomar(nuevo, snapshotDeApertura) Then Return False
+        If registrar Then _registrar(nuevo)
+        Return True
+    End Function
+
     ''' <summary>¿Quedó sucio el borrador después de volcarle los paneles? La LEY es
-    ''' <see cref="Borradores.SucioContraLaBase"/>; acá sólo se le pasa si hay base, porque la comparación
-    ''' la hace el llamador —es el único que sabe comparar SU tipo de borrador—.</summary>
+    ''' <see cref="Borradores.SucioContraLaBase"/>; acá sólo se le pasa si hay base, porque la
+    ''' comparación la hace el llamador —es el único que sabe comparar SU tipo de borrador—.</summary>
     Friend Function Sucio(igualALaBase As Boolean) As Boolean
         Return Borradores.SucioContraLaBase(_base IsNot Nothing, igualALaBase)
+    End Function
+
+    ''' <summary>¿Cambiar a <paramref name="nuevo"/> DESTRUYE trabajo del usuario?
+    ''' <para>⛔⛔ <b>EL CAMBIO DE OBJETIVO ES DESTRUCTIVO Y NO AVISABA.</b> <see cref="Abandonar"/>
+    ''' aplica <c>Borradores.QueHacerAlAbandonar</c>, y sus dos ramas activas destruyen: al borrador
+    ''' NUEVO lo DA DE BAJA, y al OVERRIDE adoptado le REPONE el snapshot de apertura. O sea que
+    ''' apretar «Override existing…» con media hora de edición encima la tira sin una sola
+    ''' pregunta — y el editor se ve igual después, porque enseguida muestra el objetivo nuevo.</para>
+    ''' <para>⛔ NO ES UNA LEY NUEVA: la suciedad es la MISMA que ya decide
+    ''' <c>Borradores.SucioContraLaBase</c> y que cada editor deja escrita en <c>IsModified</c> en
+    ''' su <c>Commit</c>. Acá sólo se le agregan las dos condiciones que la vuelven una pregunta:
+    ''' que HAYA objetivo tomado y que el nuevo sea OTRO.</para>
+    ''' <para>⛔ Vive acá y no en los cinco <c>TomarYVolcar</c> porque es la mitad medible: un
+    ''' testigo no puede correr un <c>MessageBox</c>, pero sí esta función. Mismo movimiento que
+    ''' <see cref="CambiarObjetivo"/>.</para></summary>
+    ''' <param name="actualEstaSucio">El <c>IsDirty</c> del objetivo ACTUAL — el llamador es el único
+    ''' que sabe leerlo de SU tipo de borrador.
+    ''' <para>⛔⛔ <c>IsDirty</c> (<c>IsNew OrElse IsModified</c>) y NO <c>IsModified</c> pelado: es el
+    ''' MISMO predicado con el que el saver decide EMITIR. Con `IsModified` solo, el cartel y la
+    ''' emisión discrepaban — un borrador nuevo con media hora de trabajo encima no preguntaba y se
+    ''' escribía igual. Consecuencia aceptada: un nuevo en blanco recién abierto también pregunta, que
+    ''' es la dirección segura y la misma que ya fija <c>Borradores.SucioContraLaBase</c> (sin base ⇒
+    ''' sucio).</para></param>
+    Friend Function CambiarDestruyeTrabajo(nuevo As TD, actualEstaSucio As Boolean) As Boolean
+        If _actual Is Nothing OrElse nuevo Is Nothing Then Return False
+        If _idDe(_actual) = _idDe(nuevo) Then Return False
+        Return actualEstaSucio
     End Function
 
     ''' <summary>SOLTAR la toma sin aplicar la ley: el borrador tomado dejó de existir por decisión

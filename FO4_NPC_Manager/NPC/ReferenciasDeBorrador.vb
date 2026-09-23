@@ -71,6 +71,19 @@ Public Module CensoDeReferencias
                                               .Que = que}
     End Function
 
+    ''' <summary>⛔⛔ LAS CLASES QUE TIENEN BORRADOR — <b>LA SEDE</b>, y no una lista mas.
+    ''' <para>El parrafo de arriba ya declaraba la ley en PROSA («hoy son OCHO: OTFT, LVLI, ARMO, ARMA,
+    ''' MSWP y, desde la ola de head parts, HDPT, TXST y FLST») y eso no alcanzo: un gate se escribio su
+    ''' propia copia con CINCO y quedo atras cuando TXST y FLST recibieron borrador el 20-sep. MEDIDO el
+    ''' 21-sep: `OutfitDraftSaveGate` derivaba 4 campos del ARMA de Fallout contra los 8 que el censo de
+    ''' aca abajo rinde, y en Skyrim derivaba 0 contra 4. Un comentario no lo consume nadie; esto si.</para>
+    ''' <para>⛔ El que la necesite la LEE. Copiarla es volver a tener dos listas, que es el defecto que
+    ''' el propio doc de <see cref="DeBorrador"/> dice venir a cerrar: «Dos listas se separan; esta no
+    ''' puede».</para></summary>
+    Friend ReadOnly ClasesConBorrador As New HashSet(Of String)(
+        New String() {"OTFT", "LVLI", "ARMO", "ARMA", "MSWP", "HDPT", "TXST", "FLST"},
+        StringComparer.Ordinal)
+
     ''' <summary>EL CENSO CERRADO de los campos por los que un borrador puede apuntar a OTRO borrador.
     ''' Sale de la reflexión de las vistas, no de una lista de memoria.
     '''
@@ -127,19 +140,6 @@ Public Module CensoDeReferencias
     ''' mapa —sólo entran los identificadores reales que resolvieron—, así que esto es una reescritura de
     ''' VALOR sobre un subrecord que ya existe, otro gesto; (2) meter el caso bajo un régimen cuya
     ''' semántica no aplica sería disfrazar la ley, no cumplirla.</para></summary>
-    ''' <summary>⛔⛔ LAS CLASES QUE TIENEN BORRADOR — <b>LA SEDE</b>, y no una lista mas.
-    ''' <para>El parrafo de arriba ya declaraba la ley en PROSA («hoy son OCHO: OTFT, LVLI, ARMO, ARMA,
-    ''' MSWP y, desde la ola de head parts, HDPT, TXST y FLST») y eso no alcanzo: un gate se escribio su
-    ''' propia copia con CINCO y quedo atras cuando TXST y FLST recibieron borrador el 20-sep. MEDIDO el
-    ''' 21-sep: `OutfitDraftSaveGate` derivaba 4 campos del ARMA de Fallout contra los 8 que el censo de
-    ''' aca abajo rinde, y en Skyrim derivaba 0 contra 4. Un comentario no lo consume nadie; esto si.</para>
-    ''' <para>⛔ El que la necesite la LEE. Copiarla es volver a tener dos listas, que es el defecto que
-    ''' el propio doc de <see cref="DeBorrador"/> dice venir a cerrar: «Dos listas se separan; esta no
-    ''' puede».</para></summary>
-    Friend ReadOnly ClasesConBorrador As New HashSet(Of String)(
-        New String() {"OTFT", "LVLI", "ARMO", "ARMA", "MSWP", "HDPT", "TXST", "FLST"},
-        StringComparer.Ordinal)
-
     Friend Iterator Function DeBorrador(record As Object) As IEnumerable(Of ReferenciaDeBorrador)
         If record Is Nothing Then Return
 
@@ -188,6 +188,58 @@ Public Module CensoDeReferencias
             End If
             ' La plantilla está en la interfaz común: la declaran los dos juegos.
             Yield RefDe(armo, Function(x) x.TemplateArmor, Sub(x, v) x.TemplateArmor = v, "plantilla")
+
+            ' ======================================================================================
+            ' OBTS — las propiedades de Object Template. Sólo Fallout 4: medido, `PropertyValue1FormID`
+            ' da CERO matches en `WbViews_TES5.vb`.
+            '
+            ' ⛔⛔ EL CAMINO ES `Combinations → Properties2`, Y LOS NOMBRES ESTÁN HECHOS PARA CONFUNDIR.
+            ' MEDIDO en las vistas generadas:
+            '   · `ArmoFO4_Combinations.Properties2` → `ArmoFO4_Properties2`, que implementa
+            '     `IBloque_Properties4` y SÍ declara `PropertyValue1FormID`. Es el de OBTS.
+            '   · `ArmoFO4_Combinations.Properties` es PRIVADO (`PropertiesDeLaForma`, sólo por la
+            '     interfaz), así que sobre el tipo concreto ni existe.
+            '   · Y `ArmoFO4_Properties` —el de la RAÍZ del record, sin el 2— da CERO matches de
+            '     `PropertyValue1FormID`: es otro bloque.
+            ' Enfilar el equivocado no falla por sí solo: devolvería NADA y la rama quedaría muerta con
+            ' el gate en verde. Por eso el walk es TIPADO y no una ruta de texto — equivocarlo es error
+            ' de compilación, que es como se encontró esto.
+            '
+            ' ⛔ EL CRITERIO ES LA RAMA MATERIALIZADA, NO EL DISCRIMINADOR, y no es preferencia: es lo
+            ' que se EMITE. `WbUnionDef.Emit` (WbValueDefs.vb:1283-1287) escribe `node.Children(0)`, y
+            ' el árbol se materializa al parsear/crear y NO se re-materializa cuando alguien escribe el
+            ' discriminador (`WbEdit.RamaQueElDecisorElige`, WbEdit.vb:348-354: «leer el hijo devuelve
+            ' esa rama RANCIA»; arreglar las 161 uniones es ola aparte, decisión del usuario). Una rama
+            ' de FormID materializada con un fid de borrador SE ESCRIBE aunque el discriminador ya diga
+            ' otra cosa.
+            '
+            ' ⛔ Y mirar ADEMÁS el discriminador (`Value Type ∈ {FormIDInt, FormIDFloat}`) no agrega
+            ' NADA: `Presente` y la lectura resuelven por el MISMO `Find` (CanonBridge.vb:170-183), así
+            ' que sin la rama materializada la lectura da 0 y `RemapearUno` lo saltea
+            ' (Borradores.vb:408). Sería una rama que ningún mutante puede matar.
+            ' ======================================================================================
+            ' ⛔ EL OTRO DUEÑO DE UN OBJECT TEMPLATE ES EL NPC_, Y QUEDA AFUERA — MEDIDO, NO SUPUESTO.
+            ' `NpcFO4` declara `Combinations` → `Properties3` → `NpcFO4_Properties3`, que implementa el
+            ' MISMO `IBloque_Properties4` y por lo tanto también tiene `PropertyValue1FormID`. No entra
+            ' por dos razones medidas, y las dos tienen que seguir siendo ciertas:
+            '   1. un NPC_ NO es una de las ocho clases con borrador — este censo recorre records de
+            '      borrador, y lo que la app le cambia a un NPC_ va por `NpcRecordOverlay`, cuyos campos
+            '      de FormID se censan y se remapean aparte (`MainForm.PromoteSavedDrafts`);
+            '   2. la app NUNCA escribe ahí: `Properties3`, `AgregarCombinations` y `NpcFO4_Combinations`
+            '      dan CERO matches en `FO4_NPC_Manager` y en `Wardrobe_Manager`. No hay editor que pueda
+            '      meter un 0xFF en esa rama.
+            ' ⛔ Si mañana aparece un editor de object template del NPC_, esto se cae y la arista se agrega
+            ' ACÁ — no en el editor nuevo.
+            If armoFo4 IsNot Nothing Then
+                For Each comb In armoFo4.Combinations
+                    For Each p In comb.Properties2
+                        If p.PropertyValue1FormIDPresente Then
+                            Yield RefDe(p, Function(x) x.PropertyValue1FormID,
+                                        Sub(x, v) x.PropertyValue1FormID = v, "object template property")
+                        End If
+                    Next
+                Next
+            End If
             Return
         End If
 
@@ -280,5 +332,16 @@ Public Module CensoDeReferencias
 
         ' MSWP no rinde nada. Ver el párrafo del doc: no es un hueco.
     End Function
+
+    ''' <summary>«ESTA CLASE NO TIENE SEGUNDA CASA» — dicho, no omitido.
+    ''' <para>⛔ <c>NpcOverrideSaver.ExigirReferenciasSinColgar</c> pedía la segunda casa (los picks
+    ''' SELLADOS del atuendo) con un <c>Optional … = Nothing</c>, y siete de sus ocho llamadas la omitían
+    ''' en silencio. Un parámetro opcional que significa «no mires esa casa» es exactamente cómo se llega
+    ''' a tener una casa sin mirar: pasó una vez —el ARMO al que sólo apuntaba un pick salía «no lo
+    ''' referencia nadie»— y la ola siguiente encontró una TERCERA casa por el mismo camino.</para>
+    ''' <para>Con el parámetro obligatorio, un llamador nuevo tiene que ESCRIBIR qué pasa, y escribir
+    ''' esto es declarar que lo pensó.</para></summary>
+    Friend ReadOnly SinSegundaCasa As IEnumerable(Of ReferenciaDeBorrador) =
+        Array.Empty(Of ReferenciaDeBorrador)()
 
 End Module

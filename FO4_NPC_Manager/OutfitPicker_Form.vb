@@ -23,6 +23,7 @@ Imports FO4_Base_Library
 ''' restores it on cancel, so browsing is non-destructive. The Create tab previews its assembled set via
 ''' a throwaway draft (<see cref="OutfitDraft.PreviewDraftFormID"/>) dropped on close.</summary>
 Public Class OutfitPicker_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
     ''' <summary>El estado con el que el render dibujó a este NPC (<c>NpcRenderHost.LastRenderedState</c>).
@@ -73,6 +74,19 @@ Public Class OutfitPicker_Form
     ''' de un New LVL anterior que el usuario aceptó) no es nuestro y no se toca. Los ARMO/ARMA editados
     ''' desde acá tampoco entran: tienen su propio modal con su propio OK/Cancel.</para></summary>
     Private ReadOnly _lvliRegistradasPorMi As New HashSet(Of UInteger)
+
+    ''' <summary>Las listas PREEXISTENTES que ESTE diálogo promovió a override (el drill-down y el
+    ''' «Override LVL…»). Son NUESTRAS para bajarlas al CANCELAR — la promoción la hicimos nosotros —
+    ''' pero NO para bajarlas con OK.
+    ''' <para>⛔⛔ EL LIBRO ESTABA UNIDO Y ESO BORRABA TRABAJO DEL USUARIO. Con un solo conjunto, el
+    ''' barrido del cierre CON OK daba por abandonada una LVLI <b>vanilla que el usuario acababa de
+    ''' editar</b>: `TieneReferrerFueraDe` sólo censa BORRADORES y presets, nunca records reales, así que
+    ''' una lista de un OTFT real no tiene referrer de borrador y salía en la barrida. Y contradecía el
+    ''' doc del propio plan, que dice: «Lo que NO se toca con OK: las PREEXISTENTES que la sesión mutó
+    ''' — no las creó este diálogo y el usuario aceptó esas ediciones».</para>
+    ''' <para>Con CANCEL la conducta no cambia: las promovidas se siguen bajando enteras, porque sin la
+    ''' promoción no existían como borrador.</para></summary>
+    Private ReadOnly _lvliPromovidasPorMi As New HashSet(Of UInteger)
 
     ''' <summary>Estado de APERTURA de cada lista por nivel PREEXISTENTE que esta sesión mutó. Se restaura al
     ''' cerrar SIN OK.
@@ -743,8 +757,10 @@ Public Class OutfitPicker_Form
         Dim d = _mainForm.TryGetLeveledListDraft(fid)
         If d Is Nothing Then
             d = _mainForm.BuildLeveledOverrideDraftFromReal(fid)
-            ' La promoción a override la hicimos NOSOTROS al entrar: se baja si el diálogo cierra sin OK.
-            If d IsNot Nothing Then _lvliRegistradasPorMi.Add(d.FormID)
+            ' ⛔ AL LIBRO DE LAS PROMOVIDAS, NO AL DE LAS CREADAS. La promoción la hicimos nosotros, así
+            ' que se baja al CANCELAR — pero la lista es PREEXISTENTE y el usuario la está editando: con
+            ' OK se queda. Estaban en el mismo conjunto y el barrido se la llevaba.
+            If d IsNot Nothing Then _lvliPromovidasPorMi.Add(d.FormID)
         End If
         If d Is Nothing Then
             MessageBox.Show(Me, "That item isn't an editable leveled list.", "Open leveled list",
@@ -752,14 +768,44 @@ Public Class OutfitPicker_Form
             Return
         End If
         If _lvlNavStack.Contains(d.FormID) Then Return   ' already open in this chain — avoid a navigation cycle
+        ' ⛔ SE MARCA DESPUÉS DE LA GUARDA DE ARRIBA, y no es cosmético: los tomados viven en un
+        ' `HashSet` SIN conteo (`Borradores`), así que una marca de más seguida de UN solo
+        ' `DesmarcarTomado` libera lo que otro todavía necesita. Con la guarda antes del `Add`, el
+        ' mismo FormID no puede entrar dos veces en la pila y `SoltarPilaDeListas` nunca desmarca
+        ' más veces de las que marcó.
+        Borradores.MarcarTomado(d.FormID)
         _lvlNavStack.Add(d.FormID)
         RefreshItemCandidates()   ' a just-promoted override draft now appears as an addable candidate
         RefreshPieces()
     End Sub
 
+    ''' <summary>Soltar la pila de navegación de listas por nivel: DESMARCA cada FormID tomado y la
+    ''' vacía.
+    ''' <para>⛔⛔ EXISTE PORQUE LA PILA TIENE CINCO SALIDAS Y SÓLO UNA ES EL «Back». Las otras cuatro la
+    ''' vacían de golpe (<c>RenderLeveledLevel</c> cuando el borrador desapareció,
+    ''' <c>PrefillPiecesFromOutfit</c>, <c>LoadOutfitDraftForEdit</c>) o ni la tocan
+    ''' (<c>FormClosing</c>). Una marca que sobrevive deja el FormID INACCESIBLE por el resto de la
+    ''' sesión y <c>TomaDeBorrador.Tomar</c> devuelve False: el editor no vuelve a abrir. Es el defecto
+    ''' que <c>NPC/Borradores.vb:246-249</c> llama PEOR que el que la marca cierra.</para>
+    ''' <para>⛔ Y la salida de <c>RenderLeveledLevel</c> es la que más importa: se dispara cuando el
+    ''' borrador «vanished (reverted elsewhere)», o sea por el propio camino de baja de esta ola.</para>
+    ''' <para>⛔ Esto convive con la toma del editor de LVLI porque ése es MODAL y de un solo llamador:
+    ''' nunca hay dos dueños vivos del mismo FormID. <c>Borradores</c> lleva los tomados en un
+    ''' <c>HashSet</c> SIN conteo, así que con dos dueños el primero que suelte libera lo que el otro
+    ''' todavía necesita. Si ese editor se vuelve no-modal, esto hay que rehacerlo.</para></summary>
+    Private Sub SoltarPilaDeListas()
+        For Each fid In _lvlNavStack
+            Borradores.DesmarcarTomado(fid)
+        Next
+        _lvlNavStack.Clear()
+    End Sub
+
     ''' <summary>"▲ Back": pop one nested level (RefreshPieces restores the outfit view at the root).</summary>
     Private Sub OnBackLevel(sender As Object, e As EventArgs)
-        If _lvlNavStack.Count > 0 Then _lvlNavStack.RemoveAt(_lvlNavStack.Count - 1)
+        If _lvlNavStack.Count > 0 Then
+            Borradores.DesmarcarTomado(_lvlNavStack(_lvlNavStack.Count - 1))
+            _lvlNavStack.RemoveAt(_lvlNavStack.Count - 1)
+        End If
         RefreshPieces()
     End Sub
 
@@ -769,7 +815,7 @@ Public Class OutfitPicker_Form
     Private Sub RenderLeveledLevel()
         Dim d = CurrentLevelDraft()
         If d Is Nothing Then   ' the draft vanished (reverted elsewhere) — bail to the outfit root
-            _lvlNavStack.Clear()
+            SoltarPilaDeListas()
             RefreshPieces()
             Return
         End If
@@ -861,12 +907,15 @@ Public Class OutfitPicker_Form
     Friend Shared Function PlanDeCierreDeListas(esOk As Boolean,
                                                 snapshots As IEnumerable(Of LeveledListDraft),
                                                 creadas As IEnumerable(Of UInteger),
-                                                tieneReferrerFuera As Func(Of UInteger, ICollection(Of UInteger), Boolean)) _
+                                                tieneReferrerFuera As Func(Of UInteger, ICollection(Of UInteger), Boolean),
+                                                promovidas As IEnumerable(Of UInteger)) _
             As (Restaurar As List(Of LeveledListDraft), Bajar As List(Of UInteger))
         Dim restaurar As New List(Of LeveledListDraft)
         Dim bajar As New List(Of UInteger)
         Dim creadasList As New List(Of UInteger)
         If creadas IsNot Nothing Then creadasList.AddRange(creadas)
+        Dim promovidasList As New List(Of UInteger)
+        If promovidas IsNot Nothing Then promovidasList.AddRange(promovidas)
 
         If esOk Then
             If creadasList.Count = 0 Then Return (restaurar, bajar)
@@ -876,7 +925,9 @@ Public Class OutfitPicker_Form
                 Throw New ArgumentNullException(NameOf(tieneReferrerFuera),
                     "PlanDeCierreDeListas necesita el censo de referrers para decidir qué lista creada quedó abandonada.")
             End If
-            ' BARRIDO: todas candidatas, y se salva la que algo de AFUERA reclame.
+            ' ⛔ BARRIDO SOBRE LAS CREADAS ÚNICAMENTE. Las PROMOVIDAS no entran: no las creó este
+            ' diálogo, el usuario aceptó sus ediciones, y darlas por abandonadas le borra el trabajo.
+            ' Todas candidatas, y se salva la que algo de AFUERA reclame.
             Dim aBajar As New HashSet(Of UInteger)(creadasList)
             Dim huboRescate = True
             While huboRescate
@@ -901,6 +952,12 @@ Public Class OutfitPicker_Form
             Next
         End If
         bajar.AddRange(creadasList)
+        ' ⛔ Y las PROMOVIDAS también, pero SÓLO acá: sin la promoción que hicimos nosotros no existían
+        ' como borrador, así que cancelar tiene que dejarlas como estaban. Sin esta línea, cancelar
+        ' dejaría registrado y sucio un override que el usuario nunca aceptó ⇒ la fase 2d lo emite.
+        For Each fid In promovidasList
+            If Not bajar.Contains(fid) Then bajar.Add(fid)
+        Next
         Return (restaurar, bajar)
     End Function
 
@@ -914,7 +971,10 @@ Public Class OutfitPicker_Form
     Private Sub SnapshotAntesDeMutar(d As LeveledListDraft)
         If d Is Nothing Then Return
         ' La registramos nosotros ⇒ en Cancel se baja ENTERA; no hay estado previo al que volver.
-        If _lvliRegistradasPorMi.Contains(d.FormID) Then Return
+        ' ⛔ LOS DOS CONJUNTOS. Al partir el libro, una PROMOVIDA que no se mirara acá empezaría a
+        ' llevarse foto de apertura, y el cierre sin OK haría `Restaurar` Y `Bajar` sobre el mismo
+        ' FormID: sale bien sólo por el orden de dos bucles, que es una trampa con retardo.
+        If _lvliRegistradasPorMi.Contains(d.FormID) OrElse _lvliPromovidasPorMi.Contains(d.FormID) Then Return
         If _lvliSnapshotDeApertura.ContainsKey(d.FormID) Then Return
         Try
             _lvliSnapshotDeApertura(d.FormID) = d.Clone()
@@ -1011,7 +1071,8 @@ Public Class OutfitPicker_Form
             ' cuando existe, y ése no lo registramos nosotros — no nos toca bajarlo al cancelar.
             Dim yaEstaba = _mainForm.TryGetLeveledListDraft(dlg.SelectedFormID) IsNot Nothing
             Dim d = _mainForm.BuildLeveledOverrideDraftFromReal(dlg.SelectedFormID)
-            If d IsNot Nothing AndAlso Not yaEstaba Then _lvliRegistradasPorMi.Add(d.FormID)
+            ' ⛔ PROMOVIDA, no creada: ver `DrillIntoLeveled`. Es una LVLI que ya existía.
+            If d IsNot Nothing AndAlso Not yaEstaba Then _lvliPromovidasPorMi.Add(d.FormID)
             If d Is Nothing Then
                 MessageBox.Show(Me, "Could not open that leveled list.", "Override LVL",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
@@ -1963,25 +2024,35 @@ Public Class OutfitPicker_Form
         OnItemFilterChanged(Me, EventArgs.Empty)   ' re-filters + RefreshItemList
     End Sub
 
-    ''' <summary>"New LVL…" → modal (name + 3 LVLF flags + Chance None + Max Count) → register an empty own
-    ''' LeveledListDraft, which then shows in the item list () ready to be filled via "Add to lvl".</summary>
+    ''' <summary>«New LVL…» → el editor de listas por nivel, que ahora tiene sus CUATRO puertas.
+    ''' <para>⛔⛔ EL LIBRO AL QUE VA LA LISTA LO DECIDE EL <b>ORIGEN</b> QUE DEVUELVE EL EDITOR, y el
+    ''' archivado ocurre ACÁ — registrar y apuntar siguen pasando juntos, en un solo lugar. Las tres
+    ''' ramas no son intercambiables:</para>
+    ''' <list type="bullet">
+    ''' <item><b>Creada</b> — la hizo el editor (en blanco o de una plantilla) ⇒ al libro de las
+    ''' CREADAS: se baja al cancelar y entra al barrido con OK.</item>
+    ''' <item><b>Promovida</b> — ya existía y el editor la promovió a override ⇒ al libro de las
+    ''' PROMOVIDAS: se baja al cancelar, pero con OK SE QUEDA.</item>
+    ''' <item><b>Adoptada</b> — ya era un borrador antes ⇒ a NINGÚN libro. ⛔ Ésta es la destructiva
+    ''' si se equivoca: meterla en «creadas» hace que cancelar este diálogo le BORRE al usuario una
+    ''' lista que hizo y aceptó antes. La ley ya estaba escrita arriba, en el doc de
+    ''' <see cref="_lvliRegistradasPorMi"/>: «si el borrador YA existía … no es nuestro y no se
+    ''' toca».</item></list></summary>
     Private Sub OnNewLvl(sender As Object, e As EventArgs)
         Using dlg As New LeveledListEditor_Form(_mainForm)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            Dim d = LeveledListDraft.Nuevo(_mainForm.AllocateDraftFormID(),
-                                           Canon.CanonBridge.SessionGame())
-            d.Record.EditorID = dlg.FullEditorID
-            d.Record.FlagsCalculateFromAllLevelsPlayerSLevel = dlg.CalcAllLevels
-            d.Record.FlagsCalculateForEachItemInCount = dlg.CalcEachInCount
-            d.Record.FlagsUseAll = dlg.UseAll
-            d.Record.ChanceNone = dlg.ChanceNoneValue
-            ' Max Count (LVLM) sólo existe en Fallout 4 — en Skyrim ese subrecord no está en el
-            ' formato.
-            Dim fo4Rec = TryCast(d.Record, Canon.LvliFO4)
-            If fo4Rec IsNot Nothing Then fo4Rec.MaxCount = dlg.MaxCountValue
-            _mainForm.RegisterLeveledListDraft(d)
-            ' La creamos NOSOTROS: se baja si el diálogo cierra sin OK.
-            _lvliRegistradasPorMi.Add(d.FormID)
+            Dim fid = dlg.ResultLvliFormID
+            If fid = 0UI Then Return
+            Dim d = _mainForm.TryGetLeveledListDraft(fid)
+            If d Is Nothing Then Return
+            Select Case dlg.ResultOrigen
+                Case LeveledListEditor_Form.OrigenDelObjetivo.Creada
+                    _lvliRegistradasPorMi.Add(fid)
+                Case LeveledListEditor_Form.OrigenDelObjetivo.Promovida
+                    _lvliPromovidasPorMi.Add(fid)
+                Case Else
+                    ' Adoptada: no es nuestra. A ningún libro.
+            End Select
             RefreshItemCandidates()
             ' Auto-add the new (empty) leveled list as a piece, then select it so "Add to lvl" is enabled
             ' immediately — the user creates the list and starts filling it without an extra "Add" step.
@@ -2608,7 +2679,7 @@ Public Class OutfitPicker_Form
         ' ⛔ Se vuelve a la RAIZ. Sembrar con el usuario metido en una lista por nivel dejaba la pila de
         ' navegacion apuntando a un borrador de OTRO atuendo: la grilla mostraba las entradas de esa
         ' lista mientras las piezas sembradas eran las del atuendo nuevo.
-        _lvlNavStack.Clear()
+        SoltarPilaDeListas()
         _pieces.Clear()
         _pieceOrderCounter = 0
         ' INAM items AS AUTHORED (ARMO or LVLI) — a leveled entry stays a leveled piece (not flattened).
@@ -2852,7 +2923,7 @@ Public Class OutfitPicker_Form
         RefreshItemCandidates()
         ' ⛔ Se vuelve a la RAIZ: reabrir un borrador con el usuario metido en una lista por nivel
         ' dejaba la pila apuntando a OTRO borrador. Ver `PrefillPiecesFromOutfit`.
-        _lvlNavStack.Clear()
+        SoltarPilaDeListas()
         _pieces.Clear()
         _pieceOrderCounter = 0
         ' ⛔ El MISMO sembrador que `PrefillPiecesFromOutfit`. Con `AddItemFidAsPiece` acá, reabrir el
@@ -2865,65 +2936,75 @@ Public Class OutfitPicker_Form
         RefreshPieces()
     End Sub
 
-    ''' <summary>Delete (a NEW draft) or Revert (an OVERRIDE draft) the selected My-outfits row. Override → confirm +
-    ''' unregister (the NPC falls back to the original OTFT). New → block with a referrer list if anything still
-    ''' references it, else confirm + unregister. After a successful drop, if that draft was loaded for edit, clear the
-    ''' override target so a later Commit doesn't resurrect it; then refresh the list + candidates + pieces.</summary>
+    ''' <summary>«Delete / Revert…» de la lista «My outfits». <b>Decide y ejecuta la SEDE ÚNICA</b>;
+    ''' acá sólo quedan la fila que se le pasa y el refresco de la pantalla.
+    ''' <para>⛔⛔ <b>ERA LA QUINTA COPIA DE LA MISMA LEY</b>, y la que más se había separado: tenía
+    ''' su propia redacción para los tres carteles, su propio orden de <c>MarkRecordForRemoval</c> +
+    ''' <c>RevertAppOverrideInMemory</c>, y —lo que la volvía incompatible— seguía BLOQUEANDO el
+    ''' borrador referenciado con un <c>MessageBoxButtons.OK</c>. Con D-3 recién aplicado, dejarla
+    ''' habría restaurado la conducta doble que D-3 vino a sacar: el mismo atuendo referenciado
+    ''' se borraba desde un selector y te frenaba desde el otro.</para>
+    ''' <para>⛔ La rama de los YA GUARDADOS también se va: era la única que llegaba a
+    ''' <c>QuitarGuardado</c> por un camino propio, y desde rev-34 la sede exige
+    ''' <c>MainForm.EsRecordPropioVivo</c> antes de marcar nada — una guarda que esta copia no
+    ''' tenía.</para></summary>
     Private Sub OnDeleteOrRevertOutfit(sender As Object, e As EventArgs)
         Dim tag = SelectedMyOutfitTag()
         If tag Is Nothing Then Return
 
-        ' SAVED authored outfit (UInteger FormID) → mark for removal on the next Save (a new outfit is deleted;
-        ' an override reverts to the original). Applied when the user next Saves.
+        ' La lista mezcla dos tipos de fila: un `UInteger` es un OTFT PROPIO YA GUARDADO, y un
+        ' `OutfitDraft` es uno vivo de la sesión. La sede despacha POR FormID, así que las dos
+        ' terminan en la misma entrada — lo único que cambia es de dónde sale el nombre.
+        Dim fila As FormIdPickerEntry
         If TypeOf tag Is UInteger Then
             Dim fid = CUInt(tag)
-            Dim referrers = _mainForm.GetDraftReferrers(fid)
-            Dim refWarn = If(referrers.Count > 0, vbCrLf & vbCrLf & "Still referenced by:" & vbCrLf & String.Join(vbCrLf, referrers), "")
-            If MessageBox.Show(Me, $"Remove saved outfit '{_mainForm.GetOutfitDisplayName(fid)}' from your plugin on the next Save?" & refWarn,
-                               "Remove saved outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return
-            _mainForm.MarkRecordForRemoval(fid)
-            _mainForm.RevertAppOverrideInMemory(fid)   ' in-memory: restore the mod's winning OTFT (override) / drop it (new)
-            If _overrideTargetFormID = fid Then LimpiarObjetivoDeCreate()
-            RefreshMyOutfitDrafts()
-            RefreshItemCandidates()
-            RefreshPieces()
-            Return
-        End If
-
-        Dim d = TryCast(tag, OutfitDraft)
-        If d Is Nothing Then Return
-
-        If d.IsOverride OrElse Not d.IsNew Then
-            If MessageBox.Show(Me, $"Revert outfit '{d.Record.EditorID}' to the original? " &
-                               "Your changes will be discarded.",
-                               "Revert outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
-            _mainForm.UnregisterOutfitDraft(d.FormID)
-            ' Dropping the in-memory draft is NOT enough: if this override was ALREADY SAVED into the plugin, the
-            ' saver's Phase 2a re-preserves it (re-emits every target-plugin OTFT as an OVERRIDE entry unless it's in
-            ' RecordsToRemove), so the reverted outfit would keep getting written. Mark it for removal so Phase 2a drops
-            ' it and the original wins. No-op when no saved copy exists (removal only drops target-plugin records). The
-            ' revert branch (IsOverride OrElse Not IsNew) always carries a real FormID, never a 0xFF draft sentinel.
-            _mainForm.MarkRecordForRemoval(d.FormID)
-            _mainForm.RevertAppOverrideInMemory(d.FormID)   ' in-memory: restore the mod's winning OTFT so it shows immediately
+            Dim nombre = _mainForm.GetOutfitDisplayName(fid)
+            fila = New FormIdPickerEntry With {.FormID = fid, .EditorID = nombre,
+                                               .DisplayName = nombre, .Signature = "OTFT",
+                                               .PluginName = "(saved)"}
         Else
-            Dim referrers = _mainForm.GetDraftReferrers(d.FormID)
-            If referrers.Count > 0 Then
-                MessageBox.Show(Me, "Can't delete — still referenced by:" & vbCrLf & String.Join(vbCrLf, referrers),
-                                "Delete outfit draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                Return
-            End If
-            If MessageBox.Show(Me, $"Delete outfit draft '{d.Record.EditorID}'?",
-                               "Delete outfit draft",
-                               MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
-            _mainForm.UnregisterOutfitDraft(d.FormID)
+            Dim d = TryCast(tag, OutfitDraft)
+            If d Is Nothing OrElse d.Record Is Nothing Then Return
+            fila = New FormIdPickerEntry With {.FormID = d.FormID, .EditorID = d.Record.EditorID,
+                                               .DisplayName = d.Record.EditorID, .Signature = "OTFT",
+                                               .PluginName = If(d.IsOverride, "(override)", "(new)")}
         End If
 
-        ' Was this draft the one loaded into Create for edit? Drop the override target so a later CommitCreate
-        ' doesn't re-register it under the same FormID.
-        If _overrideTargetFormID = d.FormID Then LimpiarObjetivoDeCreate()
+        ' La limpieza del objetivo de Create es la POSTCONDICIÓN y vive en `TrasLaBaja`, que la sede
+        ' llama sola: acá la ventana sólo se vuelve a dibujar.
+        If Not BorradoDeBorradores.BorrarORevertir(_mainForm, Me, fila, Me) Then Return
         RefreshMyOutfitDrafts()
         RefreshItemCandidates()
         RefreshPieces()
+    End Sub
+
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '==============================================================================================
+
+    ''' <summary>El atuendo que la pestaña Create tiene cargado para editar, o 0.
+    ''' <para>⛔ Este selector no usa <c>TomaDeBorrador</c> —no marca el FormID como tomado—, así
+    ''' que <c>Borradores.EstaTomado</c> nunca va a decir que sí sobre él. Contestar igual es lo
+    ''' correcto: si mañana alguien le pone la toma, la precondición ya está cableada y no hay que
+    ''' acordarse.</para></summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return _overrideTargetFormID
+    End Function
+
+    ''' <summary>Ninguna: esta baja es SIEMPRE de un OTFT, y lo que la pestaña Create tiene sin
+    ''' volcar son PRENDAS —ARMO y LVLI—, nunca un atuendo. Medido: <c>_pieces</c> guarda FormID de
+    ''' prenda y de lista por nivel, y el botón que llega acá sólo opera sobre la lista «My
+    ''' outfits».</summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN: si el atuendo dado de baja era el que Create tenía cargado, se
+    ''' suelta el objetivo — sin esto, un <c>CommitCreate</c> posterior lo RESUCITA bajo el mismo
+    ''' FormID, que es la línea que la copia vieja ya llevaba y que no se puede perder al mudarla.</summary>
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        If formID <> 0UI AndAlso _overrideTargetFormID = formID Then LimpiarObjetivoDeCreate()
     End Sub
 
     ''' <summary>El "chance none" POR ENTRADA (LVLO\Chance None) sólo existe en Fallout 4 — en
@@ -3006,9 +3087,14 @@ Public Class OutfitPicker_Form
         ' ⛔ Y CON OK TAMBIÉN SE BAJA lo que quedó sin dueño: ver `PlanDeCierreDeListas`. El censo va DESPUÉS
         ' de dar de baja el borrador de vista previa (arriba): ése referencia todo lo que el usuario armó en
         ' Create, así que consultarlo antes salvaría hasta la lista abandonada.
+        ' LA PILA SE SUELTA ANTES DEL PLAN: el FormClosing no la tocaba, asi que el dialogo se
+        ' cerraba con la pila cargada y las marcas puestas, y esos FormID quedaban inaccesibles
+        ' por el resto de la sesion.
+        SoltarPilaDeListas()
         Dim planCierre = PlanDeCierreDeListas(DialogResult = DialogResult.OK,
                                               _lvliSnapshotDeApertura.Values, _lvliRegistradasPorMi,
-                                              AddressOf _mainForm.TieneReferrerFueraDe)
+                                              AddressOf _mainForm.TieneReferrerFueraDe,
+                                              _lvliPromovidasPorMi)
         For Each snap In planCierre.Restaurar
             Try
                 _mainForm.RestaurarBorradorDeLista(snap)
@@ -3025,6 +3111,7 @@ Public Class OutfitPicker_Form
         Next
         _lvliSnapshotDeApertura.Clear()
         _lvliRegistradasPorMi.Clear()
+        _lvliPromovidasPorMi.Clear()
 
         ' Defensive: the outfit-context draft is normally dropped in the editor-open Finally; unregister here
         ' too in case the form closes while one is still registered.

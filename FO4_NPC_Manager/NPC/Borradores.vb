@@ -191,42 +191,6 @@ Public Module Borradores
         If hayValor Then escribir() Else quitar()
     End Sub
 
-    ''' <summary>Reidentifica un record RECIÉN CLONADO como el OVERRIDE que el destino ya era.
-    ''' Es la gemela de <see cref="ReidentificarComoClon"/> para el otro gesto: «llená mi record con
-    ''' el contenido de ese otro», que NO es «haceme un record nuevo a partir de ese otro».
-    '''
-    ''' <para>⛔⛔ EXISTE PORQUE FALTABA Y SE PERDÍA LA IDENTIDAD DEL DESTINO. El «Start from an
-    ''' existing list…» del editor de FLST clonaba con <c>FlstDraft.Clon</c> y le pisaba el record al
-    ''' borrador. Y <c>Clon</c> aplica la ley de un record NUEVO: apaga <c>Deleted</c>, apaga
-    ''' <c>EsVistaEfectiva</c> y <b>borra el <c>EditorId</c> del contexto</b>. Sobre un borrador que era
-    ''' OVERRIDE de un FLST existente, eso lo dejaba sin su EditorID — y el emisor reporta sus avisos
-    ''' con el <c>EditorId</c> del CONTEXTO, así que además los publicaba con la identidad de otro.
-    ''' Lo levantó la revisión adversarial y el usuario eligió esta opción entre las dos que había.</para>
-    '''
-    ''' <para>⛔ LAS BANDERAS DEL DESTINO, NO LAS DEL ORIGEN, y por el mismo motivo que un clon no
-    ''' hereda <c>Deleted</c>: las banderas del encabezado son de la IDENTIDAD, no del contenido. Un
-    ''' override que traiga las del origen puede nacer marcado <c>Deleted</c> — o dejar de estarlo —
-    ''' sin que el usuario haya pedido ninguna de las dos cosas.</para>
-    '''
-    ''' <para>⛔ Y <c>EsVistaEfectiva</c> queda APAGADA igual que en el clon: lo que se va a escribir al
-    ''' .esp es un record del usuario, y el saver rechaza a propósito una vista efectiva.</para>
-    ''' <para>Toma <c>Object</c> por lo mismo que su gemela, y TIRA por lo mismo: pasarle el borrador
-    ''' en vez de su <c>.Record</c> compila, y con un <c>Return</c> mudo el destino se quedaría con la
-    ''' identidad del origen — el defecto que esto vino a cerrar, por la puerta de al lado.</para></summary>
-    Public Sub ReidentificarComoOverride(record As Object, formIDDestino As UInteger,
-                                         edidDestino As String, flagsDestino As UInteger)
-        Dim v = TryCast(record, Canon.CanonRecordView)
-        If v Is Nothing OrElse v.Context Is Nothing Then
-            Throw New ArgumentException(
-                "ReidentificarComoOverride necesita el RECORD (una vista canónica), no el borrador que lo " &
-                "contiene ni Nothing: sin él no hay contexto que reidentificar y el destino se quedaría con " &
-                "la identidad —y las banderas— del record del que se copió.", NameOf(record))
-        End If
-        v.Context.FormID = formIDDestino
-        v.Context.EditorId = If(edidDestino, "")
-        v.Context.RecordFlags = flagsDestino
-        v.Context.EsVistaEfectiva = False
-    End Sub
 
     ''' <summary>LOS FormID QUE ALGÚN EDITOR TIENE TOMADOS AHORA MISMO.
     '''

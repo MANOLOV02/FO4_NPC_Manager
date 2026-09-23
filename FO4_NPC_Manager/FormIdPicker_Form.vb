@@ -1,4 +1,4 @@
-Imports System.Linq
+﻿Imports System.Linq
 Imports FO4_Base_Library
 
 ''' <summary>A reusable, signature-filtered FormID PICKER dialog. Replaces the per-field FormID
@@ -66,6 +66,19 @@ Public Class FormIdPicker_Form
     ''' <see cref="_sigEntryCache"/> is NEVER mutated here — this button is meant for drafts-only pickers.</summary>
     Private ReadOnly _onDeleteEntry As Func(Of FormIdPickerEntry, Boolean)
 
+    ''' <summary>Los FormID de las filas que el LLAMADOR pasó (borradores propios + records propios ya
+    ''' guardados). Es lo único sobre lo que «Delete / Revert…» se habilita.
+    '''
+    ''' <para>⛔⛔ <b>SIN ESTO EL BOTÓN SE HABILITA SOBRE CUALQUIER FILA NO-NULA</b>, y eso ya estaba
+    ''' pasando en producción: de los nueve selectores que hoy ofrecen la baja, <b>SIETE enumeran el
+    ''' orden de carga entero</b> (medido), y «Show all» apaga el <c>formIdFilter</c>. O sea que el mismo
+    ''' botón decía «borrá tu borrador» en una fila y «sacá del plugin un record que no es tuyo» en la de
+    ''' al lado — sobre un aviso destructivo y sin deshacer.</para>
+    ''' <para>⛔ Los records propios YA GUARDADOS entran por <c>BorradoDeBorradores.EntradasPropias</c> a
+    ''' ESTA misma lista, así que conservan su salida; un record vanilla de <c>Fallout4.esm</c> no la
+    ''' tiene. La ley de «qué es mío» vive allá, no acá: acá sólo se pregunta.</para></summary>
+    Private ReadOnly _fidsDeLasFilas As New HashSet(Of UInteger)
+
     ''' <summary>The chosen record's GLOBAL FormID after <c>DialogResult.OK</c>. 0 = the pinned
     ''' "(none / NULL)" row was chosen (only possible when <c>allowNull</c> was True).</summary>
     Public ReadOnly Property SelectedFormID As UInteger
@@ -96,6 +109,19 @@ Public Class FormIdPicker_Form
         End Property
     End Class
 
+    ''' <summary>EL SELECTOR SIN FILAS DE BORRADOR — el caso de los <b>28</b> sitios que sólo eligen
+    ''' un record del orden de carga.
+    ''' <para>⛔ El número sale del censo que está más abajo en este mismo archivo, y decía <b>22</b>:
+    ''' dos cifras para un mismo censo, a cuarenta líneas de distancia. Si se re-mide, se re-miden
+    ''' las dos.</para>
+    ''' <para>⛔⛔ <b>NO RECIBE `extraDraftEntries`, Y ÉSA ES LA ENFORCEMENT.</b> Ofrecer un borrador sin
+    ''' camino de baja lo deja sin salida, y hasta esta ola eso era «acordarse de pasar un parámetro
+    ''' opcional»: 5 selectores se olvidaron. Con las filas fuera de esta puerta, un sitio que las
+    ''' pase sin decidir la vía <b>NO COMPILA</b> — el compilador es el gate, que es más fuerte que
+    ''' tirar en producción (y tirar no serviría: la app corre con
+    ''' <c>UnhandledExceptionMode.ThrowException</c> y un <c>Using ... As New</c> NO atrapa el ctor, ver
+    ''' <c>MswpSubEditor_Form:51-54</c>).</para>
+    ''' <para>Para filas de borrador: <see cref="ParaBorradores"/> o <see cref="ParaBorradoresSinDueno"/>.</para></summary>
     ''' <param name="pluginManager">Master plugin manager — the record source for every allowed signature.</param>
     ''' <param name="allowedSignatures">Record signatures the field accepts, per the caller's
     ''' allowed-signature rule (e.g. {"RACE"}, {"KYWD"}, {"TXST"}, {"FLST"}, {"MSWP"}, {"ARMA"},
@@ -103,28 +129,124 @@ Public Class FormIdPicker_Form
     ''' <param name="title">Optional window caption; a sensible default is derived from the signatures.</param>
     ''' <param name="currentFormID">The field's current value — preselected in the list when present.</param>
     ''' <param name="allowNull">True → include a pinned "(none / NULL)" row that returns FormID 0.</param>
-    ''' <param name="extraDraftEntries">In-memory drafts (ARMA/ARMO/MSWP not yet saved) to append after the
-    ''' real records, each shown with Plugin="(new)".</param>
     ''' <param name="formIdFilter">Optional per-FormID predicate (e.g. race-compatibility for ARMA/ARMO pickers).
     ''' When supplied, the "Show all" checkbox is shown/enabled and each non-NULL row is gated by this predicate
     ''' unless "Show all" is checked. Nothing → no gating and the checkbox stays hidden/disabled.</param>
-    ''' <param name="onDeleteEntry">Optional delete/revert handler. Nothing (default) → the "Delete / Revert…"
-    ''' button stays hidden and existing callers are unaffected. When supplied, the button is shown; clicking it
-    ''' passes the selected row as a <see cref="FormIdPickerEntry"/> and, if the handler returns True, the picker
-    ''' drops that row and repaints. Intended for drafts-only pickers — the shared cache is never mutated.</param>
     Public Sub New(pluginManager As PluginManager,
                    allowedSignatures As IEnumerable(Of String),
                    Optional title As String = Nothing,
                    Optional currentFormID As UInteger = 0UI,
                    Optional allowNull As Boolean = True,
-                   Optional extraDraftEntries As IEnumerable(Of FormIdPickerEntry) = Nothing,
-                   Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing,
-                   Optional onDeleteEntry As Func(Of FormIdPickerEntry, Boolean) = Nothing)
+                   Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing)
+        Me.New(pluginManager, allowedSignatures, title, currentFormID, allowNull,
+               Nothing, formIdFilter, Nothing, Nothing, Nothing)
+    End Sub
+
+    ''' <summary>EL SELECTOR CON FILAS DE BORRADOR Y CON DUEÑO: lo abre un editor que tiene un borrador
+    ''' tomado y sabe recuperarse de la baja.
+    ''' <para>⛔ <paramref name="dueno"/> NO es opcional y el llamador lo ESCRIBE: es quien contesta la
+    ''' precondición (qué FormID tiene tomado), quién tiene referencias sin volcar, y qué hacer DESPUÉS
+    ''' de la baja (<c>Soltar</c>, la re-toma, los libros de sesión). Ver
+    ''' <see cref="BorradoDeBorradores.IDuenoDeBorradores"/>.</para></summary>
+    Friend Shared Function ParaBorradores(mainForm As MainForm,
+                                          dueno As BorradoDeBorradores.IDuenoDeBorradores,
+                                          allowedSignatures As IEnumerable(Of String),
+                                          title As String,
+                                          currentFormID As UInteger,
+                                          allowNull As Boolean,
+                                          extraDraftEntries As IEnumerable(Of FormIdPickerEntry),
+                                          Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing,
+                                          Optional onDeleteEntry As Func(Of FormIdPickerEntry, Boolean) = Nothing) As FormIdPicker_Form
+        If mainForm Is Nothing Then Throw New ArgumentNullException(NameOf(mainForm))
+        If dueno Is Nothing Then Throw New ArgumentNullException(NameOf(dueno),
+            "Si el selector NO cuelga de un editor con borrador tomado, usá `ParaBorradoresSinDueno` y decilo.")
+        Return New FormIdPicker_Form(mainForm.PluginManagerForEditor, allowedSignatures, title, currentFormID,
+                                     allowNull, extraDraftEntries, formIdFilter, onDeleteEntry, mainForm, dueno)
+    End Function
+
+    ''' <summary>EL SELECTOR CON FILAS DE BORRADOR Y SIN DUEÑO.
+    ''' <para>⛔ El nombre obliga a DECIRLO. No hay default que deje pasar «me olvidé del dueño» en
+    ''' silencio: eso es exactamente lo que esta ola vino a cerrar. Sólo vale cuando el sitio que abre el
+    ''' picker no tiene ningún borrador tomado ni referencias sin volcar. Medidos al cerrar la ola son
+    ''' DOS, y los dos escriben el FormID elegido apenas vuelve el diálogo: <c>EditBody_Form</c> (al
+    ''' <c>SkinFormIDOverride</c> del preset) y <c>EditFace_Form</c> (la textura de cabeza).</para>
+    ''' <para>⛔ El doc decía «un solo sitio» y había TRES. El tercero era
+    ''' <c>ArmaEditor_Form.PickTxstInto</c>, y estaba MAL: ese editor tiene <c>_toma</c> y ya
+    ''' implementa el contrato, así que la condición de esta puerta —«no tiene ningún borrador
+    ''' tomado»— no se cumplía. Pasó a <see cref="ParaBorradores"/> en esta misma ola. Un número
+    ''' escrito se queda viejo solo: si aparece un tercero, se re-mide acá.</para></summary>
+    Friend Shared Function ParaBorradoresSinDueno(mainForm As MainForm,
+                                                  allowedSignatures As IEnumerable(Of String),
+                                                  title As String,
+                                                  currentFormID As UInteger,
+                                                  allowNull As Boolean,
+                                                  extraDraftEntries As IEnumerable(Of FormIdPickerEntry),
+                                                  Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing,
+                                                  Optional onDeleteEntry As Func(Of FormIdPickerEntry, Boolean) = Nothing) As FormIdPicker_Form
+        If mainForm Is Nothing Then Throw New ArgumentNullException(NameOf(mainForm))
+        Return New FormIdPicker_Form(mainForm.PluginManagerForEditor, allowedSignatures, title, currentFormID,
+                                     allowNull, extraDraftEntries, formIdFilter, onDeleteEntry, mainForm, Nothing)
+    End Function
+
+    ''' <summary>⛔ PRIVADO A PROPÓSITO: es la única forma de que «no se puede pasar filas sin decidir la
+    ''' vía de baja» lo haga cumplir el COMPILADOR y no una convención. Todo esto vive en el MISMO
+    ''' ensamblado, así que un ctor <c>Friend</c> dejaría la puerta abierta al sitio 36.</summary>
+    Private Sub New(pluginManager As PluginManager,
+                    allowedSignatures As IEnumerable(Of String),
+                    title As String,
+                    currentFormID As UInteger,
+                    allowNull As Boolean,
+                    extraDraftEntries As IEnumerable(Of FormIdPickerEntry),
+                    formIdFilter As Func(Of UInteger, Boolean),
+                    onDeleteEntry As Func(Of FormIdPickerEntry, Boolean),
+                    mainForm As MainForm,
+                    dueno As BorradoDeBorradores.IDuenoDeBorradores)
         InitializeComponent()
         _pluginManager = pluginManager
         _allowNull = allowNull
         _formIdFilter = formIdFilter
-        _onDeleteEntry = onDeleteEntry
+
+        ' ⛔ SE MATERIALIZA UNA SOLA VEZ. `extraDraftEntries` es un `IEnumerable` y acá se recorre para
+        ' la guarda, para `_fidsDeLasFilas` y para `BuildEntries`: con una consulta perezosa serían tres
+        ' recorridos, y con un iterador de un solo uso, basura.
+        Dim draftRows As List(Of FormIdPickerEntry) = Nothing
+        If extraDraftEntries IsNot Nothing Then
+            draftRows = extraDraftEntries.Where(Function(x) x IsNot Nothing).ToList()
+            For Each d In draftRows
+                _fidsDeLasFilas.Add(d.FormID)
+            Next
+        End If
+        Dim hayBorradores = (draftRows IsNot Nothing AndAlso draftRows.Count > 0)
+
+        ' ⛔ EL CINTURÓN. Llegar acá con filas y sin ninguna vía es imposible desde las dos fábricas —la
+        ' de con-dueño exige el dueño y la de sin-dueño arma la baja sola—, así que esto no puede
+        ' dispararse hoy. Queda porque la orden del pedido es literal («si llegan borradores sin ninguna
+        ' de las dos vías, TIRA — no se calla») y porque un ctor privado nuevo mañana no tiene por qué
+        ' saberlo. La enforcement real es que este ctor es `Private`.
+        If hayBorradores AndAlso onDeleteEntry Is Nothing AndAlso mainForm Is Nothing Then
+            Throw New ArgumentException(
+                "FormIdPicker_Form: llegaron filas de borrador sin camino de baja. Usá `ParaBorradores` " &
+                "(con dueño) o `ParaBorradoresSinDueno`, o pasá un `onDeleteEntry` propio.")
+        End If
+
+        ' ⛔ LA BAJA SE ARMA SOLA CUANDO HAY FILAS. Ésta es la inversión que cierra la clase entera de
+        ' defecto: hasta ahora era un parámetro opcional del que había que acordarse, y 5 selectores se
+        ' olvidaron. `onDeleteEntry` explícito queda para el llamador que necesita algo distinto (hoy,
+        ' los dos selectores de MSWP que el caso C55-G1 de `OutfitDraftSaveGate` vigila leyendo el
+        ' FUENTE).
+        '
+        ' ⛔ EL REPARTO, RE-MEDIDO AL CERRAR LA OLA (grep sobre `FO4_NPC_Manager`, sin contar los dos
+        ' `Me.New` internos de este archivo): 49 sitios construyen un selector.
+        '   · 28 con el ctor PÚBLICO — no pasan filas de borrador y no ofrecen baja;
+        '   · 19 por `ParaBorradores` (con dueño);
+        '   ·  2 por `ParaBorradoresSinDueno`.
+        ' O sea 21 sitios con filas de borrador, no 16. El censo del handoff los contaba por el NOMBRE
+        ' del argumento (`drafts|entradas|extraDraftEntries`) y era CIEGO a los que pasan una variable
+        ' con otro nombre — `FormListEditor_Form` pasa `propias`. Se cuenta por la RANURA del ctor.
+        _onDeleteEntry = If(onDeleteEntry,
+                            If(hayBorradores AndAlso mainForm IsNot Nothing,
+                               Function(en) BorradoDeBorradores.BorrarORevertir(mainForm, Me, en, dueno),
+                               Nothing))
 
         ' "Show all" only makes sense when a filter was supplied — otherwise nothing to override.
         ' Hidden (not just disabled) when no filter, so an unfiltered picker shows no stray control.
@@ -146,7 +268,7 @@ Public Class FormIdPicker_Form
                               "No signatures supplied.",
                               $"Pick a record ({String.Join(", ", sigs)}). Type to filter; double-click or Enter to choose.")
 
-        BuildEntries(sigs, extraDraftEntries)
+        BuildEntries(sigs, draftRows)
         ' Initial population goes through the SAME display filter (empty text + "Show all" unchecked) so the
         ' race gate is applied from the start when a filter was supplied — no separate unfiltered first paint.
         OnFilterChanged(Me, EventArgs.Empty)
@@ -160,7 +282,15 @@ Public Class FormIdPicker_Form
 
         ' Optional delete/revert affordance: HIDDEN unless the caller supplied a handler, so real-record pickers
         ' (no handler) are visually and behaviorally unchanged. Enabled only while a non-NULL row is selected.
-        ButtonDeleteEntry.Visible = (_onDeleteEntry IsNot Nothing)
+        ' ⛔⛔ LAS DOS CONDICIONES, Y LA SEGUNDA ES F1. El enable exige que la fila esté en
+        ' `_fidsDeLasFilas` (ver su ⛔), así que con CERO filas propias el botón quedaba VISIBLE Y
+        ' MUERTO: no hay selección que lo despierte. Medido en los dos selectores de MSWP
+        ' (`ArmoEditor_Form.PickFidInto`, `ArmaEditor_Form.PickFidInto`): pasan un `onDeleteEntry`
+        ' explícito y una LISTA VACÍA cuando el usuario todavía no tiene ningún swap propio ni
+        ' guardado, y ahí `_onDeleteEntry IsNot Nothing` bastaba para mostrarlo.
+        '   Y no se arregla del lado del llamador: son dos sitios hoy y la ley volvería a ser
+        ' «acordarse», que es exactamente lo que esta ola cerró con las fábricas.
+        ButtonDeleteEntry.Visible = (_onDeleteEntry IsNot Nothing AndAlso _fidsDeLasFilas.Count > 0)
         AddHandler ButtonDeleteEntry.Click, AddressOf OnDeleteEntryClick
         AddHandler ListViewRecords.SelectedIndexChanged, AddressOf OnDeleteSelectionChanged
         OnDeleteSelectionChanged(Me, EventArgs.Empty)
@@ -379,7 +509,12 @@ Public Class FormIdPicker_Form
     Private Sub OnDeleteSelectionChanged(sender As Object, e As EventArgs)
         Dim en As Entry = Nothing
         If ListViewRecords.SelectedItems.Count > 0 Then en = TryCast(ListViewRecords.SelectedItems(0).Tag, Entry)
-        ButtonDeleteEntry.Enabled = (en IsNot Nothing AndAlso Not en.IsNullRow)
+        ' ⛔ SÓLO SOBRE LAS FILAS QUE EL LLAMADOR PASÓ. Ver el ⛔ de `_fidsDeLasFilas`: sin esta
+        ' condición el botón se habilita sobre CUALQUIER fila no-nula, y siete de los nueve selectores
+        ' que hoy ofrecen la baja enumeran el orden de carga entero. El aviso es destructivo y no hay
+        ' deshacer, así que la fila vanilla de otro plugin no puede quedar al alcance del mismo botón.
+        ButtonDeleteEntry.Enabled = (en IsNot Nothing AndAlso Not en.IsNullRow AndAlso
+                                     _fidsDeLasFilas.Contains(en.FormID))
     End Sub
 
     ''' <summary>Delete/revert the selected row via the caller's handler. The handler does the REAL removal

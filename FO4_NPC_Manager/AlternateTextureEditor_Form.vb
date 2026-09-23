@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>Una entrada de <c>Model\MODS\Alternate Textures</c> de un head part de Skyrim: el nombre
 ''' del nodo 3D, el <c>TXST</c> nuevo y el índice del nodo. Modal chico, al molde de
@@ -16,6 +16,7 @@ Imports FO4_Base_Library
 ''' 12 en Skyrim, con <c>CIS1 CIS2 CTDA MODC MODF</c> como los únicos cinco que son de Fallout 4 y
 ''' ninguno que sea sólo de Skyrim— es lo que lo mostró.</para></summary>
 Public Class AlternateTextureEditor_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
 
@@ -70,10 +71,51 @@ Public Class AlternateTextureEditor_Form
         TextBoxTxst.Text = If(fid = 0UI, "(none)", _mainForm.GetRecordDisplayNameForEditor(fid))
     End Sub
 
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '==============================================================================================
+
+    ''' <summary>Este modal no TOMA ningún borrador: edita una fila del arreglo del editor de arriba.</summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return 0UI
+    End Function
+
+    ''' <summary>⛔⛔ <c>_newTexture</c> NO SALE DE ESTA VENTANA HASTA EL OK: el editor de head parts lo
+    ''' lee por <see cref="NewTexture"/> recién cuando el modal devuelve <c>DialogResult.OK</c>. Mientras
+    ''' tanto ese TXST no está en ningún record registrado, así que <c>GetDraftReferrers</c> no lo ve y
+    ''' «Delete / Revert…» diría que no lo apunta nadie. Borrarlo dejaría la fila apuntando a un 0xFF
+    ''' muerto. Es la MISMA forma que <c>ArmoAddonEditor_Form._armaFormID</c>, y el segundo sujeto de
+    ''' este miembro del contrato.</summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        If formID <> 0UI AndAlso formID = _newTexture Then Return New String() {"alternate texture (not accepted yet)"}
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN: si dieron de baja el TXST elegido, se suelta — aceptar con un FormID
+    ''' recién borrado escribiría una referencia muerta.</summary>
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        If formID = 0UI OrElse formID <> _newTexture Then Return
+        PonerTxst(0UI)
+    End Sub
+
+    ''' <summary>⛔ OFRECE LOS BORRADORES DE TXST: es la segunda mitad de F3. Hasta esta ola la baja de
+    ''' un conjunto de texturas vivía en UN solo campo de OTRO editor, así que uno propio no se podía
+    ''' elegir acá ni sacar desde acá.
+    ''' <para>⚠️ Este camino es de SKYRIM ÚNICAMENTE — <c>Alternate Textures</c> no existe en el esquema
+    ''' de Fallout 4 (medido: cero declaraciones en las vistas de FO4). El eje del gate que lo mide tiene
+    ''' que decir «no aplica» en FO4 en vez de salir SIN SUJETO.</para></summary>
     Private Sub OnElegirTxst(sender As Object, e As EventArgs)
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"TXST"},
-                                           "Select the replacement texture set (TXST)",
-                                           _newTexture, True, Nothing, Nothing, Nothing)
+        Dim entradas = _mainForm.TxstDrafts().Select(Function(d) New FormIdPickerEntry With {
+            .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+            .Signature = "TXST", .PluginName = If(d.IsOverride, "(override)", "(new)")}).ToList()
+        entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "TXST", entradas))
+        Using dlg As FormIdPicker_Form = If(entradas.Count = 0,
+                New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"TXST"},
+                                      "Select the replacement texture set (TXST)", _newTexture, True),
+                FormIdPicker_Form.ParaBorradores(_mainForm, Me, {"TXST"},
+                                                 "Select the replacement texture set (TXST)",
+                                                 _newTexture, True, entradas))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             PonerTxst(dlg.SelectedFormID)
         End Using

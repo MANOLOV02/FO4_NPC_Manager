@@ -437,7 +437,7 @@ Public Class ConditionsEditor_Form
         ' Las firmas salen del esquema: la rama es `Wb.Fid("Reference")` sin lista, o sea que acepta
         ' cualquier record colocado. Se ofrecen las dos que el `.pas` nombra para esta union.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"REFR", "ACHR"},
-                                           "Pick the reference", actual, False, Nothing, Nothing, Nothing)
+                                           "Pick the reference", actual, False)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             TextBoxReference.Tag = dlg.SelectedFormID
             TextBoxReference.Text = If(dlg.SelectedFormID = 0UI, "(none)",
@@ -719,7 +719,7 @@ Public Class ConditionsEditor_Form
         ' cero, que el selector ya da por su cuenta. Pasársela como firma a filtrar no traería nada.
         Dim firmas = rama.Firmas.Where(Function(f) Not String.Equals(f, "NULL", StringComparison.Ordinal)).ToArray()
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, firmas, titulo,
-                                           actual, False, Nothing, Nothing, Nothing)
+                                           actual, False)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             caja.Tag = dlg.SelectedFormID
             caja.Text = If(dlg.SelectedFormID = 0UI, "(none)",
@@ -729,7 +729,7 @@ Public Class ConditionsEditor_Form
 
     Private Sub OnElegirGlobal(sender As Object, e As EventArgs)
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"GLOB"}, "Pick the global",
-                                           _cond.ConditionComparisonValueGlobal, False, Nothing, Nothing, Nothing)
+                                           _cond.ConditionComparisonValueGlobal, False)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             TextBoxValue.Tag = dlg.SelectedFormID
             TextBoxValue.Text = _mainForm.GetRecordDisplayNameForEditor(dlg.SelectedFormID)

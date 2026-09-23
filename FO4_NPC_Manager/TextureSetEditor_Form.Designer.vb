@@ -20,6 +20,10 @@ Partial Class TextureSetEditor_Form
     Private Sub InitializeComponent()
         RootLayout = New TableLayoutPanel()
         TopRow = New FlowLayoutPanel()
+        ButtonNewBlank = New Button()
+        ButtonNewFromTemplate = New Button()
+        ButtonOverrideExisting = New Button()
+        ButtonEditMine = New Button()
         LabelEdid = New Label()
         TextBoxEdid = New TextBox()
         LabelBanner = New Label()
@@ -41,14 +45,16 @@ Partial Class TextureSetEditor_Form
         RootLayout.ColumnCount = 1
         RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         RootLayout.Controls.Add(TopRow, 0, 0)
-        RootLayout.Controls.Add(GridTextures, 0, 1)
-        RootLayout.Controls.Add(LabelObnd, 0, 2)
-        RootLayout.Controls.Add(LabelDodt, 0, 3)
-        RootLayout.Controls.Add(BottomLayout, 0, 4)
+        RootLayout.Controls.Add(LabelBanner, 0, 1)
+        RootLayout.Controls.Add(GridTextures, 0, 2)
+        RootLayout.Controls.Add(LabelObnd, 0, 3)
+        RootLayout.Controls.Add(LabelDodt, 0, 4)
+        RootLayout.Controls.Add(BottomLayout, 0, 5)
         RootLayout.Dock = DockStyle.Fill
         RootLayout.Name = "RootLayout"
         RootLayout.Padding = New Padding(8)
-        RootLayout.RowCount = 5
+        RootLayout.RowCount = 6
+        RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         RootLayout.RowStyles.Add(New RowStyle())
@@ -56,14 +62,43 @@ Partial Class TextureSetEditor_Form
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.TabIndex = 0
         '
+        ' Las cuatro puertas de objetivo y el EditorID, en el orden del molde de HDPT/ARMO/ARMA.
+        ' ⛔ `WrapContents = True`: los botones van en UN solo FlowLayoutPanel y la barra envuelve si
+        ' no entran. Con una columna por botón el ancho mínimo de la tabla es la suma de todos y el
+        ' último se recorta — el defecto que el editor de head parts documenta.
         TopRow.AutoSize = True
+        TopRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        TopRow.Controls.Add(ButtonNewBlank)
+        TopRow.Controls.Add(ButtonNewFromTemplate)
+        TopRow.Controls.Add(ButtonOverrideExisting)
+        TopRow.Controls.Add(ButtonEditMine)
         TopRow.Controls.Add(LabelEdid)
         TopRow.Controls.Add(TextBoxEdid)
-        TopRow.Controls.Add(LabelBanner)
         TopRow.Dock = DockStyle.Fill
+        TopRow.Margin = New Padding(0)
         TopRow.Name = "TopRow"
         TopRow.TabIndex = 0
-        TopRow.WrapContents = False
+        TopRow.WrapContents = True
+        '
+        ButtonNewBlank.AutoSize = True
+        ButtonNewBlank.Name = "ButtonNewBlank"
+        ButtonNewBlank.TabIndex = 0
+        ButtonNewBlank.Text = "New (blank)"
+        '
+        ButtonNewFromTemplate.AutoSize = True
+        ButtonNewFromTemplate.Name = "ButtonNewFromTemplate"
+        ButtonNewFromTemplate.TabIndex = 1
+        ButtonNewFromTemplate.Text = "New from template…"
+        '
+        ButtonOverrideExisting.AutoSize = True
+        ButtonOverrideExisting.Name = "ButtonOverrideExisting"
+        ButtonOverrideExisting.TabIndex = 2
+        ButtonOverrideExisting.Text = "Override existing…"
+        '
+        ButtonEditMine.AutoSize = True
+        ButtonEditMine.Name = "ButtonEditMine"
+        ButtonEditMine.TabIndex = 3
+        ButtonEditMine.Text = "Edit mine…"
         '
         LabelEdid.Anchor = AnchorStyles.Left
         LabelEdid.AutoSize = True
@@ -77,12 +112,15 @@ Partial Class TextureSetEditor_Form
         TextBoxEdid.Size = New Size(280, 23)
         TextBoxEdid.TabIndex = 1
         '
-        LabelBanner.Anchor = AnchorStyles.Left
+        ' ⛔ EL BANNER VA EN SU PROPIA FILA, EN NEGRITA Y CON EL COLOR POR DEFECTO. Antes compartía la
+        ' barra de arriba con el EditorID —se superponían— y estaba en `GrayText`, que lo hacía leer
+        ' como deshabilitado justamente en el dato más importante de la ventana. Misma ley que en
+        ' `ArmaEditor_Form` / `ArmoEditor_Form` / `HeadPartEditor_Form`.
         LabelBanner.AutoSize = True
-        LabelBanner.ForeColor = SystemColors.GrayText
-        LabelBanner.Margin = New Padding(12, 9, 3, 0)
+        LabelBanner.Font = New Font(Font, FontStyle.Bold)
+        LabelBanner.Margin = New Padding(3, 6, 3, 6)
         LabelBanner.Name = "LabelBanner"
-        LabelBanner.TabIndex = 2
+        LabelBanner.TabIndex = 1
         '
         ' Las ocho filas (rótulo + caja + Browse) las agrega el code-behind con los nombres del juego.
         GridTextures.ColumnCount = 3
@@ -161,9 +199,20 @@ Partial Class TextureSetEditor_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(900, 480)
+                ' ⛔⛔ +40 px DE ALTO, Y ES POR LA FILA DE BOTONES QUE ESTA OLA AGREGO. `RootLayout` paso de 5
+        ' filas a 6 —la barra de «New / New from template… / Override existing… / Edit mine…»— y el
+        ' `ClientSize` se quedo como estaba, asi que esos pixeles se los saco al contenido.
+        '    MEDIDO por `TxstEditorLayoutGate`: la ultima fila de `GridTextures` quedo en **-13 px** (las 9
+        ' filas de textura piden 34 cada una y la grilla ya no las cubre). Sin sobrante que repartir, el
+        ' mutante del propio gate dejo de mover el desfase y el gate se acuso a si mismo:
+        ' «este gate no puede ver el defecto que dice vigilar». O sea que el instrumento detecto que la
+        ' ventana se habia quedado corta antes de que lo viera un humano.
+        '    El numero sale del deficit medido (13) mas el sobrante que la ventana tenia antes (~20),
+        ' redondeado al alto real de la barra. Se verifica volviendo a correr el gate: la ultima fila tiene
+        ' que dar POSITIVA.
+        ClientSize = New Size(900, 520)
         Controls.Add(RootLayout)
-        MinimumSize = New Size(700, 420)
+        MinimumSize = New Size(700, 460)
         Name = "TextureSetEditor_Form"
         StartPosition = FormStartPosition.CenterParent
         Text = "Texture Set Editor"
@@ -176,6 +225,10 @@ Partial Class TextureSetEditor_Form
 
     Friend WithEvents RootLayout As TableLayoutPanel
     Friend WithEvents TopRow As FlowLayoutPanel
+    Friend WithEvents ButtonNewBlank As Button
+    Friend WithEvents ButtonNewFromTemplate As Button
+    Friend WithEvents ButtonOverrideExisting As Button
+    Friend WithEvents ButtonEditMine As Button
     Friend WithEvents LabelEdid As Label
     Friend WithEvents TextBoxEdid As TextBox
     Friend WithEvents LabelBanner As Label

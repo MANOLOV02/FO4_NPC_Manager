@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.Linq
 Imports FO4_Base_Library
 
@@ -19,8 +19,12 @@ Imports FO4_Base_Library
 ''' Value1FormID without re-resolving or overwriting it — the FormID only changes when the user picks in the
 ''' FormID dialog.</summary>
 Public Class ObtsPropertyEditor_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
+    ''' <summary>Ver el <c>param</c> del constructor. Decide si el selector de <c>Value1</c> ofrece
+    ''' borradores propios.</summary>
+    Private ReadOnly _duenoCensado As Boolean
     ''' <summary>The working copy (source of truth). Deep-copied from the incoming property in the ctor; copied
     ''' out into <see cref="ResultProperty"/> on OK. Never aliased to the caller's instance.</summary>
     Private ReadOnly _prop As OMOD_Property
@@ -37,7 +41,20 @@ Public Class ObtsPropertyEditor_Form
 
     ''' <param name="mainForm">Owner — supplies the PluginManager for the Value1 FormID picker + display names.</param>
     ''' <param name="prop">The property to edit. DEEP-COPIED in (never aliased); Nothing starts a fresh IntType.</param>
-    Public Sub New(mainForm As MainForm, prop As OMOD_Property)
+    ''' <param name="duenoCensado">¿El record DUEÑO de esta combinación está en el censo de
+    ''' referencias de borrador?
+    ''' <para>⛔⛔ NO es «de dónde vengo»: es la ÚNICA condición que hace seguro ofrecer borradores en
+    ''' el selector de <c>Value1</c>. Un ARMO borrador SÍ está censado — <c>CensoDeReferencias.DeBorrador</c>
+    ''' recorre sus propiedades de OBTS —; un override de record de NPC NO: es la «segunda casa» que
+    ''' <c>NPC/ReferenciasDeBorrador.vb</c> declara, y ni el censo ni el remapeo de la promoción la
+    ''' recorren. Ofrecer borradores con un dueño sin censar significa que «Delete / Revert…» diría que a
+    ''' ese borrador no lo referencia nadie, se borraría, Y el <c>.esp</c> saldría con el <c>0xFF</c>
+    ''' provisional adentro de la propiedad — un cambio de BYTES que nadie pidió.</para>
+    ''' <para>⛔ El default es la opción SEGURA y la insegura hay que ESCRIBIRLA: no es un centinela.
+    ''' Un llamador que se olvide no rompe nada — sólo no ofrece borradores.</para></param>
+    Public Sub New(mainForm As MainForm, prop As OMOD_Property,
+                   Optional duenoCensado As Boolean = False)
+        _duenoCensado = duenoCensado
         InitializeComponent()
         _mainForm = mainForm
 
@@ -184,18 +201,110 @@ Public Class ObtsPropertyEditor_Form
         End If
     End Sub
 
+    ''' <summary>QUÉ FILAS PROPIAS ofrece el selector de <c>Value1</c>. Vacía cuando el record dueño
+    ''' NO está censado.
+    ''' <para>⛔ Vive acá afuera, <c>Friend Shared</c> y PURA, por lo mismo que
+    ''' <c>OutfitPicker_Form.PlanDeCierreDeListas</c>: adentro del manejador de un botón el testigo no
+    ''' la puede correr — tendría que abrir un modal, que lo cuelga — y un caso que mira el TEXTO del
+    ''' manejador mide la letra en vez de la conducta. No es un gancho de prueba: es la MISMA función
+    ''' que usa el botón.</para>
+    ''' <para>De las cinco firmas que el campo acepta, sólo tres tienen borrador: OMOD y KYWD no, así
+    ''' que no hay nada que ofrecer de ellas.</para></summary>
+    Friend Shared Function FilasPropiasDeValue1(mainForm As MainForm, duenoCensado As Boolean) As List(Of FormIdPickerEntry)
+        Dim entradas As New List(Of FormIdPickerEntry)
+        If mainForm Is Nothing OrElse Not duenoCensado Then Return entradas
+        entradas.AddRange(mainForm.MswpDrafts().Where(Function(d) d?.Record IsNot Nothing).
+            Select(Function(d) New FormIdPickerEntry With {
+                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+                .Signature = "MSWP", .PluginName = If(d.IsOverride, "(override)", "(new)")}))
+        entradas.AddRange(mainForm.ArmoDrafts().Where(Function(d) d?.Record IsNot Nothing).
+            Select(Function(d) New FormIdPickerEntry With {
+                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+                .Signature = "ARMO", .PluginName = If(d.IsOverride, "(override)", "(new)")}))
+        entradas.AddRange(mainForm.ArmaDrafts().Where(Function(d) d?.Record IsNot Nothing).
+            Select(Function(d) New FormIdPickerEntry With {
+                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+                .Signature = "ARMA", .PluginName = If(d.IsOverride, "(override)", "(new)")}))
+        For Each sig In New String() {"MSWP", "ARMO", "ARMA"}
+            entradas.AddRange(BorradoDeBorradores.EntradasPropias(mainForm, sig, entradas))
+        Next
+        Return entradas
+    End Function
+
     ''' <summary>FormID Value1 picker — SAME broad signature set + bit mirroring as the old
     ''' <c>EditValue1ForRow</c> (no PropertyIndex→signature table in the model yet, TODO). Only this explicit
-    ''' action mutates <c>Value1FormID</c>; Value1 mirrors the picked FormID's bits.</summary>
+    ''' action mutates <c>Value1FormID</c>; Value1 mirrors the picked FormID's bits.
+    ''' <para>⛔ OFRECE LOS BORRADORES PROPIOS — pero SÓLO si el record dueño está censado.</para>
+    ''' <para>De las cinco firmas que este campo acepta, tres tienen borrador (MSWP, ARMO, ARMA);
+    ''' OMOD y KYWD no, así que no hay nada que ofrecer de ellas. Hasta esta ola no se ofrecía
+    ''' ninguna: el usuario no podía apuntar una propiedad de object template a un record suyo sin
+    ''' guardar primero.</para>
+    ''' <para>⛔ Y con su camino de BAJA, que la fábrica arma sola. Este diálogo no toma ningún
+    ''' borrador y escribe <c>_prop.Value1FormID</c> apenas vuelve el selector, así que va SIN
+    ''' dueño — y el nombre de la fábrica obliga a decirlo.</para></summary>
+    ''' <summary>EL SELECTOR DE <c>Value1</c>, ARMADO Y SIN MOSTRAR.
+    ''' <para>⛔⛔ La CONSTRUCCIÓN es la ley —con filas propias y camino de baja, o con el ctor plano—
+    ''' y vive afuera del manejador por lo mismo que <see cref="FilasPropiasDeValue1"/>: adentro del
+    ''' clic el testigo no la puede correr, porque <c>ShowDialog</c> lo cuelga, y mirar el FUENTE mide
+    ''' la ORTOGRAFÍA. El eje medía el INSUMO (las filas) y no el CONSUMO: el mutante «usar siempre el
+    ''' ctor plano» sobrevivía VERDE. Así el gate construye EL MISMO objeto que ve el usuario.</para></summary>
+    Friend Shared Function SelectorDeValue1(mainForm As MainForm,
+                                            dueno As BorradoDeBorradores.IDuenoDeBorradores,
+                                            duenoCensado As Boolean,
+                                            actual As UInteger) As FormIdPicker_Form
+        Dim entradas = FilasPropiasDeValue1(mainForm, duenoCensado)
+        If entradas.Count = 0 Then
+            Return New FormIdPicker_Form(mainForm.PluginManagerForEditor,
+                                         {"MSWP", "OMOD", "KYWD", "ARMO", "ARMA"},
+                                         "Pick Value1 (FormID)", actual, allowNull:=True)
+        End If
+        Return FormIdPicker_Form.ParaBorradores(mainForm, dueno,
+                                                {"MSWP", "OMOD", "KYWD", "ARMO", "ARMA"},
+                                                "Pick Value1 (FormID)", actual, True, entradas)
+    End Function
+
     Private Sub OnPickValue1(sender As Object, e As EventArgs)
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor,
-                                           {"MSWP", "OMOD", "KYWD", "ARMO", "ARMA"},
-                                           "Pick Value1 (FormID)", _prop.Value1FormID, allowNull:=True)
+        ' ⛔ EL MISMO OBJETO QUE MIDE EL GATE: la construcción vive en `SelectorDeValue1`, no acá.
+        Using dlg As FormIdPicker_Form = SelectorDeValue1(_mainForm, Me, _duenoCensado, _prop.Value1FormID)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             _prop.Value1FormID = dlg.SelectedFormID
             _prop.Value1 = BitConverter.ToSingle(BitConverter.GetBytes(_prop.Value1FormID), 0)
             LabelValue1FormID.Text = FormIdDisplay(_prop.Value1FormID)
         End Using
+    End Sub
+
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '==============================================================================================
+
+    ''' <summary>Este diálogo no TOMA ningún borrador: edita una propiedad suelta.</summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return 0UI
+    End Function
+
+    ''' <summary>⛔⛔ LA REFERENCIA DE ESTA PROPIEDAD NO ESTÁ EN NINGÚN RECORD REGISTRADO, y por eso
+    ''' el censo no la ve.
+    ''' <para>Las combinaciones de OBTS se editan sobre una COPIA despegada del record
+    ''' (<c>ArmoEditor_Form</c>: <c>_comboHost = fo4.Copia()</c>), y la propiedad recién llega al
+    ''' record del borrador tras el OK del modal de la combinación más el debounce. Mientras tanto
+    ''' <c>GetDraftReferrers</c> no la encuentra: sin esto, la baja diría que a ese borrador no lo
+    ''' apunta nadie y el usuario confirmaría A CIEGAS — y la propiedad quedaría con un 0xFF que el
+    ''' remapeo no resuelve.</para>
+    ''' <para>⚠️ <c>duenoCensado</c> contesta OTRA pregunta —¿qué record es el dueño?— y no tapa
+    ''' éste, que es ¿la referencia llegó al record?</para></summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        If formID <> 0UI AndAlso formID = _prop.Value1FormID Then Return New String() {"object template property (not accepted yet)"}
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN: si dieron de baja el record que esta propiedad apunta, se limpia —
+    ''' aceptar con un FormID recién borrado escribiría una referencia muerta.</summary>
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        If formID = 0UI OrElse formID <> _prop.Value1FormID Then Return
+        _prop.Value1FormID = 0UI
+        _prop.Value1 = 0.0F
+        LabelValue1FormID.Text = FormIdDisplay(0UI)
     End Sub
 
     Private Sub OnOk(sender As Object, e As EventArgs)

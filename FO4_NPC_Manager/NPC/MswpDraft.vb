@@ -70,6 +70,33 @@ Public Class MswpDraft
                                    .IsOverride = True, .IsNew = False}
     End Function
 
+    ''' <summary>Un record NUEVO a partir de uno que ya existe (una plantilla).
+    ''' <para>⛔ FALTABA, y por eso el editor de MSWP no tenía «New from template…»: era la Única de
+    ''' las seis clases con borrador sin su `Clon`. Las otras cinco (ARMO, ARMA, HDPT, TXST, FLST) la
+    ''' tienen con esta misma forma.</para>
+    ''' <para>⛔ No se reconstruye campo por campo: copiar el ÁRBOL trae TODO lo que el record tenía,
+    ''' incluidos los campos que la app no modela y los que ningún editor muestra. El porqué largo
+    ''' está en <c>ArmoDraft.Clon</c>, con el caso medido que lo pagó.</para>
+    ''' <para>El EditorID NO se toca acá: lo pone el editor, que es quien sabe si el usuario le dio
+    ''' uno o hay que sintetizarlo.</para></summary>
+    Public Shared Function Clon(rec As PluginRecord, plugins As PluginManager,
+                                formIDNuevo As UInteger) As MswpDraft
+        Dim d = Edicion(rec, plugins)
+        If d Is Nothing Then Return Nothing
+        Return ClonDesdeCopia(d.Record, formIDNuevo)
+    End Function
+
+    ''' <summary>La cola COMÚN de todo clon: exigir la copia y darle identidad nueva. Gemela de la de
+    ''' <c>TxstDraft</c>; el porqué —incluido el defecto del clon que nacía <c>Deleted</c> por heredar
+    ''' <c>RecordFlags</c>— está en <c>ArmoDraft</c>.</summary>
+    Private Shared Function ClonDesdeCopia(copia As Canon.IMswp, formIDNuevo As UInteger) As MswpDraft
+        Borradores.ExigirRecord(copia, "MSWP", "la copia del record falló: árbol o contexto nulos, o la firma no corresponde a esta vista")
+        Dim d As New MswpDraft With {.Record = copia, .FormID = formIDNuevo,
+                                     .IsOverride = False, .IsNew = True}
+        Borradores.ReidentificarComoClon(d.Record, formIDNuevo)
+        Return d
+    End Function
+
     Public Function Clone() As MswpDraft
         ' ⛔ `Clone` es la TERCERA puerta: también CONSTRUYE un borrador, y `Copia()` puede
         ' devolver Nothing por los mismos tres caminos. Su resultado se registra en producción —

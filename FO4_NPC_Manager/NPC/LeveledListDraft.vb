@@ -56,6 +56,26 @@ Public Class LeveledListDraft
 
     ''' <summary>Una edición de una lista que ya existe. Se trabaja sobre una COPIA: cancelar el
     ''' editor tiene que dejar el original como estaba.</summary>
+    ''' <summary>Un borrador NUEVO con el CONTENIDO de otro record — «New from template…».
+    ''' <para>⛔ Existe porque LVLI era la ÚNICA de las ocho clases con este gesto escrito INLINE en su
+    ''' formulario, y en esta misma ola se creó <c>MswpDraft.Clon</c> con el argumento de que era la
+    ''' única que faltaba. Un gesto que vive en el formulario no lo puede correr ningún testigo, y las
+    ''' cuatro líneas que lo componen —FormID nuevo, <c>IsOverride=False</c>, <c>IsNew=True</c> y la
+    ''' re-identificación— se olvidan de a una.</para>
+    ''' <para>⛔ <c>ReidentificarComoClon</c> es la que saca lo que NO se clona (la identidad del
+    ''' original). Sin ella el clon sale apuntando a sí mismo como override.</para></summary>
+    Public Shared Function Clon(origen As LeveledListDraft, fidNuevo As UInteger) As LeveledListDraft
+        If origen Is Nothing OrElse origen.Record Is Nothing OrElse fidNuevo = 0UI Then Return Nothing
+        Dim d = origen.Clone()
+        If d Is Nothing Then Return Nothing
+        Borradores.ReidentificarComoClon(d.Record, fidNuevo)
+        d.FormID = fidNuevo
+        d.IsOverride = False
+        d.IsNew = True
+        d.IsModified = True
+        Return d
+    End Function
+
     Public Shared Function Edicion(rec As PluginRecord, plugins As PluginManager) As LeveledListDraft
         Borradores.ExigirPluginsNormalizados(plugins)
         If rec Is Nothing Then Return Nothing

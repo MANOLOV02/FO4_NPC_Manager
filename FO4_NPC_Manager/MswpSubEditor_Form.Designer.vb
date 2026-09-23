@@ -27,6 +27,11 @@ Partial Class MswpSubEditor_Form
     Private Sub InitializeComponent()
         RootLayout = New TableLayoutPanel()
         EdidRow = New FlowLayoutPanel()
+        LabelBanner = New Label()
+        ButtonNewBlank = New Button()
+        ButtonNewFromTemplate = New Button()
+        ButtonOverrideExisting = New Button()
+        ButtonEditMine = New Button()
         LabelEdid = New Label()
         TextBoxEdid = New TextBox()
         LabelEdidPreview = New Label()
@@ -51,15 +56,17 @@ Partial Class MswpSubEditor_Form
         RootLayout.ColumnCount = 1
         RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         RootLayout.Controls.Add(EdidRow, 0, 0)
-        RootLayout.Controls.Add(LabelHint, 0, 1)
-        RootLayout.Controls.Add(GridSubs, 0, 2)
-        RootLayout.Controls.Add(ButtonsRow, 0, 3)
-        RootLayout.Controls.Add(BottomLayout, 0, 4)
+        RootLayout.Controls.Add(LabelBanner, 0, 1)
+        RootLayout.Controls.Add(LabelHint, 0, 2)
+        RootLayout.Controls.Add(GridSubs, 0, 3)
+        RootLayout.Controls.Add(ButtonsRow, 0, 4)
+        RootLayout.Controls.Add(BottomLayout, 0, 5)
         RootLayout.Dock = DockStyle.Fill
         RootLayout.Location = New Point(0, 0)
         RootLayout.Name = "RootLayout"
         RootLayout.Padding = New Padding(8)
-        RootLayout.RowCount = 5
+        RootLayout.RowCount = 6
+        RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
@@ -71,6 +78,13 @@ Partial Class MswpSubEditor_Form
         ' EdidRow
         '
         EdidRow.AutoSize = True
+        ' Las cuatro puertas de objetivo DELANTE del EditorID, en el orden del molde de
+        ' HDPT/ARMO/ARMA. ⛔ UN solo FlowLayoutPanel con `WrapContents`: con una columna por botón
+        ' el ancho mínimo de la tabla es la suma de todos y el último se recorta.
+        EdidRow.Controls.Add(ButtonNewBlank)
+        EdidRow.Controls.Add(ButtonNewFromTemplate)
+        EdidRow.Controls.Add(ButtonOverrideExisting)
+        EdidRow.Controls.Add(ButtonEditMine)
         EdidRow.Controls.Add(LabelEdid)
         EdidRow.Controls.Add(TextBoxEdid)
         EdidRow.Controls.Add(LabelEdidPreview)
@@ -111,6 +125,34 @@ Partial Class MswpSubEditor_Form
         LabelEdidPreview.TabIndex = 2
         '
         ' LabelHint
+        '
+        ' ⛔ EL BANNER EN SU PROPIA FILA, EN NEGRITA Y CON EL COLOR POR DEFECTO: es el dato más
+        ' importante de la ventana. Misma ley que en ARMO/ARMA/HDPT/TXST/FLST.
+        LabelBanner.AutoSize = True
+        LabelBanner.Font = New Font(Font, FontStyle.Bold)
+        LabelBanner.Margin = New Padding(3, 6, 3, 6)
+        LabelBanner.Name = "LabelBanner"
+        LabelBanner.TabIndex = 1
+        '
+        ButtonNewBlank.AutoSize = True
+        ButtonNewBlank.Name = "ButtonNewBlank"
+        ButtonNewBlank.TabIndex = 0
+        ButtonNewBlank.Text = "New (blank)"
+        '
+        ButtonNewFromTemplate.AutoSize = True
+        ButtonNewFromTemplate.Name = "ButtonNewFromTemplate"
+        ButtonNewFromTemplate.TabIndex = 1
+        ButtonNewFromTemplate.Text = "New from template…"
+        '
+        ButtonOverrideExisting.AutoSize = True
+        ButtonOverrideExisting.Name = "ButtonOverrideExisting"
+        ButtonOverrideExisting.TabIndex = 2
+        ButtonOverrideExisting.Text = "Override existing…"
+        '
+        ButtonEditMine.AutoSize = True
+        ButtonEditMine.Name = "ButtonEditMine"
+        ButtonEditMine.TabIndex = 3
+        ButtonEditMine.Text = "Edit mine…"
         '
         LabelHint.AutoSize = True
         LabelHint.ForeColor = Color.DimGray
@@ -217,7 +259,18 @@ Partial Class MswpSubEditor_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(820, 480)
+                ' ⛔⛔ +40 px DE ALTO, Y ES POR LA FILA DE BOTONES QUE ESTA OLA AGREGO. `RootLayout` paso de 5
+        ' filas a 6 —la barra de «New / New from template… / Override existing… / Edit mine…»— y el
+        ' `ClientSize` se quedo como estaba, asi que esos pixeles se los saco al contenido.
+        '    MEDIDO por `TxstEditorLayoutGate`: la ultima fila de `GridTextures` quedo en **-13 px** (las 9
+        ' filas de textura piden 34 cada una y la grilla ya no las cubre). Sin sobrante que repartir, el
+        ' mutante del propio gate dejo de mover el desfase y el gate se acuso a si mismo:
+        ' «este gate no puede ver el defecto que dice vigilar». O sea que el instrumento detecto que la
+        ' ventana se habia quedado corta antes de que lo viera un humano.
+        '    El numero sale del deficit medido (13) mas el sobrante que la ventana tenia antes (~20),
+        ' redondeado al alto real de la barra. Se verifica volviendo a correr el gate: la ultima fila tiene
+        ' que dar POSITIVA.
+        ClientSize = New Size(820, 520)
         Controls.Add(RootLayout)
         Font = New Font("Segoe UI", 9F)
         MinimizeBox = False
@@ -236,6 +289,11 @@ Partial Class MswpSubEditor_Form
 
     Friend WithEvents RootLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents EdidRow As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents LabelBanner As System.Windows.Forms.Label
+    Friend WithEvents ButtonNewBlank As System.Windows.Forms.Button
+    Friend WithEvents ButtonNewFromTemplate As System.Windows.Forms.Button
+    Friend WithEvents ButtonOverrideExisting As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditMine As System.Windows.Forms.Button
     Friend WithEvents LabelEdid As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
     Friend WithEvents LabelEdidPreview As System.Windows.Forms.Label

@@ -476,6 +476,18 @@ Public Module NpcOverrideSaver
         Dim removeSet As HashSet(Of UInteger) = If(ctx.RecordsToRemove, New HashSet(Of UInteger)())
         Dim writeInputs = inputs.Where(Function(ni) Not removeSet.Contains(ni.NpcFormID)).ToList()
 
+        ' ⛔⛔ LA TERCERA CASA, Y ANTES DE ESCRIBIR NADA. Decisión del usuario (22-sep): la red que hace
+        ' defendible al borrado permisivo de D-3 tiene que cubrir las TRES casas, no dos.
+        '
+        ' ⛔⛔ VA DESPUÉS DE `writeInputs` Y SÓLO SOBRE ELLOS, y NO es una optimización. El guardado tiene
+        ' ALCANCE —«Selected» vs «All changed», `SaveEsp_Form`— y `ctx.AppliedPresets` es el diccionario de
+        ' TODA LA SESIÓN. Arriba de esta línea, el preset roto de un NPC que este guardado NO escribe —o de
+        ' uno marcado para QUITAR, que se descuenta justo acá— rechazaba el guardado ENTERO diciendo que «el
+        ' ESP saldría corrupto», que para ese guardado es FALSO.
+        '    Rechazar un guardado CORRECTO es peor que el mensaje pelado que esta guarda vino a arreglar: el
+        ' usuario queda sin poder guardar un NPC sano por culpa de otro que ni siquiera está en el alcance.
+        ExigirPresetsSinColgar(ctx, New HashSet(Of UInteger)(writeInputs.Select(Function(ni) ni.NpcFormID)))
+
         ' Phase 1: build one override entry per NON-removed NPC. outfitEntries is shared and deduped at the end.
         Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry)
         For Each npcInput In writeInputs
@@ -884,8 +896,10 @@ Public Module NpcOverrideSaver
                 ' ARMO o a una LVLI propios, y si ese borrador se cancelo la referencia queda colgada igual.
                 ' Sin esto, un atuendo que apunta a un ARMO propio ya borrado no tenia el error nombrado y
                 ' caia al cortafuegos del writer con el FormID pelado.
+                ' ⛔ Y CON LA SEGUNDA CASA: los picks SELLADOS del atuendo no están en el record, y un
+                ' ARMO borrador al que sólo lo apunta un pick también deja la realización colgada.
                 ExigirReferenciasSinColgar("OTFT", d.Record.EditorID, d.FormID, d.Record,
-                                           BorradoresRegistrados(ctx))
+                                           BorradoresRegistrados(ctx), d.ReferenciasDePicks())
                 oe.ItemArmoFormIDs.AddRange(d.Prendas())
                 outfitEntries.Add(oe)
             Next
@@ -939,7 +953,7 @@ Public Module NpcOverrideSaver
             For Each fid In needed
                 Dim d = draftByFid(fid)
                 ' ⛔ ANTES de armar las entradas, y para las DOS ramas (override preservado y nueva).
-                ExigirReferenciasSinColgar("LVLI", d.Record.EditorID, d.FormID, d.Record, registradosLvl)
+                ExigirReferenciasSinColgar("LVLI", d.Record.EditorID, d.FormID, d.Record, registradosLvl, CensoDeReferencias.SinSegundaCasa)
                 ' OVERRIDE draft (re-edit of an existing LVLI): keep its real FormID + EDID verbatim. An UNCHANGED
                 ' override (pulled in by a reference but not itself edited) is skipped — its FormID resolves to the
                 ' record it overrides (the master original, or this plugin's copy preserved in Phase 2a), so no
@@ -1321,7 +1335,7 @@ For Each d In hdptByFid.Values
                 For Each fid In neededArmo
                     Dim d = armoByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
-                    ExigirReferenciasSinColgar("ARMO", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    ExigirReferenciasSinColgar("ARMO", d.Record.EditorID, d.FormID, d.Record, registrados, CensoDeReferencias.SinSegundaCasa)
                     If armoAlreadyEmitted.Contains(d.FormID) Then armoEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     Canon.CanonModelInfo.Refrescar(CType(d.Record, Canon.CanonView), ctx.PluginManager, ctx.ModelWarnings)
                     armoEntries.Add(BuildArmoEntry(d, ctx, espNameNoExt, usedArmoEdids, target))
@@ -1331,7 +1345,7 @@ For Each d In hdptByFid.Values
                 For Each fid In neededArma
                     Dim d = armaByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
-                    ExigirReferenciasSinColgar("ARMA", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    ExigirReferenciasSinColgar("ARMA", d.Record.EditorID, d.FormID, d.Record, registrados, CensoDeReferencias.SinSegundaCasa)
                     If armaAlreadyEmitted.Contains(d.FormID) Then armaEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     Canon.CanonModelInfo.Refrescar(CType(d.Record, Canon.CanonView), ctx.PluginManager, ctx.ModelWarnings)
                     armaEntries.Add(BuildArmaEntry(d, ctx, espNameNoExt, usedArmaEdids, target))
@@ -1341,7 +1355,7 @@ For Each d In hdptByFid.Values
                 For Each fid In neededMswp
                     Dim d = mswpByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
-                    ExigirReferenciasSinColgar("MSWP", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    ExigirReferenciasSinColgar("MSWP", d.Record.EditorID, d.FormID, d.Record, registrados, CensoDeReferencias.SinSegundaCasa)
                     If mswpAlreadyEmitted.Contains(d.FormID) Then mswpEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     mswpEntries.Add(BuildMswpEntry(d, ctx, espNameNoExt, usedMswpEdids, target))
                 Next
@@ -1351,7 +1365,7 @@ For Each d In hdptByFid.Values
                 For Each fid In neededTxst
                     Dim d = txstByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
-                    ExigirReferenciasSinColgar("TXST", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    ExigirReferenciasSinColgar("TXST", d.Record.EditorID, d.FormID, d.Record, registrados, CensoDeReferencias.SinSegundaCasa)
                     If txstAlreadyEmitted.Contains(d.FormID) Then txstEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     txstEntries.Add(BuildTxstEntry(d, ctx, espNameNoExt, usedTxstEdids, target))
                 Next
@@ -1360,7 +1374,7 @@ For Each d In hdptByFid.Values
                 For Each fid In neededFlst
                     Dim d = flstByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
-                    ExigirReferenciasSinColgar("FLST", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    ExigirReferenciasSinColgar("FLST", d.Record.EditorID, d.FormID, d.Record, registrados, CensoDeReferencias.SinSegundaCasa)
                     If flstAlreadyEmitted.Contains(d.FormID) Then flstEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     flstEntries.Add(BuildFlstEntry(d, ctx, espNameNoExt, usedFlstEdids, target))
                 Next
@@ -1369,7 +1383,7 @@ For Each d In hdptByFid.Values
                 For Each fid In neededHdpt
                     Dim d = hdptByFid(fid)
                     If d.IsOverride AndAlso Not d.IsDirty Then Continue For
-                    ExigirReferenciasSinColgar("HDPT", d.Record.EditorID, d.FormID, d.Record, registrados)
+                    ExigirReferenciasSinColgar("HDPT", d.Record.EditorID, d.FormID, d.Record, registrados, CensoDeReferencias.SinSegundaCasa)
                     If hdptAlreadyEmitted.Contains(d.FormID) Then hdptEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     ' ⛔ EL BLOQUE DE MODEL INFORMATION SE REFRESCA ACA, no en el editor. Los tres
                     ' llamados (ARMO, ARMA, HDPT) son el EMBUDO: lo que llega hasta aca llego por el
@@ -2689,13 +2703,24 @@ For Each d In hdptByFid.Values
     ''' propio ya borrado no tenía el error nombrado y caía al cortafuegos del writer con el FormID pelado.
     ''' <see cref="CensoDeReferencias.DeBorrador"/> es la MISMA enumeración que usa el remapeo de la
     ''' promoción: si un campo puede APUNTAR a un borrador, puede quedar COLGADO, así que las dos leyes
-    ''' tienen que leer la misma lista o se separan.</para></summary>
+    ''' tienen que leer la misma lista o se separan.</para>
+    ''' <para>⛔⛔ Y RECORRE LAS <b>DOS CASAS</b>, no una. `DeBorrador` es la del RECORD; las
+    ''' realizaciones SELLADAS de un atuendo viven aparte (<c>OutfitDraft.ReferenciasDePicks</c>) y esta
+    ''' guarda no las miraba — medido: <c>ReferenciasDePicks</c> daba CERO matches en este archivo.
+    ''' Esa asimétría ya costó una vez, con el mismo nombre, y está escrita en
+    ''' <c>NPC/ReferenciasDeBorrador.vb</c>: un ARMO borrador al que sólo apuntaba un pick salía «no lo
+    ''' referencia nadie» y la realización quedaba apuntando a un FormID muerto.
+    ''' <para>Mientras la baja de un borrador referenciado estaba BLOQUEADA, el hueco era inalcanzable.
+    ''' Al unificar la baja en la versión PERMISIVA (decisión del usuario, 22-sep) deja de serlo: sin
+    ''' este segundo recorrido, borrar un ARMO al que sólo lo apunta un pick sale del guardado SIN
+    ''' error y la prenda se dibuja VACÍA. Por eso es la PRECONDICIÓN de esa decisión.</para></summary>
     Friend Sub ExigirReferenciasSinColgar(clase As String, edid As String, fid As UInteger,
                                           record As Object,
-                                          borradoresRegistrados As HashSet(Of UInteger))
+                                          borradoresRegistrados As HashSet(Of UInteger),
+                                          picksDelAtuendo As IEnumerable(Of CensoDeReferencias.ReferenciaDeBorrador))
         If record Is Nothing Then Return
         Dim n = 0
-        For Each r In CensoDeReferencias.DeBorrador(record)
+        For Each r In Referencias(record, picksDelAtuendo)
             n += 1
             If r.Valor = 0UI Then Continue For
             If Not Borradores.EsFormIdDeBorrador(r.Valor) Then Continue For
@@ -2706,6 +2731,89 @@ For Each d In hdptByFid.Values
                 "this one still pointed at it; remove the reference or create the record again.")
         Next
     End Sub
+
+    ''' <summary>LAS DOS CASAS en una sola enumeración: los campos del RECORD y —cuando el llamador
+    ''' las pasa— las realizaciones SELLADAS del atuendo, que no viven en el record.</summary>
+    Private Iterator Function Referencias(record As Object,
+                                          picksDelAtuendo As IEnumerable(Of CensoDeReferencias.ReferenciaDeBorrador)) _
+            As IEnumerable(Of CensoDeReferencias.ReferenciaDeBorrador)
+        For Each r In CensoDeReferencias.DeBorrador(record)
+            Yield r
+        Next
+        If picksDelAtuendo Is Nothing Then Return
+        For Each r In picksDelAtuendo
+            Yield r
+        Next
+    End Function
+
+    ''' <summary>LA TERCERA CASA: los campos del PRESET que apuntan a un borrador. Tira nombrando el NPC
+    ''' y el campo si alguno quedó apuntando a un provisional que ya no tiene borrador.
+    '''
+    ''' <para>⛔⛔ <b>POR QUÉ EXISTE, y es una decisión del usuario del 22-sep.</b> Con el borrado
+    ''' unificado en la versión PERMISIVA (D-3), lo que hace defendible borrar un borrador referenciado
+    ''' es que el guardado REBOTE nombrando el record y el campo. Esa promesa está escrita en
+    ''' <c>BorradoDeBorradores</c>, y era FALSA para esta casa: <see cref="ExigirReferenciasSinColgar"/>
+    ''' recorre los campos del RECORD y los picks SELLADOS del atuendo, y el preset no es ninguno de los
+    ''' dos. Un TXST borrador elegido como textura de cabeza de un NPC —capacidad que la ola de
+    ''' borradores abrió— y después borrado pasaba la red, y el guardado moría más adentro, en el
+    ''' cortafuegos del writer, con el FormID PELADO: sin decir qué NPC ni qué campo.</para>
+    '''
+    ''' <para>⛔ NO ERA UN PROBLEMA DE BYTES y por eso no entró como bloqueante: el tiro del writer pasa
+    ''' ANTES de escribir y <c>GuardarConCopia</c> restaura, así que el <c>.esp</c> nunca se corrompía. Lo
+    ''' que se perdía era el MENSAJE, que es exactamente para lo que estas guardas existen.</para>
+    '''
+    ''' <para>⛔ SIN PARÁMETRO Y SIN CENTINELA: la casa sale de <c>ctx.AppliedPresets</c>, que el contexto
+    ''' ya trae. Pasarla por argumento habría sumado un segundo <c>Optional … = Nothing</c> al lado del de
+    ''' los picks, y un parámetro opcional que significa «no mires esa casa» es cómo se llega a tener una
+    ''' casa sin mirar.</para>
+    '''
+    ''' <para>⛔ Y CORRE UNA VEZ POR GUARDADO, no por record: la referencia no vive en ningún record que
+    ''' se esté escribiendo — vive en el preset del NPC.</para></summary>
+    ''' <param name="npcsQueSeEscriben">Los NPC de ESTE guardado, ya descontados los marcados para quitar.
+    ''' ⛔ Obligatorio y sin default: <c>AppliedPresets</c> es de toda la sesión y el guardado tiene
+    ''' ALCANCE, así que sin este filtro la guarda rechaza por un NPC que no se escribe.</param>
+    Friend Sub ExigirPresetsSinColgar(ctx As SaveContext, npcsQueSeEscriben As HashSet(Of UInteger))
+        If ctx Is Nothing OrElse ctx.AppliedPresets Is Nothing OrElse npcsQueSeEscriben Is Nothing Then Return
+        Dim registrados = BorradoresRegistrados(ctx)
+        For Each kv In ctx.AppliedPresets
+            If Not npcsQueSeEscriben.Contains(kv.Key) Then Continue For
+            Dim p = kv.Value
+            If p Is Nothing Then Continue For
+            ' El MISMO censo que `MainForm.GetDraftReferrers` recorre para armar el cartel de la baja:
+            ' si el cartel lo nombra como referrer, la red lo tiene que ver. Dos listas se separan.
+            ExigirDelPreset(kv.Key, "default outfit", p.DefaultOutfitFormIDOverride, registrados, ctx)
+            ExigirDelPreset(kv.Key, "skin (WNAM)", p.SkinFormIDOverride, registrados, ctx)
+            ExigirDelPreset(kv.Key, "head texture", p.HeadTextureFormIDOverride, registrados, ctx)
+            ExigirDelPreset(kv.Key, "sleeping outfit", p.SleepOutfitFormIDOverride, registrados, ctx)
+            If p.HeadPartFormIDs IsNot Nothing Then
+                For Each fid In p.HeadPartFormIDs
+                    ExigirDelPreset(kv.Key, "head part", fid, registrados, ctx)
+                Next
+            End If
+        Next
+    End Sub
+
+    ''' <summary>Un campo del preset. Silencioso salvo que apunte a un provisional SIN borrador.</summary>
+    ''' <param name="npcFid">El NPC dueño del preset — es la mitad del mensaje que faltaba.</param>
+    Private Sub ExigirDelPreset(npcFid As UInteger, campo As String, valor As UInteger?,
+                                registrados As HashSet(Of UInteger), ctx As SaveContext)
+        If Not valor.HasValue OrElse valor.Value = 0UI Then Return
+        If Not Borradores.EsFormIdDeBorrador(valor.Value) Then Return
+        If registrados.Contains(valor.Value) Then Return
+        Dim nombre = NombreDelNpc(npcFid, ctx)
+        Throw New InvalidOperationException(
+            $"NPC {nombre} ({npcFid:X8}), {campo}: provisional reference {valor.Value:X8} with no " &
+            "draft — the ESP would come out corrupt. The referenced record was canceled or deleted " &
+            "while this NPC still pointed at it; pick another one or create the record again.")
+    End Sub
+
+    ''' <summary>El EditorID del NPC, o su FormID en hexa si el record no resuelve. ⛔ El mensaje sin el
+    ''' nombre es el defecto que esta guarda vino a cerrar, así que el fallback nunca es vacío.</summary>
+    Private Function NombreDelNpc(fid As UInteger, ctx As SaveContext) As String
+        Dim rec = ctx?.PluginManager?.GetRecord(fid)
+        Dim edid = If(rec Is Nothing, Nothing, rec.EditorID)
+        Return If(String.IsNullOrEmpty(edid), $"0x{fid:X8}", edid)
+    End Function
 
     ''' <summary>Build (or extend) the Leveled NPC list(s) for a save where <c>AddToLvlList</c> is set, and
     ''' append the resulting <see cref="SaveNpcEspWriter.LvliRecordEntry"/> (IsNpcList) to

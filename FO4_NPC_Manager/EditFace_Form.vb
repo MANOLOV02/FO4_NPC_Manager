@@ -1175,8 +1175,23 @@ Public Class EditFace_Form
         ' allowNull:=False — elegir un TXST es SÓLO el estado "override". El "ninguno" tiene su propio botón; dejar
         ' la fila NULL acá reintroduciría la ambigüedad de origen (el picker devuelve 0 para NULL, que ahora
         ' significa CLEAR, y el usuario no tendría cómo distinguirlo de "volver al valor del record").
-        Using dlg As New FormIdPicker_Form(_pluginManager, {"TXST"}, "Head texture (TXST)",
-                                           EffectiveHeadTextureFormID(), allowNull:=False)
+        ' ⛔ OFRECE LOS BORRADORES DE TXST: segunda mitad de F3. Y sólo se puede porque el censo de
+        ' referrers ahora MIRA `Preset.HeadTextureFormIDOverride` — que es el campo donde termina el
+        ' FormID elegido acá (`SetHeadTexture`) y NO es un campo de record, así que
+        ' `CensoDeReferencias.DeBorrador` no lo ve. Sin esa línea, «Delete / Revert…» diría que a ese
+        ' TXST no lo referencia nadie, lo borraría, y el NPC perdería su textura de cabeza EN SILENCIO:
+        ' el mismo defecto que [rev-53] cerró para las head parts.
+        ' ⛔ SIN DUEÑO, y está MEDIDO: `SetHeadTexture` escribe el preset apenas vuelve el diálogo, así
+        ' que no hay buffer sin volcar, y este formulario no TOMA ningún borrador de TXST.
+        Dim entradasTxst = _mainForm.TxstDrafts().Select(Function(d) New FormIdPickerEntry With {
+            .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+            .Signature = "TXST", .PluginName = If(d.IsOverride, "(override)", "(new)")}).ToList()
+        entradasTxst.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "TXST", entradasTxst))
+        Using dlg As FormIdPicker_Form = If(entradasTxst.Count = 0,
+                New FormIdPicker_Form(_pluginManager, {"TXST"}, "Head texture (TXST)",
+                                      EffectiveHeadTextureFormID(), allowNull:=False),
+                FormIdPicker_Form.ParaBorradoresSinDueno(_mainForm, {"TXST"}, "Head texture (TXST)",
+                                                         EffectiveHeadTextureFormID(), False, entradasTxst))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             ' Con allowNull:=False el picker no puede devolver 0 (la fila NULL no se construye y OK vetea el
             ' cierre sin selección), así que este guard es defensa redundante, no la barrera que sostiene el

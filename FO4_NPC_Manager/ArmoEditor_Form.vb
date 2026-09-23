@@ -21,6 +21,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' item — no ARMO→ARMO wrapper) and renders it equipped on the current NPC via
 ''' <see cref="MainForm.PreviewOutfitInHostAsync"/>. Re-preview is debounced.</summary>
 Public Class ArmoEditor_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _previewNpcFormID As UInteger
@@ -469,22 +470,23 @@ Public Class ArmoEditor_Form
         Dim entries = _mainForm.ArmoDrafts().Select(Function(d) New FormIdPickerEntry With {
             .FormID = d.FormID, .EditorID = d.Record.EditorID,
             .DisplayName = d.Record.EditorID, .Signature = "ARMO"}).ToList()
-        Dim draftFids As New HashSet(Of UInteger)(entries.Select(Function(x) x.FormID))
-        For Each r In _mainForm.GetAuthoredRecords("ARMO")
-            If draftFids.Contains(r.FormID) Then Continue For   ' a draft overriding it already covers this FormID
-            entries.Add(New FormIdPickerEntry With {
-                .FormID = r.FormID, .EditorID = r.EditorID, .DisplayName = r.DisplayName, .Signature = "ARMO", .PluginName = "(saved)"})
-        Next
+        ' ⛔ Y LOS YA GUARDADOS, por la SEDE ÚNICA. Era la misma docena de líneas escrita cuatro
+        ' veces (acá, en los otros dos editores y adentro de `BorradoDeBorradores`), y no es una
+        ' duplicación decorativa: el enable de «Delete / Revert…» DELEGA en esta lista la ley de qué
+        ' fila tiene salida, así que una copia que se olvide del dedup o del `"(saved)"` deja un
+        ' record propio sin ninguna forma de sacarlo desde la app.
+        entries.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "ARMO", entries))
         If entries.Count = 0 Then
             MessageBox.Show(Me, "No ARMO drafts or saved authored ARMO yet. Use New / New from template first.", "Edit mine",
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
         ' Empty sigs → the picker lists ONLY the entries we pass (no full-ARMO enumeration). "(new)" = draft, "(saved)" = real.
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, New String() {},
-                                           "Edit my ARMO (drafts + saved)", _draft.FormID, allowNull:=False,
-                                           extraDraftEntries:=entries,
-                                           onDeleteEntry:=AddressOf OnDeleteDraftEntry)
+        ' La baja la arma el propio selector con el dueño que le pasamos: ver `ParaBorradores`.
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, New String() {},
+                "Edit my ARMO (drafts + saved)", _draft.FormID, allowNull:=False,
+                extraDraftEntries:=entries)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             Dim fid = dlg.SelectedFormID
             ' ⛔ La decisión «hay borrador ⇒ adoptarlo» NO se toma acá: la toma
@@ -499,20 +501,47 @@ Public Class ArmoEditor_Form
         End Using
     End Sub
 
-    ''' <summary>Delete/revert handler for the "Edit draft…" picker's "Delete / Revert…" button. Overrides
-    ''' (<c>Not IsNew</c>) revert to the original record; new drafts are deleted only when nothing references
-    ''' them. Guards the draft that's currently open. Returns True when the draft was removed (picker drops the row).</summary>
-    Private Function OnDeleteDraftEntry(entry As FormIdPickerEntry) As Boolean
-        Dim eraElObjetivo = (_draft IsNot Nothing AndAlso entry IsNot Nothing AndAlso entry.FormID = _draft.FormID)
-        Dim quitado = QuitarSegunSuClase(entry)
-        ' ⛔ LA RECUPERACIÓN ES LA POSTCONDICIÓN DEL GESTO, y va UNA sola vez después de TODAS las ramas.
-        ' Escrita adentro de cada rama eran dos copias —y durante un rato faltó en una—: el editor quedaba
-        ' sobre un override de un FormID que `PluginManager.RevertAppOverride` acababa de sacar de
-        ' `AllRecords`, y el guardado ENTERO tiraba (`ResolveArmorDraftHeader`). Acá arriba la rama que
-        ' alguien agregue mañana nace cubierta; ahí abajo habría que acordarse.
-        If quitado AndAlso eraElObjetivo Then ReTomarObjetivoTrasLaBaja(entry.FormID)
-        Return quitado
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '
+    ' ⛔ ACÁ VIVÍA UNA COPIA DE LA LEY (`QuitarSegunSuClase`), gemela de la de ARMA y de las de
+    ' `BorradoDeHeadParts` / `BorradoDeMswp`: la misma decisión escrita CUATRO veces con el nombre de la
+    ' clase cambiado. Se mudó entera a `NPC/BorradoDeBorradores.vb`. Lo que queda acá es lo único que la
+    ' sede NO puede saber: qué tiene tomado ESTE editor y cómo se recupera después de la baja.
+    '
+    ' ⛔ Y SE FUE TAMBIÉN LA GUARDA `isCurrent`, que bloqueaba borrar el borrador NUEVO abierto. Era una
+    ' ley de ESTE editor contra la de head parts, que el MISMO gesto sí permite y resuelve soltando la
+    ' toma. Ahora la ley es una sola y vive en `Planear`; la recuperación de acá ya contemplaba el caso
+    ' —`LoadReal…Template` falla sobre un 0xFF y cae en `EmpezarBorradorEnBlanco`—, así que no hizo falta
+    ' escribir nada nuevo para cubrirlo.
+    '==============================================================================================
+
+    ''' <summary>El FormID que este editor tiene tomado. Alimenta la precondición de `Planear`.</summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return If(_draft Is Nothing, 0UI, _draft.FormID)
     End Function
+
+    ''' <summary>Este editor no tiene referencias SIN VOLCAR, y está MEDIDO — no es un hueco por omisión.
+    ''' <para>Sus buffers (<c>_addons</c>, <c>_keywords</c>) llegan al record registrado por el debounce de
+    ''' 400 ms: <c>OnFieldEdited</c> → <c>RequestPreview</c> → <c>_previewDebounce</c> →
+    ''' <c>CommitPanelsToDraft</c>. Nadie abre un selector, elige una fila y aprieta «Delete / Revert…» en
+    ''' menos de 400 ms, así que el censo de referrers ya los ve.</para></summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN de la baja. Sólo hay algo que hacer si lo que se dio de baja ERA el objetivo
+    ''' de este editor.
+    ''' <para>⛔ LA RECUPERACIÓN ES LA POSTCONDICIÓN DEL GESTO, y va UNA sola vez después de TODAS las
+    ''' ramas. Escrita adentro de cada rama eran dos copias —y durante un rato faltó en una—: el editor
+    ''' quedaba sobre un override de un FormID que <c>PluginManager.RevertAppOverride</c> acababa de sacar
+    ''' de <c>AllRecords</c>, y el guardado ENTERO tiraba (<c>ResolveArmorDraftHeader</c>). Ahora la rama
+    ''' que alguien agregue mañana a la sede nace cubierta.</para></summary>
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        If _draft Is Nothing OrElse formID <> _draft.FormID Then Return
+        ReTomarObjetivoTrasLaBaja(formID)
+    End Sub
 
     ''' <summary>Volver a tomar el objetivo después de que el usuario lo dio de baja desde el selector.
     ''' <para>⛔ Se SUELTA la toma y no se abandona: la toma todavía tiene el snapshot del borrador, así que
@@ -531,62 +560,6 @@ Public Class ArmoEditor_Form
             "Reverted", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 
-    ''' <summary>El cuerpo del gesto: dar de baja lo que la fila representa —un borrador propio o un record
-    ''' ya guardado— y decir si se quitó. NO recupera el editor: eso es la postcondición del llamador.</summary>
-    Private Function QuitarSegunSuClase(entry As FormIdPickerEntry) As Boolean
-        Dim fid = entry.FormID
-        If fid = 0UI Then Return False
-        Dim isCurrent = (_draft IsNot Nothing AndAlso fid = _draft.FormID)
-        Dim d = _mainForm.TryGetArmoDraft(fid)
-        If d IsNot Nothing Then
-            If Not d.IsNew Then
-                ' OVERRIDE draft → REVERT (discard my edits; the original record wins). Allowed even when it's the
-                ' one currently open — we reload the pristine original so the editor stays in a valid state.
-                If MessageBox.Show(Me, $"Revert '{d.Record.EditorID}' to the original record? " &
-                                   "Your edits to this draft will be discarded.",
-                                   "Revert to original", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return False
-                _mainForm.UnregisterArmoDraft(fid)
-                ' Dropping the in-memory draft is NOT enough: if this override was ALREADY SAVED into the plugin, the
-                ' saver's Phase 2a re-preserves it (re-emits every target-plugin ARMO as an OVERRIDE entry unless it's
-                ' in RecordsToRemove), so the reverted record would keep getting written. Mark it for removal so Phase 2a
-                ' drops it and the true parent wins. No-op when no saved copy exists (removal only drops target-plugin
-                ' records); when isCurrent reloads a pristine override draft it stays Not-IsDirty and is never re-emitted.
-                _mainForm.MarkRecordForRemoval(fid)
-                _mainForm.RevertAppOverrideInMemory(fid)   ' restore the mod's winning record in memory (not the ESP override)
-                Return True
-            End If
-            ' NEW draft → DELETE, but not the one you're currently building.
-            If isCurrent Then
-                MessageBox.Show(Me, "This is the NEW draft you're currently editing — switch to another first, then delete it.",
-                                "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                Return False
-            End If
-            Dim referrers = _mainForm.GetDraftReferrers(fid)
-            If referrers.Count > 0 Then
-                MessageBox.Show(Me, "Can't delete — this draft is still referenced by:" & vbCrLf & vbCrLf & String.Join(vbCrLf, referrers),
-                                "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                Return False
-            End If
-            If MessageBox.Show(Me, $"Delete draft '{d.Record.EditorID}'? This cannot be undone.",
-                               "Delete draft", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
-            _mainForm.UnregisterArmoDraft(fid)
-            Return True
-        End If
-        ' An already-SAVED authored record → mark it for removal on the next Save. A NEW record (npcm_ EDID)
-        ' is DELETED; an OVERRIDE (keeps the original EDID) is REVERTED (dropped → the original record wins).
-        Dim isNewRec = entry.EditorID IsNot Nothing AndAlso entry.EditorID.StartsWith("npcm_", StringComparison.OrdinalIgnoreCase)
-        Dim verb = If(isNewRec, "Delete", "Revert")
-        Dim detail = If(isNewRec, "It will be removed from your plugin on the next Save.",
-                                  "The override will be dropped on the next Save — the original record wins again.")
-        Dim savedReferrers = _mainForm.GetDraftReferrers(fid)
-        Dim refWarn = If(savedReferrers.Count > 0, vbCrLf & vbCrLf & "Still referenced by:" & vbCrLf & String.Join(vbCrLf, savedReferrers), "")
-        If MessageBox.Show(Me, $"{verb} saved record '{entry.DisplayName}'?" & vbCrLf & detail & refWarn,
-                           $"{verb} saved record", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
-        _mainForm.MarkRecordForRemoval(fid)
-        _mainForm.RevertAppOverrideInMemory(fid)   ' in-memory: restore the mod's winning record (override) / drop it (new)
-        Return True
-    End Function
-
     ''' <summary>FormIdPicker sobre los ARMO del orden de carga MÁS los borradores PROPIOS del usuario,
     ''' filtrado por raza/género del NPC de preview. Devuelve el FormID elegido, o 0 si se canceló.
     ''' Lo comparten «New from template…» y «Override existing…».
@@ -603,12 +576,18 @@ Public Class ArmoEditor_Form
         Dim drafts = _mainForm.ArmoDrafts().Select(Function(d) New FormIdPickerEntry With {
             .FormID = d.FormID, .EditorID = d.Record.EditorID,
             .DisplayName = d.Record.EditorID, .Signature = "ARMO"}).ToList()
+        ' ⛔ Y LOS PROPIOS YA GUARDADOS. Sin ellos, el ARMO que el usuario creó y guardó queda SIN
+        ' SALIDA: el remapeo de la promoción lo saca del registro de borradores, así que tras un Save
+        ' ya no es un borrador, y el botón —que sólo se habilita sobre las filas que pasa el llamador—
+        ' quedaría muerto sobre él. Es la mitad que `EntradasPropias` declara obligatoria para TODOS.
+        drafts.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "ARMO", drafts))
         ' Pre-select the CURRENT source record (if any) so switching Override ⇄ New-from-template keeps it selected.
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMO"},
-                                           title, CurrentTemplateSelection(), allowNull:=False,
-                                           extraDraftEntries:=drafts,
-                                           formIdFilter:=Function(fid) _mainForm.TryGetArmoDraft(fid) IsNot Nothing _
-                                                                       OrElse _mainForm.IsArmoRaceCompatible(fid, _raceFormID, _isFemale))
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"ARMO"},
+                title, CurrentTemplateSelection(), allowNull:=False,
+                extraDraftEntries:=drafts,
+                formIdFilter:=Function(fid) _mainForm.TryGetArmoDraft(fid) IsNot Nothing _
+                                            OrElse _mainForm.IsArmoRaceCompatible(fid, _raceFormID, _isFemale))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
             Return dlg.SelectedFormID
         End Using
@@ -1691,10 +1670,13 @@ Public Class ArmoEditor_Form
         Dim drafts = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
             .FormID = d.FormID, .EditorID = d.Record.EditorID,
             .DisplayName = d.Record.EditorID, .Signature = "ARMA"}).ToList()
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMA"},
-                                           "Add Armor Addon (ARMA)", 0UI, allowNull:=False,
-                                           extraDraftEntries:=drafts,
-                                           formIdFilter:=Function(fid) _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
+        ' ⛔ Y LOS PROPIOS YA GUARDADOS: ver `PickRealArmo`.
+        drafts.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "ARMA", drafts))
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"ARMA"},
+                "Add Armor Addon (ARMA)", 0UI, allowNull:=False,
+                extraDraftEntries:=drafts,
+                formIdFilter:=Function(fid) _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             _addons.Add(New ARMO_AddonEntry With {.AddonIndex = 0US, .ArmaFormID = dlg.SelectedFormID})
             RefreshAddonsGrid()
@@ -1842,7 +1824,11 @@ Public Class ArmoEditor_Form
     Private Sub OnAddCombo(sender As Object, e As EventArgs)
         Dim nueva = _comboHost.AgregarCombinacion(Nothing)
         If nueva Is Nothing Then Return
-        Using dlg As New ObtsCombinationEditor_Form(_mainForm, nueva)
+        ' ⛔ `duenoCensado:=True`: el dueño de esta combinación es un ARMO, y las propiedades de OBTS
+        ' de un ARMO borrador SÍ las recorre `CensoDeReferencias.DeBorrador`. Por eso acá es seguro
+        ' ofrecer borradores en el selector de `Value1` — y en el editor de NPC no, que por eso no lo
+        ' pasa. Ver el `param` del constructor.
+        Using dlg As New ObtsCombinationEditor_Form(_mainForm, nueva, duenoCensado:=True)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 _combinations.Add(nueva)
                 RefreshCombinationsGrid()
@@ -1898,7 +1884,11 @@ Public Class ArmoEditor_Form
         If i < 0 OrElse i >= _combinations.Count Then Return
         Dim trabajo = _comboHost.AgregarCombinacion(_combinations(i))
         If trabajo Is Nothing Then Return
-        Using dlg As New ObtsCombinationEditor_Form(_mainForm, trabajo)
+        ' ⛔ `duenoCensado:=True`: el dueño de esta combinación es un ARMO, y las propiedades de OBTS
+        ' de un ARMO borrador SÍ las recorre `CensoDeReferencias.DeBorrador`. Por eso acá es seguro
+        ' ofrecer borradores en el selector de `Value1` — y en el editor de NPC no, que por eso no lo
+        ' pasa. Ver el `param` del constructor.
+        Using dlg As New ObtsCombinationEditor_Form(_mainForm, trabajo, duenoCensado:=True)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 _combinations(i) = trabajo
                 RefreshCombinationsGrid()
@@ -2085,11 +2075,35 @@ Public Class ArmoEditor_Form
 
         Using dlg As New MswpSubEditor_Form(_mainForm, draft, meshPath, genderLabel, extraMeshPaths)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
-                _mainForm.RegisterMswpDraft(draft)
-                SetFidText(target, draft.FormID)
+                ' ⛔ EL FormID SALE DEL DIÁLOGO, no del objeto que le pasamos: el editor ahora tiene sus
+                ' cuatro puertas y el usuario pudo haber entrado con un swap y salido con OTRO.
+                ' ⛔⛔ CERO NO ES «USÁ EL QUE TE PASÉ»: ES «NO HAY OBJETIVO». El centinela viejo
+                ' (`If(dlg.ResultMswpFormID <> 0UI, …, draft.FormID)`) hacía que un OK sin objetivo cayera al
+                ' FormID que mandamos, y el `If(TryGetMswpDraft(...), draft)` de al lado lo RE-REGISTRABA: el
+                ' «Delete / Revert…» que el usuario acababa de hacer se deshacía solo.
+                '
+                ' ⛔⛔ Y EL BLANCO QUE CREAMOS NOSOTROS SE BAJA SI EL USUARIO SALIÓ CON OTRO. El protocolo de
+                ' `TomaDeBorrador` NO lo cubre, y el comentario que decía que sí estaba equivocado: `Tomar` guarda
+                ' `_registroPrevio = _buscar(fid)`, que es EL MISMO OBJETO que le pasamos, así que
+                ' `QueHacerAlAbandonar` cae en la rama `Restaurar` —no en `NoTocar`— y lo REPONE. Y todo borrador
+                ' `IsNew` es `IsDirty`, así que la fase 2g lo emite: un `npcm_MSWP_…_new` vacío y huérfano en el
+                ' `.esp` del usuario, por el solo hecho de haber probado las puertas del editor.
+                ' ⛔ LA DECISIÓN ES DE `MswpSubEditor_Form.ResultadoDelModal` y no de acá: los TRES llamadores la
+                ' escribían a mano y ya habían divergido —dos re-registraban, uno no—, que es cómo los dos
+                ' defectos de bytes entraron por puertas distintas. Y allá un testigo la puede correr.
+                Dim r = MswpSubEditor_Form.ResultadoDelModal(dlg.ResultMswpFormID, draft.FormID, isNewDraft)
+                If r.Poner = 0UI Then Return
+                If r.Bajar <> 0UI Then _mainForm.UnregisterMswpDraft(r.Bajar)
+                Dim elegido = _mainForm.TryGetMswpDraft(r.Poner)
+                If elegido Is Nothing Then Return
+                _mainForm.RegisterMswpDraft(elegido)
+                SetFidText(target, r.Poner)
                 OnFieldEdited(Me, EventArgs.Empty)
             ElseIf isNewDraft Then
                 ' Cancelled a freshly-created draft → drop it so it doesn't leak into the save set.
+                ' ⛔ El que se baja es el que CREAMOS nosotros, no el que el usuario haya dejado
+                ' elegido: con las cuatro puertas puestas pueden ser distintos, y bajar el equivocado
+                ' le borraría al usuario un swap que él no creó en este gesto.
                 _mainForm.UnregisterMswpDraft(draft.FormID)
             End If
         End Using
@@ -2108,15 +2122,30 @@ Public Class ArmoEditor_Form
         Dim alBorrar As Func(Of FormIdPickerEntry, Boolean) = Nothing
         If includeMswpDrafts Then
             drafts = _mainForm.MswpDrafts().Select(Function(d) New FormIdPickerEntry With {
-                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID, .Signature = "MSWP"}).ToList()
+                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+                .Signature = "MSWP", .PluginName = If(d.IsOverride, "(override)", "(new)")}).ToList()
+            ' ⛔⛔ Y LOS PROPIOS YA GUARDADOS, o el swap que el usuario creó y guardó queda SIN SALIDA.
+            ' Medido: el remapeo de la promoción SACA del registro todo borrador promovido
+            ' (`Borradores.RemapearSupervivientes`), así que tras un Save ese MSWP ya no es un borrador
+            ' — y el botón «Delete / Revert…», que ahora sólo se habilita sobre las filas que pasa el
+            ' llamador, quedaría VISIBLE Y MUERTO sobre él. Es, palabra por palabra, el defecto por el
+            ' que `BorradoDeMswp` existió: «la única salida era reiniciar la aplicación o abrir el .esp
+            ' en xEdit».
+            drafts.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "MSWP", drafts))
             ' ⛔ Y CON SU CAMINO DE BAJA. Sin `onDeleteEntry` el botón «Delete / Revert…» queda INVISIBLE
             ' (`FormIdPicker_Form`), que es como el MSWP terminó siendo la única clase de borrador sin salida:
             ' un override aceptado y arrepentido se emitía igual en la fase 2g y le pegaba a TODA armadura que
             ' use ese swap. La ley es la misma que la de ARMO/ARMA y vive en un solo lugar.
-            alBorrar = Function(en) BorradoDeMswp.BorrarORevertir(Me, _mainForm, en)
+            ' ⛔ EXPLÍCITO Y NO AUTOMÁTICO, a propósito: `OutfitDraftSaveGate` caso C55-G1 lee el
+            ' FUENTE de este `PickFidInto` y exige el literal `onDeleteEntry`; sin él el gate se pone
+            ' ROJO con la ley intacta. Y no es una concesión al gate: este editor tiene `_toma`, así
+            ' que bajo el contrato necesita dueño igual.
+            alBorrar = Function(en) BorradoDeBorradores.BorrarORevertir(_mainForm, Me, en, Me)
         End If
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, sigs, title, GetFid(target),
-                                           allowNull, drafts, onDeleteEntry:=alBorrar)
+        Using dlg As FormIdPicker_Form = If(drafts Is Nothing,
+                New FormIdPicker_Form(_mainForm.PluginManagerForEditor, sigs, title, GetFid(target), allowNull),
+                FormIdPicker_Form.ParaBorradores(_mainForm, Me, sigs, title, GetFid(target),
+                                                 allowNull, drafts, onDeleteEntry:=alBorrar))
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 SetFidText(target, dlg.SelectedFormID)
                 OnFieldEdited(Me, EventArgs.Empty)

@@ -768,14 +768,17 @@ Partial Class MainForm
         PanelActionsToolbar.AutoSize = True
         PanelActionsToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
         PanelActionsToolbar.Controls.Add(LabelEdit)
+        ' ⛔ EL ORDEN DE ESTOS CINCO LO FIJA EL USUARIO: Face, Body, NPC, Outfit, Head Parts
+        ' (23-sep). Es un `FlowLayoutPanel`, asi que el orden de alta ES el orden en pantalla, y los
+        ' `TabIndex` de mas abajo lo siguen para que el recorrido con el teclado no diga otra cosa.
         PanelActionsToolbar.Controls.Add(ButtonEditFace)
         PanelActionsToolbar.Controls.Add(ButtonEditBody)
-        PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
-        ' ⛔ AL LADO DE `Outfit`, y en el form PRINCIPAL: decision del usuario (20-sep). El gesto es
-        ' «estoy trabajando este NPC y quiero un head part mio», asi que va con Face/Body/Outfit/NPC y
-        ' no en un menu aparte ni dentro de Edit Face.
-        PanelActionsToolbar.Controls.Add(ButtonEditHeadParts)
         PanelActionsToolbar.Controls.Add(ButtonEditNpc)
+        PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
+        ' ⛔ EN EL FORM PRINCIPAL, con los otros cuatro: decision del usuario (20-sep). El gesto es
+        ' «estoy trabajando este NPC y quiero un head part mio», asi que va en esta barra y no en un
+        ' menu aparte ni dentro de Edit Face.
+        PanelActionsToolbar.Controls.Add(ButtonEditHeadParts)
         PanelActionsToolbar.Controls.Add(SeparatorActions1)
         PanelActionsToolbar.Controls.Add(LabelLooksMenu)
         PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu)
@@ -853,6 +856,7 @@ Partial Class MainForm
         ButtonEditHeadParts.Enabled = True
         ButtonEditHeadParts.Margin = New Padding(2)
         ButtonEditHeadParts.Name = "ButtonEditHeadParts"
+        ButtonEditHeadParts.TabIndex = 5
         ButtonEditHeadParts.Text = "Head Parts…"
         ButtonEditHeadParts.UseVisualStyleBackColor = True
         '
@@ -863,7 +867,7 @@ Partial Class MainForm
         ButtonEditOutfit.MinimumSize = New Size(80, 28)
         ButtonEditOutfit.Name = "ButtonEditOutfit"
         ButtonEditOutfit.Size = New Size(80, 28)
-        ButtonEditOutfit.TabIndex = 3
+        ButtonEditOutfit.TabIndex = 4
         ButtonEditOutfit.Text = "Outfit"
         ButtonEditOutfit.UseVisualStyleBackColor = True
         ' 
@@ -876,7 +880,7 @@ Partial Class MainForm
         ButtonEditNpc.MinimumSize = New Size(80, 28)
         ButtonEditNpc.Name = "ButtonEditNpc"
         ButtonEditNpc.Size = New Size(80, 28)
-        ButtonEditNpc.TabIndex = 4
+        ButtonEditNpc.TabIndex = 3
         ButtonEditNpc.Text = "NPC…"
         ButtonEditNpc.UseVisualStyleBackColor = True
         ' 

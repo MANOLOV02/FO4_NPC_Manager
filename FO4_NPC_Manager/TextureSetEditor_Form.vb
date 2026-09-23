@@ -21,6 +21,7 @@ Imports FO4_Base_Library.Canon.CanonInterpretacion
 ''' de los que necesita un head part. Viene gratis en la copia del árbol; el editor dice que está y no
 ''' lo toca, que es distinto de perderlo.</para></summary>
 Public Class TextureSetEditor_Form
+    Implements BorradoDeBorradores.IDuenoDeBorradores
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _game As Canon.WbGame
@@ -123,10 +124,220 @@ Public Class TextureSetEditor_Form
         ' commit la vista del editor y el registro arrancan distintos.
         If _draft.IsOverride Then Commit()
 
+        AddHandler ButtonNewBlank.Click, AddressOf OnNuevoEnBlanco
+        AddHandler ButtonNewFromTemplate.Click, AddressOf OnNuevoDesdePlantilla
+        AddHandler ButtonOverrideExisting.Click, AddressOf OnOverrideExistente
+        AddHandler ButtonEditMine.Click, AddressOf OnEditarElMio
         AddHandler TextBoxEdid.TextChanged, AddressOf OnCampo
         AddHandler TextBoxMnam.TextChanged, AddressOf OnCampo
         AddHandler ButtonOk.Click, AddressOf OnOk
         AddHandler ButtonCancel.Click, AddressOf OnCancel
+    End Sub
+
+    '==============================================================================================
+    ' LAS CUATRO PUERTAS DE OBJETIVO — el molde de HDPT / ARMO / ARMA, transcrito
+    '
+    ' ⛔ ANTES ESTE EDITOR NO TENÍA NINGUNA: el modo se INFERÍA de si el campo del llamador traía
+    ' FormID cuando se apretó «New / Edit…». Vacío ⇒ nuevo, con valor ⇒ override. El usuario no podía
+    ' decir «quiero un override» ni «quiero arrancar de éste», y no había forma de volver a abrir un
+    ' TXST propio sin pasar por el campo de otro editor.
+    '==============================================================================================
+
+    ''' <summary>«New (blank)»: un TXST nuevo y vacío.</summary>
+    Private Sub OnNuevoEnBlanco(sender As Object, e As EventArgs)
+        Dim d = TxstDraft.Nuevo(_mainForm.AllocateDraftFormID(), _game)
+        If d Is Nothing Then Return
+        ' ⛔ `registrar:=False`: un borrador NUEVO no se commitea al abrir. Registrar NO es inocuo — la
+        ' fase de guardado emite TODO borrador sucio, referenciado o no, así que abrir esta puerta y
+        ' cerrar el editor escribiría un TXST vacío al .esp. Es la misma ley que el OK ya aplica.
+        TomarYVolcar(d, registrar:=False)
+    End Sub
+
+    ''' <summary>«New from template…»: un TXST NUEVO con el contenido de uno que ya existe.</summary>
+    Private Sub OnNuevoDesdePlantilla(sender As Object, e As EventArgs)
+        Dim fid = ElegirTxstReal("Pick the texture set to copy")
+        If fid = 0UI Then Return
+        Dim rec = _mainForm.PluginManagerForEditor.GetRecord(fid)
+        If rec Is Nothing Then Return
+        Dim d = TxstDraft.Clon(rec, _mainForm.PluginManagerForEditor, _mainForm.AllocateDraftFormID())
+        If d Is Nothing Then
+            MessageBox.Show(Me, "Could not parse that texture set.", "Texture Set Editor",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+        TomarYVolcar(d)
+    End Sub
+
+    ''' <summary>«Override existing…»: se edita un TXST que YA existe, conservando su identidad.</summary>
+    Private Sub OnOverrideExistente(sender As Object, e As EventArgs)
+        Dim fid = ElegirTxstReal("Pick the texture set to override")
+        If fid = 0UI Then Return
+        CargarComoOverride(fid)
+    End Sub
+
+    ''' <summary>«Edit mine…»: los TXST PROPIOS — los borradores de esta sesión Y los que ya están
+    ''' GUARDADOS en el .esp.
+    ''' <para>⛔ LAS DOS MITADES. Con sólo los borradores, reabrir la app vacía la lista y el usuario ve
+    ''' «no hay ninguno» sobre un plugin que YA tiene texture sets suyos. Los guardados salen de
+    ''' <see cref="BorradoDeBorradores.EntradasPropias"/>, la sede única.</para>
+    ''' <para>La baja la arma el propio selector: le pasamos el dueño y no hay `onDeleteEntry` que
+    ''' acordarse de escribir.</para></summary>
+    Private Sub OnEditarElMio(sender As Object, e As EventArgs)
+        Dim entradas = _mainForm.TxstDrafts().Where(Function(d) d?.Record IsNot Nothing).
+            Select(Function(d) New FormIdPickerEntry With {
+                .FormID = d.FormID, .EditorID = d.Record.EditorID, .DisplayName = d.Record.EditorID,
+                .Signature = "TXST", .PluginName = If(d.IsOverride, "(override)", "(new)")}).ToList()
+        entradas.AddRange(BorradoDeBorradores.EntradasPropias(_mainForm, "TXST", entradas))
+        If entradas.Count = 0 Then
+            MessageBox.Show(Me,
+                            "No texture sets of yours yet — neither drafts in this session nor saved ones " &
+                            "in your plugin. Use New, New from template… or Override existing… first.",
+                            "Texture Set Editor", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Using dlg As FormIdPicker_Form = FormIdPicker_Form.ParaBorradores(
+                _mainForm, Me, {"TXST"}, "Edit my texture set (drafts + saved)",
+                0UI, False, entradas,
+                formIdFilter:=Function(fid) entradas.Any(Function(x) x.FormID = fid))
+            If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
+            If _draft IsNot Nothing AndAlso _draft.FormID = dlg.SelectedFormID Then
+                MessageBox.Show(Me, "That is the texture set you are already editing in this window.",
+                                "Texture Set Editor", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+            ' ⛔ UN BORRADOR ABIERTO EN OTRO EDITOR NO SE ABRE DOS VECES: el borrador ES el record y se
+            ' comparte por REFERENCIA, así que dos ventanas sobre el mismo objeto se pisan el trabajo
+            ' sin aviso. La marca la lleva `TomaDeBorrador`; acá sólo se pregunta.
+            If Borradores.EstaTomado(dlg.SelectedFormID) Then
+                MessageBox.Show(Me, "That texture set is already open in another editor window. Close it first.",
+                                "Texture Set Editor", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+            CargarComoOverride(dlg.SelectedFormID)
+        End Using
+    End Sub
+
+    ''' <summary>El selector de un TXST REAL, que comparten «New from template…» y «Override
+    ''' existing…». Devuelve 0 si se canceló.</summary>
+    ''' <summary>Elegir un record REAL para «New from template…» / «Override existing…».
+    ''' <para>⛔⛔ Y LOS PROPIOS YA GUARDADOS TAMBIÉN. Los cuatro <c>ElegirXxxReal</c> usaban el ctor
+    ''' PLANO, que sólo lista el orden de carga: un record que el usuario creó con esta app y ya guardó
+    ''' NO aparecía, así que no podía partir de su propio trabajo — ni para clonarlo ni para
+    ''' override-arlo. El código que esta ola borró decía textualmente que eso era el defecto.</para>
+    ''' <para>⛔ Van SIN dueño y ésa es la decisión: este diálogo no toma ningún borrador —devuelve un
+    ''' FormID y se cierra—, así que no hay precondición ni postcondición que cumplir. Las filas son
+    ''' records REALES, no borradores, pero igual pasan por la fábrica: el botón «Delete / Revert…» se
+    ''' habilita sólo sobre las filas que el llamador pasa, y un record propio guardado SÍ tiene salida
+    ''' (<c>Gesto.QuitarGuardado</c>).</para></summary>
+    Private Function ElegirTxstReal(titulo As String) As UInteger
+        Dim propias = BorradoDeBorradores.EntradasPropias(_mainForm, "TXST", Nothing)
+        ' ⛔⛔ CON DUEÑO. Este editor TIENE `_toma` y ya implementa el contrato, así que la condición de
+        ' `ParaBorradoresSinDueno` —«el sitio no tiene ningún borrador tomado»— NO se cumple. Es el mismo
+        ' error que esta ola le corrigió a `ArmaEditor_Form.PickTxstInto`, y acá pesa MÁS porque las clases
+        ' COINCIDEN: `EntradasPropias` puede listar el record que este editor tiene tomado, y sin dueño
+        ' `Planear` no sabe que lo tomó ESTA ventana ⇒ contesta «already open in another editor window»
+        ' —mentira, es ésta— y niega un gesto que la ley concede («tomado por MÍ se permite»).
+        Using dlg As FormIdPicker_Form = If(propias.Count = 0,
+                New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"TXST"}, titulo, 0UI, allowNull:=False),
+                FormIdPicker_Form.ParaBorradores(_mainForm, Me, {"TXST"}, titulo, 0UI, False, propias))
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
+            Return dlg.SelectedFormID
+        End Using
+    End Function
+
+    ''' <summary>Tomar <paramref name="fid"/> como override. ⛔ Si YA hay borrador bajo ese FormID, el
+    ''' BORRADOR MANDA sobre el disco: se adopta, no se reconstruye — reconstruirlo tiraría lo que el
+    ''' usuario ya editó en esta sesión.</summary>
+    Private Sub CargarComoOverride(fid As UInteger)
+        Dim ya = _mainForm.TxstDraftPorFormId(fid)
+        If ya IsNot Nothing Then
+            TomarYVolcar(ya)
+            Return
+        End If
+        ' ⛔ POR LA FÁBRICA, no por `Edicion` pelado: la línea de base de la suciedad sale de la MISMA,
+        ' y con dos construcciones distintas el record abría SUCIO sin que el usuario lo tocara.
+        Dim d = OverridePristino(fid, _mainForm.PluginManagerForEditor)
+        If d Is Nothing Then
+            MessageBox.Show(Me, "Could not parse that texture set.", "Texture Set Editor",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+        TomarYVolcar(d)
+    End Sub
+
+    ''' <summary>Cambiar el objetivo del editor.
+    ''' <para>⛔⛔ ABANDONA LA TOMA ANTERIOR PRIMERO. Sin esto, cada vuelta por una de las cuatro puertas
+    ''' deja el borrador anterior REGISTRADO: el editor nace con uno en blanco, así que se iban
+    ''' acumulando borradores vacíos y «Edit mine…» los listaba todos. Es el defecto que el editor de
+    ''' head parts documenta como «era el ÚNICO editor de la casa sin este paso».</para></summary>
+    ''' <param name="registrar">False para un NUEVO EN BLANCO: se toma y se vuelca pero NO se commitea,
+    ''' así que no queda registrado hasta que el usuario escriba algo.</param>
+    Private Sub TomarYVolcar(d As TxstDraft, Optional registrar As Boolean = True)
+        If d Is Nothing Then Return
+        Dim snap As TxstDraft = Nothing
+        Try
+            snap = d.Clone()
+        Catch
+        End Try
+        ' ⛔⛔ rev-37 · EL CAMBIO DE OBJETIVO ES DESTRUCTIVO Y ANTES NO AVISABA: la ley y su
+        ' porqué están en `TomaDeBorrador.CambiarDestruyeTrabajo`. El predicado vive allá para que
+        ' un testigo lo corra; el cartel, en `BorradoDeBorradores`, para que los cinco editores
+        ' digan lo mismo.
+        If _toma.CambiarDestruyeTrabajo(d, _draft IsNot Nothing AndAlso _draft.IsDirty) AndAlso
+           Not BorradoDeBorradores.ConfirmarCambioDeObjetivo(Me, "texture set", "Texture Set Editor") Then Return
+        ' ⛔ LA PUERTA ÚNICA, Y ES MEDIBLE: abandonar + tomar + registrar viven en
+        ' `TomaDeBorrador.CambiarObjetivo`, afuera del formulario, porque adentro ningún testigo
+        ' puede correrla — cada OK abre validaciones con `MessageBox` y un modal cuelga al gate.
+        ' Mismo movimiento que `PlanDeCierreDeListas` y `FilasPropiasDeValue1`.
+        If Not _toma.CambiarObjetivo(d, snap, registrar) Then
+            MessageBox.Show(Me, "That texture set is already open in another editor window. Close it first.",
+                            "Texture Set Editor", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        _draft = d
+        Volcar()
+        ' ⛔ El REGISTRO ya lo hizo la puerta (`CambiarObjetivo`). Acá sólo se vuelca el
+        ' formulario al record cuando el objetivo ya es parte del trabajo del usuario.
+        If registrar Then Commit()
+        ActualizarBanner()
+    End Sub
+
+    ''' <summary>El banner dice el MODO, que es el dato más importante de la ventana.</summary>
+    Private Sub ActualizarBanner()
+        If _draft Is Nothing Then
+            LabelBanner.Text = "No target — use New, New from template… or Override existing…"
+        Else
+            LabelBanner.Text = If(_draft.IsOverride, $"OVERRIDE of 0x{_draft.FormID:X8}", "NEW record")
+        End If
+    End Sub
+
+    '==============================================================================================
+    ' EL CONTRATO CON LA SEDE DE BAJA — `BorradoDeBorradores.IDuenoDeBorradores`
+    '==============================================================================================
+
+    ''' <summary>El FormID que este editor tiene tomado. Alimenta la precondición de `Planear`.</summary>
+    Private Function FormIdTomado() As UInteger Implements BorradoDeBorradores.IDuenoDeBorradores.FormIdTomado
+        Return If(_draft Is Nothing, 0UI, _draft.FormID)
+    End Function
+
+    ''' <summary>Sin buffers: cada campo se vuelca al record por <c>Commit</c> apenas cambia, así que el
+    ''' censo de referrers ya los ve.</summary>
+    Private Function ReferenciasNoVolcadas(formID As UInteger) As IEnumerable(Of String) _
+            Implements BorradoDeBorradores.IDuenoDeBorradores.ReferenciasNoVolcadas
+        Return Enumerable.Empty(Of String)()
+    End Function
+
+    ''' <summary>POSTCONDICIÓN de la baja.
+    ''' <para>⛔⛔ SE SUELTA LA TOMA, NO SE ABANDONA. `Abandonar` REPONDRÍA lo que el usuario acaba de
+    ''' borrar —la toma todavía tiene su snapshot y la ley diría «restaurar»—, por encima del
+    ''' `MarkRecordForRemoval` del mismo gesto. Los dos métodos existen por esta diferencia, y ésta es
+    ''' la trampa que el editor de head parts documenta con el reporte del usuario: «si hago
+    ''' delete/revert se duplica».</para></summary>
+    Private Sub TrasLaBaja(formID As UInteger) Implements BorradoDeBorradores.IDuenoDeBorradores.TrasLaBaja
+        If _draft Is Nothing OrElse _draft.FormID <> formID Then Return
+        _toma.Soltar()
+        _draft = Nothing
+        ActualizarBanner()
     End Sub
 
     ''' <summary>EL BORRADOR OVERRIDE PRISTINO de un TXST real: el record del archivo, copiado, con
@@ -229,7 +440,7 @@ Public Class TextureSetEditor_Form
         Try
             Dim r = _draft.Record
             TextBoxEdid.Text = If(r.EditorID, "")
-            LabelBanner.Text = If(_draft.IsOverride, $"OVERRIDE of 0x{_draft.FormID:X8}", "NEW record")
+            ActualizarBanner()
             PonerCaja("Diffuse", r.TexturesRGBADiffuse)
             PonerCaja("NormalGloss", r.TexturesRGBANormalGloss)
             PonerCaja("Height", r.TexturesRGBAHeight)
@@ -356,9 +567,19 @@ Public Class TextureSetEditor_Form
     ''' abrir el editor y apretar OK escribía un TXST VACÍO al .esp con EditorID automático. Es la
     ''' gemela de la del editor de head parts, y el predicado es el mismo: «¿sigue siendo idéntico a uno
     ''' en blanco?», construido en el acto — no contra una foto de apertura, que sale de un `Clone()`
-    ''' dentro de un `Try` y si falla deja la guarda sin correr.</summary>
+    ''' dentro de un `Try` y si falla deja la guarda sin correr.</para>
+    ''' <para>⛔⛔ LA PRIMERA GUARDA ES «NO HAY OBJETIVO», Y FALTABA. `TrasLaBaja` deja
+    ''' <c>_draft = Nothing</c> —correcto: el usuario acaba de borrar ese borrador desde el
+    ''' selector—, y desde ahí el OK caía en <c>Commit()</c>, que sin borrador devuelve False y
+    ''' abre «The edit could not be written…». <b>La ventana quedaba sin forma de cerrarse por
+    ''' OK</b>: cada clic repetía el mismo cartel de error sobre algo que no es un error.</para>
+    ''' <para>La salida ya estaba escrita en <c>LeveledListEditor_Form.OnOk</c> y se transcribe
+    ''' literal: sin objetivo, el OK es un Cancel.</para></summary>
     Private Sub OnOk(sender As Object, e As EventArgs)
-        If _draft IsNot Nothing AndAlso _draft.IsNew Then
+        If _draft Is Nothing Then
+            DialogResult = DialogResult.Cancel : Close() : Return
+        End If
+        If _draft.IsNew Then
             Dim intacto As Boolean = False
             Try
                 Dim enBlanco = TxstDraft.Nuevo(_draft.FormID, _game)

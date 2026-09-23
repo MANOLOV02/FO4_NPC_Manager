@@ -3240,6 +3240,19 @@ Public Class MainForm
         If Not IsDisposed AndAlso IsHandleCreated Then BeginInvoke(Sub() FlushPendingLoadWarnings())
     End Sub
 
+    ''' <summary>Reescribe EN EL LUGAR los FormID provisionales de una lista del preset.
+    ''' <para>⛔ Una sede, y no dos bucles copiados: hoy son dos listas y la tercera es la que se
+    ''' olvida. Silenciosa por diseño — un FormID que no está en el mapa no se promovió y se queda
+    ''' como está.</para></summary>
+    Private Shared Sub RemapearLista(lista As List(Of UInteger),
+                                     realGlobal As Dictionary(Of UInteger, UInteger))
+        If lista Is Nothing Then Return
+        For i = 0 To lista.Count - 1
+            Dim mapped As UInteger
+            If realGlobal.TryGetValue(lista(i), mapped) Then lista(i) = mapped
+        Next
+    End Sub
+
     ''' <summary>Filter the skin ARMO universe (built once at plugin load) by the race+gender of
     ''' the NPC currently being edited. An ARMO qualifies iff (a) at least one ARMA child has the
     ''' gender's skin TXST set (so the candidate is actually a body skin, not a placeholder) AND
@@ -3812,6 +3825,33 @@ Public Class MainForm
         If _pluginManager.RevertAppOverride(formID) Then _ctx.InvalidateRecord(formID)
     End Sub
 
+    ''' <summary>¿Este FormID es un record REAL, escrito por ESTA app, y todavía no marcado para
+    ''' quitar? Es el MISMO predicado que <see cref="GetAuthoredRecords"/> aplica por firma, pero
+    ''' preguntado por FormID.
+    ''' <para>⛔⛔ <b>SIN ESTO LA BAJA CAE A «quitar guardado» SOBRE CUALQUIER FILA.</b> La rama de
+    ''' <c>BorradoDeBorradores.Planear</c> que atiende a los records ya guardados se elegía por
+    ''' DESCARTE —«no hay borrador vivo ⇒ debe ser uno mío»— y decidía «nuevo vs override» mirando
+    ''' si el EDID empieza con <c>npcm_</c>. Sobre una fila VANILLA del orden de carga eso ofrecía
+    ''' «Revert saved…», y el «Sí» metía un record de Bethesda en <c>_recordsToRemove</c>: el
+    ''' guardado siguiente lo dejaba caer del plugin del usuario.</para>
+    ''' <para>⛔ Las dos mitades hacen falta. <c>IsNpcManagerPlugin</c> sola deja re-marcar lo ya
+    ''' marcado —el record sigue en <c>AllRecords</c> hasta el próximo Save—, y el selector volvería
+    ''' a ofrecer un gesto que ya no hace nada; <c>_recordsToRemove</c> sola no distingue vanilla.</para></summary>
+    Friend Function EsRecordPropioVivo(formID As UInteger) As Boolean
+        If formID = 0UI OrElse _pluginManager Is Nothing Then Return False
+        If _recordsToRemove.Contains(formID) Then Return False
+        Dim rec = _pluginManager.GetRecord(formID)
+        If rec Is Nothing Then Return False
+        Return _pluginManager.IsNpcManagerPlugin(rec.SourcePluginName)
+    End Function
+
+    ''' <summary>¿Este FormID quedó marcado para quitar en el próximo guardado? Lo pregunta el testigo
+    ''' de la baja: revertir un override sin esta marca deja que la fase 2a lo vuelva a preservar, y el
+    ''' record revertido se sigue escribiendo al .esp.</summary>
+    Friend Function RecordsToRemoveContiene(formID As UInteger) As Boolean
+        Return formID <> 0UI AndAlso _recordsToRemove.Contains(formID)
+    End Function
+
     ''' <summary>Snapshot of the FormIDs marked for removal — passed to the save via SaveContext.RecordsToRemove.</summary>
     Friend Function RecordsToRemove() As HashSet(Of UInteger)
         Return New HashSet(Of UInteger)(_recordsToRemove)
@@ -4110,6 +4150,23 @@ Public Class MainForm
             End If
             If p.DefaultOutfitFormIDOverride.HasValue AndAlso p.DefaultOutfitFormIDOverride.Value = formID Then
                 refs.Add($"NPC outfit — {GetRecordDisplayNameForEditor(kv.Key)}")
+            End If
+            ' ⛔⛔ EL ATUENDO DE DORMIR ES LA MISMA CLASE DE REFERENCIA QUE EL DE ARRIBA, y faltaba.
+            ' `SleepOutfitFormIDOverride` apunta a un OTFT —que TIENE borrador— y PERSISTE AL .esp:
+            ' `NpcRecordOverlay.vb:650-652` lo vuelca a `sr.SleepingOutfit` (NPC_\SOFT). Sin esta
+            ' línea, «Delete draft» decía que nadie lo referenciaba, lo borraba, y el NPC se quedaba
+            ' sin su atuendo de dormir en silencio. Es el mismo defecto que [rev-53] cerró para las
+            ' head parts, en el campo de al lado.
+            If p.SleepOutfitFormIDOverride.HasValue AndAlso p.SleepOutfitFormIDOverride.Value = formID Then
+                refs.Add($"NPC sleep outfit — {GetRecordDisplayNameForEditor(kv.Key)}")
+            End If
+            ' ⛔⛔ Y LA TEXTURA DE CABEZA, por lo mismo: `HeadTextureFormIDOverride` apunta a un TXST,
+            ' que tiene borrador desde la ola de head parts (20-sep). Lo escribe `EditFace_Form.vb:1193`
+            ' y no es campo de record, así que `CensoDeReferencias.DeBorrador` NO lo ve: si no está
+            ' acá, no está en ningún lado. Es la precondición para que un selector de TXST pueda
+            ' ofrecer borradores sin dejar al preset apuntando a un 0xFF muerto.
+            If p.HeadTextureFormIDOverride.HasValue AndAlso p.HeadTextureFormIDOverride.Value = formID Then
+                refs.Add($"NPC head texture — {GetRecordDisplayNameForEditor(kv.Key)}")
             End If
             ' ⛔⛔ LAS HEAD PARTS ASIGNADAS FALTABAN, y es el MISMO defecto que el comentario de arriba
             ' dice que ya costó una vez: «el censo miraba SOLO el record y un ARMO apuntado sólo por una
@@ -4829,16 +4886,23 @@ Public Class MainForm
         If fid = 0UI OrElse Borradores.EsFormIdDeBorrador(fid) Then Return Nothing
         Dim already = TryGetLeveledListDraft(fid)
         If already IsNot Nothing Then Return already
-        Dim rec = _pluginManager.GetRecord(fid)
-        If rec Is Nothing OrElse rec.Header.Signature <> "LVLI" Then Return Nothing
-        ' El borrador trabaja sobre una COPIA del record: cancelar el editor tiene que dejar el
-        ' original
-        ' como estaba. Edicion() ya trae TODOS los campos (no sólo el subconjunto que copiaba a mano
-        ' antes).
-        Dim d = LeveledListDraft.Edicion(rec, _pluginManager)
+        ' ⛔ UNA SOLA CONSTRUCCIÓN. `LeveledListEditor_Form.OverridePristino` arma exactamente este
+        ' borrador —copia del record, `IsModified = False`— y es TAMBIÉN el `construirBase` de la toma,
+        ' así que NO puede registrar ni devolver el borrador vivo: eso es lo propio de ESTA puerta y por
+        ' eso va acá afuera. Con dos construcciones distintas bastaba que una pusiera `IsModified` y la
+        ' otra no para que el mismo record abriera SUCIO según por dónde entrara.
+        Dim d = LeveledListEditor_Form.OverridePristino(fid, _pluginManager)
         If d Is Nothing Then Return Nothing
         RegisterLeveledListDraft(d)
         Return d
+    End Function
+
+    ''' <summary>Los borradores de lista por nivel de esta sesión.
+    ''' <para>⛔ FALTABA, y era la Única de las OCHO clases con borrador sin su enumerador — las otras
+    ''' siete lo tienen. Por eso no había forma de listar «las mías» para una LVLI: el único acceso era
+    ''' por FormID, uno a uno.</para></summary>
+    Friend Function LeveledListDrafts() As List(Of LeveledListDraft)
+        Return _leveledListDrafts.Where(Function(d) d IsNot Nothing).ToList()
     End Function
 
     ''' <summary>The in-memory LVLI draft for <paramref name="formID"/>, or Nothing.</summary>
@@ -13410,6 +13474,32 @@ Public Class MainForm
             If ov.SkinFormIDOverride.HasValue AndAlso realGlobal.TryGetValue(ov.SkinFormIDOverride.Value, mapped) Then
                 ov.SkinFormIDOverride = mapped
             End If
+            ' ⛔⛔ LOS DOS QUE FALTABAN, Y SIN ELLOS LA CAPACIDAD NUEVA ESCRIBE BASURA. El censo de
+            ' referrers ya mira estos dos campos (para que «Delete» no diga que nadie los apunta), pero
+            ' CENSAR y REMAPEAR son cosas distintas: un borrador elegido acá lleva FormID provisional
+            ' `0xFF…`, y si nadie lo reescribe al promover, el NPC queda apuntando a un record que no
+            ' existe — la textura de cabeza se pierde EN SILENCIO y el atuendo de dormir también
+            ' (`NpcRecordOverlay` lo vuelca a `sr.SleepingOutfit`).
+            ' ⛔ NO cambia ningún .esp existente: hasta esta ola esos dos selectores no ofrecían
+            ' borradores, así que es IMPOSIBLE que un archivo ya guardado tenga un 0xFF ahí. Verificado.
+            If ov.HeadTextureFormIDOverride.HasValue AndAlso realGlobal.TryGetValue(ov.HeadTextureFormIDOverride.Value, mapped) Then
+                ov.HeadTextureFormIDOverride = mapped
+            End If
+            If ov.SleepOutfitFormIDOverride.HasValue AndAlso realGlobal.TryGetValue(ov.SleepOutfitFormIDOverride.Value, mapped) Then
+                ov.SleepOutfitFormIDOverride = mapped
+            End If
+            ' ⛔⛔ Y LA LISTA DE HEAD PARTS, que el censo de referrers mira y el remapeo no tocaba. Un HDPT
+            ' BORRADOR llega a `ov.HeadPartFormIDs` por el selector de Edit Face —`EditFace_Form` lista
+            ' `HdptDrafts()`—, y `NpcRecordOverlay` vuelca esa lista al `PNAM` del NPC. Sin remapear, el NPC
+            ' guardado apunta a un head part que no existe: la pieza no se dibuja y no hay aviso.
+            '    Es la MISMA ley que las cuatro líneas de arriba —censar y remapear son cosas distintas—,
+            ' sobre campos que son listas en vez de escalares.
+            ' ⛔ `SuppressedRawHeadPartFormIDs` NO entra, y NO es un olvido: sus miembros salen del PNAM
+            ' CRUDO del NPC (`HeadPartResolver.ComputeReplacedParentOrphanMisc`), o sea FormID REALES —
+            ' nunca un provisional. Es la misma rama que el censo de referrers declara MUERTA POR FORMATO
+            ' al lado (`GetDraftReferrers`: «NO HAY CASO MEDIDO que la ejercite»). Remapearla sería código
+            ' sin sujeto, que es lo que hace que un gate mida su propio fixture.
+            RemapearLista(ov.HeadPartFormIDs, realGlobal)
         Next
 
         ' (2) y (3): remapear las referencias de los borradores que SOBREVIVEN, re-publicar la foto de

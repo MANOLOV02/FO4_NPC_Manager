@@ -365,3 +365,7 @@ FodyWeavers.xsd
 # FO4 NPC Manager runtime logs
 npc_preview.log
 compositor_trace.log
+
+# Handoffs de diseno: describen trabajo POR HACER (estado, acuerdos, censos contra un
+# commit) y quedan obsoletos apenas el trabajo entra. No van al repo publico.
+PARCHE_BORRADORES_ESTADO.md

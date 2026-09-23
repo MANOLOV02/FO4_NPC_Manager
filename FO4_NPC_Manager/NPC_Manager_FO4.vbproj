@@ -104,6 +104,11 @@
     <InternalsVisibleTo Include="SlotResolutionProbe" />
     <InternalsVisibleTo Include="ContextoPropioGate" />
     <InternalsVisibleTo Include="OutfitDraftSaveGate" />
+    <!-- El testigo de la baja de borradores: llama a `BorradoDeBorradores.Planear`/`Ejecutar`
+         (Friend), a los `Register*Draft` del MainForm y a `FormIdPicker_Form.ParaBorradores`.
+         Sin esta linea NO COMPILA, y la bateria lo reporta FATAL, que es peor que rojo: nadie
+         sabria que ley se rompio. -->
+    <InternalsVisibleTo Include="BorradoresConSalidaGate" />
     <!-- ⛔ EL ÚNICO TESTIGO de las tres leyes que un editor de borrador aplica sobre el registro:
          ABRIR (¿el borrador manda sobre el disco?), ENSUCIAR (¿contra qué se compara la suciedad?) y
          ABANDONAR (¿el registro que hay bajo este FormID lo puse yo?). Vivían escritas a mano dentro de
