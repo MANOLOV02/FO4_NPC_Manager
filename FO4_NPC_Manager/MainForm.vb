@@ -1491,6 +1491,7 @@ Public Class MainForm
     Private _savedEnabledEditBody As Boolean
     Private _savedEnabledEditOutfit As Boolean
     Private _savedEnabledEditNpc As Boolean
+    Private _savedEnabledEditHeadParts As Boolean
     Private _savedEnabledLoadLooksmenu As Boolean
     Private _savedEnabledSaveLooksmenu As Boolean
     Private _savedEnabledCopyLook As Boolean
@@ -1513,6 +1514,7 @@ Public Class MainForm
             _savedEnabledEditBody = ButtonEditBody.Enabled
             _savedEnabledEditOutfit = ButtonEditOutfit.Enabled
             _savedEnabledEditNpc = ButtonEditNpc.Enabled
+            _savedEnabledEditHeadParts = ButtonEditHeadParts.Enabled
             _savedEnabledLoadLooksmenu = ButtonLoadLooksmenu.Enabled
             _savedEnabledSaveLooksmenu = ButtonSaveLooksmenu.Enabled
             _savedEnabledCopyLook = ButtonCopyLook.Enabled
@@ -1526,6 +1528,7 @@ Public Class MainForm
             ButtonEditBody.Enabled = False
             ButtonEditOutfit.Enabled = False
             ButtonEditNpc.Enabled = False
+            ButtonEditHeadParts.Enabled = False
             ButtonLoadLooksmenu.Enabled = False
             ButtonSaveLooksmenu.Enabled = False
             ButtonCopyLook.Enabled = False
@@ -1539,6 +1542,7 @@ Public Class MainForm
             ButtonEditBody.Enabled = _savedEnabledEditBody
             ButtonEditOutfit.Enabled = _savedEnabledEditOutfit
             ButtonEditNpc.Enabled = _savedEnabledEditNpc
+            ButtonEditHeadParts.Enabled = _savedEnabledEditHeadParts
             ButtonLoadLooksmenu.Enabled = _savedEnabledLoadLooksmenu
             ButtonSaveLooksmenu.Enabled = _savedEnabledSaveLooksmenu
             ButtonCopyLook.Enabled = _savedEnabledCopyLook
@@ -6241,6 +6245,7 @@ Public Class MainForm
         ButtonEditBody.Enabled = False
         ButtonEditOutfit.Enabled = False
         ButtonEditNpc.Enabled = False
+        ButtonEditHeadParts.Enabled = False
         ButtonLoadLooksmenu.Enabled = False
         ButtonSaveLooksmenu.Enabled = False
         ButtonCopyLook.Enabled = False
@@ -11637,14 +11642,19 @@ Public Class MainForm
 
     ''' <summary>Gate the NPC (Traits) editor button: enabled whenever a real NPC with a FormID is the currently
     ''' rendered subject (LVLN sub-actors and empty selections leave it off). Unlike the outfit/face/body gates
-    ''' there is no per-race content requirement — every NPC record has editable Name/flags/factions/etc.</summary>
+    ''' there is no per-race content requirement — every NPC record has editable Name/flags/factions/etc.
+    ''' Head Parts shares this gate (user order, 23-sep): enabled only with an NPC selected.</summary>
     Private Sub UpdateEditNpcEnabled()
         Dim st = _renderHost.LastRenderedState
         Dim shouldEnable As Boolean = st IsNot Nothing AndAlso st.RootNpcFormID <> 0UI
         If InvokeRequired Then
-            Invoke(Sub() ButtonEditNpc.Enabled = shouldEnable)
+            Invoke(Sub()
+                       ButtonEditNpc.Enabled = shouldEnable
+                       ButtonEditHeadParts.Enabled = shouldEnable
+                   End Sub)
         Else
             ButtonEditNpc.Enabled = shouldEnable
+            ButtonEditHeadParts.Enabled = shouldEnable
         End If
     End Sub
 
@@ -12110,9 +12120,8 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>Abre el editor de head parts. ⛔ NO exige NPC seleccionado —crear un record no lo
-    ''' necesita— y por eso es la excepción de esta barra: si no hay sujeto, el editor abre igual y su
-    ''' preview y su panel de validez quedan apagados con el motivo escrito. Decisión F del usuario
+    ''' <summary>Abre el editor de head parts. El botón sólo se habilita con un NPC seleccionado
+    ''' (orden del usuario, 23-sep; gate en <see cref="UpdateEditNpcEnabled"/>). Decisión F del usuario
     ''' (20-sep): el botón va acá, al lado de <c>Outfit</c>, y separado de Edit Face.
     ''' <para>El contexto (NPC / raza / género) sale del ÚLTIMO estado renderizado, que es la misma
     ''' fuente que usan Edit Face y Edit Outfit: así los tres hablan del mismo sujeto.</para></summary>

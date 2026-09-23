@@ -850,10 +850,9 @@ Partial Class MainForm
         ' ButtonEditOutfit
         ' 
         ButtonEditHeadParts.AutoSize = True
-        ' ⛔ Habilitado desde el arranque, a diferencia de los otros cuatro de esta barra: crear un
-        ' record no necesita un NPC. Sin NPC seleccionado el editor abre igual y su preview y su panel
-        ' de validez quedan apagados CON EL MOTIVO ESCRITO, en vez de mentir que el head part sirve.
-        ButtonEditHeadParts.Enabled = True
+        ' ⛔ Apagado hasta que haya un NPC, igual que los otros cuatro de esta barra (orden del usuario,
+        ' 23-sep). Lo prende `UpdateEditNpcEnabled` con la misma regla que el botón NPC.
+        ButtonEditHeadParts.Enabled = False
         ButtonEditHeadParts.Margin = New Padding(2)
         ButtonEditHeadParts.Name = "ButtonEditHeadParts"
         ButtonEditHeadParts.TabIndex = 5
