@@ -1330,34 +1330,23 @@ Public Module BssliderSidecar
     ''' <para>El placeholder para un master irresoluble se aplica ACÁ, no en cada llamador: el emisor lo ponía
     ''' (<c>MergeOneNpcIntoSidecar</c>) y el camino de BORRADO no, así que la fila se escribía bajo
     ''' <c>Unknown.esp|…</c> y se buscaba bajo <c>|…</c> — el mark-to-delete no la borraba nunca. Una ley, un
-    ''' lugar.</para></summary>
+    ''' lugar.</para>
+    ''' <para>El formato vive en la librería (<see cref="FormIdentifiers.Build"/>); acá sólo queda la ley PROPIA del
+    ''' sidecar: el marcador <c>Unknown.esp</c> para un dueño irresoluble.</para></summary>
     Public Function BuildIdentifier(masterPluginName As String, globalFormID As UInteger) As String
         Dim master = If(String.IsNullOrEmpty(masterPluginName), UNKNOWN_MASTER, masterPluginName)
-        Return $"{master}|{PluginManager.ToFaceGenLocalFormID(globalFormID):X6}"
+        Return FormIdentifiers.Build(master, globalFormID)
     End Function
 
     ''' <summary>Reverse of <see cref="BuildIdentifier"/>: split <c>"Master.esp|HEX6"</c> into
     ''' the master filename and the local 24-bit FormID. Returns Nothing if the identifier is
     ''' malformed (no pipe, hex unparseable, empty master). Caller resolves the master to a
     ''' load-order index via <see cref="LooksmenuLoader.ResolveFormIdentifier"/> to compose the
-    ''' global FormID.</summary>
+    ''' global FormID. The parser lives in the library (<see cref="FormIdentifiers.TryParse"/>).</summary>
     Public Function TryParseIdentifier(identifier As String,
                                        ByRef masterPluginName As String,
                                        ByRef localFormID As UInteger) As Boolean
-        masterPluginName = ""
-        localFormID = 0UI
-        If String.IsNullOrEmpty(identifier) Then Return False
-        Dim pipeIdx = identifier.IndexOf("|"c)
-        If pipeIdx <= 0 OrElse pipeIdx >= identifier.Length - 1 Then Return False
-        Dim master = identifier.Substring(0, pipeIdx).Trim()
-        If String.IsNullOrEmpty(master) Then Return False
-        Dim hex = identifier.Substring(pipeIdx + 1).Trim()
-        Dim parsed As UInteger
-        If Not UInteger.TryParse(hex, Globalization.NumberStyles.HexNumber,
-                                 Globalization.CultureInfo.InvariantCulture, parsed) Then Return False
-        masterPluginName = master
-        localFormID = parsed And &HFFFFFFUI
-        Return True
+        Return FormIdentifiers.TryParse(identifier, masterPluginName, localFormID)
     End Function
 
 End Module

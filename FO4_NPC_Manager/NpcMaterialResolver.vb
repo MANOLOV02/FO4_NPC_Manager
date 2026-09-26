@@ -1530,33 +1530,25 @@ Friend NotInheritable Class NpcMaterialResolver
         '      SET overwrites the current material; ADD muta lo que dejó la pasada anterior.
         ' (3) Texture/Skin/Hair palette overrides happen later in this method and read whatever
         ' material this pipeline left in place.
-        If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
-            ' Draft-MSWP handling: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
-            ' has NO real record, so the lib's FormID overload (GetRecord+ParseMSWP) can't resolve it. Resolve it
-            ' via the app's MswpDraftResolver instead — it returns the draft's ALREADY-PARSED Canon.IMswp, which we
-            ' hand to the parsed-data overload so an UNSAVED swap applies live in the preview. An unresolvable
-            ' draft (resolver Nothing / not registered) falls back to the skip-with-log behavior. A swap that
-            ' references an EXISTING (real) MSWP — even from a draft ARMA/ARMO — is a normal FormID and takes the
-            ' unchanged FormID overload path below.
-            If Borradores.EsFormIdDeBorrador(candidate.MaterialSwapFormID) Then
+        ' Step 1 (swap SET, then color remap SET) lives in the library: ShapeMaterialOverrides.ApplyModelMaterial.
+        If candidate IsNot Nothing Then
+            If candidate.MaterialSwapFormID <> 0UI AndAlso Borradores.EsFormIdDeBorrador(candidate.MaterialSwapFormID) Then
+                ' Draft-MSWP handling: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
+                ' has NO real record, so the lib's FormID overload (GetRecord+ParseMSWP) can't resolve it. Resolve it
+                ' via the app's MswpDraftResolver instead — it returns the draft's ALREADY-PARSED Canon.IMswp, which we
+                ' hand to the parsed-data overload so an UNSAVED swap applies live in the preview. An unresolvable
+                ' draft (resolver Nothing / not registered) falls back to the skip-with-log behavior (the color is
+                ' still applied). A swap that references an EXISTING (real) MSWP — even from a draft ARMA/ARMO — is a
+                ' normal FormID and takes the FormID overload below.
                 Dim d = _ctx.MswpDraftResolver?.Invoke(candidate.MaterialSwapFormID)
-                If d IsNot Nothing Then
-                    ShapeMaterialOverrides.ApplyMaterialSwap(d,
-                                                            ShapeMaterialOverrides.MaterialSwapFunction.SET,
-                                                            shapes)
-                Else
+                If d Is Nothing Then
                     Logger.LogLazy(Function() $"[DRAFT-MSWP] preview skips unresolvable material-swap draft 0x{candidate.MaterialSwapFormID:X8} (applies after Save)")
                 End If
+                ShapeMaterialOverrides.ApplyModelMaterial(d, candidate.ColorRemapIndex, shapes)
             Else
-                ShapeMaterialOverrides.ApplyMaterialSwap(candidate.MaterialSwapFormID,
-                                                        ShapeMaterialOverrides.MaterialSwapFunction.SET,
-                                                        shapes, _ctx.PluginManager)
+                ShapeMaterialOverrides.ApplyModelMaterial(candidate.MaterialSwapFormID, candidate.ColorRemapIndex,
+                                                          shapes, _ctx.PluginManager)
             End If
-        End If
-        If candidate IsNot Nothing AndAlso candidate.ColorRemapIndex.HasValue Then
-            ShapeMaterialOverrides.ApplyColorRemap(candidate.ColorRemapIndex.Value, 0.0F,
-                                                   ShapeMaterialOverrides.ColorRemapFunction.SET,
-                                                   shapes)
         End If
         If candidate IsNot Nothing AndAlso candidate.OmodResolution IsNot Nothing Then
             ' FormType context comes from the candidate. Humanoid path (CollectArmoCandidates)

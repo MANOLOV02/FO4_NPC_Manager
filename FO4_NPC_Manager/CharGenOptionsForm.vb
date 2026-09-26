@@ -351,7 +351,7 @@ Public Class CharGenOptionsForm
     ''' tambien corre al arrancar la app, donde no hay a quien preguntarle; alli solo hace valer lo que el
     ''' usuario ya eligio. Preguntar dos veces por la misma decision seria peor que no preguntar.</para></summary>
     Private Function ConfirmNativePluginChange(turningOn As Boolean) As Boolean
-        Dim ruta = "Data\F4SE\Plugins\NPC_Manager_FO4_LoadBake.dll"
+        Dim ruta = "Data\" & NativePluginInstaller.DataRelativePath
         Dim texto As String
         Dim titulo As String
         If turningOn Then

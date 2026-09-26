@@ -51,6 +51,8 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <!-- The shared kit (scanner, log, call redirection): FO4_Base_Library\Native, one seat with SafeScrap. -->
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\..\..\FO4_Base_Library\Native;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>false</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
@@ -66,6 +68,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\NPC_Manager_FO4_LoadBake.cpp" />
+    <ClInclude Include="src\LoadBakeSites.h" />
+    <ClInclude Include="..\..\..\FO4_Base_Library\Native\F4sePluginKit.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="NPC_Manager_FO4_LoadBake.ini" />

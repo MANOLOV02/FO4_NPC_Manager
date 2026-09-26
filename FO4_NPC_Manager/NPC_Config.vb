@@ -230,7 +230,8 @@ Public Class NPC_Config
     ''' (<c>0x1403C3B70</c>) llama al loader sin mirar el plugin. No hay nada que arreglar alla.</para>
     ''' <para><b>ESCRIBE FUERA DE LA APP</b>, que es lo que la hace distinta del resto de esta solapa:
     ''' ON instala <c>Data\F4SE\Plugins\NPC_Manager_FO4_LoadBake.dll</c>, OFF lo borra. Por eso pide
-    ''' confirmacion. Default <b>False</b>: nada se escribe en el juego sin que lo pidan.</para>
+    ''' confirmacion. Default <b>False</b>: nada se escribe en el juego sin que lo pidan. Lo hace valer <c>NativePluginInstaller.Reconcile</c>, fachada de la sede de la libreria
+    ''' <c>EmbeddedNativePlugin</c>.</para>
     ''' Persistido en npc_config.json.</summary>
     Public Property ForceEngineBakeOnOverrides As Boolean = False
 

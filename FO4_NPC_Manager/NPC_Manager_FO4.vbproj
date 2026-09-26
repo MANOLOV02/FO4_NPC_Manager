@@ -104,6 +104,7 @@
     <InternalsVisibleTo Include="SlotResolutionProbe" />
     <InternalsVisibleTo Include="ContextoPropioGate" />
     <InternalsVisibleTo Include="OutfitDraftSaveGate" />
+    <InternalsVisibleTo Include="NpcModelMaterialGate" />
     <!-- El testigo de la baja de borradores: llama a `BorradoDeBorradores.Planear`/`Ejecutar`
          (Friend), a los `Register*Draft` del MainForm y a `FormIdPicker_Form.ParaBorradores`.
          Sin esta linea NO COMPILA, y la bateria lo reporta FATAL, que es peor que rojo: nadie

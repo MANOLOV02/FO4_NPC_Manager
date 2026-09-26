@@ -101,6 +101,12 @@ Before writing anything it verifies the function prologue. If anything does not 
 signature missing, two matches, different prologue — **it does not hook, it says so in the log,
 and the game is left untouched.**
 
+The scanner, the log and the call redirection live in the workspace kit
+`FO4_Base_Library\Native\F4sePluginKit.h`, shared with SafeScrap's plugin; WHERE this plugin hooks is
+`src\LoadBakeSites.h`, a pure resolution that `Tools\SafeScrapNativeGate` runs against the installed
+executable (through `Tools\SafeScrapNativeProbe`, built from these same headers) and checks against the
+addresses above.
+
 ## Installation
 
 ```
