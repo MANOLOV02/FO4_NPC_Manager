@@ -267,8 +267,8 @@ Friend Class NpcRenderHost
         Dim renderBody = Toggles.RenderBody
         Dim renderHeadwear = Toggles.RenderHeadwear
         Dim renderGore = Toggles.RenderGore
-        ' SSE occludes skin PER-PARTITION (BSDismemberSkinInstance), FO4 whole-shape (System-A displacement).
-        ' Byte-level RE both engines: 23-armor-oclusion-sse-re. Gates the skin-occlusion branches below.
+        ' La ley per-partición/per-segmento y la de "¿se carga la malla?" son las mismas en los dos juegos;
+        ' esto sólo elige la máscara de head parts (canal de pelo SSE vs canales A/B/C de FO4).
         Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
 
         ' --- Per-segment worn-slot occlusion, recomputed from the items CURRENTLY rendered ---
@@ -293,10 +293,16 @@ Friend Class NpcRenderHost
         ' regla de desempate NO se escriben acá: viven en NpcMeshCollector.TablaDeDuenosPorSlot, que es la
         ' sede única y la que ejerce el gate. Acá sólo se junta la entrada.
         Dim adjuntos As New List(Of NpcMeshCollector.AdjuntoDeBiped)
-        ' ⛔ UN adjunto por ARMA, no por SHAPE. El writer corre una vez por ARMA (el driver le pasa el
-        ' ARMO y él recorre sus armatures), así que una ARMA con N shapes tiene que producir UNA pasada.
-        ' Con N pasadas el one-shot del ARMO y el desalojo se ejecutan N veces.
-        Dim armasAdjuntadas As New HashSet(Of UInteger)
+        ' ⛔ UN adjunto por CANDIDATO (= una ARMA de un ARMO adjuntado), no por SHAPE ni por ARMA. El writer
+        ' corre una vez por cada ARMA de cada ARMO que se adjunta (FO4 0x1404629d0 → 0x14045f270 → writer;
+        ' SSE 0x14027EAE0 → 0x14027CD90 → writer): una ARMA con N shapes es UNA pasada, pero la misma ARMA
+        ' colgada de DOS ARMO son dos (las alas de DLC1EncDragon07, ARMO {45} y {46} con la ARMA {46}), y la
+        ' PIEL repetida en el outfit también son dos: ningún camino vivo la saltea (FO4 0x1405235e0 no compara
+        ' contra la piel —el salteo 0x1405063aa es código muerto—; SSE 0x1403C4080 / 0x1403C5484 tampoco).
+        Dim armasAdjuntadas As New HashSet(Of Object)
+        ' Por ARMA, los candidatos que la adjuntaron, EN ORDEN DE ATTACH. De acá sale cuál de ellos es el que
+        ' se dibuja cuando el motor carga esa malla (ver EntradaQueCargaElModelo).
+        Dim candidatosDeLaArma As New Dictionary(Of UInteger, List(Of (Armo As UInteger, Cand As MainForm.MeshCandidate)))
         Dim Adjuntar As Action(Of IRenderableShape, UInteger) =
             Sub(shp As IRenderableShape, armaOwn As UInteger)
                 Dim ownerKey As String = Nothing
@@ -312,9 +318,17 @@ Friend Class NpcRenderHost
                 ' Sin ARMA resuelta el ítem NO pasa por el writer (que es por ARMA): no puede ser dueño
                 ' de ningún slot. Es el fallback de EquipResolver al world model del ARMO.
                 If ownerArmaId = 0UI Then Exit Sub
-                If Not armasAdjuntadas.Add(ownerArmaId) Then Exit Sub
                 Dim ownerArmoId As UInteger = 0UI
                 LastRenderData.ShapeArmoFormID.TryGetValue(shp, ownerArmoId)
+                Dim ownerCand As MainForm.MeshCandidate = Nothing
+                LastRenderData.ShapeCandidate.TryGetValue(shp, ownerCand)
+                Dim lista As List(Of (Armo As UInteger, Cand As MainForm.MeshCandidate)) = Nothing
+                If Not candidatosDeLaArma.TryGetValue(ownerArmaId, lista) Then
+                    lista = New List(Of (Armo As UInteger, Cand As MainForm.MeshCandidate))
+                    candidatosDeLaArma(ownerArmaId) = lista
+                End If
+                If ownerCand IsNot Nothing AndAlso Not lista.Any(Function(x) x.Cand Is ownerCand) Then lista.Add((ownerArmoId, ownerCand))
+                If Not armasAdjuntadas.Add(NpcMeshCollector.IdentidadDeAdjunto(ownerCand, ownerArmoId, ownerArmaId)) Then Exit Sub
                 adjuntos.Add(New NpcMeshCollector.AdjuntoDeBiped With {
                     .Key = ownerKey, .ArmaId = ownerArmaId, .ArmoId = ownerArmoId, .ArmaOwnSlots = armaOwn,
                     .ArmoOwnSlots = ownerArmo, .TieneSwapDePiel = ownerSwap, .Priority = ownerPrio})
@@ -474,6 +488,27 @@ Friend Class NpcRenderHost
         ' que el casco synth, la gas mask y la bandana nunca se dibujarían. ⇒ no corre, y no implementarlo
         ' es lo fiel.
         Dim tablaDeSlots = NpcMeshCollector.TablaDeDuenosPorSlot(adjuntos, Config_App.Current.Game)
+        ' ⭐ QUÉ SE DIBUJA ENTERO, en LOS DOS JUEGOS: la malla de una ARMA sólo existe si una entrada de la
+        ' tabla la carga (NpcMeshCollector.EntradaQueCargaElModelo, con sus VA). Si varios candidatos
+        ' comparten esa ARMA, el motor carga UNA malla, y la entrada queda con lo que escribió el ÚLTIMO
+        ' attach: una misma ARMA siempre gana el loop 2 contra sí misma (FO4 0x140359a6a cmp rcx,r13 / je;
+        ' SSE 0x140218D71 cmp rcx,rbp / je) y reescribe parent e instancia. ⇒ el candidato dibujado es el
+        ' ÚLTIMO adjuntado cuyo ARMO es el de la entrada; con la piel repetida en el outfit, la copia del
+        ' outfit (FO4: la entrada queda con {ARMO, instancia del ítem}). Sin candidato de ese ARMO —la
+        ' estampa SSE de un ARMO ajeno, 0x140218DEE— la malla es la del dueño: su último attach.
+        ' ⛔ ACÁ NO HAY `IsCoveredByOutfit`. Esa era una ley inventada —cruce de la SlotMask de la piel
+        ' (ARMA ∪ ARMO ∩ cabeza) con la unión de las prendas, sin VA— que ocultaba al Mirelurk entero bajo
+        ' un percebe {32} porque su ARMO de piel declara {30..33}, y que dejaba las NakedHands dibujadas
+        ' bajo un ARMO que declara 34/35 (el motor las desaloja por el loop 1).
+        Dim candidatoDibujado As New Dictionary(Of UInteger, MainForm.MeshCandidate)
+        For Each kvArma In candidatosDeLaArma
+            Dim bCarga = NpcMeshCollector.EntradaQueCargaElModelo(tablaDeSlots, kvArma.Key)
+            If bCarga < 0 OrElse kvArma.Value.Count = 0 Then Continue For
+            Dim armoDeLaEntrada = tablaDeSlots.ArmoId(bCarga)
+            Dim elegido = kvArma.Value.LastOrDefault(Function(x) x.Armo = armoDeLaEntrada).Cand
+            If elegido Is Nothing Then elegido = kvArma.Value(kvArma.Value.Count - 1).Cand
+            candidatoDibujado(kvArma.Key) = elegido
+        Next
         Dim CoveredForShape As Func(Of String, UInteger) =
             Function(shapeKey As String) NpcMeshCollector.SlotsCubiertosPorOtroModelo(tablaDeSlots, shapeKey)
         ' Estado del slot occluder para ESTE actor: uno solo, derivado de la tabla de dueños y del BOD2 del
@@ -602,8 +637,21 @@ Friend Class NpcRenderHost
                     shape.CoveredSlotsMask = CoveredForShape(shapeKey)
                 End If
             End If
-            Dim covered As Boolean = False
-            LastRenderData.ShapeCoveredByOutfit.TryGetValue(shape, covered)
+            ' ¿El motor carga la malla de ESTE candidato? Sólo para lo que pasa por la tabla de bipeds (piel y
+            ' worn items). Lo que un toggle apaga no se adjuntó, así que tampoco figura acá.
+            Dim kindVis As MainForm.MeshCandidateKind = MainForm.MeshCandidateKind.Outfit
+            Dim esAdjunto As Boolean = LastRenderData.ShapeKind.TryGetValue(shape, kindVis) AndAlso
+                                       NpcMeshCollector.EsAdjuntoDeBiped(kindVis)
+            Dim modeloCargado As Boolean = True
+            If esAdjunto Then
+                Dim armaVis As UInteger = 0UI
+                LastRenderData.ShapeArmaAddonFormID.TryGetValue(shape, armaVis)
+                Dim candVis As MainForm.MeshCandidate = Nothing
+                LastRenderData.ShapeCandidate.TryGetValue(shape, candVis)
+                Dim elegidoVis As MainForm.MeshCandidate = Nothing
+                modeloCargado = candVis IsNot Nothing AndAlso
+                                candidatoDibujado.TryGetValue(armaVis, elegidoVis) AndAlso elegidoVis Is candVis
+            End If
             Dim occludedByHeadwear As Boolean = False
             LastRenderData.ShapeOccludedByHeadwear.TryGetValue(shape, occludedByHeadwear)
             Dim meatcapCls As MainForm.MeatcapClassification = MainForm.MeatcapClassification.Normal
@@ -622,20 +670,15 @@ Friend Class NpcRenderHost
             ' subyacente, replicando el efecto in-game `unequipall`.
             If Not renderUnderarmor AndAlso (cat = MainForm.ShapeRenderCategory.Underarmor OrElse cat = MainForm.ShapeRenderCategory.GloveOutfit) Then hide = True
             ' Render body OFF → hide cuerpo desnudo del NPC: body skin + naked hands + head parts.
-            ' Aplica independientemente de si el Skin está cubierto o no (cat captura BodySkin sin
-            ' necesidad de mirar `covered`).
+            ' Aplica independientemente de si el motor carga o no la malla de la piel.
             If Not renderBody AndAlso (cat = MainForm.ShapeRenderCategory.BodySkin OrElse cat = MainForm.ShapeRenderCategory.NakedHands OrElse cat = MainForm.ShapeRenderCategory.HeadPart) Then hide = True
             ' Render headwear OFF → hide cualquier headwear (Outfit con bits cabeza/cara puros).
             If Not renderHeadwear AndAlso cat = MainForm.ShapeRenderCategory.Headwear Then hide = True
-            ' Skin cubierto por outfit + Render underarmor ON → hide (el outfit lo tapa visualmente,
-            ' evita z-fighting). Cuando Render underarmor=OFF el outfit se oculta arriba y el Skin
-            ' subyacente queda visible (no se aplica este hide). Solo afecta a Skin candidates
-            ' (BodySkin/NakedHands); las otras categorías no setean ShapeCoveredByOutfit.
-            ' FO4: skin covered by outfit → whole-shape hide (its dismember tags 1-5 aren't biped-slot
-            ' tagged). SSE: skin is occluded PER-PARTITION via CoveredSlotsMask above (keyed on the real
-            ' mesh SBP slot), so do NOT whole-hide here — a body whose BOD2 incidentally lists calves(38)
-            ' no longer vanishes under boots; only the partitions whose SBP slot is actually covered go.
-            If Not isSse AndAlso covered AndAlso renderUnderarmor AndAlso (cat = MainForm.ShapeRenderCategory.BodySkin OrElse cat = MainForm.ShapeRenderCategory.NakedHands) Then hide = True
+            ' Piel o worn item cuya malla el motor NO carga (desalojada, pisada, o sin slot compartido con su
+            ' ARMO): no se dibuja, en los DOS juegos y sin mirar la categoría. Ver EntradaQueCargaElModelo.
+            ' Los toggles siguen mandando por construcción: una prenda apagada no se adjunta, así que no le
+            ' saca la entrada a la piel y la piel reaparece (el efecto `unequipall`).
+            If esAdjunto AndAlso Not modeloCargado Then hide = True
             ' HeadPart ocluido por headwear + Render headwear ON → hide (replica occlusion matrix
             ' vanilla pelo-bajo-casco, etc). Render headwear=OFF destapa el head part para mostrar
             ' lo que estaba debajo del casco/glasses/etc.
@@ -679,8 +722,8 @@ Friend Class NpcRenderHost
                         bipedDbg = "no-dismember-parts"
                     End If
                 End If
-                Dim nmDbg = If(shape.ShapeName, "?"), catDbg = cat, hideDbg = hide
-                Logger.LogLazy(Function() $"[OCCL]   shape='{nmDbg}' cat={catDbg} own=0x{ownDbg:X} coveredMask=0x{cmDbg:X} hiddenTris={hidDbg}/{totDbg} biped={{{bipedDbg}}} renderHide={hideDbg}")
+                Dim nmDbg = If(shape.ShapeName, "?"), catDbg = cat, hideDbg = hide, cargadoDbg = modeloCargado
+                Logger.LogLazy(Function() $"[OCCL]   shape='{nmDbg}' cat={catDbg} own=0x{ownDbg:X} coveredMask=0x{cmDbg:X} hiddenTris={hidDbg}/{totDbg} biped={{{bipedDbg}}} cargado={cargadoDbg} renderHide={hideDbg}")
             End If
         Next
         ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender

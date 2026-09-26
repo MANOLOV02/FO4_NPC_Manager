@@ -2295,11 +2295,12 @@ Public Class ArmaEditor_Form
         ' ⛔ El envoltorio DECLARA, y sin esto nace en 0: como `ArmaGeometryMask` hereda del ARMO
         ' cuando la ARMA no declara nada, un addon con BOD2 vacío no es dueño de NINGÚN slot,
         ' `MeterAdjunto` lo rechaza y la fase 1 —sin dueño = cubierto— le esconde la geometría entera.
-        ' La ley (y por qué sólo cuando la ARMA no declara, y por qué se descuenta el Pip-Boy) vive en
+        ' Y si la ARMA SÍ declara, el envoltorio declara su BOD2: con 0 el motor no le carga la malla.
+        ' La ley (qué declara en cada caso, y por qué se descuenta el Pip-Boy) vive en
         ' `SlotsDelModelo.BipedDelEnvoltorio`, que es lo que el gate recorre.
-        ' ⛔ Consecuencia ACEPTADA por escrito: en el caso que esto destraba, la ARMA pasa a ser dueña de
-        ' esos slots, así que el preview puede ocluir pelo/barba (`wornEquipMask` y la fase 2), tapar el
-        ' cuerpo con «Include Body» (`IsCoveredByOutfit`) y cambiar el alcance de «Render headwear»
+        ' ⛔ Consecuencia ACEPTADA por escrito: el envoltorio declara los slots de su ARMA, así que el
+        ' preview puede ocluir pelo/barba (`wornEquipMask` y la fase 2), sacarle la entrada a la piel con
+        ' «Include Body» (tabla de dueños) y cambiar el alcance de «Render headwear»
         ' (`ClassifyShapeCategory`). Es lo que hace el motor con esa prenda puesta. Medido: en Fallout
         ' 57 de 65 mallas declaran un bit de los canales de la raza (Tools/SlotsDelModeloProbe, línea
         ' «RIESGO REAL DE H-B2»), o sea que allá es el caso NORMAL, no un borde. En Skyrim, 373 de 1155.

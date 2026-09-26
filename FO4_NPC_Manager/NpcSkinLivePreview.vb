@@ -231,6 +231,9 @@ Friend NotInheritable Class NpcSkinLivePreview
                 ' path (ver los dos bloques de abajo), y además lo lee después NpcFaceTintResolver
                 ' (ApplyMaterialPaletteHairColor). Stale ahí = candidate viejo alimentando reglas nuevas.
                 host.LastRenderData.ShapeCandidate(sh) = cand
+                ' Y lo que la tabla de dueños lee de la piel (ARMA, ARMO, máscaras, prioridad, NAM2): la piel
+                ' nueva puede traer otro BOD2 con las MISMAS rutas de malla.
+                NpcMeshCollector.RegistrarAdjuntoDeBiped(host.LastRenderData, sh, cand)
             Next
             _materialResolver.ApplyShapeMaterialOverrides(cand, host.LastRenderedState, shapesForPath)
             totalShapes += shapesForPath.Count
@@ -283,6 +286,10 @@ Friend NotInheritable Class NpcSkinLivePreview
                                                              _faceTintResolver.ApplyFaceTintOverlay(capturedState, capturedRenderData, capturedHost)
                                                          End Sub
         host.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Textures)
+        ' La tabla de dueños cambió con la piel (otro BOD2, prioridad o NAM2 con las MISMAS rutas): qué se
+        ' dibuja entero y la máscara per-segmento de cada prenda se recalculan acá, no al tocar un toggle.
+        ' Sólo máscaras sobre LastRenderData — no sube geometría ni texturas.
+        host.ApplyRenderToggleVisibility()
         host.PreviewCtl.InvalidateRender()
 
         ' MARCADOR DEL GATE A/A. Sin esta línea no hay forma de saber, leyendo el log, si un cambio de

@@ -667,11 +667,6 @@ Public Class MainForm
         ''' Set for HDPT type=7 Meatcaps (inner-mouth geometry occluded by teeth; vanilla CK declares
         ''' them but normally not visible in static pose). Filtered out in SelectWinningCandidates.</summary>
         Public Hide As Boolean = False
-        ''' <summary>Skin candidates only (NPC_/RACE.WNAM body geometry): True cuando algún outfit
-        ''' aceptado declara bits que solapan con este Skin (BODY/hands). Usado para RenderHide=True
-        ''' por default — el outfit cubre visualmente al Skin, evita z-fighting. Se destapa cuando
-        ''' "Render underarmor" se apaga (ver ApplyRenderToggleVisibility).</summary>
-        Public IsCoveredByOutfit As Boolean = False
         ''' <summary>HeadPart candidates only: True cuando un headwear aceptado oculta este head
         ''' part por la occlusion matrix vanilla (Hair ocluido por HairTop/HairLong/FaceGenHead;
         ''' FacialHair ocluido por FaceGenHead/Beard/Mouth; Eyebrows por FaceGenHead; HeadRear por
@@ -796,19 +791,13 @@ Public Class MainForm
         ''' <summary>Per-shape categoría para toggles diagnósticos de visibilidad. Ver
         ''' ApplyRenderToggleVisibility.</summary>
         Public ReadOnly ShapeCategory As New Dictionary(Of IRenderableShape, ShapeRenderCategory)
-        ''' <summary>Per-shape: True cuando el shape proviene de un Skin candidate cubierto por
-        ''' algún outfit aceptado (sus bits BODY/hand chocan con bits de outfits que ganaron).
-        ''' Usado por ApplyRenderToggleVisibility para decidir RenderHide inicial: con
-        ''' "Render underarmor" ON el Skin cubierto se oculta (el outfit lo tapa visualmente);
-        ''' con "Render underarmor" OFF el Skin cubierto se destapa.</summary>
-        Public ReadOnly ShapeCoveredByOutfit As New Dictionary(Of IRenderableShape, Boolean)
         ''' <summary>Per-shape: True cuando el shape proviene de un HeadPart ocluido por algún
         ''' headwear aceptado (occlusion matrix vanilla — pelo bajo casco, etc.). Usado por
         ''' ApplyRenderToggleVisibility: con "Render headwear" ON el head part ocluido se oculta;
         ''' OFF lo destapa para mostrar el pelo/barba/etc bajo el headwear oculto.</summary>
         Public ReadOnly ShapeOccludedByHeadwear As New Dictionary(Of IRenderableShape, Boolean)
         ''' <summary>Per-shape: the OWN worn biped-slot mask of the candidate this shape came from
-        ''' (bit N-30 = biped slot N, same convention as <see cref="EquipResolver.EquipResolution.OccupiedSlots"/>).
+        ''' (bit N-30 = biped slot N).
         ''' Stored only for worn-item (Kind=Outfit) shapes; head parts / skin have no entry (own slots = 0).
         ''' ApplyRenderToggleVisibility rebuilds the per-segment occlusion mask (IRenderableShape.CoveredSlotsMask)
         ''' from these every apply, scoped to the items CURRENTLY rendered — so a render toggle that hides an

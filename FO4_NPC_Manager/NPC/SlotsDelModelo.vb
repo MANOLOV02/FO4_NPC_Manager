@@ -216,10 +216,12 @@ Friend Class SlotsDelModelo
     ''' <c>MeterAdjunto</c> lo rechaza y la fase 1 —donde «sin dueño = cubierto»— le esconde la
     ''' geometría entera. Ése es el motivo por el que «sólo este addon» mostraba vacío mientras
     ''' «Full armor» con el ARMO padre real mostraba bien.
-    ''' <para>⛔ SÓLO cuando la ARMA no declara. Es la MISMA condición que gobierna
-    ''' <c>ArmaGeometryMask</c> —el ARMO sólo importa cuando el ARMA no declara— y es lo que mantiene
-    ''' inertes las otras puertas del BOD2 del ARMO. Sin ella, un ARMA que YA declara vería cambiar
-    ''' <c>wornEquipMask</c> y se le apagaría el pelo del NPC, que hoy funciona bien.</para>
+    ''' <para>⛔ Si la ARMA YA declara, el envoltorio declara EXACTAMENTE su BOD2. Un ARMO que no comparte
+    ''' ningún slot con su ARMA no carga su malla en el motor: FO4 da parent=ARMO sólo en un slot que el
+    ''' ARMO declara (<c>0x140359aab</c>) y el reconcile sólo carga esas entradas (<c>0x14035a1aa</c>); SSE
+    ''' sólo clona entradas con item=ARMO (<c>0x1402193D6</c>). Con el envoltorio en 0 el preview «sólo
+    ''' este addon» quedaría VACÍO (<c>NpcMeshCollector.EntradaQueCargaElModelo</c>). La consecuencia —el
+    ''' BOD2 entra al worn mask y un casco previsualizado tapa el pelo— es la de esa prenda puesta.</para>
     ''' <para>⛔ El tag del Pip-Boy se DESCUENTA, y NO por lo mismo que en el botón: su visibilidad no
     ''' depende del dueño (<c>BSTriShapeGeometry.SegmentoOculto</c> devuelve el estado del dispositivo
     ''' sin mirar la cobertura), así que declararlo no lo muestra — y en cambio dejaría la máscara
@@ -240,7 +242,7 @@ Friend Class SlotsDelModelo
     Friend Shared Function BipedDelEnvoltorio(slotsDeLaMalla As UInteger, bod2DelArma As UInteger,
                                               bitPipboy As UInteger, razaResuelta As Boolean,
                                               juego As Config_App.Game_Enum) As UInteger
-        If bod2DelArma <> 0UI Then Return 0UI
+        If bod2DelArma <> 0UI Then Return bod2DelArma
         If juego <> Config_App.Game_Enum.Skyrim AndAlso Not razaResuelta Then Return 0UI
         Return slotsDeLaMalla And Not bitPipboy
     End Function
