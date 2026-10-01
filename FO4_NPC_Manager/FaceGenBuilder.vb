@@ -2794,10 +2794,11 @@ Public Module FaceGenBuilder
 
     ''' <summary>_2d = el pliegue SSE **100% GPU**, contraparte exacta del _2c (100% CPU). Corre EXACTAMENTE las mismas
     ''' funciones que el RENDER (<see cref="SseFoldLayerStack"/>) ⇒ el sandbox mide el código que de verdad se ejecuta,
-    ''' no una copia paralela que se puede desincronizar. Tres pasos, todos GPU y todos en FLOAT (Rgba32f):
-    '''   1. facetint  = ComposeFacetintGpu(capas de tint sobre seed 0.5)      [lineal]
-    '''   2. pliegue   = FoldGpu(complexion, facetint, detail)                 [ley del engine: softlight(_,tint) x amplify(detail)]
-    '''   3. capas     = ComposeGpu(skee MASKT + overlays Face[Ovl])           [stack de capas]
+    ''' no una copia paralela que se puede desincronizar. Cuatro pasos, todos GPU y todos en FLOAT (Rgba32f):
+    '''   1. facetint  = pipeline del compositor (capas de tint sobre el seed de la ley)
+    '''   2. pliegue   = ApplySseFoldPass (ley del engine: softlight(_,tint) x amplify(detail), espacios del bucket Fold)
+    '''   3. capas     = pipeline del compositor, etapa Overlay (skee MASKT + overlays Face[Ovl])
+    '''   4. inversa   = ApplySseFoldPass (unfold), de vuelta al espacio del complexion
     ''' NADA de intermedios en 8 bits. La versión anterior transportaba el facetint como DDS y hacía el readback en
     ''' bytes LINEALES: MEDIDO contra el _2c daba RMS 2,4/255 y máx 18, con el error concentrado en las sombras (5,7 medio
     ''' en 0..31 vs 0,3 en 128..159) — la firma de cuantizar en lineal (cerca del negro 1 nivel lineal ≈ 13 niveles sRGB),
@@ -2832,23 +2833,10 @@ Public Module FaceGenBuilder
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: la cadena GPU (fold + capas + unfold) fallo.")
             Return
         End If
-        ' ComposeFoldedGpuResident devuelve LINEAL A PROPOSITO (corre un cvt sRGB->lineal internamente
-        ' porque ESA textura alimenta al RENDER, que muestrea en lineal). El _2d, en cambio, es un artefacto de
-        ' DISCO y tiene que quedar en sRGB igual que el _2c/_2. Volcarlo tal cual era el bug: MEDIDO sobre 285.978
-        ' muestras, _2d == sRGB_to_linear(_2c) EXACTO (err medio 0,255/255, max 0,942, CERO fuera de +-2, contra un
-        ' err de control de 44,1) => el arnes que existe justamente para confirmar CPU(_2c)==GPU(_2d) daba un
-        ' desacuerdo del 99,989% de los pixeles que NO era del pliegue. No afectaba al juego (lo que se empaqueta
-        ' sale del camino CPU y es byte-identico al _2c), solo cegaba la validacion de paridad.
-        ' Se deshace con la MISMA funcion (cvt(0,1) es la inversa exacta del cvt(1,0) que corre dentro de
-        ' ComposeFoldedGpuResident), en GPU y
-        ' ANTES del readback: nada de matematica CPU nueva que pueda derivar del shader. El orden queda igual que
-        ' el _2c/_2 (resample del BGRA en sRGB y recien despues el encode), que es el que exige la paridad.
-        Dim srgbId = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, foldedId, w, h, 0, 1)
-        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(foldedId) : Catch : End Try
-        If srgbId = 0 Then
-            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el cvt lineal->sRGB de salida fallo.")
-            Return
-        End If
+        ' ComposeFoldedGpuResident devuelve el diffuse pre-compensado en Fold.SrcSpace = el espacio en que se
+        ' almacena el complexion, que es EXACTAMENTE lo que el _2c/_2 escriben en disco. Ya no hay que deshacer
+        ' ninguna conversión (antes el render pedía lineal y acá se volvía a sRGB con un cvt(0,1)).
+        Dim srgbId = foldedId
         Dim acc = SseFoldLayerStack.ReadbackRgba32f(srgbId, npix)
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(srgbId) : Catch : End Try
         If acc Is Nothing Then
@@ -2856,7 +2844,7 @@ Public Module FaceGenBuilder
             Return
         End If
 
-        ' acc (sRGB, ya convertido arriba) -> BGRA. ClampByte255 de esta clase espera 0..255 (NO multiplica).
+        ' acc (espacio del archivo) -> BGRA. ClampByte255 de esta clase espera 0..255 (NO multiplica).
         Dim gbuf(npix * 4 - 1) As Byte
         For i = 0 To npix - 1
             gbuf(i * 4) = ClampByte255(acc(i * 4 + 2) * 255.0)      ' B
@@ -3131,8 +3119,11 @@ Public Module FaceGenBuilder
                 Dim faceList = SseOverlayCompositor.FaceOverlaysOnly(overlays)
                 Dim detail As String = ""
                 For Each ov In faceList
+                    ' La opacidad y el tinte EFECTIVOS (key 8/7 o la plantilla de skee), del mismo resolvedor que compone.
+                    Dim lp = SseOverlayCompositor.ResolveSkinTintLayer(ov)
+                    Dim lpTxt = If(lp.HasValue, $"opacidad={lp.Value.Opacity} tinte=({lp.Value.TintR},{lp.Value.TintG},{lp.Value.TintB})", "SIN PLANTILLA (skee no instala la capa)")
                     detail &= $"{vbCrLf}        nodo='{ov.NodeName}' diffuse='{If(ov.DiffusePath, "")}' normal='{If(ov.NormalPath, "")}' " &
-                              $"hasAlpha={ov.HasAlpha} alpha={If(ov.HasAlpha, ov.Alpha, 1.0F)} visible={SseOverlayCompositor.OverlayIsVisible(ov)}"
+                              $"hasAlpha={ov.HasAlpha} {lpTxt} visible={SseOverlayCompositor.OverlayIsVisible(ov)}"
                 Next
                 If faceList.Count = 0 Then detail = vbCrLf & "        (ningun nodo Face en el preset)"
                 Dim hO = hasOverlays, hS = hasSkee, nF = faceList.Count
@@ -3227,7 +3218,16 @@ Public Module FaceGenBuilder
             ' (a) skee MASKT masks (dyeable heads) sobre el base plegado, luego (b) los Face [Ovl] overlays
             ' (orden por índice de nodo, = skee/render). Cualquiera puede faltar; OR de las dos.
             Dim skinRgb = SseSkinRgbForNpc(pluginManager, npcData, npcFormID)
+            ' Entrega a la etapa Overlay y vuelta, con el MISMO par que usan el render CPU (SseFoldLayerStack.ComposeCpu)
+            ' y el GPU (seed + pase final de la pipeline): el albedo plegado está en Fold.OutputSpace, las MASKT
+            ' componen en el espacio de su acumulador, y la pre-compensación lee en Fold.OutputSpace.
+            ' Los Face [Ovl] van DESPUÉS de la vuelta, sobre el albedo plegado tal cual: son la capa SkinTint que
+            ' instala skee y el bucket Overlay no los gobierna (mismo orden que ComposeCpu y que el pase GPU
+            ' ApplySseFaceOverlayPass).
+            Dim foldSp = SseFaceGenBaker.ResolveFoldSpaces()
+            SseFaceGenBaker.FoldedToOverlayBase(acc, npix, foldSp)
             Dim anySkee = SseSkeeMaskReader.ComposeNifMaskLayersIntoDiffuse(nif, cloned, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba, skinRgb, Nothing, acc)
+            SseFaceGenBaker.OverlayBaseToFolded(acc, npix, foldSp)
             Dim anyOvl = SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse(acc, overlays, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba)
             ' EL GATE DIJO QUE SÍ Y EL COMPOSE NO APORTÓ NADA ⇒ ES UN FALLO, NO UN NO-OP.
             ' Los gates (HasAnyFoldableFaceOverlay / HasMaskLayers) ya replican todo lo que se puede saber SIN tocar

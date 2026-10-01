@@ -788,7 +788,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim q = SseFaceTintComposer.ResolveSkinToneQnam(_ctx.PluginManager, npcData, race, effRaceFid, npcData.Record.ConfigurationFlagsFemale)
         If q.HasValue Then skinRgb = New Double() {q.Value.R / 255.0, q.Value.G / 255.0, q.Value.B / 255.0}
 
-        ' --- 3. LA CADENA (facetint → fold → capas → sRGB→lin): PURA GPU o PURA CPU según el flag de la cámara.
+        ' --- 3. LA CADENA (facetint → fold → capas → inversa): PURA GPU o PURA CPU según el flag de la cámara.
         ' EL FLAG (Setting_GPUSkinning) ES EL ÚNICO QUE DECIDE, y cada camino es PURO de punta a punta:
         '   GPU → SseFoldLayerStack.ComposeFoldedGpuResident: la cadena ENTERA corre en GL encadenando TEXTURAS
         '         (Rgba32f), CERO readbacks en el camino caliente. El readback existe SOLO en el sandbox de
@@ -806,6 +806,8 @@ Friend NotInheritable Class NpcFaceTintResolver
 #If DEBUG Then
             measureParity = NPC_Config.Current.SseMeasureFoldParity   ' sandbox: en Release ni se lee (duplica el compose)
 #End If
+            ' La textura que vuelve está en Fold.SrcSpace = el espacio del complexion al que reemplaza, así que se
+            ' samplea exactamente como él (y son los valores que el bake escribe en el DDS): render == bake == fold.
             foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(acc, tintLayers, detailAcc, skeeRaw, faceOvl,
                                                                   skinRgb, w, h, host, measureParity, outW, outH)
             If foldedId = 0 Then
@@ -873,19 +875,22 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' Se sube Rgba32f, NO RGBA8: bajar a byte acá mete un redondeo que el GPU no tiene, y encima en
             ' espacio LINEAL, donde 8 bits aplastan las sombras. Dejaría la paridad limitada por el TRANSPORTE
             ' en vez de por el compose. No volver a RGBA8.
-            ' SYNC: el RESAMPLE va ANTES del sRGB→lineal y en FLOAT: bilineal-en-sRGB ≠ bilineal-en-lineal,
-            ' y el bake resamplea sobre los valores sRGB — hacerlo después divergiría del bake y del camino GPU.
+            ' SYNC: el RESAMPLE va sobre los valores en el espacio en que se ALMACENAN (Fold.SrcSpace, el del
+            ' archivo) y en FLOAT: es el orden del bake (resamplea el BGRA) y el del camino GPU.
             ' Se conserva el clamp a [0,1]: el fold puede pasarse de 1.0 y saturar es el comportamiento previo.
             Dim accOut = FaceTintCpuCompositor.ResampleRgbaFloat(acc, w, h, outW, outH)
             Dim outPix = outW * outH
-            ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal.
+            ' SE SUBE LO COMPUESTO TAL CUAL: la pre-compensación ya lo dejó en Fold.SrcSpace, el espacio del
+            ' complexion que reemplaza, que es lo que el bake escribe en el DDS y lo que el motor samplea (su loader
+            ' no promueve a sRGB, 0x14101FED0). Ninguna conversión acá: render == bake == fold. Se conserva el clamp
+            ' a [0,1] (el byte del archivo también satura).
             System.Threading.Tasks.Parallel.ForEach(
                 System.Collections.Concurrent.Partitioner.Create(0, outPix),
                 Sub(range)
                     For i = range.Item1 To range.Item2 - 1
                         For ch = 0 To 2
-                            Dim lin = SseFaceGenBaker.Srgb2Lin(accOut(i * 4 + ch))
-                            accOut(i * 4 + ch) = CSng(If(lin < 0.0, 0.0, If(lin > 1.0, 1.0, lin)))
+                            Dim v = accOut(i * 4 + ch)
+                            accOut(i * 4 + ch) = If(v < 0.0F, 0.0F, If(v > 1.0F, 1.0F, v))
                         Next
                     Next
                 End Sub)
@@ -915,7 +920,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' instalar ahí el resultado del fold hacía que otra cabeza con el mismo complexion heredara el face-paint
         ' de ésta. El facetint nunca tuvo el problema porque su clave ya era per-NPC — acá se aplica la MISMA ley.
         ' El material NO referencia esta clave; el bind la alcanza por MaterialData.SseFoldedDiffuseKey, así que el
-        ' loader nunca la pide y no puede haber cara blanca. IsSRGB=False: los bytes ya son lineales.
+        ' loader nunca la pide y no puede haber cara blanca. IsSRGB=False: los valores ya están en el espacio del complexion y se samplean tal cual (SSE crudo).
         Dim foldedKey = SseFoldedDiffuseKeyFor(npcData.FormID)
         ' outW/outH (no w/h): la textura instalada es la RESAMPLEADA al tamaño de CharGen Options; el entry
         ' tiene que declarar SU tamaño real o el resto del render lee dimensiones que no son las de la textura.
@@ -1108,7 +1113,7 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' <summary>Rama GPU espejo del skinning: compone el facetint SSE (tint-only) puro GPU, con las MISMAS
     ''' capas que el CPU sobre un base PLANO = seed(0.5) via <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/>
     ''' (ley SSE all-linear). Es el mismo compose que el <c>_2b</c> del bake.
-    ''' <para>Devuelve el texture-id Rgba32f LINEAL, <b>propiedad del CALLER</b> (el lo instala y el lo libera):
+    ''' <para>Devuelve el texture-id Rgba32f en el OutputSpace del canal (= el CPU y el bake), <b>propiedad del CALLER</b> (el lo instala y el lo libera):
     ''' AllocateResultTextureAndFbo genera una textura fresca por llamada, solo el FBO se reusa. 0 = fallo del
     ''' GPU y el caller ABORTA con log, no compone por CPU. GL-bound.</para>
     ''' <para>GPU-RESIDENTE, SIN READBACK: el GetTexImage + re-subida Rgba8 previo frenaba el pipeline con una
@@ -1143,10 +1148,15 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Dim neutral = seedTex : seedTex = 0   ' transferencia de propiedad: la seed plana ES el resultado
                 Return neutral
             End If
+            ' baseDiffuseSpace = el OutputSpace del canal: el espacio en que el CPU (ComposeChannelAccum) expresa el
+            ' seed constante. La pipeline cierra en ese mismo OutputSpace = los valores que el bake escribe en el
+            ' DDS del facetint y que el motor samplea crudo en el slot 6. Antes iba "lineal porque el render
+            ' decodeó" (baseDiffuseIsLinearOnGpu, el contrato de FO4), que además le agregaba un pase final a lineal
+            ' que el CPU no tiene: con la ley SSE (todo el mismo espacio) no movía nada, con otro config sí.
             Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                               seedTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
                                                               SseFaceTintComposer.AccumSpaceCapability,
-                                                              baseDiffuseIsLinearOnGpu:=True)
+                                                              baseDiffuseSpace:=CInt(FaceTintConvention.OutputSpaceForChannel(FaceTintChannel.Diffuse)))
             ' Sin fallback silencioso: si HAY capas y el pipeline no devolvió una textura fresca, es un FALLO del GPU
             ' (no "usá el base"): devolver la seed daría un facetint neutro y el NPC saldría con el tono equivocado
             ' sin que nadie se entere. 0 ⇒ el caller aborta con log.
@@ -1361,10 +1371,17 @@ Friend NotInheritable Class NpcFaceTintResolver
         End Try
         If cpu Is Nothing Then Return False
         Dim any = False
-        ' Diffuse: g22 → linear antes de subir (paridad con el output linear del path GL).
+        ' Diffuse: del espacio en que se ALMACENA (OutputSpace del canal, la convención — no un G22 escrito acá) a
+        ' lineal, que es lo que samplea el render; el MISMO par que el pase final del camino GL
+        ' (ConvertChannelIfNeeded OutputSpace → 0). EN FLOAT: convertirlo en bytes aplastaba los oscuros (ver
+        ' FaceTintCpuCompositor.BgraToRgbaUnitInSpace) y el preview CPU salía distinto del bake.
         If cpu.Diffuse IsNot Nothing AndAlso cpu.Diffuse.Bgra IsNot Nothing AndAlso diffuseEntry IsNot Nothing Then
-            FaceTintCpuCompositor.G22DiffuseBgraToLinearInPlace(cpu.Diffuse.Bgra)
-            SwapCpuChannelIntoDict(diffuseEntry, cpu.Diffuse.Bgra, cpu.Diffuse.Width, cpu.Diffuse.Height) : any = True
+            Dim w = cpu.Diffuse.Width, h = cpu.Diffuse.Height
+            Dim rgba = FaceTintCpuCompositor.BgraToRgbaUnitInSpace(cpu.Diffuse.Bgra,
+                                                                   CInt(FaceTintConvention.OutputSpaceForChannel(FaceTintChannel.Diffuse)), 0)
+            If rgba IsNot Nothing Then
+                SwapIntoDict(diffuseEntry, SseFoldLayerStack.UploadRgba32f(rgba, w * h, w, h, forceOpaque:=False), w, h) : any = True
+            End If
         End If
         ' N/S: ya lineales, subir tal cual.
         If cpu.Normal IsNot Nothing AndAlso cpu.Normal.Bgra IsNot Nothing AndAlso normalEntry IsNot Nothing Then
@@ -1377,11 +1394,16 @@ Friend NotInheritable Class NpcFaceTintResolver
     End Function
 
     ''' <summary>Sube un BGRA compuesto por CPU a una textura GL nueva y la swapea en el dict entry (borra la vieja).
-    ''' Mismo contrato que ApplyPipelineResultToDict pero desde bytes CPU (linear, IsSRGB=False).</summary>
+    ''' Para N/S: son DATO lineal y sus bytes son los del bake, así que el RGBA8 no pierde nada.</summary>
     Private Sub SwapCpuChannelIntoDict(entry As PreviewModel.Texture_Loaded_Class, bgra As Byte(), w As Integer, h As Integer)
         If entry Is Nothing OrElse bgra Is Nothing OrElse w <= 0 OrElse h <= 0 Then Return
-        Dim newId = UploadRgba8Linear(bgra, w, h)
-        If newId = 0 Then Return
+        SwapIntoDict(entry, UploadRgba8Linear(bgra, w, h), w, h)
+    End Sub
+
+    ''' <summary>Swapea una textura YA subida en el dict entry y borra la anterior. Mismo contrato que
+    ''' ApplyPipelineResultToDict (valores lineales, IsSRGB=False). newId = 0 (falló la subida) no toca nada.</summary>
+    Private Sub SwapIntoDict(entry As PreviewModel.Texture_Loaded_Class, newId As Integer, w As Integer, h As Integer)
+        If entry Is Nothing OrElse newId = 0 OrElse w <= 0 OrElse h <= 0 Then Return
         Dim oldId = entry.Texture_ID
         entry.Texture_ID = newId
         entry.IsSRGB = False

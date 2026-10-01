@@ -180,6 +180,7 @@ Friend Module SseCatalogs
             Dim counts = ResolveOverlayCounts(raw, faceOff)
             Dim knobs = ResolveFaceGenSliderKnobs(raw)
             Dim extended = ResolveExtendedMorphsEnabled(raw)
+            _overlayInstall = ResolveOverlayInstall(raw)
             _faceDisabledByFlag = faceOff
             _faceSliderMultiplier = knobs.Multiplier
             _faceSliderInterval = knobs.Interval
@@ -320,8 +321,15 @@ Friend Module SseCatalogs
     ''' SUS morphs de cara o ninguno (main.cpp:854).</summary>
     Private Const RawExtendedMorphsSlot As Integer = 11
 
+    ''' <summary>Los cuatro de <c>[Overlays/Data]</c> que skee aplica a CADA capa al instalarla (main.cpp:783-786):
+    ''' <c>bAlphaOverride</c>, <c>iAlphaFlags</c>, <c>iAlphaThreshold</c>, <c>bForceDecal</c>.</summary>
+    Private Const RawAlphaOverrideSlot As Integer = 12
+    Private Const RawAlphaFlagsSlot As Integer = 13
+    Private Const RawAlphaThresholdSlot As Integer = 14
+    Private Const RawForceDecalSlot As Integer = 15
+
     Private Function NewRawSkeeValues() As String()
-        Return {"", "", "", "", "", "", "", "", "", "", "", ""}
+        Return {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""}
     End Function
 
     ''' <summary>Mergea UN archivo sobre <paramref name="raw"/> con la regla de skee: el valor de este archivo
@@ -401,6 +409,16 @@ Friend Module SseCatalogs
                 For z = 0 To IniSectionByZone.Length - 1
                     If section.Equals(IniSectionByZone(z), StringComparison.OrdinalIgnoreCase) Then slot = RawSpellSlotBase + z
                 Next
+            ElseIf section.Equals("Overlays/Data", StringComparison.OrdinalIgnoreCase) Then
+                If key.Equals("bAlphaOverride", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawAlphaOverrideSlot
+                ElseIf key.Equals("iAlphaFlags", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawAlphaFlagsSlot
+                ElseIf key.Equals("iAlphaThreshold", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawAlphaThresholdSlot
+                ElseIf key.Equals("bForceDecal", StringComparison.OrdinalIgnoreCase) Then
+                    slot = RawForceDecalSlot
+                End If
             ElseIf section.Equals("FaceGen", StringComparison.OrdinalIgnoreCase) Then
                 ' Los dos knobs de los sliders EXTENDIDOS de cara (main.cpp:842-843). Van por el mismo camino
                 ' crudo que los contadores: se juntan los strings de los dos ini y se parsea UNA sola vez.
@@ -604,6 +622,30 @@ Friend Module SseCatalogs
     ''' skee64 lee <c>g_sliderInterval</c> —su único uso en todo el plugin es el argumento <c>interval</c> del
     ''' ctor de <c>RaceMenuSlider</c>— así que la app NO debe cuantizar valores a múltiplos del intervalo:
     ''' movería números que el motor no mueve.</para></summary>
+    ''' <summary>Lo que skee aplica a CADA capa de overlay al instalarla, del ini instalado (o sus defaults).</summary>
+    Friend Function OverlayInstall() As FO4_Base_Library.SseOverlayMaterialFactory.InstallOptions
+        EnsureSkeeIniValues()
+        SyncLock _lock
+            Return _overlayInstall
+        End SyncLock
+    End Function
+
+    Private _overlayInstall As FO4_Base_Library.SseOverlayMaterialFactory.InstallOptions = FO4_Base_Library.SseOverlayMaterialFactory.InstallOptions.Defaults
+
+    ''' <summary>Los cuatro valores de <c>[Overlays/Data]</c> con las leyes de lectura de skee: bool = "%u" y
+    ''' <c>tmp &gt; 0</c> (main.cpp:313-326); UInt16 = "%hu" (main.cpp:293), que guarda los 16 bits bajos; el
+    ''' umbral se clampea a 0xFF (main.cpp:830). Key ausente o que no parsea: el default (main.cpp:130-133).</summary>
+    Private Function ResolveOverlayInstall(raw As String()) As FO4_Base_Library.SseOverlayMaterialFactory.InstallOptions
+        Dim o = FO4_Base_Library.SseOverlayMaterialFactory.InstallOptions.Defaults
+        Dim n As UInteger
+        If ScanUInt32Like(raw(RawAlphaOverrideSlot), n) Then o.AlphaOverride = n > 0UI
+        If ScanUInt32Like(raw(RawAlphaFlagsSlot), n) Then o.AlphaFlags = CUShort(n And &HFFFFUI)
+        If ScanUInt32Like(raw(RawAlphaThresholdSlot), n) Then o.AlphaThreshold = CUShort(n And &HFFFFUI)
+        If o.AlphaThreshold > 255US Then o.AlphaThreshold = 255US
+        If ScanUInt32Like(raw(RawForceDecalSlot), n) Then o.ForceDecal = n > 0UI
+        Return o
+    End Function
+
     Friend Function FaceSliderKnobs() As RaceMenuSliderCatalog.SliderKnobs
         EnsureSkeeIniValues()
         SyncLock _lock

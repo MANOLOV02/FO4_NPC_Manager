@@ -161,7 +161,7 @@ Public Class LooksmenuLoad_Form
         End If
         ' Ordinal comparison on purpose: both catalogs key by an id the engine matches with a plain
         ' string compare (OverlayInterface / SkinInterface), so case matters here too.
-        If knownOverlayTemplateIds IsNot Nothing Then _knownOverlayTemplateIds = New HashSet(Of String)(knownOverlayTemplateIds, StringComparer.Ordinal)
+        If knownOverlayTemplateIds IsNot Nothing Then _knownOverlayTemplateIds = New HashSet(Of String)(knownOverlayTemplateIds, F4eeFixedStringComparer.Instancia)   ' ids como el motor: F4EEFixedString (StringTable.h:21-30)
         If knownLmSkinTemplateIds IsNot Nothing Then _knownLmSkinTemplateIds = New HashSet(Of String)(knownLmSkinTemplateIds, StringComparer.Ordinal)
 
         Text = If(_isSse, "Load RaceMenu Preset", "Load LooksMenu Preset")

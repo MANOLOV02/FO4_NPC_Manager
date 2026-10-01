@@ -828,9 +828,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' Synth Gen1 perdían el alpha-test de su propio material por no ser el head part de cara).
                 ' NO borrar ref ni blend acá: la ley del bake no vive en este Sub COMPARTIDO (aplicarla dejó
                 ' la cara de Valentine sólida en el preview).
-                material.AlphaTest = overrideMaterial.AlphaTest
-                material.AlphaTestRef = overrideMaterial.AlphaTestRef
-                material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
+                material.AdoptAlphaFrom(overrideMaterial)
 
                 relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialDe())
                 If logEnabled Then
@@ -1818,7 +1816,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' FaceGen) whose worn biped SlotMask intersects the override's slotMask. Faithful to skee's
             ' NIOVTaskUpdateTexture (replace only the override's slots; key 7 tint → SkinTintColor; key 8 → Alpha).
             If sseSkinOverrides IsNot Nothing AndAlso candidate IsNot Nothing _
-               AndAlso (material.IsEngineSkinTint() OrElse material.SkinTint) Then
+               AndAlso material.IsEngineSkinTint() Then
                 For Each sk In sseSkinOverrides
                     If sk Is Nothing OrElse sk.SlotMask = 0UI Then Continue For
                     ' skee SkinOverrideApplicator (OverrideInterface.cpp:1080): the shape's biped slot mask must

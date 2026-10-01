@@ -3,59 +3,59 @@ Imports FO4_Base_Library
 Imports OpenTK.Graphics.OpenGL4
 
 ''' <summary>
-''' SSE — el STACK DE CAPAS del diffuse plegado (skee MASKT + overlays <c>Face [Ovl]</c>), con las DOS réplicas:
-''' CPU (<see cref="ComposeCpu"/>) y GPU (<see cref="ComposeGpu"/>). Ambas reciben y devuelven lo MISMO — el
-''' acumulador RGBA en sRGB, <c>Double()</c> de w×h×4 — así que el caller elige por el flag de cámara
-''' (<c>Setting_GPUSkinning</c>) y NADA más cambia, y la paridad se mide restando los dos arrays.
+''' SSE — la cadena del diffuse plegado (facetint → pliegue → capas skee MASKT + <c>Face [Ovl]</c> → inversa), con
+''' las DOS réplicas: CPU (<see cref="ComposeCpu"/> + <see cref="SseFaceGenBaker"/>) y GPU
+''' (<see cref="ComposeFoldedGpuResident"/>). El caller elige por el flag de cámara (<c>Setting_GPUSkinning</c>) y
+''' NADA más cambia; la paridad se mide restando los dos resultados (sandbox).
 '''
-''' QUÉ ENTRA ACÁ Y QUÉ NO. El PLIEGUE en sí (<c>albedo = softlight(complexion, facetint) × amplify(detail)</c>,
-''' <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/>) NO es un stack de capas: es una ley FIJA del engine, sin
-''' blend-ops ni cobertura, y se computa igual en los dos caminos (en Double, sin cuantizar). Pasarla por el GPU
-''' obligaría a mandar el facetint como TEXTURA de 8 bits, y la cadena la escala hasta ×255/64 por el amplify del
-''' detail ⇒ metería un error que hoy no existe. Lo que SÍ es un stack de capas — y por eso honra el flag — son
-''' las MASKT y los overlays.
-''' (El sandbox del bake igual hornea el <c>_2d</c> = pliegue por GPU, para medir también esa variante.)
+''' El PLIEGUE en sí (<c>albedo = softlight(complexion, facetint) × amplify(detail)</c>) NO es un stack de capas: es
+''' la ley del engine, sin blend-ops ni cobertura. En CPU es <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/>; en
+''' GPU, <see cref="FaceTintCompositor.ApplySseFoldPass"/> (pase propio). Lo que SÍ es un stack de capas son las
+''' MASKT y los overlays (etapa Overlay).
 '''
-''' Ley CPU = <see cref="SseOverlayCompositor.ApplyOverlays"/> (decodificada del .fx de RaceMenu).
+''' ESPACIOS: los del bucket Fold (<see cref="SseFaceGenBaker.FoldSpaces"/>). El albedo plegado se entrega a la etapa
+''' Overlay y se recibe de vuelta por el MISMO par de conversiones en los dos caminos
+''' (<see cref="SseFaceGenBaker.FoldedToOverlayBase"/> / <see cref="SseFaceGenBaker.OverlayBaseToFolded"/>).
+'''
+''' Ley CPU de las capas = <see cref="SseOverlayCompositor.ApplyOverlays"/> (decodificada del .fx de RaceMenu).
 ''' Ley GPU = el MISMO <see cref="FaceTintCompositor"/> que usa FO4, con las capas mapeadas 1:1:
 '''   skee type 1 (Mask; el ÚNICO que producen las MASKT del NIF) → PaletteMask, canal R, color = MASKC,
 '''                                                                 opacidad = MASKA, blend = normal ⇒ alpha-over
 '''   skee type 2 (Solid)                                        → UniformColor (cobertura 1)
-'''   skee type 0 (Texture × color) y los overlays               → TextureSetDiffuse + MultiplyTextureByColor
+'''   skee type 0 (Texture × color)                              → TextureSetDiffuse + MultiplyTextureByColor
 ''' El blend-op sale de <see cref="SseOverlayCompositor.BlendOpFromSseMode"/> — la MISMA función que usa el CPU —,
 ''' así que los dos caminos no se pueden desincronizar por el mapeo.
+''' Los overlays <c>Face [Ovl]</c> NO son capas de esa etapa: son la capa SkinTint que instala skee (técnica 5), y
+''' se componen DESPUÉS, sobre el albedo plegado ya devuelto a <c>Fold.OutputSpace</c> — CPU
+''' <see cref="SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse"/>, GPU
+''' <see cref="FaceTintCompositor.ApplySseFaceOverlayPass"/>. El bucket Overlay no los gobierna: el motor no tiene
+''' opción (decisión del usuario 2026-10-01).
 ''' </summary>
 Friend Module SseFoldLayerStack
 
     ''' <summary>RENDER PURO GPU (pedido explícito del usuario): la cadena ENTERA del pliegue —
-    ''' facetint → fold → capas (skee MASKT + Face [Ovl]) → sRGB→lin final — corre en GL encadenando
+    ''' facetint → fold → capas (skee MASKT + Face [Ovl]) → unfold → resample— corre en GL encadenando
     ''' TEXTURAS (Rgba32f, float de punta a punta), con CERO readbacks en el camino caliente. Devuelve el
-    ''' texture-id FINAL (diffuse plegado en LINEAL, listo para el dict con IsSRGB=False) o 0 si CUALQUIER
-    ''' etapa falla (el caller aborta con log: SIN fallback a CPU, como siempre).
+    ''' texture-id FINAL o 0 si CUALQUIER etapa falla (el caller aborta con log: SIN fallback a CPU, como siempre).
+    ''' <para>ESPACIOS: los del bucket Fold (<see cref="SseFaceGenBaker.ResolveFoldSpaces"/>). El complexion entra en
+    ''' <c>Fold.SrcSpace</c> y la textura devuelta SALE EN EL MISMO ESPACIO: es el diffuse pre-compensado que
+    ''' reemplaza al complexion, así que se samplea exactamente como él (y es lo que el bake escribe en el DDS).
+    ''' No hay espacio de salida que elija el caller.</para>
     '''
     ''' "Dan lo mismo" es requisito de RESULTADO, no de representación: la réplica CPU produce lo mismo por
-    ''' construcción (misma ley, mismos inputs decodificados una vez) y se VERIFICA con el sandbox de paridad
-    ''' (<paramref name="measureParity"/>) — el ÚNICO lugar donde este camino hace readbacks, además de los
-    ''' stats del log cuando <c>Logger.Enabled</c> (diagnóstico opt-in, no camino caliente).
+    ''' construcción (misma ley, mismos resolvers, mismos inputs decodificados una vez) y se VERIFICA con el
+    ''' sandbox de paridad (<paramref name="measureParity"/>) — el ÚNICO lugar donde este camino hace readbacks,
+    ''' además de los stats del log cuando <c>Logger.Enabled</c> (diagnóstico opt-in, no camino caliente).
     '''
-    ''' Diferencias de representación ASUMIDAS (documentadas, no bugs):
-    '''  - float32 (GPU) vs Double (CPU): la de siempre (RMS medido 0,080/255, bajo el redondeo al byte);
-    '''  - el final NO se cuantiza a 8 bits: la textura instalada queda Rgba32f LINEAL (el camino CPU
-    '''    cuantiza a byte al subir RGBA8) ⇒ el GPU es ≤ medio paso de byte MÁS preciso — igual que el live
-    '''    de FO4, que también instala la textura float del pipeline sin bajarla.
+    ''' Diferencias de representación ASUMIDAS (documentadas, no bugs): float32 (GPU) vs float32/Double (CPU).
     ''' Qué queda en CPU (y por qué es legítimo, no impureza): el DECODE de los DDS fuente — es la ENTRADA
     ''' común a los dos caminos (leer el archivo no es compose) y garantiza inputs bit-idénticos: decodificar
     ''' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" EN EL ORIGEN.
-    ''' El alpha del complexion VIAJA INTACTO (antes se forzaba opaco acá y en el CPU): con una cabeza
-    ''' ALPHA-TEST, pisarlo con 1 apaga su recorte y aparece geometría que el alpha cortaba, con borde negro.
-    ''' Son DOS puntos: el upload (forceOpaque:=False) y el último pase del compositor
-    ''' (headDiffuseAlphaTest:=True ⇒ uForceOpaqueAlpha=0). El bake nunca tuvo el problema porque su pack
-    ''' escribe el alpha del acumulador; era un paso que sólo existía en el preview.
-    '''
-    ''' El trío viejo (<see cref="ComposeFacetintGpu"/>/<see cref="FoldGpu"/>/<see cref="ComposeGpu"/>, con
-    ''' readback por etapa) queda SOLO para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
-    ''' intermedios en CPU para escribir los .dds de comparación.</summary>
-    Friend Function ComposeFoldedGpuResident(complexionSrgb As Single(),
+    ''' El alpha del complexion VIAJA INTACTO por las cuatro etapas: con una cabeza ALPHA-TEST, pisarlo con 1
+    ''' apaga su recorte y aparece geometría que el alpha cortaba, con borde negro. Por eso el upload es
+    ''' forceOpaque:=False, los pases del pliegue copian el alpha de su entrada, y la etapa de capas va con
+    ''' headDiffuseAlphaTest:=True — igual que el CPU, que no toca el alpha en ninguna etapa.</summary>
+    Friend Function ComposeFoldedGpuResident(complexion As Single(),
                                              tintLayers As IList(Of FaceTintLayerInput),
                                              detailRaw As Single(),
                                              skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
@@ -65,21 +65,21 @@ Friend Module SseFoldLayerStack
                                              host As NpcRenderHost,
                                              measureParity As Boolean,
                                              Optional outW As Integer = 0, Optional outH As Integer = 0) As Integer
-        If host Is Nothing OrElse complexionSrgb Is Nothing OrElse w <= 0 OrElse h <= 0 Then Return 0
-        ' Tamaño de SALIDA (CharGen Options). 0/omitido = nativo ⇒ comportamiento previo, bit-inerte.
+        If host Is Nothing OrElse complexion Is Nothing OrElse w <= 0 OrElse h <= 0 Then Return 0
+        ' Tamaño de SALIDA (CharGen Options). 0/omitido = nativo.
         ' TODA la cadena (facetint, fold, capas, unfold) sigue corriendo a la resolución NATIVA del complexion:
         ' el resample es lo ÚLTIMO, igual que en el bake. Bajarlo antes cambiaría el resultado del pliegue.
         If outW <= 0 Then outW = w
         If outH <= 0 Then outH = h
         Dim npix = w * h
-        Dim seedTex = 0, tintTex = 0, complexTex = 0, detTex = 0, foldedTex = 0, srgbTex = 0
+        ' Los espacios del pliegue, del MISMO resolver que usan el CPU y ApplySseFoldPass.
+        Dim sp = SseFaceGenBaker.ResolveFoldSpaces()
+        Dim seedTex = 0, tintTex = 0, complexTex = 0, detTex = 0, foldedTex = 0, layeredTex = 0, unfoldTex = 0
         Try
             ' --- 1. FACETINT: seed de LA LEY → capas de tint del RACE/NPC (si hay). Sin capas, el facetint
             ' ES el seed (raza sin tints = seed plano; con el default 0.5 eso es soft-light IDENTIDAD, NO es
             ' un fallo — 0.5 es además el default de engine del slot 6, DefaultGreyMap). ---
-            ' EL SEED SALE DE CharGen Options, NO DE UN LITERAL: acá estaba cableado 0.5F mientras el
-            ' compose CPU leía la ley ⇒ mover el seed no movía el render (el GPU es el default) y CPU y GPU
-            ' componían desde números distintos. Fuente única = SseFaceTintComposer.TryGetFlatSeedRgb.
+            ' EL SEED SALE DE CharGen Options, NO DE UN LITERAL. Fuente única = SseFaceTintComposer.TryGetFlatSeedRgb.
             Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
             If seedRgb Is Nothing Then
                 ' Espejo EXACTO del CPU: sin seed constante no hay base de donde sembrar (facetint TINT-ONLY)
@@ -92,17 +92,17 @@ Friend Module SseFoldLayerStack
             If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then
                 tintTex = seedTex : seedTex = 0                          ' ownership pasa a tintTex
             Else
-                ' CAPACIDAD DEL ESPEJO CPU de TODO este stack (los 7 ApplyFaceTintPipeline de este archivo).
-                ' Este camino comparte el compositor GL con FO4, pero su contraparte CPU es SseFaceTintComposer,
-                ' que acumula SIEMPRE en OutputSpace (lerp uniforme del motor, sin ley de cuatro espacios). Al
-                ' declararlo, AccumInCompositeSpace queda inerte acá aunque el config lo prenda ⇒ el GPU no se
-                ' puede apartar del CPU. Si algun dia se implementa allá, se cambia SU constante y estos 7
-                ' call sites la siguen solos. NO es un If por nombre de juego: es quien espeja este camino.
+                ' CAPACIDAD DEL ESPEJO CPU de este stack: SseFaceTintComposer.AccumSpaceCapability, la misma que
+                ' declara su contraparte CPU (ComposeChannelAccum). NO es un If por nombre de juego.
+                ' baseDiffuseSpace = el OutputSpace del canal: es el espacio en que el CPU EXPRESA el seed constante
+                ' (Cvt1(seed, outSp, accSp)); la pipeline lo siembra desde ahí y cierra en ese mismo OutputSpace,
+                ' que es donde queda el facetint en los dos caminos (sp.Tint). Antes iba "lineal porque el render
+                ' decodeó" (baseDiffuseIsLinearOnGpu), que es el contrato de FO4 y no el de este stack.
                 Dim prT = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                    seedTex, 0, 0, w, h, tintLayers,
                                                                    New List(Of FaceRegionSwapInput)(),
                                                                    SseFaceTintComposer.AccumSpaceCapability,
-                                                                   baseDiffuseIsLinearOnGpu:=True)
+                                                                   baseDiffuseSpace:=sp.Tint)
                 If prT Is Nothing OrElse prT.Diffuse Is Nothing OrElse Not prT.Diffuse.IsFresh Then Return 0
                 tintTex = prT.Diffuse.TextureId
                 Try : GL.DeleteTexture(seedTex) : Catch : End Try
@@ -111,94 +111,62 @@ Friend Module SseFoldLayerStack
 
             ' Stats de entrada — SOLO si alguien mira el log (el readback del facetint es diagnóstico).
             If Logger.Enabled Then
-                Dim mC = MeanRgb(complexionSrgb, npix)
+                Dim mC = MeanRgb(complexion, npix)
                 Dim tintAcc = ReadbackRgba32f(tintTex, npix)
                 Dim mF = If(tintAcc IsNot Nothing, MeanRgb(tintAcc, npix), Nothing)
                 Dim mD = If(detailRaw IsNot Nothing, MeanRgb(detailRaw, npix), Nothing)
                 Dim dMeanR = If(mD Is Nothing, SseFaceGenBaker.EngineDefaultDetail, mD(0))
-                Logger.LogLazy(Function() $"[SSE-FOLD] IN (GPU-resident): complexion(sRGB)=({mC(0):F3},{mC(1):F3},{mC(2):F3}) " &
+                Logger.LogLazy(Function() $"[SSE-FOLD] IN (GPU-resident): complexion=({mC(0):F3},{mC(1):F3},{mC(2):F3}) " &
                                           If(mF Is Nothing, "facetint=(sin readback) ",
-                                             $"facetint/softlight-b(lin)=({mF(0):F3},{mF(1):F3},{mF(2):F3}) ") &
-                                          $"detail={If(mD Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")} " &
-                                          $"⇒ amp(detail)≈{SseFaceGenBaker.FgTintChannel(dMeanR, 0):F3}")
+                                             $"facetint=({mF(0):F3},{mF(1):F3},{mF(2):F3}) ") &
+                                          $"detail={If(mD Is Nothing, "NINGUNO(default engine)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")} " &
+                                          $"⇒ amp(detail)≈{SseFaceGenBaker.FgTintChannel(dMeanR, 0):F3} " &
+                                          $"spaces(src,work,out,tint)=({sp.Src},{sp.Working},{sp.Output},{sp.Tint})")
             End If
 
-            ' --- 2. FOLD: base = complexion (sRGB, CON SU ALPHA), capa = rama uFgTintFold del shader
-            ' (softlight con el facetint × amplify del detail: la MISMA ley fija del engine que FoldFacetintIntoDiffuse en CPU). ---
-            ' forceOpaque:=False — espejo del camino CPU: el alpha del complexion NO se pisa. El pipeline
-            ' propaga el alpha del prev tal cual, así que entrando con el alpha real sale con el alpha real.
-            ' Con alpha 1 forzado, una cabeza ALPHA-TEST deja de descartar y aparece el recorte que el alpha
-            ' hacía (borde negro). Ver la nota larga en NpcFaceTintResolver (upload del diffuse plegado).
-            complexTex = UploadRgba32f(complexionSrgb, npix, w, h, forceOpaque:=False)
+            ' --- 2. FOLD: pase PROPIO (ApplySseFoldPass), espejo de SseFaceGenBaker.FoldFacetintIntoDiffuse. ---
+            ' forceOpaque:=False — el alpha del complexion NO se pisa (ver el summary).
+            complexTex = UploadRgba32f(complexion, npix, w, h, forceOpaque:=False)
             If complexTex = 0 Then Return 0
             If detailRaw IsNot Nothing Then
                 detTex = UploadRgba32f(detailRaw, npix, w, h)
                 If detTex = 0 Then Return 0
             End If
-            Dim foldLayer = MakeFoldLayer(tintTex, detTex, unfold:=False)
-            ' stage:=Fold — el pase del pliegue resuelve el bucket FOLD, no el del canal. Es lo que hace que
-            ' `uSoftLight` llegue al shader con el modelo del MOTOR (pegtop, el default del bucket) en vez del
-            ' del bucket Diffuse (que en SSE es GIMP). Su espejo CPU, SseFaceGenBaker.FoldSoftLightModel,
-            ' resuelve EXACTAMENTE la misma etapa ⇒ los dos caminos pliegan con la misma fórmula.
-            Dim prF = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
-                                                               complexTex, 0, 0, w, h, foldLayer,
-                                                               New List(Of FaceRegionSwapInput)(),
-                                                               SseFaceTintComposer.AccumSpaceCapability,
-                                                               baseDiffuseIsLinearOnGpu:=True,
-                                                               headDiffuseAlphaTest:=True,
-                                                               stage:=FaceTintConvention.FaceTintStage.Fold)
-            If prF Is Nothing OrElse prF.Diffuse Is Nothing OrElse Not prF.Diffuse.IsFresh Then Return 0
-            foldedTex = prF.Diffuse.TextureId
+            foldedTex = FaceTintCompositor.ApplySseFoldPass(host.CompositorState, complexTex, tintTex, detTex, w, h, unfold:=False)
+            If foldedTex = 0 Then Return 0
             ' Sólo el complexion queda consumido acá. tintTex/detTex SIGUEN VIVOS: los vuelve a necesitar el
             ' pase de UNFOLD del final (la inversa usa el MISMO facetint y el MISMO detail que el fold, o no
             ' cancela). Se liberan después de ese pase.
-            If complexTex <> 0 Then Try : GL.DeleteTexture(complexTex) : Catch : End Try
+            Try : GL.DeleteTexture(complexTex) : Catch : End Try
             complexTex = 0
 
             ' Replica CPU del sandbox de paridad: vive FUERA del If de capas para que la comparacion final
-            ' cubra TAMBIEN el unfold del paso 4 (antes se comparaba antes de invertir ⇒ el paso nuevo quedaba
-            ' sin medir, que es como se colo la divergencia GPU en primer lugar).
+            ' cubra TAMBIEN el unfold del paso 4.
             Dim accCpu As Single() = Nothing
-            ' El facetint de la RÉPLICA CPU. Se guarda porque lo necesitan las DOS puntas de la cadena: la
-            ' directa (fold) y la inversa (unfold). Tienen que ser EL MISMO buffer o la inversa no cancela.
+            ' El facetint de la RÉPLICA CPU. Lo necesitan las DOS puntas de la cadena: la directa (fold) y la
+            ' inversa (unfold). Tienen que ser EL MISMO buffer o la inversa no cancela.
             Dim facetintCpu As Single() = Nothing
 
-            ' --- 3. CAPAS (skee MASKT + Face [Ovl]) SOBRE el base plegado — mismo orden que el CPU/bake. ---
+            ' --- 3. CAPAS SOBRE el base plegado — mismo orden que el CPU/bake: (a) skee MASKT en la etapa Overlay,
+            ' (b) Face [Ovl] en su pase propio sobre Fold.OutputSpace. ---
             Dim stackLayers As New List(Of FaceTintLayerInput)
+            Dim faceLayers As New List(Of FaceTintCompositor.SseFaceOverlayGpuLayer)
             If HasWork(skeeRaw, faceOvl) Then
                 stackLayers.AddRange(BuildSkeeGpuLayers(skeeRaw, skinRgb))
-                stackLayers.AddRange(BuildFaceOverlayGpuLayers(faceOvl))
-                ' ACÁ HABÍA UN `Return 0` ("había trabajo pero ninguna capa se pudo armar ⇒ FALLO, no se degrada
-                ' en silencio"). Se elimina por DOS razones:
-                '   1. TIRABA EL FOLD ENTERO ya pagado (decode del complexion a resolución nativa + detail +
-                '      facetint + pase de fold) y, como nada cachea el fallo, el render lo reintentaba en cada
-                '      refresh: el preview se quedaba "cargando". Un fallo caro y cíclico es peor que el síntoma
-                '      que quería evitar.
-                '   2. ROMPÍA LA PARIDAD CPU/GPU: `ComposeCpu` en el mismo caso NO falla — compone cero capas y
-                '      sigue. Dos caminos que deben "dar lo mismo" no pueden diferir en si abortan.
-                ' El fold de la BASE es válido y correcto por sí solo; lo que falta son las capas, y eso se
-                ' REPORTA (los composers ya loguean [SSE-OVL]/[SSE-SKEE] la textura que no pudieron leer).
-                If stackLayers.Count = 0 Then
+                faceLayers.AddRange(BuildFaceOverlayGpuLayers(faceOvl))
+                ' Sin `Return 0` cuando no se pudo armar ninguna capa: tiraría el fold ya pagado y el render lo
+                ' reintentaría en cada refresh, y el CPU (ComposeCpu) en el mismo caso compone cero capas y sigue.
+                ' Se REPORTA (los composers ya loguean [SSE-OVL]/[SSE-SKEE] la textura que no pudieron leer).
+                If stackLayers.Count = 0 AndAlso faceLayers.Count = 0 Then
                     Dim nSk = If(skeeRaw Is Nothing, 0, skeeRaw.Count), nOv = If(faceOvl Is Nothing, 0, faceOvl.Count)
                     Logger.LogLazy(Function() $"[SSE-FOLD] 0 capas GPU armadas de skee={nSk} ovl={nOv} (texturas ausentes/ilegibles) — se conserva el fold de la BASE, sin capas. Ver [SSE-OVL]/[SSE-SKEE].")
                 End If
             End If
 
-            ' SANDBOX (opt-in): el UNICO readback del camino — aca se MIDE que las dos replicas dan lo mismo,
-            ' en vez de suponerlo.
-            ' FUERA DEL `If stackLayers.Count > 0`. Estaba ADENTRO, y un NPC vanilla de SSE no trae ni
-            ' overlays de RaceMenu ni skee ⇒ cero capas ⇒ la paridad no se medía JAMAS en el caso que es el
-            ' 100% del corpus vanilla (medido: 368 invocaciones del sandbox, 0 muestras comparadas). Lo que
-            ' hay que comparar ahi es el FOLD DE LA BASE, que es exactamente lo que el bake escribe.
-            ' `ComposeCpu` con cero capas es un no-op declarado (ver la nota de arriba), asi que sacarlo de la
-            ' compuerta no cambia el resultado del caso con capas.
-            ' LA RÉPLICA CPU SE CONSTRUYE DE LAS MISMAS ENTRADAS, NO DEL RESULTADO DEL GPU.
-            ' Antes arrancaba con `accCpu = ReadbackRgba32f(foldedTex)` —el fold QUE ACABABA DE HACER EL
-            ' GPU— y más abajo invertía con el FACETINT DEL GPU. O sea que el instrumento comparaba sólo
-            ' (capas + unfold) y las otras dos etapas daban verde POR CONSTRUCCIÓN: el compose del facetint
-            ' (donde vive el SEED) y el pliegue nunca se medían. Por eso un seed cableado en el GPU podía
-            ' convivir con "PARITY OK" mientras el CPU leía la ley. El nombre del reporte —"fold + capas +
-            ' unfold"— describía algo que no estaba pasando.
+            ' SANDBOX (opt-in): el UNICO readback del camino — aca se MIDE que las dos replicas dan lo mismo.
+            ' FUERA del If de capas: un NPC vanilla de SSE no trae capas y es el 100% del corpus vanilla.
+            ' LA RÉPLICA CPU SE CONSTRUYE DE LAS MISMAS ENTRADAS, NO DEL RESULTADO DEL GPU: compose del facetint,
+            ' pliegue, capas e inversa, todos medidos.
             If measureParity Then
                 ' 1. FACETINT por el compositor CPU COMPARTIDO: la MISMA llamada que hace
                 '    SseFaceTintComposer.ComposeLinearRgba (seed de la ley + las mismas capas + acumulador).
@@ -210,73 +178,83 @@ Friend Module SseFoldLayerStack
                     Logger.LogLazy(Function() "[SSE-FOLD] PARITY: la réplica CPU del facetint salió Nothing ⇒ esta imagen NO se compara (no se reporta paridad falsa).")
                 Else
                     ' 2. FOLD por CPU sobre una COPIA del complexion (in-place: el buffer del caller no se toca).
-                    accCpu = CType(complexionSrgb.Clone(), Single())
+                    accCpu = CType(complexion.Clone(), Single())
                     SseFaceGenBaker.FoldFacetintIntoDiffuse(accCpu, facetintCpu, npix, detailRaw)
                     ' 3. CAPAS (skee MASKT + Face [Ovl]) por CPU.
                     ComposeCpu(accCpu, skeeRaw, faceOvl, skinRgb, w, h)
                 End If
             End If
-            If stackLayers.Count > 0 Then
-                ' stage:=Overlay — el stack de capas (skee MASKT + Face [Ovl]) resuelve el bucket OVERLAY.
-                ' Su espejo CPU (SseOverlayCompositor.ApplyOverlays) resuelve EXACTAMENTE la misma etapa, así
-                ' que el bucket mueve los dos caminos o no mueve ninguno.
+            ' La etapa se gatea por HasWork, IGUAL que ComposeCpu: con trabajo declarado corre aunque ninguna capa
+            ' se haya podido armar, porque el seed y el pase final de la pipeline hacen el MISMO par de conversiones
+            ' que el CPU hace en ese caso.
+            If HasWork(skeeRaw, faceOvl) Then
+                ' stage:=Overlay — el stack resuelve el bucket OVERLAY, igual que su espejo CPU
+                ' (SseOverlayCompositor.ApplyOverlays).
+                ' baseDiffuseSpace:=Fold.OutputSpace — la base ES el albedo plegado, en el espacio que declara el
+                ' bucket Fold; la pipeline la siembra de ahí a su acumulador (= SseFaceGenBaker.FoldedToOverlayBase
+                ' en el CPU) y cierra en el OutputSpace del canal.
+                ' headDiffuseAlphaTest:=True — el alpha de la base pasa INTACTO, como en el CPU. Sin esto la última
+                ' capa dejaba el alpha opaco y una cabeza alpha-test con capas perdía su recorte en GPU.
                 Dim prL = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                    foldedTex, 0, 0, w, h, stackLayers,
                                                                    New List(Of FaceRegionSwapInput)(),
                                                                    SseFaceTintComposer.AccumSpaceCapability,
-                                                                   baseDiffuseIsLinearOnGpu:=True,
-                                                                   stage:=FaceTintConvention.FaceTintStage.Overlay)
-                If prL Is Nothing OrElse prL.Diffuse Is Nothing OrElse Not prL.Diffuse.IsFresh Then Return 0
-                srgbTex = prL.Diffuse.TextureId
-                Try : GL.DeleteTexture(foldedTex) : Catch : End Try
+                                                                   headDiffuseAlphaTest:=True,
+                                                                   stage:=FaceTintConvention.FaceTintStage.Overlay,
+                                                                   baseDiffuseSpace:=sp.Output)
+                If prL Is Nothing OrElse prL.Diffuse Is Nothing OrElse prL.SpaceConversionFailed Then Return 0
+                If prL.Diffuse.IsFresh Then
+                    layeredTex = prL.Diffuse.TextureId
+                    Try : GL.DeleteTexture(foldedTex) : Catch : End Try
+                Else
+                    layeredTex = foldedTex                   ' pipeline sin nada que dibujar: devolvió la base tal cual
+                End If
                 foldedTex = 0
+                ' La pipeline cerró en el OutputSpace del canal (sp.Tint); la inversa lee en Fold.OutputSpace. Es el
+                ' segundo tramo de SseFaceGenBaker.OverlayBaseToFolded en el CPU.
+                If sp.Tint <> sp.Output Then
+                    Dim back = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, layeredTex, w, h, sp.Tint, sp.Output)
+                    If back = 0 Then Return 0
+                    Try : GL.DeleteTexture(layeredTex) : Catch : End Try
+                    layeredTex = back
+                End If
+                ' (b) Face [Ovl]: la capa SkinTint de skee, sobre el albedo plegado (= el CPU después de
+                ' OverlayBaseToFolded). Sin capas dibujables devuelve 0 y la base queda.
+                If faceLayers.Count > 0 Then
+                    Dim pf = FaceTintCompositor.ApplySseFaceOverlayPass(host.CompositorState, host.TintGpuCache,
+                                                                        layeredTex, w, h, faceLayers)
+                    If pf.Failed Then Return 0
+                    If pf.TextureId <> 0 Then
+                        Try : GL.DeleteTexture(layeredTex) : Catch : End Try
+                        layeredTex = pf.TextureId
+                    End If
+                End If
             Else
-                srgbTex = foldedTex : foldedTex = 0
+                layeredTex = foldedTex : foldedTex = 0
             End If
 
             ' --- 4. UNFOLD: invertir la cadena del engine sobre el resultado (base plegada + capas). Los slots 3
-            ' y 6 del material YA NO se neutralizan, así que el shader del preview (y el del juego) van a aplicar
+            ' y 6 del material NO se neutralizan, así que el shader del preview (y el del juego) van a aplicar
             ' softlight(.,facetint) × amplify(detail) encima; esto lo cancela de antemano y el resultado dibujado
             ' vuelve a ser exactamente el buffer compuesto. MISMO facetint y MISMO detail que el fold.
-            ' Espejo GPU de SseFaceGenBaker.PreCompensateEngineChain — si tocás una, tocá la otra. ---
-            Dim unfoldLayer = MakeFoldLayer(tintTex, detTex, unfold:=True)
-            ' CENSO PRE-UNFOLD: separa la inversa del resto. La inversa es mal condicionada cerca de
-            ' k = 1-2b = 0 (el limite es la identidad, la formula daria 0/0), asi que ahi float32 (GPU) y
-            ' float64 (CPU) pueden separarse MUCHO sin que las leyes difieran. Midiendo antes y despues se
-            ' sabe cuanto aporta cada tramo en vez de suponerlo.
+            ' Espejo GPU de SseFaceGenBaker.PreCompensateEngineChain. ---
+            ' CENSO PRE-UNFOLD: separa la inversa (mal condicionada cerca de k = 1-2b = 0) del resto.
             If accCpu IsNot Nothing Then
-                Dim preGpu = ReadbackRgba32f(srgbTex, npix)
+                Dim preGpu = ReadbackRgba32f(layeredTex, npix)
                 If preGpu IsNot Nothing Then NoteSseParityPre(accCpu, preGpu, npix)
             End If
-            ' stage:=Fold TAMBIÉN acá: la inversa tiene que cancelar la directa, así que las dos resuelven el
-            ' MISMO bucket. Si el unfold leyera otro modelo, la cadena no cancelaría.
-            Dim prU = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
-                                                               srgbTex, 0, 0, w, h, unfoldLayer,
-                                                               New List(Of FaceRegionSwapInput)(),
-                                                               SseFaceTintComposer.AccumSpaceCapability,
-                                                               baseDiffuseIsLinearOnGpu:=True,
-                                                               headDiffuseAlphaTest:=True,
-                                                               stage:=FaceTintConvention.FaceTintStage.Fold)
-            If prU Is Nothing OrElse prU.Diffuse Is Nothing OrElse Not prU.Diffuse.IsFresh Then Return 0
-            Try : GL.DeleteTexture(srgbTex) : Catch : End Try
-            srgbTex = prU.Diffuse.TextureId
-            ' Paridad CPU-vs-GPU de la cadena COMPLETA (fold + capas + unfold). La replica CPU aplica la misma
-            ' inversa con el MISMO facetint (readback) y el MISMO detail, y recien ahi se compara.
+            unfoldTex = FaceTintCompositor.ApplySseFoldPass(host.CompositorState, layeredTex, tintTex, detTex, w, h, unfold:=True)
+            If unfoldTex = 0 Then Return 0
+            Try : GL.DeleteTexture(layeredTex) : Catch : End Try
+            layeredTex = 0
+            ' Paridad CPU-vs-GPU de la cadena COMPLETA (facetint + fold + capas + unfold). La inversa del CPU usa
+            ' SU PROPIO facetint (el que compuso en el paso 1), no un readback del GPU.
             If accCpu IsNot Nothing Then
-                ' La inversa del CPU usa SU PROPIO facetint (el que compuso en el paso 1), NO un readback
-                ' del que armó el GPU. Con el del GPU, directa e inversa cancelaban el MISMO número y el
-                ' compose del facetint quedaba fuera de la medición — que es exactamente el agujero por el
-                ' que se coló el seed cableado.
                 SseFaceGenBaker.PreCompensateEngineChain(accCpu, facetintCpu, detailRaw, npix)
-                Dim accGpu = ReadbackRgba32f(srgbTex, npix)
+                Dim accGpu = ReadbackRgba32f(unfoldTex, npix)
                 If accGpu IsNot Nothing Then
                     Dim rms = RmsDiff255(accCpu, accGpu, npix)
-                    Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (fold + capas + unfold)")
-                    ' El RMS solo NO alcanza para afirmar "paridad +-1": un maximo de 8 en 200 pixeles se
-                    ' esconde detras de un RMS de 0,2. Ademas esto salia SOLO por Logger, que en el barrido esta
-                    ' APAGADO => el unico instrumento de paridad del camino SSE no reportaba nada (se veia como
-                    ' "0 comparable slots"). Se acumula un censo con el MISMO criterio que usa FO4 (maximo y cola
-                    ' >=3) y lo imprime el runner.
+                    Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (facetint + fold + capas + unfold)")
                     NoteSseParity(accCpu, accGpu, npix)
                 End If
             End If
@@ -287,33 +265,31 @@ Friend Module SseFoldLayerStack
 
             ' Stats de salida — mismo gate: readback solo con el log encendido.
             If Logger.Enabled Then
-                Dim outAcc = ReadbackRgba32f(srgbTex, npix)
+                Dim outAcc = ReadbackRgba32f(unfoldTex, npix)
                 If outAcc IsNot Nothing Then
                     Dim mO = MeanRgb(outAcc, npix)
                     Dim nSkeeL = If(skeeRaw Is Nothing, 0, skeeRaw.Count)
                     Dim nOvlL = If(faceOvl Is Nothing, 0, faceOvl.Count)
-                    Logger.LogLazy(Function() $"[SSE-FOLD] OUT (GPU-resident): folded(sRGB)=({mO(0):F3},{mO(1):F3},{mO(2):F3}) " &
-                                              $"skeeLayers={nSkeeL} faceOverlays={nOvlL}  (esperado ~0.35-0.45; ~1.0 = satura)")
+                    Logger.LogLazy(Function() $"[SSE-FOLD] OUT (GPU-resident): diffuse pre-compensado=({mO(0):F3},{mO(1):F3},{mO(2):F3}) " &
+                                              $"skeeLayers={nSkeeL} faceOverlays={nOvlL}")
                 End If
             End If
 
-            ' --- 5. RESAMPLE al tamaño de CharGen Options + sRGB→lin FINAL, EN UN SOLO PASE. ---
-            ' El cvt (mode 2 del shader compartido, curva IEC = SseFaceGenBaker.Srgb2Lin) renderiza un quad
-            ' full-screen a un FBO de outW×outH muestreando `srgbTex` con UV normalizadas. Si outW/outH son
-            ' MENORES que w/h, ese muestreo YA ES el downsample bilineal — y las texturas del compositor se
-            ' allocan con MinFilter/MagFilter=Linear + ClampToEdge (AllocateResultTextureAndFbo), que es
-            ' EXACTAMENTE el filtro que replican FaceTintCpuCompositor.ResampleBgra (bake) y ResampleRgbaFloat
-            ' (réplica CPU de esto). No hace falta un pase aparte.
-            ' EL ORDEN IMPORTA Y ES PARTE DEL CONTRATO: se resamplea SOBRE LOS VALORES sRGB y RECIÉN DESPUÉS
-            ' se convierte a lineal — bilinear en sRGB ≠ bilinear en lineal. Es el mismo orden que el bake
-            ' (que resamplea el BGRA sRGB antes de encodear) y el que hace la réplica CPU. Si alguna vez se
-            ' mueve el resample después del cvt, CPU, GPU y bake dejan de coincidir.
-            Dim linTex = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, srgbTex, outW, outH, 1, 0)
-            If linTex = 0 Then Return 0
-            Return linTex
+            ' --- 5. RESAMPLE al tamaño de CharGen Options, si difiere. ---
+            ' ConvertTextureSpace con origen = destino = Fold.SrcSpace: cvt cortocircuita y el pase es SÓLO el
+            ' muestreo a outW×outH, con el MISMO bilineal (fetchAt) que replican FaceTintCpuCompositor.ResampleBgra
+            ' (bake) y ResampleRgbaFloat (réplica CPU). Se resamplea sobre los valores en el espacio en que se
+            ' almacenan —el del archivo—, que es el orden del bake.
+            If outW = w AndAlso outH = h Then
+                Dim res = unfoldTex : unfoldTex = 0
+                Return res
+            End If
+            Dim outTex = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, unfoldTex, outW, outH, sp.Src, sp.Src)
+            If outTex = 0 Then Return 0
+            Return outTex
         Finally
             ' Limpieza de intermedios que quedaron vivos (caminos de fallo). El id devuelto nunca está acá.
-            For Each t In {seedTex, tintTex, complexTex, detTex, foldedTex, srgbTex}
+            For Each t In {seedTex, tintTex, complexTex, detTex, foldedTex, layeredTex, unfoldTex}
                 If t <> 0 Then Try : GL.DeleteTexture(t) : Catch : End Try
             Next
         End Try
@@ -328,97 +304,6 @@ Friend Module SseFoldLayerStack
         Next
         m(0) /= npix : m(1) /= npix : m(2) /= npix
         Return m
-    End Function
-
-    ''' <summary>GPU: el PLIEGUE — <c>albedo = softlight(srgbToLin(complexion), facetint) × amplify(detail)</c> — réplica
-    ''' EXACTA de <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> (CPU). Entra y sale lo MISMO que el CPU: el
-    ''' complexion en sRGB y el resultado en sRGB (<c>Double()</c> RGBA), así que el caller elige camino por el flag y
-    ''' nada más cambia. Nothing = FALLO del GPU (el caller aborta; NO se compone por CPU).
-    '''
-    ''' TODO EN FLOAT (Rgba32f): complexion, facetint y detail se suben como textura float y el readback vuelve float.
-    ''' MEDIDO por qué importa: el fold GPU viejo (<c>_2d</c>) transportaba los intermedios en 8 bits LINEALES y daba
-    ''' RMS 2,4/255 y máx 18 contra el CPU — con el error concentrado en las sombras (5,7 medio en 0..31 vs 0,3 en los
-    ''' claros), que es la firma de cuantizar en lineal: cerca del negro, 1 nivel lineal vale ~13 niveles sRGB. Y el
-    ''' facetint, además, lo amplifica el fgTint ×255/64. En float no hay dónde perder nada.
-    '''
-    ''' La ARITMÉTICA del pliegue (softlight × amplify) es FIJA —engine, DXBC verificado— y vive en el shader
-    ''' (rama <c>uFgTintFold</c>).
-    ''' Pero decir "el fold NO pasa por <see cref="FaceTintConvention"/>" es FALSO y este mismo comentario lo
-    ''' desmentía dos líneas más abajo: el fold corre DENTRO de <c>ApplyFaceTintPipeline</c>, así que el seed y el
-    ''' pase final SÍ aplican la convención del bucket Diffuse. Lo que pasa es que la ley SSE es ALL-LINEAR y esas
-    ''' dos conversiones quedan en no-op, o sea que la independencia es una COINCIDENCIA de los defaults, no una
-    ''' propiedad del diseño. Si los espacios del bucket Diffuse de SSE dejaran de ser Linear, el pliegue GPU se
-    ''' desviaría del CPU — el sandbox _2c-vs-_2d es lo que lo detectaría.</summary>
-    Friend Function FoldGpu(complexionSrgb As Single(), facetintLinear As Single(), detailRaw As Single(),
-                            w As Integer, h As Integer, host As NpcRenderHost) As Single()
-        If host Is Nothing OrElse complexionSrgb Is Nothing OrElse facetintLinear Is Nothing Then Return Nothing
-        Dim npix = w * h
-        Dim baseTex = UploadRgba32f(complexionSrgb, npix, w, h)        ' complexion en sRGB (el shader lo lineariza)
-        If baseTex = 0 Then Return Nothing
-        Dim tintTex As Integer = 0, detTex As Integer = 0, resId As Integer = 0
-        Try
-            tintTex = UploadRgba32f(facetintLinear, npix, w, h)        ' facetint CRUDO (lineal), sin cuantizar
-            If tintTex = 0 Then Return Nothing
-            If detailRaw IsNot Nothing Then detTex = UploadRgba32f(detailRaw, npix, w, h)   ' 0 ⇒ el shader usa b=0.2509803922 (0.251, default engine)
-
-            Dim foldLayer = MakeFoldLayer(tintTex, detTex, unfold:=False)
-            Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
-                                                              baseTex, 0, 0, w, h, foldLayer, New List(Of FaceRegionSwapInput)(),
-                                                              SseFaceTintComposer.AccumSpaceCapability,
-                                                              baseDiffuseIsLinearOnGpu:=True,
-                                                              stage:=FaceTintConvention.FaceTintStage.Fold)
-            resId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
-            If resId = 0 Then Return Nothing
-            Return ReadbackRgba32f(resId, npix)                         ' ya viene en sRGB (el shader lo encodea)
-        Finally
-            For Each t In {resId, detTex, tintTex, baseTex}
-                If t <> 0 Then Try : GL.DeleteTexture(t) : Catch : End Try
-            Next
-        End Try
-    End Function
-
-    ''' <summary>GPU: compone el FACETINT (las capas de tint del RACE/NPC) sobre el seed 0.5, y lo devuelve en LINEAL
-    ''' (<c>Double()</c> RGBA) — la misma salida que <see cref="SseFaceTintComposer.ComposeLinearRgba"/> (CPU). Readback
-    ''' en float: el facetint alimenta el fold, que lo amplifica ×255/64, así que cuantizarlo a 8 bits acá multiplicaría
-    ''' el error de redondeo por 4. Sin capas (raza sin tints) ⇒ 0.5 plano (= el seed, igual que el CPU), que NO es un
-    ''' fallo. Nothing = FALLO del GPU ⇒ el caller aborta.</summary>
-    Friend Function ComposeFacetintGpu(tintLayers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Single()
-        If host Is Nothing Then Return Nothing
-        Dim npix = w * h
-        ' Seed de LA LEY (CharGen Options), no el literal 0.5F que estaba cableado acá. Ver
-        ' SseFaceTintComposer.TryGetFlatSeedRgb: Nothing ⇒ la ley pide textura base y el facetint es
-        ' TINT-ONLY ⇒ FALLO (igual que el CPU), no un 0.5 de relleno.
-        Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
-        If seedRgb Is Nothing Then
-            Logger.LogLazy(Function() "[SSE-FOLD] ComposeFacetintGpu ABORT: la ley pide seed desde textura base y el facetint es TINT-ONLY.")
-            Return Nothing
-        End If
-        Dim sR = seedRgb(0), sG = seedRgb(1), sB = seedRgb(2)
-        Dim seed(npix * 4 - 1) As Single
-        ' Seed plano, paralelo por rangos (escrituras disjuntas ⇒ bit-idéntico).
-        System.Threading.Tasks.Parallel.ForEach(
-            System.Collections.Concurrent.Partitioner.Create(0, npix),
-            Sub(range)
-                For i = range.Item1 To range.Item2 - 1
-                    seed(i * 4) = sR : seed(i * 4 + 1) = sG : seed(i * 4 + 2) = sB : seed(i * 4 + 3) = 1.0F
-                Next
-            End Sub)
-        If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then Return seed
-        Dim baseTex = UploadRgba32f(seed, npix, w, h)
-        If baseTex = 0 Then Return Nothing
-        Dim resId As Integer = 0
-        Try
-            Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
-                                                              baseTex, 0, 0, w, h, tintLayers, New List(Of FaceRegionSwapInput)(),
-                                                              SseFaceTintComposer.AccumSpaceCapability,
-                                                              baseDiffuseIsLinearOnGpu:=True)
-            resId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
-            If resId = 0 Then Return Nothing
-            Return ReadbackRgba32f(resId, npix)
-        Finally
-            If resId <> 0 Then Try : GL.DeleteTexture(resId) : Catch : End Try
-            Try : GL.DeleteTexture(baseTex) : Catch : End Try
-        End Try
     End Function
 
     ''' <summary>True si hay algo que componer (evita subir texturas al pedo).
@@ -444,57 +329,25 @@ Friend Module SseFoldLayerStack
         Return anySkee OrElse SseOverlayCompositor.HasBakeableFaceOverlays(faceOvl)
     End Function
 
-    ''' <summary>CPU: compone las capas sobre <paramref name="acc"/> (sRGB, in place). Réplica exacta de skee.</summary>
+    ''' <summary>CPU: compone las capas sobre <paramref name="acc"/> (in place), que llega y sale en
+    ''' <c>Fold.OutputSpace</c> — el albedo plegado. Réplica exacta de skee. Las MASKT componen en el espacio del
+    ''' acumulador de la etapa Overlay (el par de conversiones de entrada/salida es el MISMO que hace el GPU); los
+    ''' <c>Face [Ovl]</c> componen DESPUÉS, sobre el albedo plegado tal cual (= <c>ApplySseFaceOverlayPass</c>).
+    ''' Sin trabajo no se convierte nada (el GPU tampoco pasa por la etapa).</summary>
     Friend Sub ComposeCpu(acc As Single(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                           faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
                           skinRgb As Double(), w As Integer, h As Integer)
+        If Not HasWork(skeeRaw, faceOvl) Then Return
+        Dim npix = w * h
+        Dim sp = SseFaceGenBaker.ResolveFoldSpaces()
+        SseFaceGenBaker.FoldedToOverlayBase(acc, npix, sp)
         If skeeRaw IsNot Nothing AndAlso skeeRaw.Count > 0 Then
             Dim layers = SseSkeeMaskReader.ResolveLayersForCpu(skeeRaw, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba, skinRgb, Nothing)
             If layers.Count > 0 Then SseOverlayCompositor.ApplyOverlays(acc, layers, w, h)
         End If
+        SseFaceGenBaker.OverlayBaseToFolded(acc, npix, sp)
         SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse(acc, faceOvl, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba)
     End Sub
-
-    ''' <summary>GPU: MISMO compose por el compositor compartido. El base (<paramref name="acc"/>, sRGB) se sube como
-    ''' Rgba32f — FLOAT, no 8 bits — así que el único redondeo del camino GPU es el mismo del CPU (el byte final), y no
-    ''' uno extra del transporte. Devuelve un acumulador NUEVO (sRGB, w×h×4) o Nothing si el GPU no puede (el caller
-    ''' decide; NUNCA se cae a CPU en silencio). No muta <paramref name="acc"/>. GL-bound: contexto activo.
-    ''' El RENDER ya NO pasa por acá (usa <see cref="ComposeFoldedGpuResident"/>, sin readbacks): este trío
-    ''' con readback por etapa queda para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
-    ''' intermedios en CPU para escribir los .dds de comparación.</summary>
-    Friend Function ComposeGpu(acc As Single(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
-                               faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
-                               skinRgb As Double(), w As Integer, h As Integer, host As NpcRenderHost) As Single()
-        If host Is Nothing OrElse acc Is Nothing Then Return Nothing
-        Dim layers As New List(Of FaceTintLayerInput)
-        layers.AddRange(BuildSkeeGpuLayers(skeeRaw, skinRgb))
-        layers.AddRange(BuildFaceOverlayGpuLayers(faceOvl))
-        If layers.Count = 0 Then Return Nothing
-
-        Dim npix = w * h
-        Dim baseTex = UploadRgba32f(acc, npix, w, h)
-        If baseTex = 0 Then Return Nothing
-        Dim outAcc As Single() = Nothing
-        Try
-            ' baseDiffuseIsLinearOnGpu:=True ⇒ el pipeline toma el sample del base TAL CUAL (los Rgba32f no llevan
-            ' decode sRGB en el sampler). El acumulador vive en el MISMO espacio que el acc del CPU: sRGB.
-            Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
-                                                              baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
-                                                              SseFaceTintComposer.AccumSpaceCapability,
-                                                              baseDiffuseIsLinearOnGpu:=True,
-                                                              stage:=FaceTintConvention.FaceTintStage.Overlay)
-            Dim resId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
-            If resId = 0 Then Return Nothing
-            Try
-                outAcc = ReadbackRgba32f(resId, npix)
-            Finally
-                Try : GL.DeleteTexture(resId) : Catch : End Try
-            End Try
-        Finally
-            Try : GL.DeleteTexture(baseTex) : Catch : End Try
-        End Try
-        Return outAcc
-    End Function
 
     ''' <summary>skee raw → capas del compositor. Mapeo por TIPO (ver el resumen del módulo). El blend sale de
     ''' <see cref="SseOverlayCompositor.BlendOpFromSseMode"/> = la misma fuente que el CPU.</summary>
@@ -547,32 +400,29 @@ Friend Module SseFoldLayerStack
         Return outL
     End Function
 
-    ''' <summary>Overlays <c>Face [Ovl]</c> → capas del compositor (texture × tint, alpha-over). Mismo orden que el
-    ''' CPU (<see cref="SseOverlayCompositor.SortFaceOverlays"/>).</summary>
-    Private Function BuildFaceOverlayGpuLayers(overlays As IList(Of RaceMenuJslot.JslotOverlayNode)) As List(Of FaceTintLayerInput)
-        Dim outL As New List(Of FaceTintLayerInput)
+    ''' <summary>Overlays <c>Face [Ovl]</c> → capas de <see cref="FaceTintCompositor.ApplySseFaceOverlayPass"/> (la capa
+    ''' SkinTint de skee, alpha-over). Mismo orden y mismo filtro que el CPU
+    ''' (<see cref="SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse"/>): orden de dibujo de skee, y tinte/opacidad
+    ''' del MISMO resolvedor (<see cref="SseOverlayCompositor.ResolveSkinTintLayer"/>) — una capa sin plantilla o
+    ''' con opacidad 0 no se arma, igual que el CPU la saltea.</summary>
+    Private Function BuildFaceOverlayGpuLayers(overlays As IList(Of RaceMenuJslot.JslotOverlayNode)) As List(Of FaceTintCompositor.SseFaceOverlayGpuLayer)
+        Dim outL As New List(Of FaceTintCompositor.SseFaceOverlayGpuLayer)
         If overlays Is Nothing Then Return outL
-        ' FILTRAR POR NODO Face, no sólo por "tiene diffuse". Esto FALTABA: el filtro era únicamente
-        ' `Not IsNullOrEmpty(o.DiffusePath)`, así que este camino (GPU) componía los overlays de CUERPO dentro
-        ' del diffuse de la CARA — mientras el camino CPU (ComposeFaceOverlaysIntoDiffuse) sí filtraba por Face.
-        ' Los dos caminos tienen que dar el MISMO resultado: mismo predicado, una sola ley.
-        ' Y el predicado es IsFoldableFaceOverlay, o sea Face MENOS el pool magic: un `Face [SOvl{n}]` no se
-        ' pliega NUNCA (es capa de runtime de un magic effect; ver SseOverlayCompositor.IsFoldableFaceOverlay).
-        ' Va acá y no sólo en el caller por la misma razón que el filtro de Face: el CPU lo aplica adentro.
+        ' FILTRAR POR NODO Face y por pool (IsFoldableFaceOverlay = Face MENOS el magic: un `Face [SOvl{n}]` no se
+        ' pliega NUNCA). Mismo predicado que el CPU, que lo aplica adentro: una sola ley.
         Dim ordered = SseOverlayCompositor.SortFaceOverlays(
             overlays.Where(Function(o) SseOverlayCompositor.IsFoldableFaceOverlay(o) AndAlso
                                        Not String.IsNullOrEmpty(o.DiffusePath)).ToList())
         For Each ov In ordered
+            Dim lp = SseOverlayCompositor.ResolveSkinTintLayer(ov)
+            If Not lp.HasValue OrElse Not (lp.Value.Opacity > 0.0F) Then Continue For
             Dim texBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(ov.DiffusePath))
             If texBytes Is Nothing Then Continue For
-            outL.Add(New FaceTintLayerInput With {
-                .Kind = FaceTintLayerKind.TextureSetDiffuse,
-                .LayerDdsBytes = texBytes, .LayerCacheKey = ov.DiffusePath,
-                .MultiplyTextureByColor = ov.HasTint,
-                .R = ClampByte(ov.TintR), .G = ClampByte(ov.TintG), .B = ClampByte(ov.TintB),
-                .Opacity = CSng(If(ov.HasAlpha, ov.Alpha, 1.0)),
-                .BlendOp = 0, .IsTextureSet = True,
-                .DebugName = "face-ovl"})
+            outL.Add(New FaceTintCompositor.SseFaceOverlayGpuLayer With {
+                .DdsBytes = texBytes, .CacheKey = ov.DiffusePath,
+                .TintR = lp.Value.TintR, .TintG = lp.Value.TintG, .TintB = lp.Value.TintB,
+                .Opacity = lp.Value.Opacity,
+                .DebugName = ov.NodeName})
         Next
         Return outL
     End Function
@@ -670,28 +520,6 @@ Friend Module SseFoldLayerStack
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, CInt(TextureWrapMode.ClampToEdge))
         GL.BindTexture(TextureTarget.Texture2D, 0)
         Return id
-    End Function
-
-    ''' <summary>La capa del pliegue (o de su inversa). Los TRES sitios que la armaban tenían el mismo
-    ''' cuerpo copiado, con las constantes de la ley RE-LITERALIZADAS: agregarle un campo obligaba a
-    ''' escribirlo tres veces y una omisión no la veía ningún gate de bytes del bake (el fold GPU sólo lo
-    ''' ejercita el sandbox _2c-vs-_2d).
-    ''' <para>Las constantes se leen de <see cref="SseFaceGenBaker"/>, que es donde ya vivían para el camino
-    ''' CPU. Eran los MISMOS valores (<c>1/255</c> y <c>255/64</c>, éste exacto en binario), así que el
-    ''' cambio es byte-idéntico — pero deja de haber dos fuentes que puedan separarse.</para></summary>
-    Private Function MakeFoldLayer(tintTexId As Integer, detailTexId As Integer, unfold As Boolean) As List(Of FaceTintLayerInput)
-        Return New List(Of FaceTintLayerInput) From {
-            New FaceTintLayerInput With {
-                .Kind = FaceTintLayerKind.TextureSetDiffuse,
-                .LayerTextureId = tintTexId,                      ' textura float, NO un DDS de 8 bits
-                .FoldDetailTextureId = detailTexId,               ' 0 ⇒ el shader usa el default del engine
-                .FgTintFold = True, .FgTintUnfold = unfold,
-                .FgTintOffR = SseFaceGenBaker.FgTintOffR,
-                .FgTintOffG = SseFaceGenBaker.FgTintOffG,
-                .FgTintOffB = SseFaceGenBaker.FgTintOffB,
-                .FgTintAmp = SseFaceGenBaker.FgTintAmp,
-                .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True,
-                .DebugName = If(unfold, "sse-unfold", "sse-fold")}}
     End Function
 
     ''' <summary>Friend: lo usa tambien el sandbox _2d del bake (FaceGenBuilder.WriteSseFacetint2dGpu) para el

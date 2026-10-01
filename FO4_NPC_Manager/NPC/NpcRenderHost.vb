@@ -257,20 +257,22 @@ Friend Class NpcRenderHost
     ''' <summary>Aplica RenderHide a cada mesh según su categoría y el estado de los toggles
     ''' independientes (CheckBoxRenderArmor, CheckBoxRenderUnderarmor). NO re-resuelve candidates
     ''' ni recarga NIFs — sólo flip del flag y refresh GL.</summary>
-    Public Sub ApplyRenderToggleVisibility()
-        ' El guard dice lo que el método NECESITA. Ya no toca el control ni el modelo: sólo lee
-        ' LastRenderData y escribe las máscaras de sus shapes. Exigir un Model cargado hacía que la ley
-        ' no corriera —en silencio— hasta que hubiera upload.
-        If LastRenderData Is Nothing OrElse LastRenderData.Shapes Is Nothing Then Return
+    ''' <summary>The attach list of the CURRENT render (skin first, then the worn items the toggles show), the
+    ''' input of NpcMeshCollector.TablaDeDuenosPorSlot. One place: ApplyRenderToggleVisibility and the overlay
+    ''' slot selection (AplicarSlotDeOverlays) both read it.</summary>
+    Friend Class AdjuntosDelRender
+        Public GroupSlots As Dictionary(Of Integer, UInteger)
+        Public SseWornOwnMasks As List(Of UInteger)
+        Public Adjuntos As List(Of NpcMeshCollector.AdjuntoDeBiped)
+        Public CandidatosDeLaArma As Dictionary(Of UInteger, List(Of (Armo As UInteger, Cand As MainForm.MeshCandidate)))
+    End Class
+
+    Friend Function ConstruirAdjuntos(rd As MainForm.PreviewResolutionResult) As AdjuntosDelRender
         Dim renderArmor = Toggles.RenderArmor
         Dim renderUnderarmor = Toggles.RenderUnderarmor
         Dim renderBody = Toggles.RenderBody
         Dim renderHeadwear = Toggles.RenderHeadwear
-        Dim renderGore = Toggles.RenderGore
-        ' La ley per-partición/per-segmento y la de "¿se carga la malla?" son las mismas en los dos juegos;
-        ' esto sólo elige la máscara de head parts (canal de pelo SSE vs canales A/B/C de FO4).
         Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
-
         ' --- Per-segment worn-slot occlusion, recomputed from the items CURRENTLY rendered ---
         ' Engine-faithful ORDER / other-items rule (resolver 0x14035E090, owner-slot branch 0x14035E22B),
         ' made toggle-aware: an item hidden by a render toggle (e.g. the Pipboy when "Render armor" is OFF)
@@ -306,22 +308,22 @@ Friend Class NpcRenderHost
         Dim Adjuntar As Action(Of IRenderableShape, UInteger) =
             Sub(shp As IRenderableShape, armaOwn As UInteger)
                 Dim ownerKey As String = Nothing
-                LastRenderData.MeshDictKeys.TryGetValue(shp, ownerKey)
+                rd.MeshDictKeys.TryGetValue(shp, ownerKey)
                 Dim ownerPrio As Integer = 0
-                LastRenderData.ShapePriority.TryGetValue(shp, ownerPrio)
+                rd.ShapePriority.TryGetValue(shp, ownerPrio)
                 Dim ownerArmo As UInteger = 0UI
-                LastRenderData.ShapeArmoOwnSlots.TryGetValue(shp, ownerArmo)
+                rd.ShapeArmoOwnSlots.TryGetValue(shp, ownerArmo)
                 Dim ownerSwap As Boolean = False
-                LastRenderData.ShapeArmaSwapDePiel.TryGetValue(shp, ownerSwap)
+                rd.ShapeArmaSwapDePiel.TryGetValue(shp, ownerSwap)
                 Dim ownerArmaId As UInteger = 0UI
-                LastRenderData.ShapeArmaAddonFormID.TryGetValue(shp, ownerArmaId)
+                rd.ShapeArmaAddonFormID.TryGetValue(shp, ownerArmaId)
                 ' Sin ARMA resuelta el ítem NO pasa por el writer (que es por ARMA): no puede ser dueño
                 ' de ningún slot. Es el fallback de EquipResolver al world model del ARMO.
                 If ownerArmaId = 0UI Then Exit Sub
                 Dim ownerArmoId As UInteger = 0UI
-                LastRenderData.ShapeArmoFormID.TryGetValue(shp, ownerArmoId)
+                rd.ShapeArmoFormID.TryGetValue(shp, ownerArmoId)
                 Dim ownerCand As MainForm.MeshCandidate = Nothing
-                LastRenderData.ShapeCandidate.TryGetValue(shp, ownerCand)
+                rd.ShapeCandidate.TryGetValue(shp, ownerCand)
                 Dim lista As List(Of (Armo As UInteger, Cand As MainForm.MeshCandidate)) = Nothing
                 If Not candidatosDeLaArma.TryGetValue(ownerArmaId, lista) Then
                     lista = New List(Of (Armo As UInteger, Cand As MainForm.MeshCandidate))
@@ -355,14 +357,14 @@ Friend Class NpcRenderHost
         ' La piel no es un caso aparte para el writer, así que tampoco puede serlo acá.
         ' ⛔ SE ITERA LA LISTA RESUELTA, no `PreviewCtl.Model.meshes`. Los tres bucles de este método usaban
         ' la lista de la GPU y sólo para sacar `MeshData.Shape` —son los MISMOS objetos que
-        ' `LastRenderData.Shapes`—, o sea que una ley que no depende del cuadro estaba acoplada al upload.
+        ' `rd.Shapes`—, o sea que una ley que no depende del cuadro estaba acoplada al upload.
         ' Costaba tres cosas: (1) no se podía ejercer sin contexto GL, así que el gate canónico no la cubre;
         ' (2) fallaba EN SILENCIO — si el upload no ocurrió, o la lista todavía tenía las mallas del NPC
         ' anterior, cada shape se quedaba con su máscara vieja: medido, 35.047 líneas de un barrido salieron
         ' en vacío por exactamente esto—; (3) obligaba a subir geometría y texturas de cada NPC para leer
         ' números que no dependen de la GPU. Tampoco implementaba la lectura caritativa ("recorrer lo que se
         ' dibujó"): una shape ausente de `meshes` tampoco recibía máscara, se quedaba con la anterior.
-        For Each shSkin In LastRenderData.Shapes
+        For Each shSkin In rd.Shapes
             If shSkin Is Nothing Then Continue For
             ' ⛔ POR KIND, no por la categoría de display. Con el filtro por categoría, una piel que no
             ' declare slot de cuerpo ni de manos cae en `Other` y no se registra nunca; y con la ley de
@@ -371,20 +373,20 @@ Friend Class NpcRenderHost
             ' `SkinAtronachFrost` (0005B2E7) declara BOD2 = 0x1 = sólo el slot 30. Alcance del corpus:
             ' 22 de 224 razas de Skyrim y 5 de 109 de Fallout tienen la piel así.
             Dim kindSkin As MainForm.MeshCandidateKind = MainForm.MeshCandidateKind.Outfit
-            LastRenderData.ShapeKind.TryGetValue(shSkin, kindSkin)
+            rd.ShapeKind.TryGetValue(shSkin, kindSkin)
             If kindSkin <> MainForm.MeshCandidateKind.Skin Then Continue For
             If Not renderBody Then Continue For
             Dim armaSkin As UInteger = 0UI
-            If Not LastRenderData.ShapeArmaOwnSlots.TryGetValue(shSkin, armaSkin) OrElse armaSkin = 0UI Then Continue For
+            If Not rd.ShapeArmaOwnSlots.TryGetValue(shSkin, armaSkin) OrElse armaSkin = 0UI Then Continue For
             Adjuntar(shSkin, armaSkin)
         Next
 
-        For Each sh In LastRenderData.Shapes
+        For Each sh In rd.Shapes
             If sh Is Nothing Then Continue For
             Dim own As UInteger = 0UI
-            If Not LastRenderData.ShapeOwnSlots.TryGetValue(sh, own) OrElse own = 0UI Then Continue For
+            If Not rd.ShapeOwnSlots.TryGetValue(sh, own) OrElse own = 0UI Then Continue For
             Dim oc As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
-            LastRenderData.ShapeCategory.TryGetValue(sh, oc)
+            rd.ShapeCategory.TryGetValue(sh, oc)
             Dim rendered As Boolean
             Select Case oc
                 Case MainForm.ShapeRenderCategory.ArmorOver : rendered = renderArmor
@@ -400,7 +402,7 @@ Friend Class NpcRenderHost
             End Select
             If Not rendered Then Continue For
             Dim gid As Integer = 0
-            LastRenderData.ShapeSlotGroup.TryGetValue(sh, gid)
+            rd.ShapeSlotGroup.TryGetValue(sh, gid)
             ' ⛔ ACÁ ESTABA EL STRIP DEL BIT DEL PIPBOY, y se fue con su heurística. El armador de la
             ' máscara worn del motor NO saca ningún bit: Fallout 4 0x14051F530 (0x14051F5A0 call [vt+0x238]
             ' / 0x14051F5A6 or [rbp],eax, salteando los formType 0x22/0x2B/0x2C) y Skyrim 0x14022B5A0.
@@ -421,11 +423,11 @@ Friend Class NpcRenderHost
             ' diferencia que queda entre los dos sitios es el SET —ganadores del torneo contra ítems
             ' efectivamente dibujados—, que es la decisión de producto de los toggles.
             Dim armoOwn As UInteger = 0UI
-            LastRenderData.ShapeArmoOwnSlots.TryGetValue(sh, armoOwn)
+            rd.ShapeArmoOwnSlots.TryGetValue(sh, armoOwn)
             groupSlots(gid) = armoOwn
             ' El BOD2 del ARMATURE, no la SlotMask (que trae además los bits headwear del ARMO).
             Dim armaOwn As UInteger = 0UI
-            If LastRenderData.ShapeArmaOwnSlots.TryGetValue(sh, armaOwn) AndAlso armaOwn <> 0UI Then
+            If rd.ShapeArmaOwnSlots.TryGetValue(sh, armaOwn) AndAlso armaOwn <> 0UI Then
                 ' Mecanismo (b) de HeadPartHideMask, SSE-only: la fase 2 de 0x140218200 agrupa por el
                 ' puntero de ARMA guardado en `entry+0x18`, y ese writer sólo recorre los bits del ARMA.
                 If isSse Then sseWornOwnMasks.Add(armaOwn)
@@ -435,6 +437,51 @@ Friend Class NpcRenderHost
                 Adjuntar(sh, armaOwn)
             End If
         Next
+        Return New AdjuntosDelRender With {.GroupSlots = groupSlots, .SseWornOwnMasks = sseWornOwnMasks,
+                                           .Adjuntos = adjuntos, .CandidatosDeLaArma = candidatosDeLaArma}
+    End Function
+
+    ''' <summary>FO4 LooksMenu overlay layers per biped ENTRY, per skin shape (filled by
+    ''' NpcMorphPoseResolver.ResolveOverlayLayers). F4EE runs once per biped entry i whose partClone holds the
+    ''' model and keys the template by slotMaterial[i] (OverlayInterface.cpp:891-911, :425-454); the engine loads
+    ''' an ARMA's model in ONE entry, the one EntradaQueCargaElModelo returns (0x14035a6d2..6de, 0x140358450).
+    ''' So the layers a shape shows depend on the toggles too (they change who loads the model): they are
+    ''' selected here, from the table, every time it is rebuilt.</summary>
+    Friend ReadOnly OverlayCapasPorEntrada As New Dictionary(Of IRenderableShape, Dictionary(Of Integer, List(Of OverlayMaterialLayer)))
+
+    Friend Sub AplicarSlotDeOverlays(rd As MainForm.PreviewResolutionResult, tabla As NpcMeshCollector.DuenosDeSlot)
+        SyncLock OverlayCapasPorEntrada
+            For Each kv In OverlayCapasPorEntrada
+                Dim armaId As UInteger = 0UI
+                rd.ShapeArmaAddonFormID.TryGetValue(kv.Key, armaId)
+                Dim b = If(armaId = 0UI, -1, NpcMeshCollector.EntradaQueCargaElModelo(tabla, armaId))
+                Dim capas As List(Of OverlayMaterialLayer) = Nothing
+                ' b is a biped entry 0..31; F4EE's loop is i = 0..30 (OverlayInterface.cpp:897).
+                If b < 0 OrElse b > 30 OrElse Not kv.Value.TryGetValue(b, capas) Then capas = Nothing
+                kv.Key.OverlayLayers = capas
+            Next
+        End SyncLock
+    End Sub
+
+    Public Sub ApplyRenderToggleVisibility()
+        ' El guard dice lo que el método NECESITA. Ya no toca el control ni el modelo: sólo lee
+        ' LastRenderData y escribe las máscaras de sus shapes. Exigir un Model cargado hacía que la ley
+        ' no corriera —en silencio— hasta que hubiera upload.
+        If LastRenderData Is Nothing OrElse LastRenderData.Shapes Is Nothing Then Return
+        Dim renderArmor = Toggles.RenderArmor
+        Dim renderUnderarmor = Toggles.RenderUnderarmor
+        Dim renderBody = Toggles.RenderBody
+        Dim renderHeadwear = Toggles.RenderHeadwear
+        Dim renderGore = Toggles.RenderGore
+        ' La ley per-partición/per-segmento y la de "¿se carga la malla?" son las mismas en los dos juegos;
+        ' esto sólo elige la máscara de head parts (canal de pelo SSE vs canales A/B/C de FO4).
+        Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+
+        Dim adj = ConstruirAdjuntos(LastRenderData)
+        Dim groupSlots = adj.GroupSlots
+        Dim sseWornOwnMasks = adj.SseWornOwnMasks
+        Dim adjuntos = adj.Adjuntos
+        Dim candidatosDeLaArma = adj.CandidatosDeLaArma
         Dim occupiedVisible As UInteger = 0UI
         For Each kv In groupSlots : occupiedVisible = occupiedVisible Or kv.Value : Next
 
@@ -488,6 +535,7 @@ Friend Class NpcRenderHost
         ' que el casco synth, la gas mask y la bandana nunca se dibujarían. ⇒ no corre, y no implementarlo
         ' es lo fiel.
         Dim tablaDeSlots = NpcMeshCollector.TablaDeDuenosPorSlot(adjuntos, Config_App.Current.Game)
+        AplicarSlotDeOverlays(LastRenderData, tablaDeSlots)
         ' ⭐ QUÉ SE DIBUJA ENTERO, en LOS DOS JUEGOS: la malla de una ARMA sólo existe si una entrada de la
         ' tabla la carga (NpcMeshCollector.EntradaQueCargaElModelo, con sus VA). Si varios candidatos
         ' comparten esa ARMA, el motor carga UNA malla, y la entrada queda con lo que escribió el ÚLTIMO

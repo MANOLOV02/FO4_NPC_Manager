@@ -184,13 +184,10 @@ Public Class MainForm
     ' se cargue, la respuesta correcta es "no esta", no una excepcion.
     Private _resolverLmSkin As NpcRecordOverlay.ResolveLmSkinTemplateDelegate =
         LmSkinTemplateLoader.Resolvedor(New List(Of LmSkinTemplate)())
-    ''' <summary>Parsed F4SE LooksMenu body-overlay ("tattoo") templates loaded from
-    ''' Data\F4SE\Plugins\F4EE\Overlays\&lt;mod&gt;\overlays.json + Overlays\Loose\*.json (the disk
-    ''' layout LoadOverlayMods scans — OverlayInterface.cpp:1025-1052). Gender-separated exactly like
-    ''' the engine's <c>m_overlayTemplates[isFemale?1:0]</c> (OverlayInterface.cpp:1084): index 0 = male,
-    ''' 1 = female. First-loaded-wins on a duplicate id within a gender (engine keeps the first via
-    ''' <c>emplace</c>, :1084-1090). Populated once after plugin load by <see cref="BuildOverlayTemplateCache"/>.</summary>
-    Private ReadOnly _overlayTemplates() As List(Of OverlayTemplate) = {New List(Of OverlayTemplate)(), New List(Of OverlayTemplate)()}
+    ''' <summary>The F4SE LooksMenu body-overlay ("tattoo") templates, loaded and merged exactly as
+    ''' <c>OverlayInterface::LoadOverlayMods</c> does (see <see cref="OverlayTemplateCache"/>). Populated after plugin
+    ''' load by <see cref="BuildOverlayTemplateCache"/>.</summary>
+    Private ReadOnly _overlayTemplates As New OverlayTemplateCache()
     ''' <summary>NPCs directly placed in the world via ACHR records (unique characters).</summary>
     Private _directlyPlacedNPCFormIDs As New HashSet(Of UInteger)()
     ''' <summary>NPCs that appear in the game world: placed in CELLs (ACHR) or in LVLN encounter lists.</summary>
@@ -4980,79 +4977,50 @@ Public Class MainForm
     End Sub
 
     ''' <summary>⛔ Costura de arnes (RONDA 14, rev-35): el snapshot de Copy Look (`BuildPresetFromState`) de un estado.</summary>
+    ''' <summary>Harness hook: build the LooksMenu overlay template cache the form builds at load (the harness
+    ''' constructs the form without showing it).</summary>
+    Friend Sub CargarPlantillasDeOverlayParaArnes()
+        BuildOverlayTemplateCache()
+    End Sub
+
     Friend Function CopiarLookParaArnes(state As NPCVisualState) As LooksmenuLoader.LooksmenuPreset
         Return BuildPresetFromState(state)
     End Function
 
-    ''' <summary>Build the LM body-overlay ("tattoo") template cache. Mirrors
-    ''' <see cref="BuildLmSkinTemplateCache"/> structurally, but the on-disk layout is
-    ''' <c>Data\F4SE\Plugins\F4EE\Overlays\&lt;pluginFileName&gt;\overlays.json</c> + an
-    ''' <c>Overlays\Loose\*.json</c> folder (OverlayInterface.cpp:1025-1052 LoadOverlayMods). Each file
-    ''' is parsed by <see cref="OverlayTemplateLoader.LoadFromFile"/>; the templates are then bucketed by
-    ''' gender (the engine keeps two maps, <c>m_overlayTemplates[isFemale?1:0]</c>, OverlayInterface.cpp:1084)
-    ''' with FIRST-LOADED-WINS on a duplicate id WITHIN a gender (the engine's <c>find</c>-then-<c>emplace</c>
-    ''' only inserts when the id is absent, :1084-1090; later files with the same id keep the existing
-    ''' template). The disk scan order is load-order plugins then the Loose folder, identical to the engine.</summary>
+    ''' <summary>Harness hook: el trabajo que el render de la app hace en su <c>PostTextureUploadAction</c> —el tinte
+    ''' de cara en vivo (FO4 compose, SSE facetint y pliegue)—, con el MISMO resolver. El arnés llama
+    ''' <c>RenderShapes</c> directo y sin esto el facetint no se compone nunca: una paridad medida ahí no mide nada.</summary>
+    Friend Sub AplicarTinteDeCaraParaArnes(state As NPCVisualState, renderData As PreviewResolutionResult, host As NpcRenderHost)
+        _faceTintResolver.ApplyFaceTintOverlay(state, renderData, host)
+    End Sub
+
+    ''' <summary>Build the LM body-overlay ("tattoo") template cache: <c>LoadOverlayMods</c> over the plugins this session
+    ''' loaded, in the engine's <c>ForEachMod</c> order — full plugins in load order, then light plugins (Utilities.cpp:288-299)
+    ''' — then the Loose folder (<see cref="OverlayTemplateCache.LoadOverlayMods"/>).</summary>
     Private Sub BuildOverlayTemplateCache()
-        _overlayTemplates(0).Clear()
-        _overlayTemplates(1).Clear()
+        _overlayTemplates.Clear()
         If String.IsNullOrEmpty(_dataPath) Then Return
-        Dim baseOverlayDir = Path.Combine(_dataPath, "F4SE", "Plugins", "F4EE", "Overlays")
-        If Not Directory.Exists(baseOverlayDir) Then Return
-
-        ' Per-plugin templates: Overlays\<pluginName>\overlays.json (load order = priority order).
-        For Each plugin In _pluginManager.Plugins
-            Dim p = Path.Combine(baseOverlayDir, plugin.FileName, "overlays.json")
-            If File.Exists(p) Then AddOverlayTemplatesFromFile(p)
-        Next
-        ' Loose templates: Overlays\Loose\*.json
-        Dim looseDir = Path.Combine(baseOverlayDir, "Loose")
-        If Directory.Exists(looseDir) Then
-            For Each p In Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly)
-                AddOverlayTemplatesFromFile(p)
-            Next
-        End If
+        Dim full = _pluginManager.Plugins.Where(Function(pl) Not pl.IsESL).Select(Function(pl) pl.FileName)
+        Dim light = _pluginManager.Plugins.Where(Function(pl) pl.IsESL).Select(Function(pl) pl.FileName)
+        _overlayTemplates.LoadOverlayMods(full.Concat(light), _dataPath)
     End Sub
 
-    ''' <summary>Parse one overlays.json and append its templates into the gendered cache, keeping the
-    ''' first-loaded template on a duplicate id within the same gender bucket (engine parity —
-    ''' OverlayInterface.cpp:1084-1090). <see cref="OverlayTemplate.Gender"/> is already clamped to 0..1
-    ''' by the loader, so it indexes the two buckets directly.</summary>
-    Private Sub AddOverlayTemplatesFromFile(filePath As String)
-        For Each tpl In OverlayTemplateLoader.LoadFromFile(filePath)
-            If tpl Is Nothing OrElse String.IsNullOrEmpty(tpl.Id) Then Continue For
-            Dim bucket = _overlayTemplates(If(tpl.Gender = 1, 1, 0))
-            Dim duplicate As Boolean = False
-            For Each existing In bucket
-                If String.Equals(existing.Id, tpl.Id, StringComparison.Ordinal) Then
-                    duplicate = True
-                    Exit For
-                End If
-            Next
-            If Not duplicate Then bucket.Add(tpl)
-        Next
-    End Sub
-
-    ''' <summary>Templates for one gender, sorted by Sort then DisplayName (for the Phase 4 editor combo).
-    ''' Female NPC → gender bucket 1, male → 0 — matching the engine's per-gender map split.</summary>
+    ''' <summary>Templates for one gender, in LooksMenu's list order (sort, then name as bytes — ScaleformNatives.cpp:388-394).
+    ''' Female NPC → the female map, male → the male one (OverlayInterface.cpp:1084).</summary>
     Friend Function GetOverlayTemplateCandidates(isFemale As Boolean) As List(Of OverlayTemplate)
-        Dim bucket = _overlayTemplates(If(isFemale, 1, 0))
-        Return bucket.
-            OrderBy(Function(t) t.Sort).
-            ThenBy(Function(t) t.DisplayName, StringComparer.OrdinalIgnoreCase).
-            ToList()
+        Return _overlayTemplates.Candidates(isFemale)
     End Function
 
-    ''' <summary>Resolve an overlay template by id within the matching gender bucket. Nothing if the id
-    ''' isn't loaded for that gender — caller treats that as "this overlay contributes no layer" (engine
-    ''' parity: <c>GetTemplateByName</c> returns null and <c>ForEachOverlayBySlot</c> simply skips it,
-    ''' OverlayInterface.cpp:443-448). Mirrors <see cref="ResolveLmSkinTemplate"/>.</summary>
+    ''' <summary>The ids installed for one gender, compared like the engine (<see cref="F4eeFixedStringComparer"/>).</summary>
+    Friend Function GetOverlayTemplateIds(isFemale As Boolean) As HashSet(Of String)
+        Return _overlayTemplates.KnownIds(isFemale)
+    End Function
+
+    ''' <summary>Resolve an overlay template by id within the matching gender map. Nothing if the id isn't loaded for that
+    ''' gender — caller treats that as "this overlay contributes no layer" (engine parity: <c>GetTemplateByName</c> returns
+    ''' null and <c>ForEachOverlayBySlot</c> simply skips it, OverlayInterface.cpp:443-448).</summary>
     Private Function ResolveOverlayTemplate(id As String, isFemale As Boolean) As OverlayTemplate
-        If String.IsNullOrEmpty(id) Then Return Nothing
-        For Each tpl In _overlayTemplates(If(isFemale, 1, 0))
-            If String.Equals(tpl.Id, id, StringComparison.Ordinal) Then Return tpl
-        Next
-        Return Nothing
+        Return _overlayTemplates.Resolve(id, isFemale)
     End Function
 
     ''' <summary>Friend wrapper exposing <see cref="ResolveOverlayTemplate"/> at Friend scope, mirroring
@@ -9791,7 +9759,7 @@ Public Class MainForm
         ' → null → skipped). Passing the ids lets the report say "not installed" instead of "not checked".
         Using dlg As New LooksmenuLoad_Form(_pluginManager, _resHeadParts, _dataPath, gender, raceDisplay, npcHasBodyTri,
                                             raceFormID, race, raceDefaultsForLm,
-                                            knownOverlayTemplateIds:=GetOverlayTemplateCandidates(gender = 1).Select(Function(t) t.Id),
+                                            knownOverlayTemplateIds:=GetOverlayTemplateIds(gender = 1),
                                             knownLmSkinTemplateIds:=GetLmSkinTemplateCandidates(gender = 1).Select(Function(t) t.Id))
             ' priorOverlay is the preserve BASELINE for the unticked categories: the live preview keeps
             ' rewriting _appliedPresets as the user clicks around, so reading the current overlay would

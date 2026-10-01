@@ -213,7 +213,7 @@ Public Module SclpEstimator
     ''' vertices skinned to that bone with weight &gt; <paramref name="wEps"/>: model = raw vertex position,
     ''' local = that position brought into the bone-local frame by the shape's skin→bone bind, w = the
     ''' continuous weight. Skipped shapes: unskinned, no geometry, and — when <paramref name="excludeSkinTint"/>
-    ''' — skin-tint shapes (the embedded body/skin, mirror of NpcMorphPoseResolver.ShapeIsSkinTinted). Returns
+    ''' — skin-tint shapes (the embedded body/skin: NpcMorphPoseResolver.ShapeIsSkinTinted). Returns
     ''' Nothing when the NIF does not load. (Port of the CLI's CollectBoneVertexData.)</summary>
     Private Function CollectBoneVertexData(nifBytes As Byte(), wEps As Single, excludeSkinTint As Boolean) As Dictionary(Of String, List(Of BoneVert))
         Dim nif As New Nifcontent_Class_Manolo()
@@ -235,7 +235,7 @@ Public Module SclpEstimator
                 Continue For
             End Try
             If rs.ShapeBones Is Nothing OrElse rs.ShapeBones.Count = 0 Then Continue For
-            If excludeSkinTint AndAlso ShapeIsSkinTinted(rs) Then Continue For   ' skip embedded body/skin on the UA
+            If excludeSkinTint AndAlso NpcMorphPoseResolver.ShapeIsSkinTinted(rs) Then Continue For   ' skip embedded body/skin on the UA
 
             Dim verts As List(Of SysNumerics.Vector3) = Nothing
             Try
@@ -280,14 +280,6 @@ Public Module SclpEstimator
             Next
         Next
         Return acc
-    End Function
-
-    ''' <summary>Mirror of NpcMorphPoseResolver.ShapeIsSkinTinted: true when the shape's resolved material is a
-    ''' skin-tint lighting material (embedded body/skin). Any missing material link ⇒ False.</summary>
-    Private Function ShapeIsSkinTinted(shape As IRenderableShape) As Boolean
-        Dim rel = shape.ShapeMaterial
-        If rel Is Nothing OrElse rel.material Is Nothing Then Return False
-        Return rel.material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint OrElse rel.material.SkinTint
     End Function
 
 End Module

@@ -217,9 +217,10 @@ Public Module NpcApplyScriptEmitter
         Next
     End Sub
 
-    ''' <summary>Pack a 0..1 RGBA tint into skee's 0xAARRGGBB int (kParam_ShaderTintColor, key 7).</summary>
+    ''' <summary>Pack a 0..1 RGBA tint into skee's 0xAARRGGBB int (kParam_ShaderTintColor, key 7). Each channel is
+    ''' quantized by the ONE rule the fold and the live layer use (SseOverlayMaterialFactory.TintByte).</summary>
     Private Function PackTint(r As Single, g As Single, b As Single, a As Single) As Integer
-        Dim ToByte = Function(v As Single) CInt(Math.Round(Math.Max(0.0F, Math.Min(1.0F, v)) * 255.0F))
+        Dim ToByte = Function(v As Single) SseOverlayMaterialFactory.TintByte(v)
         Return (ToByte(a) << 24) Or (ToByte(r) << 16) Or (ToByte(g) << 8) Or ToByte(b)
     End Function
 

@@ -246,6 +246,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
     Friend Sub ResolveOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult,
                                     host As NpcRenderHost)
         If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return
+        ' The per-entry FO4 layer table belongs to THIS render: start empty in both games.
+        SyncLock host.OverlayCapasPorEntrada
+            host.OverlayCapasPorEntrada.Clear()
+        End SyncLock
 
         ' GAME-AWARE: SSE (Skyrim) body overlays are RaceMenu path-based (no f4ee template catalog), sourced
         ' from the preset's SSE carrier and synthesized into materials here — a separate code path from the
@@ -310,14 +314,16 @@ Friend NotInheritable Class NpcMorphPoseResolver
             End If
 
             ' Biped slot INDICES (0..30 = SlotMask bit positions = overlays.json "slot" values) this skin
-            ' shape occupies. NOT slot numbers — the template keys its materials by the index (see
-            ' BipedSlotIndicesFromMask). Body=index 3, hands=index 4/5.
+            ' shape could be loaded in. NOT slot numbers — the template keys its materials by the index (see
+            ' BipedSlotIndicesFromMask). Layers are built for each; the ONE entry that loads the model
+            ' (EntradaQueCargaElModelo) is selected by NpcRenderHost.AplicarSlotDeOverlays.
             Dim slotIndices = BipedSlotIndicesFromMask(cand.SlotMask)
             If slotIndices.Count = 0 Then
                 shape.OverlayLayers = Nothing
                 Continue For
             End If
 
+            Dim porEntrada As New Dictionary(Of Integer, List(Of OverlayMaterialLayer))
             Dim layers As New List(Of OverlayMaterialLayer)
             For Each entry In orderedOverlays
                 If entry Is Nothing OrElse String.IsNullOrEmpty(entry.TemplateId) Then Continue For
@@ -333,21 +339,33 @@ Friend NotInheritable Class NpcMorphPoseResolver
                 ' engine, which keys slotMaterial by the (index) slot being processed.
                 For Each slotIdx In slotIndices
                     Dim slotMatPath As String = Nothing
-                    If Not tpl.SlotMaterials.TryGetValue(slotIdx, slotMatPath) Then Continue For
+                    If Not tpl.SlotMaterials.TryGetValue(CUInt(slotIdx), slotMatPath) Then Continue For
                     If String.IsNullOrEmpty(slotMatPath) Then Continue For
 
                     Dim layer = BuildOverlayLayer(shape, slotMatPath, entry)
-                    If layer IsNot Nothing Then layers.Add(layer)
+                    If layer Is Nothing Then Continue For
+                    layers.Add(layer)
+                    Dim lst As List(Of OverlayMaterialLayer) = Nothing
+                    If Not porEntrada.TryGetValue(slotIdx, lst) Then lst = New List(Of OverlayMaterialLayer) : porEntrada(slotIdx) = lst
+                    lst.Add(layer)
                 Next
             Next
 
-            shape.OverlayLayers = If(layers.Count > 0, layers, Nothing)
+            shape.OverlayLayers = Nothing
+            If porEntrada.Count > 0 Then
+                SyncLock host.OverlayCapasPorEntrada
+                    host.OverlayCapasPorEntrada(shape) = porEntrada
+                End SyncLock
+            End If
             If Logger.Enabled Then
                 Dim layerCount = layers.Count
                 Dim idxList = String.Join(",", slotIndices)
                 Logger.LogLazy(Function() $"[OVERLAY-DIAG] skin shape='{shape.ShapeName}' slotIdx=[{idxList}] mask=0x{cand.SlotMask:X8} overlays={orderedOverlays.Count} → layers={layerCount}")
             End If
         Next
+
+        ' Select, per shape, the layers of the entry that loads its model (same table as the toggle pass).
+        host.AplicarSlotDeOverlays(renderData, NpcMeshCollector.TablaDeDuenosPorSlot(host.ConstruirAdjuntos(renderData).Adjuntos, Config_App.Current.Game))
     End Sub
 
     ''' <summary>Mirror of the engine kType_SkinTint gate (OverlayInterface.cpp:104): true when the shape's
@@ -355,10 +373,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' body-texture substitution keys off (NpcMaterialResolver.vb:1039, material.NifShaderType = SkinTint).
     ''' Defensive: any missing material link ⇒ False (a shape without a resolved skin material is not a
     ''' tattoo target).</summary>
-    Private Shared Function ShapeIsSkinTinted(shape As IRenderableShape) As Boolean
+    Friend Shared Function ShapeIsSkinTinted(shape As IRenderableShape) As Boolean
         Dim rel = shape.ShapeMaterial
         If rel Is Nothing OrElse rel.material Is Nothing Then Return False
-        Return rel.material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint OrElse rel.material.SkinTint
+        Return rel.material.IsEngineSkinTint()
     End Function
 
     ''' <summary>Distinct worn SlotMask of every body-skin shape this NPC actually renders — the set of targets a
@@ -414,10 +432,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' OverlayInterface.cpp:425-454 / F4EEUpdateOverlays::Run), and that index equals the SlotMask bit
     ''' position (BipedSlots.vb:6-7 — bit (N-30) = biped slot N). So body = bit 3 = index 3 = slot 33,
     ''' hands = bit 4/5 = index 4/5. We MUST return the index (bit position) so it matches the template's
-    ''' SlotMaterials keys; returning bit+30 (the slot number 33) never matched key 3 ⇒ no overlay layers.</summary>
+    ''' SlotMaterials keys; returning bit+30 (the slot number 33) never matched key 3 ⇒ no overlay layers.
+    ''' Only indices 0..30: the engine's loop is <c>for(i = 0; i &lt; 31; ++i)</c> (OverlayInterface.cpp:897), so bit 31
+    ''' (slot 61) never receives an overlay.</summary>
     Private Shared Function BipedSlotIndicesFromMask(slotMask As UInteger) As List(Of Integer)
         Dim result As New List(Of Integer)
-        For bit = 0 To 31
+        For bit = 0 To 30
             If (slotMask And (1UI << bit)) <> 0UI Then result.Add(bit)
         Next
         Return result
@@ -442,7 +462,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Dim matType As Type = If(fullpath.EndsWith(".bgem", StringComparison.OrdinalIgnoreCase), GetType(BGEM), GetType(BGSM))
 
             Dim mat As New FO4UnifiedMaterial_Class()
-            mat.Deserialize(MaterialsPrefix & fullpath, matType, skinShape.NifShape, skinShape.NifContent)
+            ' F4EE applies the overlay material with ApplyMaterialData(shape, True) (OverlayInterface.cpp:171-172).
+            mat.Deserialize(MaterialsPrefix & fullpath, matType, skinShape.NifShape, skinShape.NifContent, engineApplyArg3:=True)
 
             ' offsetUV: add to the material's UV offset (engine :190-191). Nothing ⇒ default (0,0) = no-op.
             If entry.OffsetUV IsNot Nothing AndAlso entry.OffsetUV.Length >= 2 Then
@@ -507,11 +528,17 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Return
         End If
 
+        ' skee64 installs a body/hands/feet overlay on the FIRST SkinTint (shader type 5) geometry of the ARMA's
+        ' model in scene traversal order (GetFirstShaderType, NifUtils.cpp:900-927), not on every one.
+        Dim primeraPiel = PrimeraPielPorCandidato(renderData)
+
         For Each shape In renderData.Shapes
             If shape Is Nothing Then Continue For
             Dim cand As MainForm.MeshCandidate = Nothing
             Dim hasCand = renderData.ShapeCandidate.TryGetValue(shape, cand) AndAlso cand IsNot Nothing
-            Dim isBodySkin = hasCand AndAlso ShapeIsSkinTinted(shape)
+            Dim primera As IRenderableShape = Nothing
+            Dim isBodySkin = hasCand AndAlso ShapeIsSkinTinted(shape) AndAlso
+                             primeraPiel.TryGetValue(cand, primera) AndAlso primera Is shape
             ' The head (FaceTint shader) carries the RaceMenu "Face [Ovl{n}]" overlays (face paint), same decal
             ' mechanism as body tattoos but membership is by node name (Face) not a biped slot — the face isn't
             ' worn on a slot. skee64 g_enableFaceOverlays (OverlayInterface).
@@ -549,8 +576,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
                         ' una violación de RENDER == BAKE.
                         applies = isFace AndAlso SseOverlayCompositor.IsSpellOverlay(ov)
                     Else
+                        ' skee64 BuildOverlays (OverlayInterface.cpp:709-722): the part's bit must be set in the
+                        ' ARMO's biped mask AND in the ARMA's, each on its own (not the app's mixed SlotMask).
                         Dim nodeBits = SseOverlayNodeSlotBits(ov.NodeName)
-                        applies = isBodySkin AndAlso nodeBits <> 0UI AndAlso (cand.SlotMask And nodeBits) <> 0UI
+                        applies = isBodySkin AndAlso nodeBits <> 0UI AndAlso
+                                  (cand.ArmoOwnSlotMask And nodeBits) = nodeBits AndAlso
+                                  (cand.ArmaOwnSlotMask And nodeBits) = nodeBits
                     End If
                     If Not applies Then Continue For
                     Dim layer = BuildSseOverlayLayer(shape, ov)
@@ -571,6 +602,33 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Next
     End Sub
 
+    ''' <summary>Per candidate (= one ARMA model), its first engine-SkinTint shape in scene traversal order.</summary>
+    Private Shared Function PrimeraPielPorCandidato(renderData As MainForm.PreviewResolutionResult) As Dictionary(Of MainForm.MeshCandidate, IRenderableShape)
+        Dim result As New Dictionary(Of MainForm.MeshCandidate, IRenderableShape)
+        Dim porCand As New Dictionary(Of MainForm.MeshCandidate, List(Of IRenderableShape))
+        For Each sh In renderData.Shapes
+            If sh Is Nothing Then Continue For
+            Dim c As MainForm.MeshCandidate = Nothing
+            If Not renderData.ShapeCandidate.TryGetValue(sh, c) OrElse c Is Nothing Then Continue For
+            Dim l As List(Of IRenderableShape) = Nothing
+            If Not porCand.TryGetValue(c, l) Then l = New List(Of IRenderableShape) : porCand(c) = l
+            l.Add(sh)
+        Next
+        For Each kv In porCand
+            Dim nif = kv.Value(0).NifContent
+            If nif Is Nothing Then Continue For
+            Dim porBloque As New Dictionary(Of NiflySharp.INiShape, IRenderableShape)
+            For Each sh In kv.Value
+                If sh.NifShape IsNot Nothing AndAlso Not porBloque.ContainsKey(sh.NifShape) Then porBloque(sh.NifShape) = sh
+            Next
+            For Each blk In nif.ShapesEnOrdenDeEscena()
+                Dim sh As IRenderableShape = Nothing
+                If porBloque.TryGetValue(blk, sh) AndAlso ShapeIsSkinTinted(sh) Then result(kv.Key) = sh : Exit For
+            Next
+        Next
+        Return result
+    End Function
+
     ''' <summary>SSE biped-slot bitmask (bit = slot−30) that a RaceMenu overlay node covers. AUTHORITATIVE per
     ''' skee64 (RaceMenu source), NOT reasoned from the slot table: overlays install on the FIXED biped parts
     ''' <c>BGSBipedObjectForm::kPart_Body/Hands/Feet</c> (OverlayInterface.cpp:1055/1069/1083) = SINGLE slots
@@ -588,39 +646,23 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return 0UI
     End Function
 
-    ''' <summary>Synthesize an <see cref="OverlayMaterialLayer"/> for a PATH-based RaceMenu overlay: build an
-    ''' in-memory effect material (a fresh <see cref="FO4UnifiedMaterial_Class"/> defaults to a normalized
-    ''' BGEM — the tattoo/effect kind) with the overlay's diffuse in the base slot, normal in the normal slot
-    ''' (when present), tint as the BGEM base color, and alpha-over blend enabled so the decal pass composites
-    ''' it over the skin (Render.vb reads AlphaBlendEnabled → HasAlphaBlend, and the blend funcs default to
-    ''' SRC_ALPHA/INV_SRC_ALPHA). Wraps it exactly like <see cref="BuildOverlayLayer"/> (a RelatedMaterial_Class).
-    ''' The texture-set API used: <c>Diffuse_or_Base_Texture</c> (→ BGEM.BaseTexture, FO4UnifiedMaterial_Class.vb:539),
-    ''' <c>NormalTexture</c> (:467), <c>BaseColor</c> (BGEM base color+alpha, :2018), <c>AlphaBlendEnabled</c> (:431),
-    ''' <c>Decal</c> (:960). Paths are stored raw; the render normalizes each via CorrectTexturePath.</summary>
+    ''' <summary>The layer skee64 installs for a RaceMenu overlay (SseOverlayMaterialFactory: the skee template,
+    ''' the skin's slots 1..8, the forced alpha / Decal of skee64.ini and the per-layer overrides) - or Nothing when
+    ''' skee64 would not install it: its index is beyond the node count the installed ini creates for its pool
+    ''' ([Overlays/{zone}] iNumOverlays / iSpellOverlays, main.cpp:774-781 - the node simply does not exist), or its
+    ''' template is not installed.</summary>
     Private Shared Function BuildSseOverlayLayer(skinShape As IRenderableShape, ov As FO4_Base_Library.RaceMenuJslot.JslotOverlayNode) As OverlayMaterialLayer
+        Dim zone = SseCatalogs.ZoneOfNode(ov.NodeName)
+        If Not zone.HasValue Then Return Nothing
+        Dim idx = SseCatalogs.IndexOfNode(ov.NodeName)
+        If idx < 0 OrElse idx >= SseCatalogs.OverlayCount(zone.Value, ov.IsSpell) Then
+            Logger.LogLazy(Function() $"[OVERLAY-SSE] '{ov.NodeName}' is beyond the nodes skee64 creates ({SseCatalogs.SkeeIniSource()}): not installed")
+            Return Nothing
+        End If
         Try
-            Dim mat As New FO4UnifiedMaterial_Class()   ' fresh wrapper = normalized BGEM (effect material)
-            mat.Diffuse_or_Base_Texture = If(ov.DiffusePath, "")
-            If Not String.IsNullOrEmpty(ov.NormalPath) Then mat.NormalTexture = ov.NormalPath
-            ' Coplanar alpha-over decal (Option B). Blend funcs default to SRC_ALPHA / INV_SRC_ALPHA.
-            mat.AlphaBlendEnabled = True
-            mat.Decal = True
-            ' Opacity is skee64's kParam_ShaderAlpha (key 8 → BSShaderMaterial::alpha, ShaderUtilities.cpp:98),
-            ' NOT the alpha byte of the tint colour: kParam_ShaderTintColor unpacks into an NiColor — RGB only
-            ' (ShaderUtilities.cpp:119-125) — and only on FaceGenRGBTint/HairTint materials. An overlay with no
-            ' alpha override is fully opaque.
-            Dim opacity As Single = If(ov.HasAlpha, ov.Alpha, 1.0F)
-            If ov.HasTint Then
-                mat.BaseColor = Color.FromArgb(ClampUnitToByte(opacity), ClampUnitToByte(ov.TintR),
-                                               ClampUnitToByte(ov.TintG), ClampUnitToByte(ov.TintB))
-            Else
-                mat.BaseColor = Color.FromArgb(ClampUnitToByte(opacity), 255, 255, 255)
-            End If
-            Return New OverlayMaterialLayer With {
-                .Material = New Nifcontent_Class_Manolo.RelatedMaterial_Class With {.material = mat, .path = If(ov.DiffusePath, "")}
-            }
+            Return FO4_Base_Library.SseOverlayMaterialFactory.Build(skinShape, ov, SseCatalogs.OverlayInstall())
         Catch ex As Exception
-            Logger.LogLazy(Function() $"[OVERLAY-SSE] failed to synthesize overlay '{ov.NodeName}' ({ov.DiffusePath}): {ex.Message}")
+            Logger.LogLazy(Function() $"[OVERLAY-SSE] failed to build overlay '{ov.NodeName}' ({ov.DiffusePath}): {ex.Message}")
             Return Nothing
         End Try
     End Function
