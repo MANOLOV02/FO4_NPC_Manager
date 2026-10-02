@@ -121,13 +121,33 @@ Friend NotInheritable Class NpcTemplateHelpers
     ''' selected for preview, including a multi-leaf LVLN, when making a generic actor concrete. Returns an
     ''' empty list for a missing record or a non-LVLN signature, which the caller
     ''' treats as "unresolvable" (the conservative branch).</para></summary>
-    Public Shared Function CollectLvlnLeafNpcFormIDs(lvlnFormID As UInteger, pluginManager As PluginManager) As List(Of UInteger)
+    ''' <param name="abrirLvln">⛔ 1-oct-2026 (unificacion, rev-NM-09): de donde sale la LVLN ya parseada (la seccion 2 la
+    ''' tiene en `_lvlnDataCache`). Nothing = se abre del record con <see cref="TryAbrirLvlnTolerante"/>. Es la MISMA lectura
+    ''' tolerante: el cache de MainForm se llena con esa funcion y saltea las que no parsean.</param>
+    Public Shared Function CollectLvlnLeafNpcFormIDs(lvlnFormID As UInteger, pluginManager As PluginManager,
+                                                     Optional abrirLvln As Func(Of UInteger, Canon.ILvln) = Nothing) As List(Of UInteger)
         Dim leaves As New List(Of UInteger)
         If pluginManager Is Nothing OrElse lvlnFormID = 0UI Then Return leaves
         Dim seenLists As New HashSet(Of UInteger)
         Dim seenLeaves As New HashSet(Of UInteger)
-        CollectLvlnLeavesRecursive(lvlnFormID, pluginManager, leaves, seenLeaves, seenLists)
+        CollectLvlnLeavesRecursive(lvlnFormID, pluginManager, leaves, seenLeaves, seenLists, abrirLvln)
         Return leaves
+    End Function
+
+    ''' <summary>⛔ EL MEMO de <see cref="CollectLvlnLeafNpcFormIDs"/> (1-oct-2026, unificacion rev-NM-09): la misma lista la
+    ''' piden cientos de llamadores en una pasada (FO4 `LvlRaider*`, SSE `LvlBandit*`). Lo usan la pasada de nombres de la app
+    ''' y el probe. Vive lo que vive el delegado: quien lo arma decide su frescura (una pasada).</summary>
+    Public Shared Function HojasMemorizadas(pluginManager As PluginManager,
+                                            Optional abrirLvln As Func(Of UInteger, Canon.ILvln) = Nothing) As Func(Of UInteger, List(Of UInteger))
+        Dim memo As New Dictionary(Of UInteger, List(Of UInteger))
+        Return Function(lista As UInteger) As List(Of UInteger)
+                   Dim hs As List(Of UInteger) = Nothing
+                   If Not memo.TryGetValue(lista, hs) Then
+                       hs = CollectLvlnLeafNpcFormIDs(lista, pluginManager, abrirLvln)
+                       memo(lista) = hs
+                   End If
+                   Return hs
+               End Function
     End Function
 
     ''' <summary>⛔⛔ LA POLITICA DE HOJA SIN PANTALLA (R2, ronda 2): la de siempre, `leaves(0)`. Es la MISMA rama final
@@ -176,13 +196,13 @@ Friend NotInheritable Class NpcTemplateHelpers
 
     Private Shared Sub CollectLvlnLeavesRecursive(lvlnFormID As UInteger, pluginManager As PluginManager,
                                                   leaves As List(Of UInteger), seenLeaves As HashSet(Of UInteger),
-                                                  seenLists As HashSet(Of UInteger))
+                                                  seenLists As HashSet(Of UInteger), abrirLvln As Func(Of UInteger, Canon.ILvln))
         ' seenLists guards nested-LVLN cycles; without it a self-referencing list recurses forever.
         If Not seenLists.Add(lvlnFormID) Then Return
         Dim rec = pluginManager.GetRecord(lvlnFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "LVLN" Then Return
         ' Tolerante: lo consume el editor y el apply del Save; un LVLN roto no puede reventar ahi.
-        Dim lvln = TryAbrirLvlnTolerante(rec, pluginManager)
+        Dim lvln = If(abrirLvln Is Nothing, TryAbrirLvlnTolerante(rec, pluginManager), abrirLvln(lvlnFormID))
         If lvln Is Nothing Then Return
         For Each entry In lvln.LeveledListEntries
             If entry.LeveledListEntryNPC = 0UI Then Continue For
@@ -192,7 +212,7 @@ Friend NotInheritable Class NpcTemplateHelpers
                 Case "NPC_"
                     If seenLeaves.Add(entry.LeveledListEntryNPC) Then leaves.Add(entry.LeveledListEntryNPC)
                 Case "LVLN"
-                    CollectLvlnLeavesRecursive(entry.LeveledListEntryNPC, pluginManager, leaves, seenLeaves, seenLists)
+                    CollectLvlnLeavesRecursive(entry.LeveledListEntryNPC, pluginManager, leaves, seenLeaves, seenLists, abrirLvln)
             End Select
         Next
     End Sub

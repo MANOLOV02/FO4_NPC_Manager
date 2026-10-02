@@ -411,6 +411,83 @@ Friend NotInheritable Class NpcTemplateMaterializer
         Loop
     End Function
 
+    ''' <summary>⛔ TODAS las fuentes posibles de <paramref name="category"/> para <paramref name="npc"/>: una por cada
+    ''' combinacion de hojas de las listas niveladas que su cadena atraviesa, en el orden del archivo y sin repetir.
+    ''' <para>NO es otro caminante: corre <see cref="ResolverCadena"/> (la sede, con sus leyes: bucket anterior de FO4,
+    ''' ultimo eslabon resuelto, ciclos) con una politica de hoja que contesta una ASIGNACION lista -> hoja. La primera
+    ''' lista que la cadena pregunta sin estar asignada abre una rama por cada hoja suya. La asignacion es por LISTA
+    ''' porque el motor comparte la eleccion de hoja de una LVLN entre buckets (`0x140309E4E`). Termina porque cada rama
+    ''' fija una lista mas y las de una cadena son finitas. Una rama sin fuente (`Source Is Nothing`) no aporta.</para>
+    ''' <para>Sin fuentes si el NPC no tiene el bit o ninguna rama da fuente. <c>RamasSinFuente</c> cuenta las ramas
+    ''' terminales sin fuente: es diagnostico (el censo del probe lo publica), no cambia las fuentes.</para>
+    ''' <para>MEDIDO (1-oct-2026, Base Data, orden de carga completo, `TemplateMaterializeProbe --censo-nombres-lista`):
+    ''' SSE 3512 herederos, 731 con mas de una fuente (hasta 31); FO4 1913, 1072 (hasta 30). Ninguna cadena pregunta
+    ''' mas de una lista; ninguna rama sin fuente.</para></summary>
+    ''' <param name="hojasDe">Lista -> sus hojas NPC_ en el orden del archivo (`NpcTemplateHelpers.HojasMemorizadas`).</param>
+    Friend Shared Function FuentesPosibles(npc As NPC_Data,
+                                           category As NPC_TemplateCategory,
+                                           getParsedNpc As Func(Of UInteger, NPC_Data),
+                                           hojasDe As Func(Of UInteger, List(Of UInteger)),
+                                           firmaDe As Func(Of UInteger, String)) As ResultadoDeFuentes
+        Dim fuentes As New List(Of NPC_Data)
+        Dim ramasSinFuente = 0, corridas = 0
+        If npc Is Nothing OrElse npc.Record Is Nothing OrElse hojasDe Is Nothing Then Return New ResultadoDeFuentes(fuentes, 0, 0)
+        If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, category) Then Return New ResultadoDeFuentes(fuentes, 0, 0)
+        Dim vistas As New HashSet(Of UInteger)
+        Dim pendientes As New Stack(Of Dictionary(Of UInteger, UInteger))
+        pendientes.Push(New Dictionary(Of UInteger, UInteger))
+        While pendientes.Count > 0
+            Dim asig = pendientes.Pop()
+            Dim libre As UInteger = 0UI
+            Dim hojaAsignada = Function(lista As UInteger) As UInteger
+                                   Dim h As UInteger = 0UI
+                                   If asig.TryGetValue(lista, h) Then Return h
+                                   Dim hs = hojasDe(lista)
+                                   If hs Is Nothing OrElse hs.Count = 0 Then Return 0UI
+                                   If libre = 0UI Then libre = lista
+                                   Return hs(0)
+                               End Function
+            Dim r = ResolverCadena(npc, category, getParsedNpc, hojaAsignada, firmaDe)
+            corridas += 1
+            If libre <> 0UI Then
+                ' Al reves: la pila saca la ultima primero, y las fuentes salen en el orden del archivo.
+                Dim hs = hojasDe(libre)
+                For k = hs.Count - 1 To 0 Step -1
+                    Dim nueva As New Dictionary(Of UInteger, UInteger)(asig)
+                    nueva(libre) = hs(k)
+                    pendientes.Push(nueva)
+                Next
+                Continue While
+            End If
+            If r.Source Is Nothing OrElse r.Source.Record Is Nothing Then
+                ramasSinFuente += 1
+                Continue While
+            End If
+            If vistas.Add(r.Source.FormID) Then fuentes.Add(r.Source)
+        End While
+        Return New ResultadoDeFuentes(fuentes, ramasSinFuente, corridas)
+    End Function
+
+    ''' <summary>El FULL que una fuente de Base Data le deja al heredero: el suyo, o vacio si no lo trae
+    ''' (`MaterializeBaseData`: si la fuente no trae FULL, el heredero tampoco). Una sede para el nombre heredado, los nombres
+    ''' posibles y el censo del probe (aud-B-05). Los oraculos de los gates la escriben aparte a proposito.</summary>
+    Friend Shared Function FullQueDejaLaFuente(fuente As NPC_Data) As String
+        Return If(fuente.Record.NamePresente, If(fuente.Record.Name, ""), "")
+    End Function
+
+    ''' <summary>Lo que devuelve <see cref="FuentesPosibles"/>: las fuentes (orden del archivo, sin repetir) y cuantas
+    ''' ramas terminaron sin fuente; <c>Corridas</c> = cuantas veces corrio la sede (diagnostico del censo, aud-A-01).</summary>
+    Friend NotInheritable Class ResultadoDeFuentes
+        Public ReadOnly Property Fuentes As IReadOnlyList(Of NPC_Data)
+        Public ReadOnly Property RamasSinFuente As Integer
+        Public ReadOnly Property Corridas As Integer
+        Public Sub New(fuentes As List(Of NPC_Data), ramasSinFuente As Integer, corridas As Integer)
+            Me.Fuentes = fuentes
+            Me.RamasSinFuente = ramasSinFuente
+            Me.Corridas = corridas
+        End Sub
+    End Class
+
     ''' <summary>El orden en que la copia de Fallout 4 (`0x1406580A0`) llama a la lambda `0x140664FC0`, con el
     ''' bucket en edx: `0x140658140` (8), `0x1406581CE` (7), `0x14065826B` (0), `0x140658535` (0xC),
     ''' `0x14065857C` (1), `0x1406586AE` (2), `0x140658700` (3), `0x140658768` (4), `0x1406587DE` (5),

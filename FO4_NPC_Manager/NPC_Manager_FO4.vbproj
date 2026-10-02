@@ -63,6 +63,11 @@
     <!-- Sonda de medición (Tools/, sólo lectura): ejercita NpcTemplateMaterializer.MakeCategoryOwn REAL
          sobre el load order en vez de reimplementar su lógica. Ver Tools/TemplateMaterializeProbe. -->
     <InternalsVisibleTo Include="TemplateMaterializeProbe" />
+    <!-- 1-oct-2026 (unificacion de "las hojas de una lista", decision del usuario): las dos sondas de "missing bake"
+         arman la poblacion "en el juego" con la SEDE (NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs, Friend) en vez de su
+         copia propia del recorrido. Mismo criterio que TemplateMaterializeProbe: IVT antes que ampliar la superficie. -->
+    <InternalsVisibleTo Include="MissingBakeFindProbe" />
+    <InternalsVisibleTo Include="MissingBakeClassifyProbe" />
     <!-- arq-05: el gate del bucket Traits necesita ProbeCategoryOwn/MakeCategoryOwn, que son
          Friend a proposito. Mismo criterio que TemplateMaterializeProbe: IVT antes que ampliar
          la superficie publica. -->

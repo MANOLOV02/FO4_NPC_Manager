@@ -198,7 +198,8 @@ Public Class MainForm
     Private _finalLVLNFormIDs As New List(Of UInteger)()
     ''' <summary>Parsed LVLN data cache keyed by FormID.</summary>
     Private _lvlnDataCache As New Dictionary(Of UInteger, Canon.ILvln)()
-    ''' <summary>Pre-computed flattened leaf NPC FormID list per LVLN. Recursive descent into
+    ''' <summary>Pre-computed leaf NPC FormID list per LVLN, from THE seat (`NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs`
+    ''' via `HojasMemorizadas`: distinct, in file order; 1-oct-2026 unification). Recursive descent into
     ''' nested LVLNs is resolved during cache warmup (BuildNPCClassification) so the tree
     ''' rebuild path doesn't do per-keystroke recursion + per-entry _pluginManager.GetRecord
     ''' lookups. Invalidation: BuildNPCClassification clears + repopulates. Save ESP doesn't
@@ -236,7 +237,7 @@ Public Class MainForm
         If n Is Nothing Then Return ""
         Dim k As String = Nothing
         If _npcSortKeyCache.TryGetValue(n.FormID, k) Then Return k
-        Return TextoDeNpc(n)
+        Return TextoDeLaFila(n)
     End Function
 
     ''' <summary>QUE es la clave de orden. Un solo sitio: el plan contempla —y por ahora
@@ -245,8 +246,9 @@ Public Class MainForm
     ''' distintas sin ningún aviso.</summary>
     Private Sub SembrarClaveDeOrden(npc As NPC_Data)
         If npc Is Nothing Then Return
-        ' ⛔ Con el nombre EFECTIVO (punto 12): el heredado ya no se le escribe al record.
-        _npcSortKeyCache(npc.FormID) = TextoDeNpc(npc)
+        ' ⛔ Con el nombre de la FILA (punto 12 y decision del usuario 1-oct-2026): el heredado ya no se le escribe al
+        ' record, y un heredero de lista ordena por su conjunto de nombres, que es lo que muestra.
+        _npcSortKeyCache(npc.FormID) = TextoDeLaFila(npc)
         ' Va JUNTO con la clave, no aparte: los dos salen del record y el filtro los pide en la misma
         ' pasada. Sembrarlos en sitios distintos es la forma de que uno quede fresco y el otro no.
         _npcHeredaAparienciaCache(npc.FormID) = NpcTemplateHelpers.NpcInheritsVisualAppearance(npc)
@@ -301,8 +303,8 @@ Public Class MainForm
                                          Optional resembrarClaveDeOrden As Boolean = True)
         If npc Is Nothing Then Return
         Dim fid = npc.FormID
-        _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreEfectivo(npc))
-        _npcDisplayLabelCache(fid) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreEfectivo(npc))
+        _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreDeLaFila(npc))
+        _npcDisplayLabelCache(fid) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreDeLaFila(npc))
         If Not resembrarClaveDeOrden Then Return
         SembrarClaveDeOrden(npc)
         If ordenarAhora Then OrdenarNpcs()   ' la clave de este NPC acaba de cambiar
@@ -3055,6 +3057,14 @@ Public Class MainForm
     ''' dice el archivo" quedaba con un FULL que el archivo no trae (DECISIONES 14-sep, punto 12).</para></summary>
     Private ReadOnly _nombresHeredados As New Dictionary(Of UInteger, String)()
 
+    ''' <summary>⛔⛔ LOS NOMBRES POSIBLES de un heredero de Base Data cuya cadena atraviesa una lista nivelada, por FormID:
+    ''' el FULL de cada fuente de <see cref="NpcTemplateMaterializer.FuentesPosibles"/>, sin repetir por TEXTO y en el
+    ''' orden del archivo. Solo hay entrada con DOS o mas nombres: con uno, la fila es la de siempre.
+    ''' <para>Decision del usuario (1-oct-2026): sin pantalla el arbol no elige una hoja, muestra el conjunto; y la fila NO
+    ''' cambia al publicar el preview. La llenan <see cref="ResolveInheritedFullNames"/> (carga y refresco de la sesion) y,
+    ''' para un NPC que cambio de instancia, <see cref="RefrescarSesionTrasCambioDeRecords"/>; nunca la publicacion.</para></summary>
+    Private ReadOnly _nombresPosibles As New Dictionary(Of UInteger, List(Of String))()
+
     ''' <summary>El nombre que el motor le deja a este NPC: el FULL de la fuente de Base Data si hereda ese
     ''' bucket (`MaterializeBaseData`: si la fuente no trae FULL, el heredero tampoco), si no el propio.
     ''' ⛔ Mira el bit VIVO: un NPC desprendido en la sesion vuelve a mostrar su propio nombre.</summary>
@@ -3067,11 +3077,37 @@ Public Class MainForm
         Return If(npc.Record.Name, "")
     End Function
 
-    ''' <summary>El texto de `NPC_Data.ToString()` ("nombre [EditorID]" o el EditorID), con el nombre EFECTIVO.
-    ''' `ToString` vive en la libreria y lee el FULL crudo; la lista lo usaba como clave de orden.</summary>
+    ''' <summary>El nombre de la FILA del arbol (etiqueta, texto buscable y clave de orden): los nombres posibles unidos
+    ''' por " | " si el NPC tiene mas de uno (<see cref="_nombresPosibles"/>), si no <see cref="NombreEfectivo"/>. Los
+    ''' mensajes de una operacion (estado, avisos, progreso del bake) siguen con <see cref="NombreEfectivo"/>: nombran la
+    ''' hoja con la que esa operacion trabaja.
+    ''' <para>⛔ Mira el bit VIVO, como <see cref="NombreEfectivo"/>: un NPC desprendido en la sesion vuelve a su nombre.</para></summary>
+    Friend Function NombreDeLaFila(npc As NPC_Data) As String
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return ""
+        If NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, NPC_TemplateCategory.BaseData) Then
+            Dim posibles As List(Of String) = Nothing
+            If _nombresPosibles.TryGetValue(npc.FormID, posibles) Then
+                Return String.Join(" | ", posibles.Select(Function(s) If(s = "", "(no name)", s)))
+            End If
+        End If
+        Return NombreEfectivo(npc)
+    End Function
+
+    ''' <summary>El texto de `NPC_Data.ToString()` ("nombre [EditorID]" o el EditorID), con el nombre EFECTIVO. Lo usan los
+    ''' mensajes de una operacion; la clave de orden usa <see cref="TextoDeLaFila"/>.</summary>
     Private Function TextoDeNpc(npc As NPC_Data) As String
         If npc Is Nothing Then Return ""
-        Dim nombre = NombreEfectivo(npc)
+        Return TextoConNombre(npc, NombreEfectivo(npc))
+    End Function
+
+    ''' <summary>La clave de orden: el formato de <see cref="TextoDeNpc"/> con el nombre de la FILA, para que el arbol ordene
+    ''' por lo que muestra.</summary>
+    Private Function TextoDeLaFila(npc As NPC_Data) As String
+        If npc Is Nothing Then Return ""
+        Return TextoConNombre(npc, NombreDeLaFila(npc))
+    End Function
+
+    Private Shared Function TextoConNombre(npc As NPC_Data, nombre As String) As String
         If nombre <> "" Then Return $"{nombre} [{npc.EditorID}]"
         Return npc.EditorID
     End Function
@@ -3086,14 +3122,31 @@ Public Class MainForm
     ''' <para>⛔ Y YA NO MUTA LA CACHE: el resultado va a <see cref="_nombresHeredados"/>.</para></summary>
     Private Sub ResolveInheritedFullNames()
         _nombresHeredados.Clear()
+        _nombresPosibles.Clear()
         ' ⛔ RONDA 12 (rev-32): LEE la cache tal cual, NO la siembra. La siembra es de la carga (`SembrarCacheConLaCarga`):
         ' esto corre tambien desde el refresco de la sesion (commit del NPC Editor, Reset), y sembrar ahi re-insertaba en la
         ' cache la instancia MUTADA que Reset acababa de sacar.
         Dim leer = LectorDeLaSesion()
         Dim firma = NpcTemplateHelpers.FirmaDeRecord(_pluginManager)
+        ' ⛔ Memo de UNA pasada (no `_lvlnLeavesCache`): en la carga esto corre ANTES de `BuildNPCClassification`
+        ' (`ParseAllNPCs`: `ResolveInheritedFullNames` y despues `RebuildTreeModelCache`), asi que ese cache todavia es el
+        ' del orden de carga ANTERIOR.
+        Dim hojasDe = NpcTemplateHelpers.HojasMemorizadas(_pluginManager)
         For Each npc In _allNPCs
             ResolverNombreHeredado(npc, leer, firma)
+            ResolverNombresPosibles(npc, leer, firma, hojasDe)
         Next
+    End Sub
+
+    ''' <summary>La entrada de UN NPC en <see cref="_nombresPosibles"/>. La usan la carga y el refresco de la sesion; la
+    ''' publicacion no, porque la fila no depende de la hoja en pantalla (decision del usuario 2a, 1-oct-2026).</summary>
+    Private Sub ResolverNombresPosibles(npc As NPC_Data, leer As Func(Of UInteger, NPC_Data), firma As Func(Of UInteger, String),
+                                        hojasDe As Func(Of UInteger, List(Of UInteger)))
+        If npc Is Nothing OrElse npc.Record Is Nothing Then Return
+        _nombresPosibles.Remove(npc.FormID)
+        Dim fuentes = NpcTemplateMaterializer.FuentesPosibles(npc, NPC_TemplateCategory.BaseData, leer, hojasDe, firma).Fuentes
+        Dim nombres = fuentes.Select(AddressOf NpcTemplateMaterializer.FullQueDejaLaFuente).Distinct(StringComparer.Ordinal).ToList()
+        If nombres.Count > 1 Then _nombresPosibles(npc.FormID) = nombres
     End Sub
 
     ''' <summary>⛔⛔ RONDA 12 (rev-32): la SIEMBRA de la cache de la sesion con las instancias de `_allNPCs`. SOLO la carga
@@ -3124,10 +3177,12 @@ Public Class MainForm
     ''' Devuelve si refresco alguno: el llamador ordena una vez.</summary>
     Private Function RefrescarSesionTrasCambioDeRecords(excluido As NPC_Data) As Boolean
         Dim nombresAntes As New Dictionary(Of UInteger, String)(_nombresHeredados)
+        Dim posiblesAntes As New Dictionary(Of UInteger, List(Of String))(_nombresPosibles)
         ResolveInheritedFullNames()
         Dim cambiados As New HashSet(Of UInteger)()
         Dim leer = LectorDeLaSesion()
         Dim firma = NpcTemplateHelpers.FirmaDeRecord(_pluginManager)
+        Dim hojasDe = NpcTemplateHelpers.HojasMemorizadas(_pluginManager)
         For i = 0 To _allNPCs.Count - 1
             Dim n = _allNPCs(i)
             If n Is Nothing Then Continue For
@@ -3138,6 +3193,7 @@ Public Class MainForm
                 ' Su PROPIA entrada se calculo arriba con las banderas de la instancia descartada: se rehace con la nueva
                 ' por la sede de una entrada.
                 ResolverNombreHeredado(deLaCache, leer, firma)
+                ResolverNombresPosibles(deLaCache, leer, firma, hojasDe)
             End If
         Next
         Dim alguno = False
@@ -3146,7 +3202,13 @@ Public Class MainForm
             Dim nA As String = Nothing, nD As String = Nothing
             Dim hayA = nombresAntes.TryGetValue(otro.FormID, nA)
             Dim hayD = _nombresHeredados.TryGetValue(otro.FormID, nD)
-            If cambiados.Contains(otro.FormID) OrElse hayA <> hayD OrElse Not String.Equals(nA, nD, StringComparison.Ordinal) Then
+            ' ⛔ 1-oct-2026: y si cambio su CONJUNTO de nombres (p. ej. el FULL de una de sus hojas): la fila es el conjunto.
+            Dim pA As List(Of String) = Nothing, pD As List(Of String) = Nothing
+            Dim hayPA = posiblesAntes.TryGetValue(otro.FormID, pA)
+            Dim hayPD = _nombresPosibles.TryGetValue(otro.FormID, pD)
+            Dim posiblesCambiaron = hayPA <> hayPD OrElse (hayPA AndAlso Not pA.SequenceEqual(pD, StringComparer.Ordinal))
+            If cambiados.Contains(otro.FormID) OrElse hayA <> hayD OrElse Not String.Equals(nA, nD, StringComparison.Ordinal) OrElse
+               posiblesCambiaron Then
                 RefrescarCachesDerivados(otro, ordenarAhora:=False)
                 alguno = True
             End If
@@ -3175,7 +3237,7 @@ Public Class MainForm
         Dim r = NpcTemplateMaterializer.ResolverCadena(npc, NPC_TemplateCategory.BaseData, leer,
                                                        HojaDeListaPara(npc.FormID), firma)
         If r.Source Is Nothing OrElse r.Source.Record Is Nothing Then Return
-        _nombresHeredados(npc.FormID) = If(r.Source.Record.NamePresente, If(r.Source.Record.Name, ""), "")
+        _nombresHeredados(npc.FormID) = NpcTemplateMaterializer.FullQueDejaLaFuente(r.Source)
     End Sub
 
     Private Sub RebuildTreeModelCache()
@@ -3203,9 +3265,7 @@ Public Class MainForm
         LmHairColorLutLoader.Invalidate()
         LmHairColorLutLoader.EnsureLoaded(_pluginManager)
         For Each npc In _ctx.NpcCache.Values
-            _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreEfectivo(npc))
-            _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreEfectivo(npc))
-            SembrarClaveDeOrden(npc)
+            RefrescarCachesDerivados(npc, ordenarAhora:=False)
         Next
 
         ' RESIEMBRA LA CLAVE DE ORDEN DE TODOS ⇒ TIENE QUE REORDENAR. `PopulateNPCTree` dejó de reordenar
@@ -5103,21 +5163,27 @@ Public Class MainForm
                                    Return String.Compare(lvlnA.EditorID, lvlnB.EditorID, StringComparison.OrdinalIgnoreCase)
                                End Function)
 
-        ' Collect NPCs in leveled lists (encounter spawns)
-        ' Se recorre `_lvlnDataCache`, NO `allLVLNRecords`: la caché ya excluye los LVLN que no parsearon.
-        ' Recorrer la lista cruda volvía a pasar el MISMO record roto por ParseLVLN (GetRecord devuelve el mismo
-        ' objeto, PluginManager.BuildTypeIndex sale de AllRecords), así que la excepción salía igual y el
-        ' try/catch de arriba quedaba inerte: la carga entera seguía muriendo por un solo record.
+        ' Las hojas de cada LVLN (seccion 2) y los NPC de encuentro ("en el juego"), por LA SEDE de "las hojas de una lista"
+        ' (`NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs`): sin repetir, en el orden del archivo, con su guarda de ciclos.
+        ' ⛔ 1-oct-2026 (unificacion, decision del usuario, rev-NM-09): antes habia DOS recorridos propios aca
+        ' (`ComputeAndCacheLVLNLeaves`, que dejaba repetidas, y `CollectNPCsFromLVLNRecursive`). A/B medido
+        ' (`TemplateMaterializeProbe --ab-hojas-seccion2`): mismo conjunto en todas las LVLN y mismo orden en las finales
+        ' (las unicas que lee la seccion 2), la misma poblacion; solo se van las filas repetidas de la seccion 2 (SSE 83
+        ' listas / 757 filas, FO4 29 / 96).
+        ' ⛔ Sin memo (aud-B-02): cada LVLN se pide UNA vez, y la vieja reusaba sub-listas entre raices con resultados
+        ' PARCIALES en los ciclos. Costo medido de la clasificacion ("caches" del estado de carga, una carga por muestra):
+        ' SSE antes 1734 ms, despues 1641 / 1901 / 2183 ms; FO4 antes 1450 ms, despues 1045 / 1141 / 1554 ms -- la
+        ' diferencia queda dentro del ruido entre cargas.
+        ' Se lee de `_lvlnDataCache`, NO del record: la cache ya excluye los LVLN que no parsearon, y re-abrirlos volvia a
+        ' pasar el MISMO record roto por el parser.
+        Dim abrirDeLaCache = Function(f As UInteger) As Canon.ILvln
+                                 Dim l As Canon.ILvln = Nothing
+                                 Return If(_lvlnDataCache.TryGetValue(f, l), l, Nothing)
+                             End Function
         For Each lvlnFid In _lvlnDataCache.Keys.ToList()
-            CollectNPCsFromLVLNRecursive(lvlnFid, _npcsInGameWorld, New HashSet(Of UInteger)())
-        Next
-
-        ' Warm _lvlnLeavesCache: pre-compute flattened NPC FormID list for every LVLN. Recursion
-        ' memoizada via ComputeAndCacheLVLNLeaves — sub-LVLNs ya cacheadas se leen del cache, no
-        ' se re-walkean. Costo total: O(total entries across all LVLNs). Una sola vez al startup;
-        ' PopulateNPCTree luego sólo hace dictionary lookups O(1) por LVLN.
-        For Each lvlnFid In _lvlnDataCache.Keys
-            ComputeAndCacheLVLNLeaves(lvlnFid, New HashSet(Of UInteger)())
+            Dim hojas = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFid, _pluginManager, abrirDeLaCache)
+            _lvlnLeavesCache(lvlnFid) = hojas
+            _npcsInGameWorld.UnionWith(hojas)
         Next
 
         ' Scan all NPCs to find which are used as template sources.
@@ -5170,32 +5236,6 @@ Public Class MainForm
                                       $"{totalInWorld} in-game NPCs inherit appearance total (the rest are LVLN encounters, still listed under section 2)")
         End If
 
-    End Sub
-
-    Private Sub CollectNPCsFromLVLNRecursive(lvlnFormID As UInteger, result As HashSet(Of UInteger), visited As HashSet(Of UInteger))
-        If lvlnFormID = 0UI OrElse visited.Contains(lvlnFormID) Then Return
-        Dim rec = _pluginManager.GetRecord(lvlnFormID)
-        If rec Is Nothing OrElse rec.Header.Signature <> "LVLN" Then Return
-
-        visited.Add(lvlnFormID)
-        ' La caché es la fuente: la llenó el barrido de arranque, que ya saltea (y reporta) los LVLN que no
-        ' parsean. Re-parsear acá reintroducía la excepción por la puerta de al lado — un LVLN anidado roto
-        ' alcanzaba para tumbar la carga aunque el bucle de arriba lo hubiera salteado.
-        Dim lvln As Canon.ILvln = Nothing
-        If Not _lvlnDataCache.TryGetValue(lvlnFormID, lvln) OrElse lvln Is Nothing Then Return
-
-        For Each entry In lvln.LeveledListEntries
-            If entry.LeveledListEntryNPC = 0UI Then Continue For
-            Dim entryRec = _pluginManager.GetRecord(entry.LeveledListEntryNPC)
-            If entryRec Is Nothing Then Continue For
-
-            Select Case entryRec.Header.Signature
-                Case "NPC_"
-                    result.Add(entry.LeveledListEntryNPC)
-                Case "LVLN"
-                    CollectNPCsFromLVLNRecursive(entry.LeveledListEntryNPC, result, visited)
-            End Select
-        Next
     End Sub
 
     ''' <summary>True if this NPC is only used as a template source and never placed in the world or in any LVLN.</summary>
@@ -5508,45 +5548,11 @@ Public Class MainForm
     Private Function EtiquetaDeNpc(npc As NPC_Data) As String
         Dim etiqueta As String = Nothing
         If _npcDisplayLabelCache.TryGetValue(npc.FormID, etiqueta) Then Return etiqueta
-        etiqueta = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreEfectivo(npc))
+        etiqueta = NpcDisplayHelpers.BuildNpcDisplayLabel(npc, NombreDeLaFila(npc))
         _npcDisplayLabelCache(npc.FormID) = etiqueta
         Return etiqueta
     End Function
 
-
-    ''' <summary>Compute (memoized) la lista flattened de NPC FormIDs alcanzables desde un LVLN.
-    ''' Recurse en sub-LVLNs vía la misma función (memoización mutua). El cache global
-    ''' <see cref="_lvlnLeavesCache"/> guarda el resultado por FormID, así una sola pasada en
-    ''' BuildNPCClassification cubre todos los LVLNs y los rebuilds del tree (filter / save)
-    ''' luego sólo hacen lookup O(1) sin volver a tocar el plugin manager.
-    '''
-    ''' Cycle detection: `inProgress` se pasa por la cadena de recursión activa. Si A→B→A, la
-    ''' segunda visita a A retorna lista vacía y el cache de B captura la parte de B sin
-    ''' contribución cíclica. Vanilla FO4 no tiene ciclos LVLN; el guard es defensivo.</summary>
-    Private Function ComputeAndCacheLVLNLeaves(lvlnFormID As UInteger, inProgress As HashSet(Of UInteger)) As List(Of UInteger)
-        Dim cached As List(Of UInteger) = Nothing
-        If _lvlnLeavesCache.TryGetValue(lvlnFormID, cached) Then Return cached
-        If lvlnFormID = 0UI OrElse inProgress.Contains(lvlnFormID) Then Return New List(Of UInteger)()
-        inProgress.Add(lvlnFormID)
-        Dim result As New List(Of UInteger)
-        Dim lvln As Canon.ILvln = Nothing
-        If _lvlnDataCache.TryGetValue(lvlnFormID, lvln) Then
-            For Each entry In lvln.LeveledListEntries
-                If entry.LeveledListEntryNPC = 0UI Then Continue For
-                Dim entryRec = _pluginManager.GetRecord(entry.LeveledListEntryNPC)
-                If entryRec Is Nothing Then Continue For
-                Select Case entryRec.Header.Signature
-                    Case "NPC_"
-                        result.Add(entry.LeveledListEntryNPC)
-                    Case "LVLN"
-                        result.AddRange(ComputeAndCacheLVLNLeaves(entry.LeveledListEntryNPC, inProgress))
-                End Select
-            Next
-        End If
-        inProgress.Remove(lvlnFormID)
-        _lvlnLeavesCache(lvlnFormID) = result
-        Return result
-    End Function
 
     Private Function BuildTemplateDependencyMap(npcById As IReadOnlyDictionary(Of UInteger, NPC_Data)) As Dictionary(Of UInteger, List(Of TemplateDependencyEdge))
         Dim dependencyMap As New Dictionary(Of UInteger, List(Of TemplateDependencyEdge))
@@ -5705,7 +5711,7 @@ Public Class MainForm
             If cached.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         Else
             ' Fallback para NPCs no incluidos en el cache (raro — debería estar todo)
-            Dim fallback = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreEfectivo(npc))
+            Dim fallback = NpcDisplayHelpers.BuildNpcSearchableText(npc, NombreDeLaFila(npc))
             If fallback.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         End If
         ' Categorías del template dependency edge no entran al cache (depende del contexto del
@@ -9358,6 +9364,30 @@ Public Class MainForm
         Return If(f Is Nothing, Nothing, f.Texto)
     End Function
 
+    ''' <summary>⛔ Costura de arnes (1-oct-2026): la etiqueta que el arbol le pone a la fila de este NPC (`EtiquetaDeNpc`, la
+    ''' del cache), sin necesitar el modelo poblado.</summary>
+    Friend Function EtiquetaDeLaFilaParaArnes(npc As NPC_Data) As String
+        Return EtiquetaDeNpc(npc)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (1-oct-2026): las LVLN finales de la seccion 2 (`_finalLVLNFormIDs`).</summary>
+    Friend Function LvlnFinalesParaArnes() As List(Of UInteger)
+        Return New List(Of UInteger)(_finalLVLNFormIDs)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (1-oct-2026): las hojas que la seccion 2 cuelga de una LVLN (`_lvlnLeavesCache`), o
+    ''' Nothing si no tiene entrada.</summary>
+    Friend Function HojasDeSeccion2ParaArnes(lvlnFormID As UInteger) As List(Of UInteger)
+        Dim hs As List(Of UInteger) = Nothing
+        Return If(_lvlnLeavesCache.TryGetValue(lvlnFormID, hs), hs, Nothing)
+    End Function
+
+    ''' <summary>⛔ Costura de arnes (1-oct-2026, rev-NM-13): la poblacion "en el juego" (`_npcsInGameWorld`): ACHR colocados
+    ''' mas las hojas de toda LVLN. La leen la seccion 1 (`IsTemplateOnly`, categorias Unused/Template).</summary>
+    Friend Function PoblacionEnElJuegoParaArnes() As HashSet(Of UInteger)
+        Return New HashSet(Of UInteger)(_npcsInGameWorld)
+    End Function
+
     ''' <summary>⛔ Costura de arnes (RONDA 11, aud-02): lo que contesta el BUSCADOR del arbol para este NPC y este texto, por
     ''' la MISMA funcion del repoblado (`MatchesNpcFilter`, sin arista de dependencias).</summary>
     Friend Function CoincideConElBuscadorParaArnes(npc As NPC_Data, texto As String) As Boolean
@@ -12872,47 +12902,7 @@ Public Class MainForm
         ' in-session mount, so the readback's re-mount can't remove them). Revert each (NEW app record → drop;
         ' OVERRIDE → restore the base), fix _allNPCs, then rebuild the tree model + repopulate so the node vanishes
         ' (NEW) or reappears under the base plugin group (OVERRIDE).
-        Dim removedAny As Boolean = False
-        For Each fid In droppedFromTarget
-            RevertAppOverrideInMemory(fid)   ' PluginManager: drop NEW / revert OVERRIDE + targeted parse-cache invalidate
-            _dirtyNpcs.Remove(fid)
-            _npcRecordOverrides.Remove(fid)
-            ' Drop the LooksMenu overlay too. The saver's Phase 3b already PRUNED this NPC from the .bssliders
-            ' sidecar + BodyGen .ini on disk (via _recordsToRemove), but the overlay is the in-memory SOURCE the
-            ' sidecar is built from (MergeOneNpcIntoSidecar reads _appliedPresets). Leaving it behind desyncs
-            ' memory from disk and would RESURRECT the pruned sidecar entry on the next save. A deleted NEW record
-            ' / reverted OVERRIDE discards all authored appearance, so the whole overlay goes.
-            _appliedPresets.Remove(fid)
-            Dim baseRec = _pluginManager.GetRecord(fid)
-            If baseRec Is Nothing OrElse baseRec.Header.Signature <> "NPC_" Then
-                ' NEW authored record → gone from the load order. Drop every model entry for it.
-                _allNPCs.RemoveAll(Function(n) n IsNot Nothing AndAlso n.FormID = fid)
-            Else
-                ' OVERRIDE reverted → re-parse the now-winning base record and replace it in the model.
-                Dim baseNpc = NpcRecordOverlay.GetParsedNpc(fid, _pluginManager)
-                If baseNpc IsNot Nothing Then
-                    Dim replaced = False
-                    For i = 0 To _allNPCs.Count - 1
-                        If _allNPCs(i) IsNot Nothing AndAlso _allNPCs(i).FormID = fid Then
-                            _allNPCs(i) = baseNpc
-                            replaced = True
-                            Exit For
-                        End If
-                    Next
-                    If Not replaced Then _allNPCs.Add(baseNpc)
-                End If
-            End If
-            removedAny = True
-        Next
-        If removedAny Then
-            ' NO se ordena aca: en este punto `_npcSortKeyCache` todavia tiene la clave del override que
-            ' se acaba de tirar, asi que ordenar ahora usaria el nombre VIEJO. Quien re-siembra las claves
-            ' es `RebuildTreeModelCache`, y es el que ordena al terminar.
-            ' Rebuild the model caches from the mutated _allNPCs (drops the NEW record from NpcCache/searchable/
-            ' display too), then repopulate the tree so the phantom node is gone.
-            RebuildTreeModelCache()
-            PopulateNPCTree(_pendingTreeFilter)
-        End If
+        QuitarDelModeloLosRecordsCaidos(droppedFromTarget)
 
         ' Removal intents were applied by the saver's Phase 2a (it dropped every target-plugin record whose GLOBAL
         ' FormID is in this set). Clear it now so a stale mark can't re-drop a record the user later re-authors: e.g.
@@ -13125,6 +13115,66 @@ Public Class MainForm
         _appliedPresets.Remove(npcFormID)
         Return False
     End Function
+
+    ''' <summary>Part 2 del guardado: los records que el Save deja caer del plugin destino DESAPARECEN del modelo en memoria
+    ''' (NEW → afuera; OVERRIDE → vuelve la base). Extraida del cuerpo del Save (1-oct-2026, aud-B-01) para que un arnes la
+    ''' ejerza; el cuerpo es el de siempre.
+    ''' <para>⛔ Un record que cae CAMBIA lo que heredan sus herederos (Base Data: el nombre y, si es hoja de una lista, el
+    ''' conjunto de nombres). Por eso, despues de reconstruir los caches del modelo, pasa por LA SEDE del refresco de la sesion
+    ''' (<see cref="RefrescarSesionTrasCambioDeRecords"/>), igual que el Reset: antes reconstruia la fila con los nombres
+    ''' heredados de ANTES del Save.</para></summary>
+    Private Sub QuitarDelModeloLosRecordsCaidos(droppedFromTarget As List(Of UInteger))
+        Dim removedAny As Boolean = False
+        For Each fid In droppedFromTarget
+            RevertAppOverrideInMemory(fid)   ' PluginManager: drop NEW / revert OVERRIDE + targeted parse-cache invalidate
+            _dirtyNpcs.Remove(fid)
+            _npcRecordOverrides.Remove(fid)
+            ' Drop the LooksMenu overlay too. The saver's Phase 3b already PRUNED this NPC from the .bssliders
+            ' sidecar + BodyGen .ini on disk (via _recordsToRemove), but the overlay is the in-memory SOURCE the
+            ' sidecar is built from (MergeOneNpcIntoSidecar reads _appliedPresets). Leaving it behind desyncs
+            ' memory from disk and would RESURRECT the pruned sidecar entry on the next save. A deleted NEW record
+            ' / reverted OVERRIDE discards all authored appearance, so the whole overlay goes.
+            _appliedPresets.Remove(fid)
+            Dim baseRec = _pluginManager.GetRecord(fid)
+            If baseRec Is Nothing OrElse baseRec.Header.Signature <> "NPC_" Then
+                ' NEW authored record → gone from the load order. Drop every model entry for it.
+                _allNPCs.RemoveAll(Function(n) n IsNot Nothing AndAlso n.FormID = fid)
+            Else
+                ' OVERRIDE reverted → re-parse the now-winning base record and replace it in the model.
+                Dim baseNpc = NpcRecordOverlay.GetParsedNpc(fid, _pluginManager)
+                If baseNpc IsNot Nothing Then
+                    Dim replaced = False
+                    For i = 0 To _allNPCs.Count - 1
+                        If _allNPCs(i) IsNot Nothing AndAlso _allNPCs(i).FormID = fid Then
+                            _allNPCs(i) = baseNpc
+                            replaced = True
+                            Exit For
+                        End If
+                    Next
+                    If Not replaced Then _allNPCs.Add(baseNpc)
+                End If
+            End If
+            removedAny = True
+        Next
+        If removedAny Then
+            ' NO se ordena aca: en este punto `_npcSortKeyCache` todavia tiene la clave del override que
+            ' se acaba de tirar, asi que ordenar ahora usaria el nombre VIEJO. Quien re-siembra las claves
+            ' es `RebuildTreeModelCache` (y ordena al terminar); si el refresco de la sesion de abajo cambia algun
+            ' nombre heredado, vuelve a ordenar.
+            ' Rebuild the model caches from the mutated _allNPCs (drops the NEW record from NpcCache/searchable/
+            ' display too), then repopulate the tree so the phantom node is gone.
+            RebuildTreeModelCache()
+            ' ⛔ aud-B-01: los nombres heredados (y los conjuntos) con los records YA revertidos -- la cache de la sesion
+            ' acaba de reconstruirse desde `_allNPCs`. Refresca los derivados de los que cambiaron; si alguno cambio, ordena.
+            If RefrescarSesionTrasCambioDeRecords(Nothing) Then OrdenarNpcs()
+            PopulateNPCTree(_pendingTreeFilter)
+        End If
+    End Sub
+
+    ''' <summary>⛔ Costura de arnes (1-oct-2026, aud-B-01): la Part 2 del guardado sobre los FormID dados.</summary>
+    Friend Sub QuitarDelModeloLosRecordsCaidosParaArnes(fids As List(Of UInteger))
+        QuitarDelModeloLosRecordsCaidos(fids)
+    End Sub
 
     ''' <summary>Post-save re-read (Step 6). Mounts the just-written plugin as the top override so
     ''' GetRecord returns the saved state, then RE-PARSES each written NPC into _ctx.NpcCache / _allNPCs.
