@@ -12,8 +12,8 @@ Imports FO4_Base_Library
 ''' latchea la POSICIÓN, porque su color es justamente lo que el ajuste mueve y hay que re-muestrearlo en
 ''' cada iteración.</para>
 '''
-''' <para><b>Los dos píxeles son WYSIWYG</b> — el color final tal como se ve, con luz, sombra, tonemap y el
-''' encode a display ya aplicados (Shader_Class: <c>tonemap()</c> + <c>pow(1/2.2)</c>). Por eso el auto-calc
+''' <para><b>Los dos píxeles son WYSIWYG</b> — el color final tal como se ve, con luz, sombra y la ley de display
+''' del frame ya aplicadas: el post del juego, o con el post apagado la cola de 2.3.8 en el fragment. Por eso el auto-calc
 ''' es un LAZO CERRADO —aplicar, re-renderizar, re-muestrear— y no una inversión analítica: invertir la
 ''' cadena exigiría deshacer el tonemap (que no es separable por canal) y la iluminación del punto, y daría
 ''' un número lindo y equivocado. El lazo no reimplementa NI UN espacio: deja que el pipeline real calcule y

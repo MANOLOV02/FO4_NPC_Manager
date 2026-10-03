@@ -22,6 +22,9 @@ Public Class Preflight_Form
     Public Sub New()
         ' La version, TAMBIEN aca: esta es la PRIMERA ventana que ve el usuario de NPC Manager.
         WindowTitle = VersionGate.TituloConVersion("FO4 NPC Manager") & " — Setup"
+        ' WTHR/IMGS: the preview's weather table refreshes from this load order (PreviewImagingTable). Only the
+        ' preflight loads them: the bake (BakeAllRunner) keeps SIGS_NPC_RENDERING.
+        SignatureFilter = New HashSet(Of String)(SIGS_NPC_RENDERING.Concat({"WTHR", "IMGS"}), StringComparer.Ordinal)
     End Sub
 
     Protected Overrides Function LoadSavedSelection(game As Config_App.Game_Enum) As IEnumerable(Of String)
