@@ -2466,7 +2466,7 @@ Public Module FaceGenBuilder
                 ' value is NPC-level, not a BGSM field, so the app provides it (same split as the skin
                 ' tone COLOR which the resolver puts in HairTintColor and the library writes).
                 mat.SkinTintAlpha = skinTintAlpha
-                mat.Save_To_Shader(nif, shape, bsls, mat.NifShaderType, slot5Path)
+                mat.Save_To_Shader(nif, shape, bsls, mat.NifShaderType, slot5Path, transcription:=True)
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif sea standalone
                 ' (todos los datos del material viven embedded en el shader, sin depender
@@ -2537,7 +2537,7 @@ Public Module FaceGenBuilder
                 If bgem Is Nothing Then
                     Return
                 End If
-                mat.Save_To_Shader(nif, shape, bes)
+                mat.Save_To_Shader(nif, shape, bes, transcription:=True)
                 If bes.Name IsNot Nothing Then bes.Name.String = ""
                 ' Transform_Changed: el CK lo setea en TODO shape horneado, también los effect shaders, así
                 ' que esta rama necesita el mismo tratamiento que la de lighting.

@@ -1583,6 +1583,9 @@ Friend NotInheritable Class NpcMaterialResolver
             If relatedMaterial Is Nothing Then Continue For
 
             Dim matPre = relatedMaterial.material
+            ' User decision rev-43 b: a head part IS a FaceGen shape of the engine; the preview draws it with the wetness the bake
+            ' writes inline (FO4UnifiedMaterial_Class.EngineWetness). The bake does not read the mark.
+            If matPre IsNot Nothing AndAlso candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart Then matPre.MarkWetnessAsBaked()
             If logEnabled AndAlso matPre IsNot Nothing Then
                 Dim palOnPre = matPre.GrayscaleToPaletteColor
                 Dim palScalePre = matPre.GrayscaleToPaletteScale
