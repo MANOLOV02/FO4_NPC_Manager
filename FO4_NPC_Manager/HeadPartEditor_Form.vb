@@ -369,6 +369,7 @@ Public Class HeadPartEditor_Form
         ' GLControl se crea en code-behind: necesita un contexto OpenGL que el diseñador no puede dar.
         Try
             _preview = New PreviewControl() With {.Dock = DockStyle.Fill}
+            _preview.Intent.DrawEngineSkippedForEditing = True   ' a picker / a record editor: a piece view (C2 v3 L5)
             PreviewControlPanel.Controls.Add(_preview)
             _preview.BringToFront()
             _preview.ApplyResize(True)

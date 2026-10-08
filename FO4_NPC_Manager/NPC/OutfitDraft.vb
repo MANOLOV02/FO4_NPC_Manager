@@ -349,7 +349,7 @@ Public Class OutfitDraft
                 ' `For Each` captura la variable del bucle -que en VB es UNA sola para todas las
                 ' vueltas- y todos los `Poner` terminarian escribiendo sobre el ULTIMO pick.
                 Yield CensoDeReferencias.RefDe(pk, Function(x) x.ArmoFormID,
-                                               Sub(x, v) x.ArmoFormID = v, "realización sorteada")
+                                               Sub(x, v) x.ArmoFormID = v, "rolled pick")
             Next
         Next
     End Function

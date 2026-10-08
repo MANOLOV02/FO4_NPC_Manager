@@ -146,7 +146,7 @@ Public Module CensoDeReferencias
         Dim otft = TryCast(record, Canon.IOtft)
         If otft IsNot Nothing Then
             For Each it In otft.Items
-                Yield RefDe(it, Function(x) x.Item, Sub(x, v) x.Item = v, "prenda")
+                Yield RefDe(it, Function(x) x.Item, Sub(x, v) x.Item = v, "outfit item")
             Next
             Return
         End If
@@ -155,7 +155,7 @@ Public Module CensoDeReferencias
         If lvli IsNot Nothing Then
             For Each en In lvli.LeveledListEntries
                 Yield RefDe(en, Function(x) x.LeveledListEntryItem,
-                            Sub(x, v) x.LeveledListEntryItem = v, "entrada")
+                            Sub(x, v) x.LeveledListEntryItem = v, "leveled list entry")
             Next
             Return
         End If
@@ -183,11 +183,11 @@ Public Module CensoDeReferencias
                 ' Alternate Textures (MODS) → TXST. Ningún selector las escribe hoy; entran por formato.
                 For Each at In armoSse.AlternateTextures
                     Yield RefDe(at, Function(x) x.AlternateTextureNewTexture,
-                                Sub(x, v) x.AlternateTextureNewTexture = v, "textura alternativa")
+                                Sub(x, v) x.AlternateTextureNewTexture = v, "alternate texture")
                 Next
             End If
             ' La plantilla está en la interfaz común: la declaran los dos juegos.
-            Yield RefDe(armo, Function(x) x.TemplateArmor, Sub(x, v) x.TemplateArmor = v, "plantilla")
+            Yield RefDe(armo, Function(x) x.TemplateArmor, Sub(x, v) x.TemplateArmor = v, "template armor")
 
             ' ======================================================================================
             ' OBTS — las propiedades de Object Template. Sólo Fallout 4: medido, `PropertyValue1FormID`
@@ -247,18 +247,18 @@ Public Module CensoDeReferencias
         ' juegos, y desde la ola de head parts TXST y FLST tienen borrador, así que son aristas reales.
         Dim arma = TryCast(record, Canon.IArma)
         If arma IsNot Nothing Then
-            Yield RefDe(arma, Function(x) x.MaleSkinTexture, Sub(x, v) x.MaleSkinTexture = v, "textura de piel")
-            Yield RefDe(arma, Function(x) x.FemaleSkinTexture, Sub(x, v) x.FemaleSkinTexture = v, "textura de piel")
+            Yield RefDe(arma, Function(x) x.MaleSkinTexture, Sub(x, v) x.MaleSkinTexture = v, "skin texture")
+            Yield RefDe(arma, Function(x) x.FemaleSkinTexture, Sub(x, v) x.FemaleSkinTexture = v, "skin texture")
             Yield RefDe(arma, Function(x) x.MaleSkinTextureSwapList,
-                        Sub(x, v) x.MaleSkinTextureSwapList = v, "lista de swap de piel")
+                        Sub(x, v) x.MaleSkinTextureSwapList = v, "skin texture swap list")
             Yield RefDe(arma, Function(x) x.FemaleSkinTextureSwapList,
-                        Sub(x, v) x.FemaleSkinTextureSwapList = v, "lista de swap de piel")
+                        Sub(x, v) x.FemaleSkinTextureSwapList = v, "skin texture swap list")
             Dim armaSse = TryCast(record, Canon.ArmaSSE)
             If armaSse IsNot Nothing Then
                 ' Idem ARMO: por formato, sin selector todavía.
                 For Each at In armaSse.AlternateTextures
                     Yield RefDe(at, Function(x) x.AlternateTextureNewTexture,
-                                Sub(x, v) x.AlternateTextureNewTexture = v, "textura alternativa")
+                                Sub(x, v) x.AlternateTextureNewTexture = v, "alternate texture")
                 Next
             End If
         End If
@@ -271,9 +271,9 @@ Public Module CensoDeReferencias
             Yield RefDe(armaFo4, Function(x) x.FemaleMaterialSwap,
                         Sub(x, v) x.FemaleMaterialSwap = v, "material swap")
             Yield RefDe(armaFo4, Function(x) x.MaleMaterialSwap2,
-                        Sub(x, v) x.MaleMaterialSwap2 = v, "material swap 1ra persona")
+                        Sub(x, v) x.MaleMaterialSwap2 = v, "1st-person material swap")
             Yield RefDe(armaFo4, Function(x) x.FemaleMaterialSwap2,
-                        Sub(x, v) x.FemaleMaterialSwap2 = v, "material swap 1ra persona")
+                        Sub(x, v) x.FemaleMaterialSwap2 = v, "1st-person material swap")
         End If
 
         ' ============================================================================
@@ -289,10 +289,10 @@ Public Module CensoDeReferencias
         Dim hdpt = TryCast(record, Canon.IHdpt)
         If hdpt IsNot Nothing Then
             For Each ex In hdpt.ExtraParts
-                Yield RefDe(ex, Function(x) x.Part, Sub(x, v) x.Part = v, "parte extra")
+                Yield RefDe(ex, Function(x) x.Part, Sub(x, v) x.Part = v, "extra part")
             Next
-            Yield RefDe(hdpt, Function(x) x.TextureSet, Sub(x, v) x.TextureSet = v, "conjunto de texturas")
-            Yield RefDe(hdpt, Function(x) x.ValidRaces, Sub(x, v) x.ValidRaces = v, "razas válidas")
+            Yield RefDe(hdpt, Function(x) x.TextureSet, Sub(x, v) x.TextureSet = v, "texture set")
+            Yield RefDe(hdpt, Function(x) x.ValidRaces, Sub(x, v) x.ValidRaces = v, "valid races")
             Yield RefDe(hdpt, Function(x) x.Color, Sub(x, v) x.Color = v, "color")
             ' El material swap del modelo sólo existe en Fallout 4 (en Skyrim ese MODS es un arreglo de
             ' texturas alternativas, que se enumera abajo).
@@ -305,7 +305,7 @@ Public Module CensoDeReferencias
             If hdptSse IsNot Nothing Then
                 For Each at In hdptSse.AlternateTextures
                     Yield RefDe(at, Function(x) x.AlternateTextureNewTexture,
-                                Sub(x, v) x.AlternateTextureNewTexture = v, "textura alternativa")
+                                Sub(x, v) x.AlternateTextureNewTexture = v, "alternate texture")
                 Next
             End If
             Return
@@ -319,7 +319,7 @@ Public Module CensoDeReferencias
         Dim flst = TryCast(record, Canon.IFlst)
         If flst IsNot Nothing Then
             For Each en In flst.FormIDs
-                Yield RefDe(en, Function(x) x.FormID, Sub(x, v) x.FormID = v, "miembro de la lista")
+                Yield RefDe(en, Function(x) x.FormID, Sub(x, v) x.FormID = v, "list member")
             Next
             Return
         End If

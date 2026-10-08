@@ -2377,6 +2377,7 @@ Public Class ArmaEditor_Form
 
         If _preview Is Nothing OrElse _preview.IsDisposed Then
             _preview = New PreviewControl() With {.Dock = DockStyle.Fill}
+            _preview.Intent.DrawEngineSkippedForEditing = True   ' a picker / a record editor: a piece view (C2 v3 L5)
             PreviewControlPanel.Controls.Add(_preview)
             _preview.BringToFront()
             _preview.ApplyResize(True)

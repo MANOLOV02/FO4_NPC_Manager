@@ -10832,7 +10832,7 @@ Public Class MainForm
         motivo = Nothing
         Dim npc = _ctx.GetParsedNpc(npcFormID)
         If npc Is Nothing OrElse npc.Record Is Nothing Then
-            motivo = $"NPC 0x{npcFormID:X8}: no se pudo leer el record."
+            motivo = $"NPC 0x{npcFormID:X8}: the record could not be read."
             Return False
         End If
         If Not NpcTemplateHelpers.HasTemplateFlag(npc.Record.ConfigurationTemplateFlags, cat) Then Return True

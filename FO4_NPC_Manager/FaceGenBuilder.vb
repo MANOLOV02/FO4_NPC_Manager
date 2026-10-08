@@ -259,9 +259,9 @@ Public Module FaceGenBuilder
         For Each t In _parityTests
             If t.Slug = slug Then axis = t.Axis : Exit For
         Next
-        Dim what = "el camino vectorial NO es bit-identico al escalar ⇒ los bytes saldrian distintos segun la CPU"
+        Dim what = "the vector path is NOT bit-identical to the scalar one ⇒ the baked bytes would differ by CPU"
         Throw New InvalidOperationException(
-            $"Parity gate FAILED [{axis}] — {what}. Hornear ahora produciria bytes que no describen la ley. Detalle: " & r)
+            $"Parity gate FAILED [{axis}] — {what}. Baking now would produce bytes that do not follow the law. Detail: " & r)
     End Sub
 
     ''' <summary>Eje de verificación al que pertenece cada self-test. El gate mezcla cosas que NO prueban lo
@@ -2416,7 +2416,7 @@ Public Module FaceGenBuilder
         ' externo — así que les corresponde el MISMO gesto. Copiarlo en vez de compartirlo fue lo primero que
         ' se intentó, y se desincronizó al toque: la versión a mano no tenía el centinela de Emissive de más
         ' abajo y apagaba el Emissive en las 9 cabezas de FO4.
-        TranscribeResolvedMaterialToShader(nif, cloned, mat, skinTintAlpha)
+        TranscribeResolvedMaterialToShader(nif, cloned, mat, skinTintAlpha, FO4UnifiedMaterial_Class.TranscriptionAlphaCreation.CkRule)
         Return mat
     End Function
 
@@ -2436,7 +2436,8 @@ Public Module FaceGenBuilder
     Friend Sub TranscribeResolvedMaterialToShader(nif As Nifcontent_Class_Manolo,
                                                   shape As INiShape,
                                                   mat As FO4UnifiedMaterial_Class,
-                                                  skinTintAlpha As Single)
+                                                  skinTintAlpha As Single,
+                                                  alphaCreation As FO4UnifiedMaterial_Class.TranscriptionAlphaCreation)
         If nif Is Nothing OrElse shape Is Nothing OrElse mat Is Nothing Then Return
         Dim shad = nif.GetShader(shape)
         If shad Is Nothing Then
@@ -2466,7 +2467,7 @@ Public Module FaceGenBuilder
                 ' value is NPC-level, not a BGSM field, so the app provides it (same split as the skin
                 ' tone COLOR which the resolver puts in HairTintColor and the library writes).
                 mat.SkinTintAlpha = skinTintAlpha
-                mat.Save_To_Shader(nif, shape, bsls, mat.NifShaderType, slot5Path, transcription:=True)
+                mat.Save_To_Shader(nif, shape, bsls, mat.NifShaderType, slot5Path, transcription:=True, alphaCreation:=alphaCreation)
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif sea standalone
                 ' (todos los datos del material viven embedded en el shader, sin depender
@@ -2537,7 +2538,7 @@ Public Module FaceGenBuilder
                 If bgem Is Nothing Then
                     Return
                 End If
-                mat.Save_To_Shader(nif, shape, bes, transcription:=True)
+                mat.Save_To_Shader(nif, shape, bes, transcription:=True, alphaCreation:=alphaCreation)
                 If bes.Name IsNot Nothing Then bes.Name.String = ""
                 ' Transform_Changed: el CK lo setea en TODO shape horneado, también los effect shaders, así
                 ' que esta rama necesita el mismo tratamiento que la de lighting.

@@ -821,7 +821,7 @@ Public NotInheritable Class SceneNifExporter
                             dynClone.VertexDesc.VertexAttributes Or NiflySharp.Enums.VertexAttribute.Vertex
                         Dim plainClone = RecortarABSTriShape(destNif, dynClone)
                         If plainClone Is Nothing OrElse Not destNif.ReplaceBlock(dynClone, plainClone) Then
-                            Throw New Exception("no se pudo convertir el BSDynamicTriShape a BSTriShape")
+                            Throw New Exception("could not convert the BSDynamicTriShape to BSTriShape")
                         End If
                         clonedINiShape = plainClone
                     End If

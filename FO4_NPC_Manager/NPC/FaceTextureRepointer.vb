@@ -91,7 +91,7 @@ Public NotInheritable Class FaceTextureRepointer
                 ' el shader al modelo en pantalla. El clone preserva también VetoAlphaPropertyCreation, que
                 ' es lo que impide estrenarle un NiAlphaProperty a DiMA (paridad CK, ver 40-bake-leyes-fo4 §8).
                 Dim mat = resolvedMaterial.Clone()
-                FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, mat, mat.SkinTintAlpha)
+                FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, mat, mat.SkinTintAlpha, FO4UnifiedMaterial_Class.TranscriptionAlphaCreation.CkRule)
             End If
         End If
 

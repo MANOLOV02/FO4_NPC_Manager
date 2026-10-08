@@ -2617,9 +2617,9 @@ For Each d In hdptByFid.Values
             If pRec Is Nothing Then faltan.Add("Record")
             If pFid Is Nothing Then faltan.Add("FormID")
             If faltan.Count > 0 Then
-                problemas.Add($"{t.Name}: no declara {String.Join(", ", faltan.ToArray())} — este aviso " &
-                              "no puede saber si tiene overrides sucios, así que podrían descartarse sin " &
-                              "que se muestren.")
+                problemas.Add($"{t.Name}: does not declare {String.Join(", ", faltan.ToArray())} — this notice " &
+                              "cannot tell whether it has edited overrides, so they could be discarded without " &
+                              "being listed.")
                 Continue For
             End If
             Try
@@ -2634,8 +2634,8 @@ For Each d In hdptByFid.Values
                 r.Add(If(String.IsNullOrEmpty(eid), $"0x{fid:X8}", eid))
             Catch ex As Exception
                 ' ⛔ NO se traga: un aviso que se apaga solo es peor que no tenerlo.
-                problemas.Add($"{t.Name}: la lectura de sus propiedades tiró " &
-                              $"{ex.GetType().Name} — sus overrides sucios podrían descartarse sin mostrarse.")
+                problemas.Add($"{t.Name}: reading its properties threw " &
+                              $"{ex.GetType().Name} — its edited overrides could be discarded without being listed.")
             End Try
         Next
         Return r

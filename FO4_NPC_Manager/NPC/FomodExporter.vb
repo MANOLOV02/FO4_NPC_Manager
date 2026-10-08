@@ -147,15 +147,15 @@ Public Module FomodExporter
             For Each fid In npcFormIDs
                 For Each entry In NpcFaceGenPacker.CanonicalFaceGenEntryPathsForNpc(fid, pluginManager, game)
                     addDisk(ItemKind.FaceGenLoose, entry, False, "",
-                            "FALTA en disco: el NIF/DDS de FaceGen de este NPC no esta horneado")
+                            "MISSING on disk: this NPC's FaceGen NIF/DDS is not baked")
                 Next
                 For Each extra In NpcFaceGenPacker.InventedLooseFilesForNpc(fid, pluginManager, dataPath)
                     inventadas.Add(extra)
                 Next
             Next
             For Each extra In inventadas
-                addDisk(ItemKind.FaceGenLoose, extra, False, "textura que inventa el bake: no la trae ningun mod",
-                        "FALTA en disco: el NIF la referencia y no la trae ningun mod — esa nuca queda sin textura")
+                addDisk(ItemKind.FaceGenLoose, extra, False, "texture invented by the bake: no mod provides it",
+                        "MISSING on disk: the NIF references it and no mod provides it — that nape is left untextured")
             Next
         End If
 

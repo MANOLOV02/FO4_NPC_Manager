@@ -59,8 +59,8 @@ Friend Module EscrituraDelParBodyGen
                 ' Sin foto no hay vuelta atrás, y escribir igual es apostar a que el segundo no falle. Se
                 ' corta ANTES de tocar el disco: el par queda entero.
                 Throw New ParDeBodyGenException(
-                    $"no se pudo leer el templates.ini que ya estaba ('{Path.GetFileName(templatesPath)}'), " &
-                    "así que no había cómo deshacer si fallaba el segundo archivo. No se tocó ninguno de los dos.",
+                    $"could not read the existing templates.ini ('{Path.GetFileName(templatesPath)}'), " &
+                    "so there was no way to undo if the second file failed. Neither file was touched.",
                     quedoConsistente:=True, inner:=ex)
             End Try
         End If
@@ -101,17 +101,17 @@ Friend Module EscrituraDelParBodyGen
             End Try
             If volvio Then
                 Throw New ParDeBodyGenException(
-                    $"no se pudo escribir '{Path.GetFileName(morphsPath)}' ({exMorphs.Message}). " &
-                    $"Se deshizo '{Path.GetFileName(templatesPath)}': los dos quedaron como estaban antes de " &
-                    "guardar, así que los body morphs que ya funcionaban siguen funcionando.",
+                    $"could not write '{Path.GetFileName(morphsPath)}' ({exMorphs.Message}). " &
+                    $"'{Path.GetFileName(templatesPath)}' was rolled back: both files are as they were before " &
+                    "saving, so the body morphs that already worked still work.",
                     quedoConsistente:=True, inner:=exMorphs)
             End If
             Throw New ParDeBodyGenException(
-                $"no se pudo escribir '{Path.GetFileName(morphsPath)}' ({exMorphs.Message}) y TAMPOCO se pudo " &
-                $"deshacer '{Path.GetFileName(templatesPath)}'" &
-                If(porQueNoVolvio = "", "", $" ({porQueNoVolvio})") & ". Los dos archivos quedaron DESAJUSTADOS: " &
-                "morphs.ini nombra plantillas que templates.ini ya no declara, así que esos NPC pierden sus " &
-                "body morphs en el juego hasta que se vuelva a guardar.",
+                $"could not write '{Path.GetFileName(morphsPath)}' ({exMorphs.Message}) and could NOT roll " &
+                $"back '{Path.GetFileName(templatesPath)}' either" &
+                If(porQueNoVolvio = "", "", $" ({porQueNoVolvio})") & ". The two files are now OUT OF SYNC: " &
+                "morphs.ini names templates that templates.ini no longer declares, so those NPCs lose their " &
+                "body morphs in game until you save again.",
                 quedoConsistente:=False, inner:=exMorphs)
         End Try
     End Sub
