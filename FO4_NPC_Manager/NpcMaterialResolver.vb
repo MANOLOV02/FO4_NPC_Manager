@@ -778,16 +778,11 @@ Friend NotInheritable Class NpcMaterialResolver
         ' portador era estructuralmente inalcanzable. El único síntoma visible era nulo (ver la nota de
         ' NpcDiffuseAlphaTest), pero el bake no podía confiar en su propio dato.
         material.NpcDiffuseAlphaTest = npcDiffuseAlphaTest
-        ' El veto de fabricación es el COMPLEMENTO del hecho, tal como lo componía el tri-estado viejo
-        ' (True = fabricar + bit; False = vetar + sin bit). Se separan porque son dos cosas distintas, pero
-        ' el bake sigue componiéndolas del mismo dato.
-        ' CAMBIO DE ALCANCE: al asignarse acá arriba y no dentro de la rama del MNAM, el veto ahora LLEGA
-        ' a los NPC cuyo TXST no trae MNAM (1.757 en FO4) y a todo SSE, donde antes se perdía.
-        material.VetoAlphaPropertyCreation = Not npcDiffuseAlphaTest
 
-        ' forceDiffuseOnly (RE): la fuente FTST del camino Face FO4 aplica SOLO el slot 0 — el
-        ' ATTACH del engine, GetTexturePath(slot 0) (game 0x1406EE0D7 / CK 0x140ED3830, todas las llamadas
-        ' con xor edx,edx).
+        ' forceDiffuseOnly (RE): la fuente FTST del camino Face aplica SOLO el slot 0 — el ATTACH del engine,
+        ' GetTexturePath(slot 0) (Fallout4.exe 1.11.240 0x1406EE3C2..4A2: FTST si el head part es Face, si no el
+        ' bodyTex, si no el TNAM; GetTexturePath 0x140597100 con xor edx,edx; escribe sólo material+0x48 /
+        ' CK 0x140ED3830).
         '
         ' NO agregar acá una rama que cargue el MNAM: sería código muerto. forceDiffuseOnly sólo se
         ' enciende en la rama SSE, y el TXST de Skyrim no tiene subrecord MNAM (a diferencia de FO4)
@@ -822,13 +817,12 @@ Friend NotInheritable Class NpcMaterialResolver
                     material.NormalTexture = overrideMaterial.NormalTexture
                     material.SmoothSpecTexture = overrideMaterial.SmoothSpecTexture
                 End If
-                ' REGLA B — QUÉ ALPHA: el alpha es PARTE DEL MATERIAL, sale del BGSM del MNAM SIN GATE.
-                ' El motor (ApplyMaterialToGeometry 0x142169BB0) lo aplica sin mirar la anatomía del shape.
-                ' NO re-introducir un gate por anatomía: refutado con contraejemplo vanilla (los ojos de los
-                ' Synth Gen1 perdían el alpha-test de su propio material por no ser el head part de cara).
-                ' NO borrar ref ni blend acá: la ley del bake no vive en este Sub COMPARTIDO (aplicarla dejó
-                ' la cara de Valentine sólida en el preview).
-                material.AdoptAlphaFrom(overrideMaterial)
+                ' REGLA B — QUÉ ALPHA: NINGUNO. El MNAM de un TXST nunca se aplica como material: Fallout4.exe 1.11.240
+                ' lo carga dentro del TXST y copia SÓLO sus 8 rutas de textura a los slots (0x140596E50), y la cabeza
+                ' sólo lee rutas (ATTACH 0x1406EE3C2..4A2 slot 0; REGEN 0x1406DEA10 slots 0/1/5/7 o 1/7). Ningún
+                ' llamador de ApplyMaterialData (0x1421715E0) recibe ese material. El alfa de la forma es el de
+                ' ResolveEngineAlpha: el material que nombra el NIF más el escritor de la cabeza (0x1406EEA90).
+                ' Medido en vivo (F4seRenderDiag, Valentine armado en vivo): Gen2SkinHead.BGSM + NiAlphaProperty 0x02EC/0.
 
                 relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialDe())
                 If logEnabled Then
@@ -1586,6 +1580,10 @@ Friend NotInheritable Class NpcMaterialResolver
             ' User decision rev-43 b: a head part IS a FaceGen shape of the engine; the preview draws it with the wetness the bake
             ' writes inline (FO4UnifiedMaterial_Class.EngineWetness). The bake does not read the mark.
             If matPre IsNot Nothing AndAlso candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart Then matPre.MarkWetnessAsBaked()
+            ' Hecho del record del escritor de alfa de la cabeza (Fallout4.exe 0x1406EEA90: head part Face 0x1406EEBB8 + ACBS 0x01000000
+            ' 0x1406EEC0D): el motor no exige TXST, así que no depende de que la cara resuelva uno. Sólo el True: el False sigue llegando por
+            ' ApplyTextureSetOverrides (clear del bit SF2, ley del CK).
+            If matPre IsNot Nothing AndAlso state IsNot Nothing AndAlso state.HeadDiffuseAlphaTest AndAlso IsFaceHeadPartFor(candidate) Then matPre.NpcDiffuseAlphaTest = True
             If logEnabled AndAlso matPre IsNot Nothing Then
                 Dim palOnPre = matPre.GrayscaleToPaletteColor
                 Dim palScalePre = matPre.GrayscaleToPaletteScale
@@ -1646,15 +1644,12 @@ Friend NotInheritable Class NpcMaterialResolver
                     End If
                 ElseIf (Not isSkinCand) OrElse shaderIsSkinTint Then
                     ' isFaceTxstSource (solo FO4, =FTST): diffuse-only per RE del attach (slot 0).
-                    ' La decisión de ESCRITURA del alpha-test se compone ACÁ, no dentro del resolver: es una
-                    ' regla del BAKE (dominio NPC). El CK fabrica el NiAlphaProperty y pone el bit Alpha_Test
-                    ' SII el NPC tiene ACBS\Diffuse Alpha Test (0x01000000), y solo en el shape de la CARA.
-                    ' El False es EXPLÍCITO, no Nothing: es un veto de fabricación, si no los ojos Gen1
-                    ' (material con alphaTest=True) estrenarían un NiAlphaProperty que el CK no pone.
-                    ' Ver 40-bake-leyes-fo4.
-                    ' HECHO del record + anatomía: el bit F4SPF2 Alpha_Test lo pone el CK sólo en la CARA
-                    ' de un NPC con el flag ACBS. Es lo único que este dato gobierna hoy (antes
-                    ' también vetaba la creación del NiAlphaProperty; ese veto se borró, ver NpcDiffuseAlphaTest).
+                    ' HECHO del record + anatomía = la condición del escritor de alfa de la cabeza (Fallout4.exe 0x1406EEA90):
+                    ' head part tipo Face (0x1406EEBB8) de un NPC con ACBS\Diffuse Alpha Test 0x01000000 (0x1406EEC0D). Con eso
+                    ' ResolveEngineAlpha da el bloque NUEVO 0x02EC/0 y Save_To_Shader prende SF2 Alpha_Test (FaceGenAlphaWriterApplies).
+                    ' El False explícito sólo limpia el bit SF2 (ley del CK); ya no hay veto de creación del bloque.
+                    ' Los ojos Gen1 (SynthGen1Eyes, sin uso en vanilla) tienen shader INLINE con su NiAlphaProperty 0x12EC/128
+                    ' en el NIF: el alpha-test es del NIF, no del MNAM (Gen1Eyes.BGSM, test 128), y ya no se toca.
                     Dim npcDiffuseAlphaTest As Boolean = state IsNot Nothing AndAlso
                                                         state.HeadDiffuseAlphaTest AndAlso
                                                         IsFaceHeadPartFor(candidate)

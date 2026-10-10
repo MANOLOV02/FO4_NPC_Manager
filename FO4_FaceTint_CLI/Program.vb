@@ -142,6 +142,9 @@ Module Program
         ''' clasificación exhaustiva de TODOS los NPC_; parte B = A/B de geometría horneada vs cruda sobre
         ''' una muestra de los que entran nuevos. READ-ONLY: no escribe ni un NIF.</summary>
         Public FaceGenGate As Boolean = False
+        ''' <summary>--alfaraizgate &lt;dir&gt;: ley de alfa de raiz sobre datos reales (Valentine, DiMA) por el resolver y el bake;
+        ''' el bake escribe en &lt;dir&gt; (BakeOutputRoot), nunca en el Data.</summary>
+        Public AlfaRaizGate As String = ""
         ''' <summary>Corre los self-tests del gate de paridad y sale. No hornea, no monta plugins.</summary>
         Public ParityGate As Boolean = False
         ''' <summary>Con --paritygate: además vuelca los golden del fold listos para pegar. Es un volcado,
@@ -403,7 +406,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso opt.DdsProbe = "" AndAlso opt.RecScan = "" AndAlso Not opt.MeshCollide AndAlso opt.DumpAcc = "" AndAlso Not opt.TexSlotDiff AndAlso Not opt.ShapeOrder AndAlso Not opt.TintCountScan AndAlso Not opt.AlphaGateScan AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" AndAlso opt.OutfitScan = "" AndAlso Not opt.FaceGenGate Then
+        If work.Count = 0 AndAlso opt.DdsProbe = "" AndAlso opt.RecScan = "" AndAlso Not opt.MeshCollide AndAlso opt.DumpAcc = "" AndAlso Not opt.TexSlotDiff AndAlso Not opt.ShapeOrder AndAlso Not opt.TintCountScan AndAlso Not opt.AlphaGateScan AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" AndAlso opt.OutfitScan = "" AndAlso Not opt.FaceGenGate AndAlso opt.AlfaRaizGate = "" Then
             Console.Error.WriteLine("No NPCs to process (check --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -1389,6 +1392,11 @@ Module Program
             Return
         End If
 
+        If opt.AlfaRaizGate <> "" Then
+            AlfaRaizGateRun(pm, opt.AlfaRaizGate, dataPath)
+            Return
+        End If
+
         ' --- FACEGENGATE: blast radius del cambio de gate de FaceGen (heurística → RACE.DATA bit 0x2).
         If opt.FaceGenGate Then
             _fggEdidFilter = opt.Edid
@@ -1503,6 +1511,99 @@ Module Program
     ''' ruta que la app (FaceGenBuilder.BuildCharGen). Con --vanillaonly el entorno ya cargó SOLO plugins
     ''' oficiales (PluginManager.OfficialPluginsOnly), así que el record + las texturas son vanilla por
     ''' construcción (sin override de mods). Devuelve True si Success.</summary>
+    ''' <summary>GATE de la ley de alfa de raiz (propuesta-alfa-raiz v2), sobre los records y NIF reales:
+    ''' (1) PREVIEW: el material que el resolver deja en cada forma, por ResolveEngineAlpha;
+    ''' (2) BAKE: el NiAlphaProperty de la forma de cara en el NIF horneado (escrito en outDir, no en el Data) contra el del
+    ''' FaceGeom del CK (BA2 shipped). Valentine: cara 0x02EC/0 (escritor 0x1406EEA90), head-rear sin bloque. DiMA: cara sin bloque.
+    ''' Caso 3: Valentine SIN TXST de cara (FTST y DFT anulados en el estado): el escritor no depende del TXST, la cara sigue 0x02EC/0.</summary>
+    Private Sub AlfaRaizGateRun(pm As PluginManager, outDir As String, dataPath As String)
+        Dim fails As New List(Of String)
+        IO.Directory.CreateDirectory(outDir)
+        FO4_NPC_Manager.BakeOutputRoot.Elegida = outDir
+        Dim casos = {("Fallout4.esm", "CompanionNickValentine", True, False), ("DLCCoast.esm", "DLC03DiMA", False, False),
+                     ("Fallout4.esm", "CompanionNickValentine", True, True)}
+        For Each c0 In casos
+            Dim c = (c0.Item1, If(c0.Item4, c0.Item2 & "(sin TXST de cara)", c0.Item2), c0.Item3)
+            Dim sinTxst = c0.Item4
+            Dim fid = ResolveEdid(pm, c0.Item1, c0.Item2)
+            If fid = 0UI Then fails.Add($"{c.Item2}: no resuelve") : Continue For
+            Dim rec As New List(Of (Shape As String, St As FO4UnifiedMaterial_Class.EngineAlphaState, W As Boolean, Path As String))
+            Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, FO4_NPC_Manager.ResolucionDeHeadParts.SinBorradores(pm), dataPath)
+            Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(st As FO4_NPC_Manager.MainForm.NPCVisualState) st.RecordBase)
+            Dim del As FO4_NPC_Manager.FaceGenBuilder.ApplyShapeMaterialOverridesDelegate =
+                Sub(cand, st, shapes)
+                    If sinTxst AndAlso st IsNot Nothing Then st.ExplicitHeadTextureFormID = 0UI : st.HeadTextureFormID = 0UI
+                    Dim lista = shapes.ToList()
+                    mres.ApplyShapeMaterialOverrides(cand, st, lista)
+                    For Each s In lista
+                        Dim m = s.ShapeMaterial?.material
+                        If m IsNot Nothing Then rec.Add((s.ShapeName, m.ResolveEngineAlpha(), m.FaceGenAlphaWriterApplies(), If(s.ShapeMaterial.path, "")))
+                    Next
+                End Sub
+            Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, ctx.HeadParts, New FO4_NPC_Manager.LecturaDeCadena With {.PluginManager = pm},
+                                                                   New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset), Nothing, del,
+                                                                   willBePacked:=False, lutDataPath:=dataPath)
+            If res Is Nothing OrElse Not res.Success Then fails.Add($"{c.Item2}: bake fallo") : Continue For
+            For Each r In rec
+                Console.WriteLine($"[preview] {c.Item2} '{r.Shape}' mat='{r.Path}' writer={r.W} -> {If(r.St.Present, $"0x{r.St.NiFlags():X4}/{r.St.Threshold}", "sin bloque")}")
+            Next
+            Dim face = rec.Where(Function(r) r.Shape = "SynthGen2Head1:0").ToList()
+            If face.Count = 0 Then fails.Add($"{c.Item2}: la forma de cara SynthGen2Head1:0 no paso por el resolver")
+            For Each r In face
+                ' El caso sin TXST tiene que llegar SIN el MNAM del FTST/DFT (si no, no prueba nada).
+                If sinTxst AndAlso r.Path.IndexOf("gen2skinheadvalentine", StringComparison.OrdinalIgnoreCase) >= 0 Then fails.Add($"{c.Item2}: la cara todavia resolvio el MNAM del TXST ('{r.Path}')")
+                If c.Item3 Then
+                    If Not (r.St.Present AndAlso r.St.NiFlags() = &H2EC AndAlso r.St.Threshold = 0) Then fails.Add($"{c.Item2} preview cara: {If(r.St.Present, $"0x{r.St.NiFlags():X4}/{r.St.Threshold}", "sin bloque")}, want 0x02EC/0")
+                ElseIf r.St.Present Then
+                    fails.Add($"{c.Item2} preview cara: 0x{r.St.NiFlags():X4}/{r.St.Threshold}, want sin bloque")
+                End If
+            Next
+            If c.Item3 Then
+                For Each r In rec.Where(Function(x) x.Shape = "HeadRear:0")
+                    If r.St.Present Then fails.Add($"{c.Item2} preview head-rear: 0x{r.St.NiFlags():X4}/{r.St.Threshold}, want sin bloque")
+                Next
+            End If
+            ' BAKE vs CK: alfa de cada forma del NIF horneado contra el FaceGeom shipped.
+            Dim alphaOf = Function(n As Nifcontent_Class_Manolo) As Dictionary(Of String, String)
+                              Dim d As New Dictionary(Of String, String)
+                              For Each s In n.GetShapes()
+                                  Dim k = If(s.Name?.String, "")
+                                  Dim v = "sin bloque"
+                                  If s.AlphaPropertyRef IsNot Nothing AndAlso s.AlphaPropertyRef.Index >= 0 Then
+                                      Dim ap = TryCast(n.Blocks(s.AlphaPropertyRef.Index), NiflySharp.Blocks.NiAlphaProperty)
+                                      If ap IsNot Nothing Then v = $"0x{ap.Flags.Value:X4}/{ap.Threshold}"
+                                  End If
+                                  d(k) = v
+                              Next
+                              Return d
+                          End Function
+            Dim ours As New Nifcontent_Class_Manolo() : ours.Load_Manolo(IO.File.ReadAllBytes(res.OutputPath))
+            Dim origin = pm.GetOriginatingPluginName(fid)
+            Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{PluginManager.ToFaceGenLocalFormID(fid):X8}.nif").ToLowerInvariant()
+            Dim ckArch As Boolean
+            Dim ckb = CkNifRefBytes(ckKey, ckArch)
+            Dim a1 = alphaOf(ours)
+            If ckb Is Nothing OrElse ckb.Length = 0 Then
+                fails.Add($"{c.Item2}: sin referencia del CK ({ckKey})")
+            Else
+                Dim ck As New Nifcontent_Class_Manolo() : ck.Load_Manolo(ckb)
+                Dim a2 = alphaOf(ck)
+                For Each kv In a2
+                    Dim o As String = Nothing
+                    a1.TryGetValue(kv.Key, o)
+                    Console.WriteLine($"[bake] {c.Item2} '{kv.Key}' CK {kv.Value} | nuestro {If(o, "(sin forma)")}")
+                    If o IsNot Nothing AndAlso o <> kv.Value Then fails.Add($"{c.Item2} bake '{kv.Key}': nuestro {o} vs CK {kv.Value}")
+                Next
+            End If
+        Next
+        If fails.Count = 0 Then
+            Console.WriteLine("ALFA-RAIZ GATE: PASS")
+        Else
+            Console.WriteLine("ALFA-RAIZ GATE: FAIL | " & String.Join(" | ", fails))
+            Environment.ExitCode = 1
+        End If
+    End Sub
+
     Private Function BuildFaceGenNpc(pm As PluginManager, espName As String, edid As String, Optional compareCk As Boolean = False, Optional dataPath As String = Nothing) As Boolean
         Dim npcFormID = ResolveEdid(pm, espName, edid)
         If npcFormID = 0UI Then
@@ -10498,6 +10599,7 @@ persist:
                 Case "--ddscompare" : a.DdsCompare = True : i += 1
                 Case "--rawdds" : a.RawDds = True : i += 1
                 Case "--alphagatescan" : a.AlphaGateScan = True : i += 1
+                Case "--alfaraizgate" : a.AlfaRaizGate = v : i += 2
                 Case "--tintcountscan" : a.TintCountScan = True : i += 1
                 Case "--ddsprobe" : a.DdsProbe = v : i += 2
                 Case "--recscan" : a.RecScan = v : i += 2
@@ -10554,7 +10656,7 @@ persist:
                     Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" AndAlso a.OutfitScan = "" AndAlso Not a.FaceGenGate AndAlso Not a.ParityGate Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" AndAlso a.OutfitScan = "" AndAlso Not a.FaceGenGate AndAlso Not a.ParityGate AndAlso a.AlfaRaizGate = "" Then
             Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
         End If
         ' --rawdds + --ddscompare: COMBINACION DELIBERADA, marcada a los gritos (no abortada).

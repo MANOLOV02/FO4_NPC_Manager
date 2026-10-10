@@ -88,10 +88,9 @@ Public NotInheritable Class FaceTextureRepointer
             Else
                 ' CLON: `resolvedMaterial` es el material VIVO del render — el mismo objeto que dibuja el
                 ' preview. La transcripción le escribe SkinTintAlpha, así que mutar el original le movería
-                ' el shader al modelo en pantalla. El clone preserva también VetoAlphaPropertyCreation, que
-                ' es lo que impide estrenarle un NiAlphaProperty a DiMA (paridad CK, ver 40-bake-leyes-fo4 §8).
+                ' el shader al modelo en pantalla. El clone preserva también NpcDiffuseAlphaTest (el escritor de alfa de la cara).
                 Dim mat = resolvedMaterial.Clone()
-                FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, mat, mat.SkinTintAlpha, FO4UnifiedMaterial_Class.TranscriptionAlphaCreation.CkRule)
+                FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, mat, mat.SkinTintAlpha)
             End If
         End If
 

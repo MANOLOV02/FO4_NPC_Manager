@@ -62,10 +62,8 @@ Public NotInheritable Class ShapeMaterialTranscriber
         ' CLON: `mat` es el material VIVO del render; la transcripción le escribe SkinTintAlpha y mutarlo
         ' movería el shader del modelo en pantalla.
         Dim matClone = mat.Clone()
-        ' Export de una forma que NO es cara: sin NiAlphaProperty en el fuente, el bloque se crea como lo crea el motor al
-        ' aplicar el archivo (decision del usuario 6-oct-2026; no hay referencia del CK para estas formas).
-        FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, matClone, matClone.SkinTintAlpha,
-                                                          FO4UnifiedMaterial_Class.TranscriptionAlphaCreation.Engine)
+        ' Sin NiAlphaProperty en el fuente, el bloque es el que crea el motor (ResolveEngineAlpha, WriteAlphaPropertyToShape).
+        FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, matClone, matClone.SkinTintAlpha)
         Return Outcome.Written
     End Function
 
