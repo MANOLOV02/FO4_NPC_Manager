@@ -774,6 +774,26 @@ Friend Class NpcRenderHost
                 Logger.LogLazy(Function() $"[OCCL]   shape='{nmDbg}' cat={catDbg} own=0x{ownDbg:X} coveredMask=0x{cmDbg:X} hiddenTris={hidDbg}/{totDbg} biped={{{bipedDbg}}} cargado={cargadoDbg} renderHide={hideDbg}")
             End If
         Next
+        ' Tacos altos: el piso baja la MAYOR altura entre las mallas que SE DIBUJAN (sólo lectura; la ley de cada
+        ' juego vive en HighHeels.ForInstalledMesh). Va acá porque este es el único lugar que decide qué se
+        ' dibuja: apagar "Render armor" saca las botas y el piso vuelve a su lugar.
+        Dim alturaPorMalla As New Dictionary(Of String, Double)(StringComparer.OrdinalIgnoreCase)
+        Dim tacos As Double = 0
+        For Each shape In LastRenderData.Shapes
+            If shape Is Nothing OrElse shape.RenderHide Then Continue For
+            Dim meshKey As String = Nothing
+            LastRenderData.MeshDictKeys.TryGetValue(shape, meshKey)
+            Dim h As Double
+            If meshKey Is Nothing OrElse Not alturaPorMalla.TryGetValue(meshKey, h) Then
+                h = HighHeels.ForInstalledMesh(meshKey, shape.NifContent)
+                If meshKey IsNot Nothing Then alturaPorMalla(meshKey) = h
+            End If
+            tacos = Math.Max(tacos, h)
+        Next
+        If PreviewCtl IsNot Nothing Then
+            PreviewCtl.Intent.FloorOffset = -tacos
+            If PreviewCtl.Model IsNot Nothing Then PreviewCtl.Model.FloorOffset = -tacos
+        End If
         ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
         ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de
         ' RenderHide en shapes existentes que el shader respeta en cada frame.
