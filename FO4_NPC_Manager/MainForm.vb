@@ -9084,7 +9084,7 @@ Public Class MainForm
     ' so it can be reused by the NPC ObjectTemplate / OMOD path. The generic material-resolution
     ' helpers (EnsureShapeMaterialResolved / TryLoadMaterialFromDictionary) now live in the lib's
     ' MaterialResolver module and are called directly from there, e.g.
-    ' `ShapeMaterialOverrides.ApplyMaterialSwap(formID, func, shapes, _pluginManager)`.
+    ' `ShapeMaterialOverrides.ApplyMaterialSwap(formID, shapes, _pluginManager, remap)` (ola 0c pto 17: one pass, its CNAM into `remap`).
 
 
 

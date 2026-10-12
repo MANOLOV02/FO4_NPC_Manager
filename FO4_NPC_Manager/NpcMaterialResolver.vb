@@ -1514,15 +1514,16 @@ Friend NotInheritable Class NpcMaterialResolver
             End If
         End If
 
-        ' Material override pipeline order (matches engine application order):
-        '   1. ARMA-direct base swap (MaterialSwapFormID + ColorRemapIndex per gender on the ARMA
-        '      record itself — semantically SET).
-        '   2. OBTS/OMOD resolution from the parent ARMO — DirectProperties of applied
-        '      combinations, then Properties of every IncludedOmod, in declaration order.
-        '      SET overwrites the current material; ADD muta lo que dejó la pasada anterior.
-        ' (3) Texture/Skin/Hair palette overrides happen later in this method and read whatever
+        ' Material override pipeline order (matches engine application order, ola 0c pto 17: 0x140255EC0):
+        '   1. ARMA-direct base swap (MaterialSwapFormID per gender on the ARMA record itself — semantically SET).
+        '   2. OBTS/OMOD resolution from the parent ARMO — DirectProperties of applied combinations, then Properties
+        '      of every IncludedOmod, in declaration order: swaps applied, ColorRemappingIndex into the instance's index.
+        '   3. ONE color remapping index per shape: instance > the matched substitution's CNAM > the ARMA's ColorRemapIndex.
+        ' (4) Texture/Skin/Hair palette overrides happen later in this method and read whatever
         ' material this pipeline left in place.
-        ' Step 1 (swap SET, then color remap SET) lives in the library: ShapeMaterialOverrides.ApplyModelMaterial.
+        ' Steps 1-3 live in the library: ShapeMaterialOverrides.ApplyModelMaterial (with the candidate's OmodResolution).
+        ' FormType context of the OMOD properties comes from the candidate: humanoid path (CollectArmoCandidates) "ARMO",
+        ' NPC robot path (CollectRobotChunkCandidates) "NPC_".
         If candidate IsNot Nothing Then
             If candidate.MaterialSwapFormID <> 0UI AndAlso Borradores.EsFormIdDeBorrador(candidate.MaterialSwapFormID) Then
                 ' Draft-MSWP handling: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
@@ -1536,17 +1537,11 @@ Friend NotInheritable Class NpcMaterialResolver
                 If d Is Nothing Then
                     Logger.LogLazy(Function() $"[DRAFT-MSWP] preview skips unresolvable material-swap draft 0x{candidate.MaterialSwapFormID:X8} (applies after Save)")
                 End If
-                ShapeMaterialOverrides.ApplyModelMaterial(d, candidate.ColorRemapIndex, shapes)
+                ShapeMaterialOverrides.ApplyModelMaterial(d, candidate.ColorRemapIndex, shapes, candidate.OmodResolution, candidate.OmodResolutionFormType, _ctx.PluginManager)
             Else
                 ShapeMaterialOverrides.ApplyModelMaterial(candidate.MaterialSwapFormID, candidate.ColorRemapIndex,
-                                                          shapes, _ctx.PluginManager)
+                                                          shapes, _ctx.PluginManager, candidate.OmodResolution, candidate.OmodResolutionFormType)
             End If
-        End If
-        If candidate IsNot Nothing AndAlso candidate.OmodResolution IsNot Nothing Then
-            ' FormType context comes from the candidate. Humanoid path (CollectArmoCandidates)
-            ' sets "ARMO"; NPC robot path (CollectRobotChunkCandidates) sets "NPC_". Drives
-            ' which PropertyIndex enum interprets each Property idx.
-            OmodResolutionApplier.ApplyResolutionToShapes(candidate.OmodResolution, candidate.OmodResolutionFormType, shapes, _ctx.PluginManager)
         End If
 
         Dim solidTintColor = ResolveHeadPartSolidTintColor(candidate)
