@@ -37,9 +37,7 @@ Public Class Preflight_Form
     End Sub
 
     Protected Overrides Sub OnGameCommitted(game As Config_App.Game_Enum)
-        ' El juego queda FIJADO aca ⇒ re-aplicar el gate por juego de la ley opt-in del CK (blend de skin NO
-        ' normalizado), y los settings de decodificacion.
-        NPC_Config.ApplyEngineSkinWeightNormalizationGate(game)
+        ' El juego queda FIJADO aca ⇒ re-aplicar los settings de decodificacion.
         NPC_Config.ApplyGlDecodeSetting()
         NPC_Config.ApplyDownsizeFromMip0Setting()
         ' Primer momento en que se puede instalar el plugin de F4SE en el Data correcto. No hace nada en Skyrim.

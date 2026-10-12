@@ -71,11 +71,6 @@ Module Program
                                                 ' del comparador exhaustivo. Default 0,05 = el historico. Bajarlo
                                                 ' expone la banda 0,02-0,05, donde vive el grueso del drift del
                                                 ' neutral en FO4 (con 0,05 solo se ve la COLA).
-        ' --engineskinblend / --noengineskinblend: fuerza ON/OFF la replica de la normalizacion de
-        ' pesos de skin del MOTOR (w3 = 1 - Sum(w0..w2); si w3 <= 0 se descarta SIN renormalizar).
-        ' Nothing = usar el default de la app (hoy True, gateado a FO4). La rama OFF se mantiene a
-        ' proposito como control de regresion. Fuente/VAs: FO4_Base_Library.EngineSkinWeightNormalization
-        ' (CreationKit.exe 0x142B73230 y Fallout4.exe 0x141837390 son la MISMA funcion).
         ' --ddscompare: NO saltear el bloque DDS del comparador ni los skips de imagen del bake. Es la unica
         ' forma de validar CONTENIDO DE PIXELES: la comparacion existe en LOS DOS motores — SSE diffea el
         ' facetint _d y FO4 los tres canales de FaceCustomization (_d/_msn/_s), cada uno como su propia
@@ -117,7 +112,6 @@ Module Program
         Public DumpAcc As String = ""
         ' --shapeorder: compara la SECUENCIA de shapes del NIF del CK contra nuestro orden de emision.
         Public ShapeOrder As Boolean = False
-        Public EngineSkinNorm As Boolean? = Nothing
         Public VanillaOnly As Boolean = False    ' --vanillaonly: con --buildfacegen, SALTEA NPCs cuyo record GANADOR no es vanilla/DLC (overridden por un mod) — para comparar fiel vs CK del BA2
         Public NoCreationClub As Boolean = False   ' --nocc: con --vanillaonly, deja el corpus en base+DLC (sin Creation Club), que es lo unico reproducible entre maquinas
         Public Info As Boolean = False
@@ -278,9 +272,10 @@ Module Program
         End If
 
         ' NPC_Config por el MISMO camino que la GUI y el runner del batch.
-        ' De todas las propiedades de NPC_Config sólo DOS pueden mover los bytes del bake; el resto es
-        ' estado de UI. Son `ReplicateEngineSkinWeightNormalization` (posiciones skinneadas) y
-        ' `ApplyGhoulHeadRearFix` (D/N/S del shape). Si se agrega una tercera, hay que auditarla acá.
+        ' De todas las propiedades de NPC_Config sólo UNA puede mover los bytes del bake; el resto es
+        ' estado de UI: `ApplyGhoulHeadRearFix` (D/N/S del shape). La ley de pesos de skin ya no es una opción
+        ' (D21, 12-oct-2026): en Fallout 4 es siempre la del motor (FO4_Base_Library.Fo4EngineSkin). Si se agrega
+        ' otra propiedad que mueva bytes, hay que auditarla acá.
         ' `--defaults` NO lee la config del usuario: un CLI de MEDICIÓN que hereda estado mutable es una
         ' fuente de irreproducibilidad (dos corridas del mismo commit difieren porque alguien tocó un
         ' checkbox). Los dos roles conviven —bake headless, donde honrar la config es lo correcto, y harness
@@ -300,15 +295,6 @@ Module Program
             npcCfgSource = $"compiled defaults (no npc_config.json at {FO4_NPC_Manager.NPC_Config.ConfigFilePath})"
         End If
 
-        ' Replica de la normalizacion de pesos del MOTOR. Sin flag se respeta el valor de la config (o el
-        ' default si no hay config); con --engineskinblend/--noengineskinblend se fuerza. El gate por juego
-        ' es el MISMO que usa la app (solo FO4), asi que el CLI no puede encenderla en un motor donde no
-        ' esta verificada por RE. VA DESPUES de LoadConfig(): LoadConfig REEMPLAZA Current, asi que al
-        ' reves el override quedaria pisado por la config.
-        If opt.EngineSkinNorm.HasValue Then
-            FO4_NPC_Manager.NPC_Config.Current.ReplicateEngineSkinWeightNormalization = opt.EngineSkinNorm.Value
-        End If
-        FO4_NPC_Manager.NPC_Config.ApplyEngineSkinWeightNormalizationGate(opt.Game)
         FO4_NPC_Manager.NPC_Config.ApplyGlDecodeSetting()
         FO4_NPC_Manager.NPC_Config.ApplyDownsizeFromMip0Setting()
         PosReportThreshold = opt.PosThresh
@@ -342,9 +328,7 @@ Module Program
         ' que lo pedido habia sido `--game sse`. Con los dos, un barrido rotulado con el juego
         ' equivocado se ve en la primera linea del log.
         Console.WriteLine($"[cfg] game={opt.Game}   (--game '{If(opt.GameRaw, "<no pasado; default>")}')")
-        Console.WriteLine($"[cfg]   ReplicateEngineSkinWeightNormalization = {FO4_NPC_Manager.NPC_Config.Current.ReplicateEngineSkinWeightNormalization}" &
-                          $" (override={If(opt.EngineSkinNorm.HasValue, opt.EngineSkinNorm.Value.ToString(), "none")})" &
-                          $" -> EngineSkinWeightNormalization.Enabled={EngineSkinWeightNormalization.Enabled} (gate: solo FO4)")
+        Console.WriteLine($"[cfg]   skin weight law                        = {If(Fo4EngineSkin.UsesEngineLaw(Fo4EngineSkin.Slots), "engine (Fo4EngineSkin: w3 = 1 - sat(w0+w1+w2))", "normalized (not Fallout 4)")}")
         Console.WriteLine($"[cfg]   ApplyGhoulHeadRearFix                  = {FO4_NPC_Manager.NPC_Config.Current.ApplyGhoulHeadRearFix}" &
                           " (afecta D/N/S de la nuca ghoul-female FO4)")
         ' GAME-AWARE: el bake ESCRIBE en Config_App.Current.DataPath, que es ReadOnly y deriva de FO4ExePath
@@ -2789,7 +2773,6 @@ Module Program
             End If
         End If
 
-        Console.WriteLine("  " & EngineSkinWeightNormalization.StatsLine())
         Console.WriteLine("  ---- _faceBones + base bones RULE (BAKETEST3 prediction) ----")
         Console.WriteLine("    prediction: the maxD 0.02-0.05 band appears ONLY in shapes whose rig has base bones.")
         Dim popBase = RigBaseDrift + RigBaseClean, popNoBase = RigEyeDrift + RigEyeClean
@@ -10608,8 +10591,6 @@ persist:
                 Case "--dumpacc" : a.DumpAcc = v : i += 2
                 Case "--shapeorder" : a.ShapeOrder = True : i += 1
                 Case "--defaults" : a.Defaults = True : i += 1
-                Case "--engineskinblend" : a.EngineSkinNorm = True : i += 1
-                Case "--noengineskinblend" : a.EngineSkinNorm = False : i += 1
                 Case "--vanillaonly" : a.VanillaOnly = True : i += 1
                 Case "--nocc" : a.NoCreationClub = True : i += 1
                 Case "--rankby" : a.RankBy = v.ToLowerInvariant() : i += 2

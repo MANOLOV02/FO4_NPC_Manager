@@ -177,7 +177,6 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyMouthVanillaFix = New CheckBox()
         CheckBoxBakeSseRaceMenuOverlays = New CheckBox()
         CheckBoxResolveHphHeadTri = New CheckBox()
-        CheckBoxReplicateEngineSkinNorm = New CheckBox()
         CheckBoxRecalcTangentSpace = New CheckBox()
         CheckBoxForceEngineBakeOnOverrides = New CheckBox()
         CheckBoxForceHalfOnBakedHeads = New CheckBox()
@@ -1662,7 +1661,6 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxApplyMouthVanillaFix)
         TabPageFixes.Controls.Add(CheckBoxBakeSseRaceMenuOverlays)
         TabPageFixes.Controls.Add(CheckBoxResolveHphHeadTri)
-        TabPageFixes.Controls.Add(CheckBoxReplicateEngineSkinNorm)
         TabPageFixes.Controls.Add(CheckBoxRecalcTangentSpace)
         TabPageFixes.Controls.Add(CheckBoxForceEngineBakeOnOverrides)
         TabPageFixes.Controls.Add(CheckBoxForceHalfOnBakedHeads)
@@ -1726,23 +1724,13 @@ Partial Class CharGenOptionsForm
         CheckBoxResolveHphHeadTri.Text = "Resolve missing/mismatched head .tri from High Poly Head (SSE)"
         CheckBoxResolveHphHeadTri.UseVisualStyleBackColor = True
         ' 
-        ' CheckBoxReplicateEngineSkinNorm
-        ' 
-        CheckBoxReplicateEngineSkinNorm.AutoSize = True
-        CheckBoxReplicateEngineSkinNorm.Location = New Point(12, 151)
-        CheckBoxReplicateEngineSkinNorm.Name = "CheckBoxReplicateEngineSkinNorm"
-        CheckBoxReplicateEngineSkinNorm.Size = New Size(392, 19)
-        CheckBoxReplicateEngineSkinNorm.TabIndex = 5
-        CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
-        CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
-        ' 
         ' CheckBoxForceHalfOnBakedHeads
         ' 
-        ' Fila siguiente a 'Force engine to use bake on overrides' (y=226), mismo paso de 25.
+        ' Fila siguiente a 'Force engine to use bake on overrides' (y=201), mismo paso de 25.
         ' Sufijo (FO4) y NO se oculta en Skyrim: misma convencion que el resto del tab, que
         ' muestra las opciones del otro juego DESHABILITADAS con su sufijo.
         CheckBoxForceHalfOnBakedHeads.AutoSize = True
-        CheckBoxForceHalfOnBakedHeads.Location = New Point(12, 251)
+        CheckBoxForceHalfOnBakedHeads.Location = New Point(12, 226)
         CheckBoxForceHalfOnBakedHeads.Name = "CheckBoxForceHalfOnBakedHeads"
         CheckBoxForceHalfOnBakedHeads.Size = New Size(360, 19)
         CheckBoxForceHalfOnBakedHeads.TabIndex = 11
@@ -1756,7 +1744,7 @@ Partial Class CharGenOptionsForm
         ' DESHABILITADAS con su sufijo (SSE). Esconderla romperia esa convencion y dejaria al
         ' usuario de Skyrim sin saber por que existe la opcion en las capturas.
         CheckBoxForceEngineBakeOnOverrides.AutoSize = True
-        CheckBoxForceEngineBakeOnOverrides.Location = New Point(12, 226)
+        CheckBoxForceEngineBakeOnOverrides.Location = New Point(12, 201)
         CheckBoxForceEngineBakeOnOverrides.Name = "CheckBoxForceEngineBakeOnOverrides"
         CheckBoxForceEngineBakeOnOverrides.Size = New Size(360, 19)
         CheckBoxForceEngineBakeOnOverrides.TabIndex = 10
@@ -1766,7 +1754,7 @@ Partial Class CharGenOptionsForm
         ' CheckBoxRecalcTangentSpace
         ' 
         CheckBoxRecalcTangentSpace.AutoSize = True
-        CheckBoxRecalcTangentSpace.Location = New Point(12, 201)
+        CheckBoxRecalcTangentSpace.Location = New Point(12, 176)
         CheckBoxRecalcTangentSpace.Name = "CheckBoxRecalcTangentSpace"
         CheckBoxRecalcTangentSpace.Size = New Size(392, 19)
         CheckBoxRecalcTangentSpace.TabIndex = 9
@@ -1781,7 +1769,7 @@ Partial Class CharGenOptionsForm
         ' CheckBoxMatchSubsurfaceFlag
         ' 
         CheckBoxMatchSubsurfaceFlag.AutoSize = True
-        CheckBoxMatchSubsurfaceFlag.Location = New Point(12, 176)
+        CheckBoxMatchSubsurfaceFlag.Location = New Point(12, 151)
         CheckBoxMatchSubsurfaceFlag.Name = "CheckBoxMatchSubsurfaceFlag"
         CheckBoxMatchSubsurfaceFlag.Size = New Size(260, 19)
         CheckBoxMatchSubsurfaceFlag.TabIndex = 6
@@ -2008,7 +1996,6 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxApplyMouthVanillaFix As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxBakeSseRaceMenuOverlays As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxResolveHphHeadTri As System.Windows.Forms.CheckBox
-    Friend WithEvents CheckBoxReplicateEngineSkinNorm As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxRecalcTangentSpace As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxForceEngineBakeOnOverrides As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxForceHalfOnBakedHeads As System.Windows.Forms.CheckBox

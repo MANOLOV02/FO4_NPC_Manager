@@ -115,11 +115,6 @@ Friend Module BakeAllRunner
             ' ---------------------------------------------------------------------------------
             Config_App.LoadConfig()
             NPC_Config.LoadConfig()
-            ' El gate va PEGADO al LoadConfig: EngineSkinWeightNormalization.Enabled arranca en False y solo lo
-            ' enciende ApplyEngineSkinWeightNormalizationGate. Sin esta linea el bake-all corria SIEMPRE con la
-            ' ley apagada aunque el usuario la tuviera guardada en True (el valor persistia y se mostraba en la
-            ' UI, pero no se APLICABA en este camino). Se re-aplica mas abajo si --executable cambia el juego.
-            NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
             NPC_Config.ApplyGlDecodeSetting()
             NPC_Config.ApplyDownsizeFromMip0Setting()
 
@@ -171,10 +166,8 @@ Friend Module BakeAllRunner
             Dim glCtl As PreviewControl = Nothing
             Dim glHost As NpcRenderHost = Nothing
 
-            ' Re-aplicar el gate con el juego DEFINITIVO: --executable puede haber cambiado Current.Game arriba,
-            ' y la ley esta verificada por RE solo en FO4. Sin esta segunda llamada, un override a SkyrimSE.exe
-            ' dejaria encendida una ley que en Skyrim no esta verificada.
-            NPC_Config.ApplyEngineSkinWeightNormalizationGate(game)
+            ' La ley de pesos del motor no tiene compuerta propia: la decide el juego ACTIVO (Fo4EngineSkin.UsesEngineLaw), asi que
+            ' un --executable que cambie Current.Game arriba ya la deja bien.
             NPC_Config.ApplyGlDecodeSetting()
             NPC_Config.ApplyDownsizeFromMip0Setting()
 

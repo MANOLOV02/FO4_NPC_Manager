@@ -69,12 +69,6 @@ Public Class CharGenOptionsForm
         ' solo en Skyrim; el valor persistido se round-trip-ea intacto cuando el juego activo es FO4. Lo consume
         ' NpcMorphResolver.LoadTriForShape (render/preview) vía Config_App.Setting_SseResolveHighPolyHeadTri.
         CheckBoxResolveHphHeadTri.Checked = c.Setting_SseResolveHighPolyHeadTri
-        ' FO4-only, DEFAULT ON: replicar la normalizacion de pesos de skin del MOTOR (w3 = 1−Σ, se descarta si ≤0).
-        ' Replica un DEFECTO del CK, no una ley del motor: sirve para igualar al CK byte a byte, no para
-        ' que la malla salga "mejor". Default False ⇒ camino normalizado de siempre, bit-idéntico.
-        ' Fuente/VAs del RE en FO4_Base_Library.EngineSkinWeightNormalization. Enabled solo en FO4 porque el mecanismo NO
-        ' está verificado en los binarios de Skyrim (el valor persistido se round-trip-ea intacto en SSE).
-        CheckBoxReplicateEngineSkinNorm.Checked = NPC_Config.Current.ReplicateEngineSkinWeightNormalization
         ' UNA SOLA PROPIEDAD, DOS PUERTAS. Esta casilla y la de la pestana Rendering del dialogo
         ' compartido (FO4_Base_Library.LightRigForm) editan el MISMO Config_App.Setting_RecalculateNormals,
         ' igual que en Wardrobe Manager, donde el mismo valor se toca desde la barra principal y desde
@@ -94,7 +88,6 @@ Public Class CharGenOptionsForm
         ' deshabilita la casilla nomas. Ver NPC_Config.ForceHalfPrecisionOnBakedHeads.
         CheckBoxForceHalfOnBakedHeads.Checked = NPC_Config.Current.ForceHalfPrecisionOnBakedHeads
         CheckBoxForceHalfOnBakedHeads.Enabled = isFo4
-        CheckBoxReplicateEngineSkinNorm.Enabled = isFo4
         CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
@@ -330,8 +323,6 @@ Public Class CharGenOptionsForm
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
             CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
             CheckBoxApplyMouthVanillaFix.Checked = cfgDef.Setting_ApplyMouthVanillaFix
-            ' Default True (FO4): replicar la normalización de pesos del motor. Ver EngineSkinWeightNormalization.
-            CheckBoxReplicateEngineSkinNorm.Checked = npcDef.ReplicateEngineSkinWeightNormalization
             ' Default False: no se escribe nada en el juego sin que lo pidan. Revertir NO borra el DLL acá
             ' —este botón sólo toca la UI—: el borrado lo hace el OK, con su confirmación, como cualquier
             ' otro camino que apague el toggle.
@@ -682,10 +673,6 @@ Public Class CharGenOptionsForm
         ' del dialogo compartido. Gobierna los DOS momentos en que hace falta: al extraer la geometria y
         ' despues de aplicar los morphs. Al volver del OK, MainForm re-renderiza el NPC actual.
         c.Setting_RecalculateNormals = CheckBoxRecalcTangentSpace.Checked
-        ' Ley del MOTOR → NPC_Config + re-aplicar el gate por juego INMEDIATAMENTE, porque el render
-        ' del NPC actual se rehace al volver del OK y tiene que usar ya el modo elegido (RENDER == BAKE).
-        NPC_Config.Current.ReplicateEngineSkinWeightNormalization = CheckBoxReplicateEngineSkinNorm.Checked
-        NPC_Config.ApplyEngineSkinWeightNormalizationGate(c.Game)
         ' El toggle que ESCRIBE FUERA DE LA APP. Se confirma el CAMBIO (no el estado), y si el usuario dice
         ' que no se deja el valor como estaba y la casilla vuelve sola: decir "No" tiene que significar que
         ' no pasó nada, ni en el disco ni en el config.

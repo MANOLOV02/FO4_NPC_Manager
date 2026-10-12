@@ -182,9 +182,6 @@ Module Program
 
         Config_App.LoadConfig()
         NPC_Config.LoadConfig()
-        ' Ley opt-in del CK (blend de skin NO normalizado) — gate por juego. Se re-aplica al finalizar
-        ' el selector de juego del Preflight y al aceptar CharGen Options. Ver NPC_Config.ApplyEngineSkinWeightNormalizationGate.
-        NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
         NPC_Config.ApplyGlDecodeSetting()
         NPC_Config.ApplyDownsizeFromMip0Setting()
         ' Hace valer contra el disco el toggle "Force engine to use bake on overrides": instala el plugin
