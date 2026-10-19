@@ -432,23 +432,29 @@ Public Module LooksmenuLoader
         Public ScaleUV As Single()            ' JSON "scaleUV" [x,y]; Nothing = default (1,1) (:608-611)
     End Class
 
-    ''' <summary>EL ORDEN DE DIBUJO de los overlays de LooksMenu: de ABAJO hacia ARRIBA, o sea prioridad
-    ''' DESCENDENTE — la prioridad MÁS BAJA se dibuja última y queda ARRIBA. Es el análogo FO4 de
-    ''' <c>SseOverlayCompositor.OrderForDraw</c> y, como aquélla, es LA ÚNICA implementación: la consume el
-    ''' resolver del render y la fija el gate.
-    ''' <para><b>DE DÓNDE SALE.</b> La CITA (f4ee OverlayInterface.cpp:124-152) da el orden de ENGANCHE:
-    ''' <c>ForEachOverlayBySlot</c> recorre el <c>PriorityMap</c> —un <c>std::multimap&lt;SInt32,…&gt;</c>, o sea
-    ''' prioridad ASCENDENTE (OverlayInterface.h:123)— y por cada entrada clona la shape de piel y hace
-    ''' <c>AttachChild</c>. La MEDICIÓN es un reporte in-game (2026-08-28) que dice que se ve encima el PRIMER
-    ''' nodo enganchado ⇒ el motor dibuja los hermanos coplanares al revés del enganche. Enganchar NO es dibujar:
-    ''' ese paso lo decide el acumulador del motor, que f4ee no toca (no hay un solo <c>reverse</c>/<c>rbegin</c>
-    ''' en el plugin), y NO está leído del binario. Si algún día se lee y dice otra cosa, cambia ESTA función.</para>
-    ''' <para><c>OrderByDescending</c> es estable ⇒ entradas con la misma prioridad conservan el orden del preset,
-    ''' que es lo que hace el multimap dentro de un bucket. Tolera <c>Nothing</c> en la lista (el resolver filtra
-    ''' recién adentro del loop); un nulo ordena al fondo.</para></summary>
-    Public Function OrderOverlaysForDraw(entries As IEnumerable(Of OverlayEntry)) As List(Of OverlayEntry)
+    ''' <summary>EL ORDEN DE ENGANCHE de los overlays de LooksMenu (item 2b r19b-07): el que da
+    ''' <c>ForEachOverlayBySlot</c> al recorrer el <c>PriorityMap</c> —un <c>std::multimap&lt;SInt32,…&gt;</c>, o sea
+    ''' prioridad ASCENDENTE y, a igual prioridad, orden de inserción (f4ee OverlayInterface.h:123,
+    ''' OverlayInterface.cpp:425-451)— clonando la shape de piel y haciendo <c>AttachChild(clon, true)</c> por
+    ''' entrada (:152). Es LA ÚNICA implementación: la consume el resolver del render (IRenderableShape.OverlayLayers
+    ''' en FO4 = orden de enganche) y la fija el gate.
+    ''' <para><b>EL DIBUJO NO SALE DE ACÁ.</b> Lo decide el acumulador del motor, leído del binario (Tools/re-docs/
+    ''' RE_FO4_TECHNIQUE_BUCKET_ORDER_2026-10-19, Addendum r19b-2): la capa entra en la lista de su material con la ley de
+    ''' cualquier forma. Una capa de EFECTO F4EE (las 685 plantillas instaladas son BGEM con mezcla; el byte decal se ignora
+    ''' porque F4EE aplica el material con ApplyMaterialData(…, true), 0x14216B12A) es grupo 1 ⇒ la LISTA ALFA ordenada
+    ''' (0x1421D4B19 -&gt; 0x1422214B0, append): las capas de una base comparten skinInstance ⇒ la misma clave del sort
+    ''' (0x14221DA70), que es estable ⇒ quedan en este orden, y con LESS_EQUAL arriba queda la ÚLTIMA enganchada = la de
+    ''' MAYOR prioridad. Una capa lighting con paquete (UV de capa identidad, sin controlador) va en el bucket 4 en orden de
+    ''' registro (igual); sin paquete, en la cadena al revés (arriba la primera). Lo dibuja el lib
+    ''' (PreviewModel.BuildFo4TechniqueSequences y la lista alfa). Lo contrario de Skyrim SE, donde skee fuerza decal y el clon va
+    ''' a la lista 4 que antepone (arriba el primero; Addendum r19b-3, SseOverlayCompositor.DrawOrderKey): el reporte in-game del
+    ''' 2026-08-28 coincide con esa ley SSE. Decisión del usuario 19-oct-2026: en FO4 manda la ley FO4.</para>
+    ''' <para><c>OrderBy</c> es estable ⇒ entradas con la misma prioridad conservan el orden del preset (el de
+    ''' inserción del multimap). Tolera <c>Nothing</c> en la lista (el resolver filtra recién adentro del loop); un
+    ''' nulo ordena al final.</para></summary>
+    Public Function OrderOverlaysForAttach(entries As IEnumerable(Of OverlayEntry)) As List(Of OverlayEntry)
         If entries Is Nothing Then Return New List(Of OverlayEntry)()
-        Return entries.OrderByDescending(Function(e) If(e IsNot Nothing, e.Priority, Integer.MaxValue)).ToList()
+        Return entries.OrderBy(Function(e) If(e IsNot Nothing, e.Priority, Integer.MaxValue)).ToList()
     End Function
 
     ''' <summary>Parse a LooksMenu preset JSON file. Returns Nothing if the file is unreadable

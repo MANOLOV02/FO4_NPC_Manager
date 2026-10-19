@@ -282,13 +282,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Return
         End If
 
-        ' ORDEN DE DIBUJO = abajo→arriba. La ley vive en UN solo lugar (LooksmenuLoader.OrderOverlaysForDraw,
-        ' el análogo FO4 de SseOverlayCompositor.OrderForDraw) y ahí está de dónde sale: prioridad DESCENDENTE,
-        ' o sea la MÁS BAJA arriba. El lib dibuja layers en orden de lista, así que el último agregado gana
-        ' (OverlayMaterialLayer.vb:53-57).
-        ' ⛔ ANTES ERA ASCENDENTE ACÁ MISMO, a mano, Y ESO ERA EL DEFECTO: se tomaba el orden de ENGANCHE de f4ee
-        ' por orden de dibujo. Ver la nota de OrderOverlaysForDraw.
-        Dim orderedOverlays = LooksmenuLoader.OrderOverlaysForDraw(overlays)
+        ' ORDEN DE ENGANCHE de f4ee (item 2b r19b-07): la ley vive en UN solo lugar (LooksmenuLoader.OrderOverlaysForAttach):
+        ' prioridad ascendente, empates por inserción. En FO4 OverlayLayers es ese orden y el DIBUJO lo decide el lib con la ley
+        ' de listas del motor (PreviewModel.BuildFo4TechniqueSequences); ver la nota de OrderOverlaysForAttach.
+        Dim orderedOverlays = LooksmenuLoader.OrderOverlaysForAttach(overlays)
 
         For Each shape In renderData.Shapes
             If shape Is Nothing Then Continue For
