@@ -62,7 +62,13 @@ Public NotInheritable Class FaceTextureRepointer
 
         Dim bsls = TryCast(nif.GetShader(shape), BSLightingShaderProperty)
         If bsls Is Nothing Then Return outcome
-        If bsls.ShaderType_SK_FO4 <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Return outcome
+        ' La clase que el CK ve es la del material colgado en el property: con archivo, la del factory (CK ApplyMaterialData
+        ' 0x142BCC550 -> 0x142BC6F00); el campo crudo solo eligio la clase que LoadBinary construyo y se descarto (CK 0x142BD934E ->
+        ' 0x142CBA850, el valor no se guarda en otro lado). Tools\re-docs\RE_FO4_SHADER_TYPE_CK_SAVE_2026-10-19 §1.2, §2.1.
+        ' Sin material resuelto no hay otra fuente que el bloque.
+        Dim esCara = If(resolvedMaterial IsNot Nothing, resolvedMaterial.IsEngineFace(),
+                        bsls.ShaderType_SK_FO4 = NiflySharp.Enums.BSLightingShaderType.FaceTint)
+        If Not esCara Then Return outcome
 
         Dim hex = plan.FaceGenLocalFormID.ToString("X8")
         Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso

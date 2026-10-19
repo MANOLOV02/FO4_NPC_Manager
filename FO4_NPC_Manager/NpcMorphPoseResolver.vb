@@ -400,7 +400,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     Private Shared Function ShapeIsFace(shape As IRenderableShape) As Boolean
         Dim rel = shape.ShapeMaterial
         If rel Is Nothing OrElse rel.material Is Nothing Then Return False
-        Return rel.material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint
+        Return rel.material.IsEngineFace()
     End Function
 
     ''' <summary>Is this overlay/skin-override texture present in the load order (loose + BSA)? Uses the same

@@ -6879,7 +6879,7 @@ Public Class MainForm
                 If shape Is Nothing Then Continue For
                 Dim mb = mesh.MeshData.Material.MaterialBase
                 If mb Is Nothing Then Continue For
-                If mb.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+                If Not mb.IsEngineFace() Then Continue For
                 If renderData.ShapeChargenTriPaths.TryGetValue(shape, faceTriPath) Then Exit For
             Next
             If Not String.IsNullOrEmpty(faceTriPath) Then

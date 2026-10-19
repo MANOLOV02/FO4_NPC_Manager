@@ -1619,7 +1619,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' unaffected: their HDPT.TNAM legitimately applies to the head part regardless of shader.
                 Dim isSkinCand As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin)
                 ' ⛔ `IsEngineSkinTint()`, NO `NifShaderType = SkinTint`: con archivo de material el motor
-                ' pisa el bit 21 desde el .bgsm y descarta el enum inline (FUN_142163560 + FUN_142163BE0).
+                ' pisa el bit 21 desde el .bgsm y descarta el enum inline (aplicador 0x14216AF90 + factory 0x14216B610, Fallout4.exe 1.11.240).
                 ' Ver el doc de esa función. Sin archivo de material devuelve el enum inline, o sea que
                 ' SSE —que no tiene .bgsm— no se mueve un bit.
                 Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.IsEngineSkinTint())

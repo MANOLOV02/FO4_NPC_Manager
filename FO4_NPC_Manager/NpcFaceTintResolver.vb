@@ -120,7 +120,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             If fm Is Nothing OrElse fm.MeshData Is Nothing OrElse fm.MeshData.Material Is Nothing Then Continue For
             Dim fmb = fm.MeshData.Material.MaterialBase
             If fmb Is Nothing Then Continue For
-            If fmb.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            If Not fmb.IsEngineFace() Then Continue For
             If Not (TypeOf fmb.Underlying_Material Is BGSM) Then Continue For
             faceOn = fmb.SubsurfaceLighting
             faceRolloff = fmb.SubsurfaceLightingRolloff
@@ -144,7 +144,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             Dim mb = mesh.MeshData.Material.MaterialBase
             If mb Is Nothing Then Continue For
             If Not mb.SkinTint Then Continue For
-            If mb.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            If mb.IsEngineFace() Then Continue For
             If Not (TypeOf mb.Underlying_Material Is BGSM) Then Continue For
 
             Dim preOn = mb.SubsurfaceLighting
@@ -318,7 +318,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' The actual face shape uses the FaceTint shader (BSLightingShaderType). Other "head"
             ' shapes (BaseFemaleHeadRear with body texture, mouth, lashes, eyes) use SkinTint or
             ' EnvMap. Filtering by shader type avoids touching the headrear / mouth diffuses.
-            If materialBase.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then
+            If Not materialBase.IsEngineFace() Then
                 Continue For
             End If
 
@@ -1289,7 +1289,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Dim mb = m?.MeshData?.Material?.MaterialBase
                 If mb Is Nothing Then Continue For
                 withMat += 1
-                If mb.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then faceN += 1
+                If mb.IsEngineFace() Then faceN += 1
                 If mb.SkinTint Then
                     skinTintN += 1
                     If mb.SkinTintFromOverride Then ovrN += 1
@@ -1313,7 +1313,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             If materialBase Is Nothing Then Continue For
             ' Body = SkinTint material que NO es la cara (la cara va por su propio path slot-12 del compositor).
             If Not materialBase.SkinTint Then Continue For
-            If materialBase.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            If materialBase.IsEngineFace() Then Continue For
             ' A RaceMenu skin override with a key-7 tint already set this shape's SkinTintColor; skee replays the
             ' override over the base skin tone, so the override wins — don't overwrite it with the QNAM tone.
             If materialBase.SkinTintFromOverride Then Continue For
@@ -1689,7 +1689,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             If mat.SkinTint AndAlso Not mat.SkinTintFromOverride Then
                 ' If/Then explicito y NO un ternario: `If(cond, nullableA, nullableB)` es justo la construccion
                 ' de VB que devuelve un Nullable con HasValue=True cuando no corresponde (00-reglas-vb-trampas).
-                If mat.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then
+                If mat.IsEngineFace() Then
                     If skinTone.HasValue Then mat.SkinTintColor = skinTone.Value
                 Else
                     If bodySkinTone.HasValue Then mat.SkinTintColor = bodySkinTone.Value

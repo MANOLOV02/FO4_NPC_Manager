@@ -2455,7 +2455,7 @@ Public Module FaceGenBuilder
                 ' TX05 cuando el shader es FaceTint. Para todo lo demás, va EnvmapMaskTexture
                 ' (NIF inline TX05 capturado en _EnvmapMaskPath; ver Deserialize sidecar JSON).
                 Dim slot5Path As String
-                If mat.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint AndAlso
+                If mat.TipoQueSeEscribe(nif, bsls, transcription:=True) = NiflySharp.Enums.BSLightingShaderType.FaceTint AndAlso
                    Not String.IsNullOrEmpty(mat.WrinklesTexture) Then
                     slot5Path = mat.WrinklesTexture
                 Else
@@ -2466,7 +2466,7 @@ Public Module FaceGenBuilder
                 ' value is NPC-level, not a BGSM field, so the app provides it (same split as the skin
                 ' tone COLOR which the resolver puts in HairTintColor and the library writes).
                 mat.SkinTintAlpha = skinTintAlpha
-                mat.Save_To_Shader(nif, shape, bsls, mat.NifShaderType, slot5Path, transcription:=True)
+                mat.Save_To_Shader(nif, shape, bsls, slot5Path, transcription:=True)
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif sea standalone
                 ' (todos los datos del material viven embedded en el shader, sin depender
@@ -2497,36 +2497,10 @@ Public Module FaceGenBuilder
                 If Not nif.Header.Version.IsSSE Then
                     NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
                 End If
-                ' El ShaderType horneado es FUNCION DETERMINISTICA de los flags del material: el CK NO preserva
-                ' el tipo de la fuente, lo DERIVA. Probado al 100 % sobre el corpus FaceGen vanilla de FO4 (1490
-                ' NIF / 14136 lighting shapes, 8 combinaciones de flags, todas puras). Precedencia (load-bearing
-                ' Glow > Face; el resto nunca coexiste): Glowmap -> GlowShader · Facegen -> FaceTint · SkinTint ->
-                ' SkinTint · Hair -> HairTint · EnvironmentMapping -> EnvironmentMap · si no, Default.
-                ' Testigo de que es por FLAGS y no por el inline: eyelashes.bgsm trae inline EnvironmentMap con su
-                ' flag apagado y el CK las hornea Default (1381/1381).
-                ' Se deriva de los BOOLS del material (fieles a los flags tras Create_From_Shader). Es BAKE-ONLY:
-                ' la Derive de la libreria queda conservadora porque en meshes generales bGlowmap y
-                ' bEnvironmentMapping conviven con inline Default.
-                ' ⛔ GAME-GATED: en SSE el CK PRESERVA el shader type y los flags del source, asi que derivar alla
-                ' colapsaba los ojos a Default y rompia el shader.
-                If Not nif.Header.Version.IsSSE Then
-                    Dim bakedType As Enums.BSLightingShaderType
-                    If mat.Glowmap Then
-                        bakedType = Enums.BSLightingShaderType.GlowShader
-                    ElseIf mat.Facegen Then
-                        bakedType = Enums.BSLightingShaderType.FaceTint
-                    ElseIf mat.SkinTint Then
-                        bakedType = Enums.BSLightingShaderType.SkinTint
-                    ElseIf mat.Hair Then
-                        bakedType = Enums.BSLightingShaderType.HairTint
-                    ElseIf mat.EnvironmentMapping Then
-                        bakedType = Enums.BSLightingShaderType.EnvironmentMap
-                    Else
-                        bakedType = Enums.BSLightingShaderType.Default
-                    End If
-                    bsls.ShaderType = bakedType
-                    NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
-                End If
+                ' El ShaderType horneado y su bit 17 los escribio Save_To_Shader (transcription:=True) con el duenio de la libreria
+                ' (FO4UnifiedMaterial_Class.TipoDelBloque / OjoDelBloque): en FO4 con .bgsm, la cascada del factory 0x14216B610 con el
+                ' bit 17 en 0 (FaceGen del CK: 0 de 14.136 formas con el bit; tipo = f(flags) al 100 %, eyelashes.bgsm 1381/1381
+                ' Default); en SSE, el tipo del bloque (el CK de SSE lo preserva). Antes habia aca una segunda cascada con otro orden.
 
             Else
                 Dim bes = TryCast(shad, BSEffectShaderProperty)
