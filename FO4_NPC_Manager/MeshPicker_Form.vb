@@ -150,7 +150,7 @@ Public Class MeshPicker_Form
             Dim nif As New Nifcontent_Class_Manolo()
             nif.Load_Manolo(bytes)
 
-            Dim shapes = NifRenderableShape.FromNif(nif)
+            Dim shapes = NifRenderableShape.FromNif(nif, key)
             _preview.RenderShapes(shapes.Cast(Of IRenderableShape)(), Nothing)
         Catch ex As Exception
             Logger.LogLazy(Function() $"[MESH-PICKER] preview render failed for '{key}': {ex.GetType().Name}: {ex.Message}")

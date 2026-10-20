@@ -52,7 +52,7 @@ Friend Module PreviewDeHeadPart
                 Continue For
             End Try
 
-            Dim shapes = NifRenderableShape.FromNif(nif)
+            Dim shapes = NifRenderableShape.FromNif(nif, dictKey)
             If shapes Is Nothing OrElse Not shapes.Any() Then Continue For
 
             ' El TNAM de ESTE nodo sobre SUS formas. Los HDPT de ojos vanilla comparten

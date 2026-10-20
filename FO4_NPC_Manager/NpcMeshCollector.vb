@@ -2421,7 +2421,15 @@ Friend NotInheritable Class NpcMeshCollector
                 result.CandidateNif(candidate) = nif
             End If
 
-            Dim shapes = NifRenderableShape.FromNif(nif)
+            Dim shapes = NifRenderableShape.FromNif(nif, dictKey)
+            ' Ola 7b: the path the game puts this candidate's NIF through (GameAttachLaw): an OMOD chunk by connect point (0x1404350D0 ->
+            ' 0x14186EF40), a head part through FaceGen, the ARMA model of a worn ARMO (Skin / Outfit) through the BipedAnim (0x140359BA0 ->
+            ' 0x14035DC20 -> 0x14035E960).
+            Dim attach = If(candidate.ChunkOmodFormID <> 0UI OrElse candidate.Kind = MainForm.MeshCandidateKind.Attachment, GameAttachKind.ConnectPoint,
+                            If(candidate.Kind = MainForm.MeshCandidateKind.HeadPart, GameAttachKind.HeadPart, GameAttachKind.BipedWorn))
+            For Each sh In shapes
+                sh.GameAttach = attach
+            Next
             Dim logEnabled = Logger.Enabled
 
             ' De-dup de skin en SSE por pertenencia BOD2 (regla record-faithful, NO réplica del motor): una
