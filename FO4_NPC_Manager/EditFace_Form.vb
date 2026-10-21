@@ -5208,7 +5208,7 @@ Public Class EditFace_Form
         ' Force handle creation (and therefore PreviewControl.OnLoad — shader/program/default
         ' textures init) synchronously BEFORE we await the first render. Without this, the
         ' Await Task.Run inside RenderInHostAsync resumes before HandleCreated has fired, the
-        ' pipeline calls RenderShapes against a control whose SharedActiveShader is still
+        ' pipeline calls RenderShapes against a control whose programs (CurrentShader) are still
         ' Nothing, and we get GL_INVALID_VALUE on the program handle plus VAO bind errors.
         EditPreviewControl.CreateControl()
 

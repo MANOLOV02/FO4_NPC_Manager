@@ -1244,7 +1244,8 @@ Friend NotInheritable Class NpcFaceTintResolver
 
     ''' <summary>Records the per-actor skin tone on every body SkinTint shape (hands/neck/body, NOT the
     ''' face) as material SkinTintColor + SkinTintAlpha. The SkinTint shader soft-lights the untoned body
-    ''' diffuse with it at render (uEffectiveType==4, engine-faithful) — nothing is baked into the texture,
+    ''' diffuse with it at render (the G-buffer record's TintColor, Fo4GBufferConstants.TintColor: engine-faithful) — nothing is
+    ''' baked into the texture,
     ''' so the body needs NO pristine snapshot. Guarded by the race's SkinTone tint catalog (humans have it;
     ''' synth/ghoul/robot don't → skip; their skin shapes aren't human skin-tone).</summary>
     Private Sub TryApplyBodySkinSoftLight(state As MainForm.NPCVisualState, Optional host As NpcRenderHost = Nothing)
