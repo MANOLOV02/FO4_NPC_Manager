@@ -11,7 +11,7 @@ Imports FO4_Base_Library
 ''' <see cref="DictionaryPicker_Control"/> lives in Panel1; the PreviewControl is created in
 ''' <c>Shown</c> (so its OpenGL context spins up only when the form is visible), docked Fill into a
 ''' DEDICATED panel inside Panel2, and torn down explicitly on FormClosing
-''' (BeginTeardown → Clean → Dispose). The render path is the lib's simple primitive:
+''' (PreviewControl.Release: BeginTeardown → Dispose, which cleans). The render path is the lib's simple primitive:
 ''' <c>Nifcontent_Class_Manolo.Load_Manolo(bytes)</c> → <c>NifRenderableShape.FromNif(nif)</c> →
 ''' <c>PreviewControl.RenderShapes(shapes, Nothing)</c> — no skeleton/pose/material setup is needed
 ''' for a bare standalone mesh (RenderShapes nulls the resolvers internally).
@@ -82,20 +82,8 @@ Public Class MeshPicker_Form
 
     Private Sub MeshPicker_Form_FormClosing(sender As Object, e As System.Windows.Forms.FormClosingEventArgs) Handles Me.FormClosing
         ' Quiesce render loop → control Clean/Dispose (same ordering as the editor hosts).
-        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then
-            Try
-                _preview.BeginTeardown()
-            Catch
-            End Try
-            Try
-                _preview.Clean()
-            Catch
-            End Try
-            Try
-                _preview.Dispose()
-            Catch
-            End Try
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b).
+        PreviewControl.Release(_preview)
         _preview = Nothing
     End Sub
 

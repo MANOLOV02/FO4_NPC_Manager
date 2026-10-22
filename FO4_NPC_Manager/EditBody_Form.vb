@@ -3740,31 +3740,13 @@ Public Class EditBody_Form
         ' Quiesce the render loop FIRST — see EditFace_Form for the full rationale.
         ' Without this the safety-repaint heartbeat can drain a paint mid-host-Dispose
         ' against GL handles the host has already deleted.
-        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
-            Try
-                EditPreviewControl.BeginTeardown()
-            Catch
-            End Try
-        End If
-
-        ' Tear down host BEFORE the preview control — same ordering rationale as EditFace_Form.
-        If _editorHost IsNot Nothing Then
-            Try
-                _editorHost.Dispose()
-            Catch
-            End Try
-            _editorHost = Nothing
-        End If
-        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
-            Try
-                EditPreviewControl.Clean()
-            Catch
-            End Try
-            Try
-                EditPreviewControl.Dispose()
-            Catch
-            End Try
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b): quiesced, then the host (its GL caches)
+        ' with the context alive, then the control.
+        PreviewControl.Release(EditPreviewControl, Sub()
+                                       Dim h = _editorHost
+                                       _editorHost = Nothing
+                                       h?.Dispose()
+                                   End Sub)
         EditPreviewControl = Nothing
     End Sub
 

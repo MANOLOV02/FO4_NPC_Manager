@@ -5280,39 +5280,13 @@ Public Class EditFace_Form
         ' this, an OnPaint between _editorHost.Dispose() and EditPreviewControl.Clean()
         ' draws against shaders/textures the host has already deleted from the shared
         ' GL context, surfacing as "Program handle does not refer to..." errors.
-        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
-            Try
-                EditPreviewControl.BeginTeardown()
-            Catch
-            End Try
-        End If
-
-        ' Tear down the editor's host BEFORE the PreviewControl so the host's Dispose can drop
-        ' refs to last render artifacts while the GL context (still alive) can still reclaim
-        ' GPU caches via the TintGpuCache.Clear path.
-        If _editorHost IsNot Nothing Then
-            Try
-                _editorHost.Dispose()
-            Catch
-                ' Defensive — host disposal walks dictionaries / nullable refs; swallow so the
-                ' form still closes if anything throws.
-            End Try
-            _editorHost = Nothing
-        End If
-        ' Guard against double-Close / FormClosing firing twice: the WM pattern checks
-        ' IsDisposed before touching the GL handle so we mirror it exactly.
-        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
-            Try
-                EditPreviewControl.Clean()
-            Catch
-                ' Defensive — Clean() walks GL state; swallow so the form still closes if a
-                ' GL teardown corner-case throws.
-            End Try
-            Try
-                EditPreviewControl.Dispose()
-            Catch
-            End Try
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b): quiesced, then the host (its GL caches)
+        ' with the context alive, then the control.
+        PreviewControl.Release(EditPreviewControl, Sub()
+                                       Dim h = _editorHost
+                                       _editorHost = Nothing
+                                       h?.Dispose()
+                                   End Sub)
         EditPreviewControl = Nothing
 
         ' Release the cached hair-palette LUT bitmap. EnsureHairPaletteLoaded builds it once

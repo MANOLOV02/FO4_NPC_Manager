@@ -641,8 +641,9 @@ Friend Module BakeAllRunner
                     If selfTest IsNot Nothing Then
                         log($"FATAL: the GL context was created but DOES NOT DRAW: {selfTest}")
                         log("       With a GL that does not draw, CPU-vs-GPU parity would be a made-up number.")
-                        Try : glHost.TintGpuCache?.Clear() : Catch : End Try
-                        Try : glCtl.Dispose() : Catch : End Try
+                        ' The one release of the preview (PreviewControl.Release; ola 7g round 2f, user decision r7g-09): quiesced, the
+                        ' host's GL tint cache with the context alive, then the control.
+                        PreviewControl.Release(glCtl, Sub() glHost.TintGpuCache?.Clear())
                         Try : glForm.Dispose() : Catch : End Try
                         Return ExitFatal
                     End If
@@ -664,7 +665,8 @@ Friend Module BakeAllRunner
                     log($"FATAL: FGBAKE_GPU_PARITY=1 but the GL context could not be created: {ex.GetType().Name}: {ex.Message}")
                     log("       STACK: " & ex.ToString())
                     log("       Without a GL context this run would measure only the CPU and report parity that was never tested.")
-                    Try : glCtl?.Dispose() : Catch : End Try
+                    ' The one release of the preview (PreviewControl.Release; ola 7g round 2f, user decision r7g-09).
+                    PreviewControl.Release(glCtl)
                     Try : glForm?.Dispose() : Catch : End Try
                     Return ExitFatal
                 End Try
@@ -1142,9 +1144,9 @@ Friend Module BakeAllRunner
                 ' Ademas: este exe con --windowless a veces NO SALE al terminar. Un Form vivo empeora eso, asi
                 ' que se destruye SIEMPRE, incluso si el loop murio por excepcion.
                 If glHost IsNot Nothing OrElse glCtl IsNot Nothing OrElse glForm IsNot Nothing Then
-                    Try : glHost?.TintGpuCache?.Clear() : Catch : End Try
-                    Try : glCtl?.RenderTimer?.Stop() : Catch : End Try
-                    Try : glCtl?.Dispose() : Catch : End Try
+                    ' The one release of the preview (PreviewControl.Release; ola 7g round 2f, user decision r7g-09): BeginTeardown stops
+                    ' its render timer, the host's GL tint cache goes with the context alive, then the control.
+                    PreviewControl.Release(glCtl, Sub() glHost?.TintGpuCache?.Clear())
                     Try : glForm?.Dispose() : Catch : End Try
                     glHost = Nothing : glCtl = Nothing : glForm = Nothing
                     log("GPU PARITY: GL context destroyed.")

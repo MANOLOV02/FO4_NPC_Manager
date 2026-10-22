@@ -9622,31 +9622,13 @@ Public Class MainForm
         ' Quiesce the render loop FIRST so the safety-repaint heartbeat cannot drain
         ' a paint while the host disposes its GL caches (TintGpuCache, PristineDiffusePixels).
         ' Same rationale as EditFace_Form / EditBody_Form.
-        If _previewControl IsNot Nothing AndAlso Not _previewControl.IsDisposed Then
-            Try
-                _previewControl.BeginTeardown()
-            Catch
-            End Try
-        End If
-
-        If _renderHost IsNot Nothing Then
-            Try
-                _renderHost.Dispose()
-            Catch
-            End Try
-            _renderHost = Nothing
-        End If
-
-        If _previewControl IsNot Nothing AndAlso Not _previewControl.IsDisposed Then
-            Try
-                _previewControl.Clean()
-            Catch
-            End Try
-            Try
-                _previewControl.Dispose()
-            Catch
-            End Try
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b): quiesced, then the host (its GL caches)
+        ' with the context alive, then the control.
+        PreviewControl.Release(_previewControl, Sub()
+                                       Dim h = _renderHost
+                                       _renderHost = Nothing
+                                       h?.Dispose()
+                                   End Sub)
 
         If _dirtyNodeFont IsNot Nothing Then
             _dirtyNodeFont.Dispose()

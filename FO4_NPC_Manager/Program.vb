@@ -107,6 +107,10 @@ Module Program
         ' donde tuvo que salir: es de FO4_Base_Library y hacía que el JIT resolviera la librería antes de la
         ' primera línea de Main. Acá adentro es lo primero que se hace, así que la garantía es la misma.
         RecuperacionDeLotes.ConfigurarCarpeta("NpcManager")
+        ' The app's channel for unexpected errors (CrashReport), for what the library survives and reports: a preview control
+        ' released with a step that failed (PreviewControl.Release; ola 7g round 2f, user decision r7g-04 - release and warn).
+        ' The headless modes (--bake-all...) take it to stderr (EnsureConsole -> CrashReport.UseConsole).
+        PreviewControl.UnexpectedErrorChannel = AddressOf CrashReport.ReportError
         ' NPC Manager es un VISOR: no dibuja helper shapes (colisiones, marcadores, emisores) salvo que
         ' el usuario prenda la casilla. UNA sola linea acá porque los CUATRO Config_App.LoadConfig del
         ' archivo y el --bake-all cuelgan todos de RealMain. Ver Config_App.DefaultShowHelperShapes:

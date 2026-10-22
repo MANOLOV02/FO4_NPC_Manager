@@ -2153,29 +2153,13 @@ Public Class HeadPartEditor_Form
         End Try
 
         ' Los CUATRO pasos, en este orden. Ver el ⛔⛔ de arriba.
-        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then
-            Try
-                _preview.BeginTeardown()
-            Catch
-            End Try
-        End If
-        If _host IsNot Nothing Then
-            Try
-                _host.Dispose()
-            Catch
-            End Try
-            _host = Nothing
-        End If
-        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then
-            Try
-                _preview.Clean()
-            Catch
-            End Try
-            Try
-                _preview.Dispose()
-            Catch
-            End Try
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b): quiesced, then the host (its GL caches)
+        ' with the context alive, then the control.
+        PreviewControl.Release(_preview, Sub()
+                                       Dim h = _host
+                                       _host = Nothing
+                                       h?.Dispose()
+                                   End Sub)
     End Sub
 
     '==============================================================================================

@@ -2425,29 +2425,13 @@ Public Class ArmaEditor_Form
         End If
 
         ' Quiesce render loop → host Dispose → control Clean/Dispose (same ordering as OutfitPicker/EditBody).
-        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then
-            Try
-                _preview.BeginTeardown()
-            Catch
-            End Try
-        End If
-        If _host IsNot Nothing Then
-            Try
-                _host.Dispose()
-            Catch
-            End Try
-            _host = Nothing
-        End If
-        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then
-            Try
-                _preview.Clean()
-            Catch
-            End Try
-            Try
-                _preview.Dispose()
-            Catch
-            End Try
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b): quiesced, then the host (its GL caches)
+        ' with the context alive, then the control.
+        PreviewControl.Release(_preview, Sub()
+                                       Dim h = _host
+                                       _host = Nothing
+                                       h?.Dispose()
+                                   End Sub)
     End Sub
 
 End Class

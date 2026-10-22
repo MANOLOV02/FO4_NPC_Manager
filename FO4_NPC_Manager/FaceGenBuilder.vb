@@ -4135,7 +4135,9 @@ Public Module FaceGenBuilder
                         outputDxgiFormat:=entry.Dxgi,
                         generateMipMaps:=True, generatedMipLevels:=mips2b)
                     ' ⛔ Misma ley que arriba (destino OCULTO / VFS): `EscrituraEnElLugar`, no `WriteAllBytes`.
-                    BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(Path.Combine(outDir, $"{{formIdLow:X8}}{{suffix2b}}"), Sub(fs) fs.Write(dds2b, 0, dds2b.Length))
+                    ' The real FormID in the name (ola 7g round 2g, user decision): the escaped braces wrote the literal name
+                    ' "{formIdLow:X8}{suffix2b}", whose ':' made every NPC's _2b one NTFS alternate data stream of a file "{formIdLow".
+                    BSA_BA2_Library_DLL.EscrituraEnElLugar.Escribir(Path.Combine(outDir, $"{formIdLow:X8}{suffix2b}"), Sub(fs) fs.Write(dds2b, 0, dds2b.Length))
                     Logger.LogLazy(Function() $"[FACEBAKE-GPU] wrote '{formIdLow:X8}{suffix2b}' slot={slotL2}")
                     If WriteTGASandboxOutput Then
                         FaceTintCompositor.WriteBgraToTga(Path.Combine(outDir, $"{formIdLow:X8}{Path.ChangeExtension(suffix2b, "tga")}"), gpuBgra, ddW, ddH)

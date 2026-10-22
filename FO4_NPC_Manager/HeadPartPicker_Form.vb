@@ -434,9 +434,7 @@ Public Class HeadPartPicker_Form
     End Sub
 
     Private Sub HeadPartPicker_Form_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
-        If _preview IsNot Nothing AndAlso Not _preview.IsDisposed Then
-            _preview.Clean()
-            _preview.Dispose()
-        End If
+        ' The one release of the preview (PreviewControl.Release, ola 7g round 2b).
+        PreviewControl.Release(_preview)
     End Sub
 End Class
