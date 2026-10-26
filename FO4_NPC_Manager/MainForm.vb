@@ -8308,15 +8308,33 @@ Public Class MainForm
     ''' MainForm so EditFace_Form's <c>_mainForm.RefreshFaceTintLivePreview</c> call site stays
     ''' unchanged.</summary>
     Friend Function RefreshFaceTintLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
-        Return _faceTintResolver.RefreshFaceTintLivePreview(host)
+        If Not _faceTintResolver.RefreshFaceTintLivePreview(host) Then Return False
+        RefreshOverlayLayersAfterSkinTone(If(host, _renderHost))
+        Return True
     End Function
+
+    ''' <summary>Ola 7h round 4c: a live edit rewrote the NPC's effective QNAM (state.TextureLightingColor) - F4EE's npc-&gt;skinColor, the
+    ''' tint an overlay layer whose material is SkinTint takes when the overlay has none (OverlayInterface.cpp:207-213), and which an NPC
+    ''' keeps (the engine's actor-tone walk runs at the load only for the player, D:\WinTmp\rc\re25\re.md 3 and addenda). The layers are
+    ''' rebuilt by their one producer (RefreshOverlayLayersLive -&gt; NpcMorphPoseResolver.ResolveOverlayLayers -&gt;
+    ''' OverlayMaterialLayer.FromF4ee); nothing to do on a host without layers.</summary>
+    Private Sub RefreshOverlayLayersAfterSkinTone(host As NpcRenderHost)
+        If host Is Nothing Then Exit Sub
+        Dim conCapas As Boolean
+        SyncLock host.OverlayCapasPorEntrada
+            conCapas = host.OverlayCapasPorEntrada.Count > 0
+        End SyncLock
+        If conCapas Then RefreshOverlayLayersLive(host)
+    End Sub
 
     ''' <summary>Facade del editor de cuerpo: repinta SOLO el tono de piel del cuerpo con el ajuste manual
     ''' (re-resuelve el QNAM efectivo y reescribe los uniforms del soft-light). No recompone la cara ni toca
     ''' texturas -- el ajuste no entra por ahi-, asi que sirve para arrastrar un slider y para las iteraciones
     ''' del auto-calc.</summary>
     Friend Function RefreshBodySkinToneLive(offset As SkinToneQnamOffset, Optional host As NpcRenderHost = Nothing) As Boolean
-        Return _faceTintResolver.RefreshBodySkinToneLive(offset, host)
+        If Not _faceTintResolver.RefreshBodySkinToneLive(offset, host) Then Return False
+        RefreshOverlayLayersAfterSkinTone(If(host, _renderHost))
+        Return True
     End Function
 
     ''' <summary>Tono de piel BASE del host (sin el ajuste manual). Nothing = este NPC no tiene tono derivable

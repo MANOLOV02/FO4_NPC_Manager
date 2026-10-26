@@ -286,6 +286,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' prioridad ascendente, empates por inserción. En FO4 OverlayLayers es ese orden y el DIBUJO lo decide el lib con la ley
         ' de listas del motor (PreviewModel.BuildFo4TechniqueSequences); ver la nota de OrderOverlaysForAttach.
         Dim orderedOverlays = LooksmenuLoader.OrderOverlaysForAttach(overlays)
+        ' The player's actor tone over its SkinTint layers (re27 3: PlayerCharacter's base is NPC_ 0x7, 0x140C3EFF0 -> LookupFormByID(7)).
+        Dim tonoDelJugador = If(state IsNot Nothing AndAlso state.RootNpcFormID = PlayerBaseFormID, ResolvePlayerEngineSkinTone(state), CType(Nothing, Color?))
 
         For Each shape In renderData.Shapes
             If shape Is Nothing Then Continue For
@@ -339,7 +341,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
                     If Not tpl.SlotMaterials.TryGetValue(CUInt(slotIdx), slotMatPath) Then Continue For
                     If String.IsNullOrEmpty(slotMatPath) Then Continue For
 
-                    Dim layer = BuildOverlayLayer(shape, slotMatPath, entry)
+                    Dim layer = BuildOverlayLayer(shape, slotMatPath, entry, NpcSkinColorForF4ee(state), tonoDelJugador)
                     If layer Is Nothing Then Continue For
                     layers.Add(layer)
                     Dim lst As List(Of OverlayMaterialLayer) = Nothing
@@ -440,56 +442,55 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return result
     End Function
 
-    ''' <summary>Carga el material de slot de un template de overlay, le pre-hornea el transform por instancia
-    ''' de LooksMenu (offsetUV/scaleUV) y el tinte, y lo envuelve como <see cref="OverlayMaterialLayer"/>.
-    ''' <para>La carga espeja la cadena canonica: normalizar el path, sacar y volver a poner el prefijo
-    ''' Materials\ en el Deserialize, y elegir BGEM para .bgem (efecto/tatuaje) o BGSM si no. Se le pasa el
-    ''' NifShape + NifContent de la shape de piel para que Deserialize siembre los campos de alpha y resuelva el
-    ''' ShaderType igual que cuando se cargo el material base.</para>
-    ''' <para>El pre-horneado replica LoadMaterialData: <c>oU += offsetUV.x; oV += offsetUV.y; sU *= scaleUV.x;
-    ''' sV *= scaleUV.y</c>. El pase de overlay del render sube tanto uvOffset como uvScale, asi que el scaleUV
-    ''' se honra y no solo el offset. El tinte se setea como color base del BGEM, que es no-op en un BGSM - lo
-    ''' mismo que hace el motor guardando esa escritura tras la rama de material de efecto.</para>
-    ''' <para>Nothing si falla la carga: un material de overlay roto no puede romper el render.</para></summary>
+    ''' <summary>The layer F4EE builds for one slot of an overlay template over the skin shape: OverlayMaterialLayer.FromF4ee, the
+    ''' one owner of F4EE's LoadMaterialData (the material loaded on the skin's NIF with ApplyMaterialData's 3rd argument 1, or, when
+    ''' its file does not load, the game's own result plus the frame's warning; then offsetUV / scaleUV / tint as F4EE writes them),
+    ''' with the NPC's skin colour (F4EE's npc-&gt;skinColor, NpcSkinColorForF4ee) and, for the player, the actor's skin tone the engine
+    ''' writes over it (ResolvePlayerEngineSkinTone). A material file the engine reads without failing is read as the engine reads it
+    ''' (MaterialFileReader, re27 1): nothing is swallowed here.</summary>
     Private Shared Function BuildOverlayLayer(skinShape As IRenderableShape, slotMaterialPath As String,
-                                              entry As LooksmenuLoader.OverlayEntry) As OverlayMaterialLayer
-        Try
-            Dim fullpath = FO4UnifiedMaterial_Class.CorrectMaterialPath(slotMaterialPath).StripPrefix(MaterialsPrefix)
-            If String.IsNullOrEmpty(fullpath) Then Return Nothing
-            Dim matType As Type = If(fullpath.EndsWith(".bgem", StringComparison.OrdinalIgnoreCase), GetType(BGEM), GetType(BGSM))
+                                              entry As LooksmenuLoader.OverlayEntry, npcSkinColor As Color, actorSkinTone As Color?) As OverlayMaterialLayer
+        Return OverlayMaterialLayer.FromF4ee(skinShape, slotMaterialPath, entry.Tint, entry.OffsetUV, entry.ScaleUV, npcSkinColor, actorSkinTone)
+    End Function
 
-            Dim mat As New FO4UnifiedMaterial_Class()
-            ' F4EE applies the overlay material with ApplyMaterialData(shape, True) (OverlayInterface.cpp:171-172).
-            mat.Deserialize(MaterialsPrefix & fullpath, matType, skinShape.NifShape, skinShape.NifContent, engineApplyArg3:=True)
+    ''' <summary>Ola 7h round 4e (re27 2): TESNPC::skinColor (+0x2EA..2ED) as F4EE reads it (OverlayInterface.cpp:210-213): the winning
+    ''' record's QNAM (TESNPC::Load 0x14064F230, its QNAM branch 0x1406501D9, each float x 255 truncated - the app's
+    ''' state.TextureLightingColor), else (0, 0, 0, 0): the ctor 0x14064E700 calls InitializeData 0x14064ED10 (0x14064ED31), and the
+    ''' plugin loader 0x1402EA560 resets the form before each override (ClearData 0x1402EA930, InitializeData 0x1402EA941), so a winning
+    ''' override without QNAM leaves 0 even when its master has one.</summary>
+    ''' <summary>The PlayerCharacter's base form (re27 3): 0x140C3EFF0 calls LookupFormByID(7) (0x140C3F022..033), casts it to TESNPC
+    ''' (0x140C3F051) and sets it as the player's base (vfunc +0x550 -&gt; 0x140C72800 -&gt; SetBaseObject 0x140513A90); the winning
+    ''' override of Fallout4.esm's NPC_ 0x00000007 'Player'.</summary>
+    Friend Const PlayerBaseFormID As UInteger = &H7UI
 
-            ' offsetUV: add to the material's UV offset (engine :190-191). Nothing ⇒ default (0,0) = no-op.
-            If entry.OffsetUV IsNot Nothing AndAlso entry.OffsetUV.Length >= 2 Then
-                mat.UOffset += entry.OffsetUV(0)
-                mat.VOffset += entry.OffsetUV(1)
-            End If
+    ''' <summary>Ola 7h round 4e (re27 2, re28 3): the skin tone 0x140655910 computes for the PLAYER (its gate 0x1406DF3A0 lets
+    ''' formID 7 through), from the player's list [player+0xD00] (the readers pick it for the player's base, 0x1406DF833 ..
+    ''' 0x1406F1774, 0x14065598D..992). In the state the app models LooksMenu copied into it the NPC_ 0x7's own list [npc+0x300]
+    ''' (0x1403FE7C0 at 0x140BBAFB9 / 0x140BBF3FD / 0x140BBF4FE / 0x140BC1451): the winning record's TETI / TEND with its preset
+    ''' (FaceTintInputBuilder.CapasAutoradasDelRecord over _overlay). The first entry whose template is of type 0xC (TintSlot.SkinTone;
+    ''' TintesEfectivos.CapasDelSlot over the race's effective tint groups, LmCustomTintLoader.Fusionar): rgb = its colour, alpha =
+    ''' trunc(value x 2.55) (0x1424D7290). Without one, the race default the working copy adds (re28 3): (255, 255, 255, 0); a race
+    ''' without a skin tone option: (0x80, 0x80, 0x80, 0xFF) (0x140655A5D). A saved game's list (vt[18] 0x140D65BD0) is outside the
+    ''' state the app models.</summary>
+    Private Function ResolvePlayerEngineSkinTone(state As MainForm.NPCVisualState) As Color
+        Dim sinTinte = Color.FromArgb(&HFF, &H80, &H80, &H80)
+        Dim npcData = _overlay(state)
+        If npcData Is Nothing OrElse npcData.Record Is Nothing Then Return sinTinte
+        Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return sinTinte
+        Dim grupos = LmCustomTintLoader.Fusionar(_ctx.ParseRaceCanonCached(raceRec), state.IsFemale, _ctx.PluginManager)
+        For Each tl In grupos.CapasDelSlot(FaceTintInputBuilder.CapasAutoradasDelRecord(npcData.Record), TintSlot.SkinTone)
+            Return Color.FromArgb(CInt(Math.Truncate(CSng(tl.Value) * 2.55F)) And &HFF, tl.Color.R, tl.Color.G, tl.Color.B)
+        Next
+        ' re28 3: 0x140655910 works on a copy of the list (0x1403FE7C0) to which 0x1403FE970 adds, for every race option missing from it,
+        ' the default entry 0x1403FF6D0 (0x1403FEB3A..B7A; [race+0x698+sex*8], 0x1406559B1..9E1): for a skin tone (type 0xC) a palette
+        ' entry with colour 0xFFFFFFFF and value 0 (0x1403FF7A2..7C9) - skinColor (255, 255, 255, 0) by 0x140655A25..A57.
+        If grupos.BuscarOpcionesPorSlot(TintSlot.SkinTone).Count > 0 Then Return Color.FromArgb(0, 255, 255, 255)
+        Return sinTinte
+    End Function
 
-            ' scaleUV: multiply the material's UV scale (engine :193-194). Nothing ⇒ default (1,1) = no-op.
-            ' Honored by the renderer's overlay pass (Render.vb:3201 uploads uvScale from UScale/VScale).
-            If entry.ScaleUV IsNot Nothing AndAlso entry.ScaleUV.Length >= 2 Then
-                mat.UScale *= entry.ScaleUV(0)
-                mat.VScale *= entry.ScaleUV(1)
-            End If
-
-            ' tint: BGEM effect base color (engine :227, behind kHasTintColor). Nothing ⇒ no tint. BaseColor
-            ' is <BGEMOnly>, so on a BGSM the setter is a no-op — matching the engine guarding tint behind
-            ' the effect-material branch. rgba are 0..1 (preset native); clamp before the 0..255 byte cast.
-            If entry.Tint IsNot Nothing AndAlso entry.Tint.Length >= 4 Then
-                mat.BaseColor = Color.FromArgb(ClampUnitToByte(entry.Tint(3)), ClampUnitToByte(entry.Tint(0)),
-                                               ClampUnitToByte(entry.Tint(1)), ClampUnitToByte(entry.Tint(2)))
-            End If
-
-            Return New OverlayMaterialLayer With {
-                .Material = New Nifcontent_Class_Manolo.RelatedMaterial_Class With {.material = mat, .path = fullpath}
-            }
-        Catch ex As Exception
-            Logger.LogLazy(Function() $"[OVERLAY] failed to load overlay material '{slotMaterialPath}': {ex.Message}")
-            Return Nothing
-        End Try
+    Private Shared Function NpcSkinColorForF4ee(state As MainForm.NPCVisualState) As Color
+        Return If(state.HasTextureLighting, state.TextureLightingColor, Color.FromArgb(0, 0, 0, 0))
     End Function
 
     ''' <summary>Analogo SSE de <see cref="ResolveOverlayLayers"/>: toma los overlays de RaceMenu (por PATH) del
@@ -662,12 +663,6 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Logger.LogLazy(Function() $"[OVERLAY-SSE] failed to build overlay '{ov.NodeName}' ({ov.DiffusePath}): {ex.Message}")
             Return Nothing
         End Try
-    End Function
-
-    ''' <summary>Map a 0..1 color component to a 0..255 byte, clamping out-of-range inputs.</summary>
-    Private Shared Function ClampUnitToByte(v As Single) As Integer
-        Dim n = CInt(Math.Round(v * 255.0F))
-        Return Math.Min(255, Math.Max(0, n))
     End Function
 
     ''' <summary>Build the hair zap resolver from the per-shape ShapeZapHairParts map, gated on the

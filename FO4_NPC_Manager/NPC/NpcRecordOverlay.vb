@@ -1154,10 +1154,7 @@ finDelSkin:
         Dim tintGroups = LmCustomTintLoader.Fusionar(race, isFemale, pluginManager)
         Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(npc.Record, tintGroups, pluginManager)
 
-        For Each tl In merged
-            Dim opt = tintGroups.BuscarOpcion(tl.Index)
-            If opt Is Nothing Then Continue For
-            If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For
+        For Each tl In tintGroups.CapasDelSlot(merged, TintSlot.SkinTone)
             If tl.Discriminator <> 1 Then Continue For   ' Palette only — color source for skin tone
 
             If tl.Color <> Color.Empty Then
