@@ -108,7 +108,8 @@ Public NotInheritable Class OverlayTemplateCache
     ''' <summary><c>LoadOverlayTemplates</c> (OverlayInterface.cpp:1055-1136) over the bytes <c>BSReadAll</c> reads
     ''' (Utilities.cpp:78-86: every byte, nothing cut) and <c>Json::Reader::parse</c> (json_reader.cpp:104-141): a BOM is
     ''' not skipped (the file is rejected), comments are allowed, a trailing comma is an error, trailing text after the
-    ''' first value is ignored (<see cref="JsonPrimerValor"/>), bytes are taken raw (<see cref="Jsoncpp.BytesComoLosVeJsoncpp"/>).
+    ''' first value is ignored - f4ee's reader as Jsoncpp.Parsear transcribes it, the document it navigates built from its tree
+    ''' (<see cref="Jsoncpp.DocumentoDe"/>) -, bytes are taken raw (<see cref="Jsoncpp.BytesComoLosVeJsoncpp"/>).
     ''' Then <c>for(auto &amp; item : root)</c>, each item in its own try/catch (:1077-1131): an item that throws keeps what
     ''' it already applied.</summary>
     Public Sub LoadTemplates(bytes As Byte(), source As String)
@@ -124,7 +125,10 @@ Public NotInheritable Class OverlayTemplateCache
             If transcodificado Then
                 Logger.LogLazy(Function() $"[LM-OVERLAYS] '{source}': no es UTF-8 válido; se lee con la encoding General ({PluginEncodingSettings.General.WebName}) (json_reader.cpp:390-400 no valida nada).")
             End If
-            doc = JsonPrimerValor.Documento(bytesJsoncpp)
+            Dim errorDelLector As String = Nothing
+            Dim raiz = Jsoncpp.LeerF4ee(bytesJsoncpp, errorDelLector)
+            If raiz Is Nothing Then Throw New InvalidDataException(If(errorDelLector, "jsoncpp rejected it"))
+            doc = Jsoncpp.DocumentoDe(raiz)
         Catch ex As Exception
             Logger.LogLazy(Function() $"[LM-OVERLAYS] '{source}': JSON invalido para LooksMenu ({ex.Message}). Se saltea (OverlayInterface.cpp:1070-1073).")
             Return

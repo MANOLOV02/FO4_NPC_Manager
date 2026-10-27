@@ -44,7 +44,10 @@ Public Module SclpFile
     ''' Lenient about the document shape: accepts an array at the top level, OR an object whose
     ''' single array-valued property is the bone list (some exporters wrap the array). Unknown
     ''' keys on each entry are ignored. Entries are returned verbatim (NOT filtered) — the caller
-    ''' decides what to do with identity (1,1,1) rows.</summary>
+    ''' decides what to do with identity (1,1,1) rows.
+    ''' <para>Tolerant ON PURPOSE - a divergence from the engine decided by the user on 27-oct-2026 (ola JSON, revisor oj-01): the game reads
+    ''' *.sclp with its data-file loader (0x14045F8D0 through 0x1403665F0, Jsoncpp.LeerArchivoDelMotor) and takes only
+    ''' root[i]["Name"].asCString and root[i]["Scale"]["z"/"y"/"x"].asFloat (an absent axis = 0); this is the editor's importer.</para></summary>
     ''' <exception cref="IOException">File missing/unreadable.</exception>
     ''' <exception cref="JsonException">Malformed JSON, or no bone array could be located.</exception>
     Public Function Load(path As String) As List(Of SclpBoneAbsolute)

@@ -512,15 +512,12 @@ Public Module LooksmenuLoader
 
         Dim doc As JsonDocument
         Try
-            ' Comentarios permitidos: `Json::Features` por defecto trae allowComments_ = true (json_reader.cpp:28-29).
-            ' Coma final PROHIBIDA: el reader la toma como error de sintaxis en objetos (:413-425) y arrays
-            ' (:468-474) ⇒ el motor no aplica nada. Con AllowTrailingCommas el app cargaba lo que el juego rechaza.
-            ' UN VALOR Y PARA — lo que sobra al final NO rechaza el archivo. `Reader::parse` (:104-141) llama
-            ' `readValue()`, saltea comentarios y devuelve: NUNCA comprueba `current_ == end_`, y `strictRoot_`
-            ' es false en `Features()` y en `Features::all()` (:27-32) ⇒ el motor CARGA `{…}basura`.
-            ' `JsonDocument.Parse` exigía fin de archivo y el preset se saltaba entero mientras el juego lo
-            ' aplicaba. La perilla (`AllowMultipleValues`) sólo existe en `Utf8JsonReader`, que VB no compila
-            ' (BC30668) — por eso vive en FO4_Base_Library_CSharpHelpers.
+            ' EL LECTOR ES EL DE f4ee: `Json::Reader reader` (CharGenInterface.cpp:271, Features::all()) transcripto en
+            ' Jsoncpp.Parsear con su dialecto (json_reader.cpp): comentarios permitidos (:28-29), coma final error (:413-425,
+            ' :468-474), UN VALOR Y PARA — lo que sobra al final no se mira (:104-141, strictRoot_ false :27-32) —, los
+            ' números como los lee su readNumber/decodeNumber (:303-309, :497-595: "1-2" es 1.0, "01" es 1), los bytes de
+            ' un string crudos (:311-321), sin límite de anidamiento. El JsonDocument que navega este loader lo arma ese
+            ' árbol (Jsoncpp.DocumentoDe): no decide nada, y cada valor se convierte con la misma ley (Jsoncpp.ValorDe).
             ' El corte en 0xFF ya se hizo ARRIBA, en la lectura, que es donde lo hace el motor (getline). Acá
             ' abajo los bytes ya no pueden traer ninguno. Lo otro del modo texto: CRLF se colapsa a LF, y para JSON
             ' los dos son whitespace, así que no cambia nada.
@@ -535,7 +532,10 @@ Public Module LooksmenuLoader
             If transcodificado Then
                 Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': no es UTF-8 válido; se lee con la encoding General ({PluginEncodingSettings.General.WebName}), que es contra la que se comparan los nombres de plugin (json_reader.cpp:390-400 no valida nada).")
             End If
-            doc = JsonPrimerValor.Documento(bytesJsoncpp)
+            Dim errorDelLector As String = Nothing
+            Dim raiz = Jsoncpp.LeerF4ee(bytesJsoncpp, errorDelLector)
+            If raiz Is Nothing Then Throw New InvalidDataException(If(errorDelLector, "jsoncpp rejected it"))
+            doc = Jsoncpp.DocumentoDe(raiz)
         Catch ex As Exception
             Logger.LogLazy(Function() $"[LM-PRESET] '{filePath}': JSON invalido para LooksMenu ({ex.Message}). Se saltea.")
             Return Nothing

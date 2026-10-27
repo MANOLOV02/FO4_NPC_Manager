@@ -1,5 +1,4 @@
 ﻿Imports System.IO
-Imports System.Text.Json
 Imports FO4_Base_Library
 Imports FO4_Base_Library.Canon.CanonInterpretacion
 
@@ -52,7 +51,8 @@ Public Module LmCustomTintLoader
 
     ' name → engine slot value (CharGenTint.cpp:23-48 g_slotMap). Kept explicit so LM's singular "Scar"
     ' maps to our TintSlot.Scars=21; unknown → FaceDetail=22 (CharGenTint.cpp:72).
-    Private ReadOnly _slotMap As New Dictionary(Of String, UShort)(StringComparer.OrdinalIgnoreCase) From {
+    ' std::map<std::string, UInt32>::find (CharGenTint.cpp:66 / :93 / :120): exact, case-sensitive.
+    Private ReadOnly _slotMap As New Dictionary(Of String, UShort)(StringComparer.Ordinal) From {
         {"ForeheadMask", 0US}, {"EyesMask", 1US}, {"NoseMask", 2US}, {"EarsMask", 3US},
         {"CheeksMask", 4US}, {"MouthMask", 5US}, {"NeckMask", 6US}, {"LipColor", 7US},
         {"CheekColor", 8US}, {"Eyeliner", 9US}, {"EyeSocketUpper", 10US}, {"EyeSocketLower", 11US},
@@ -62,11 +62,11 @@ Public Module LmCustomTintLoader
 
     ' name → engine blend-op value (CharGenTint.cpp:51-58 g_blendMap + BGSCharacterTint enum). Unknown →
     ' Default(0)=Normal. These are the SAME values the compositor's blend map consumes.
-    Private ReadOnly _blendMap As New Dictionary(Of String, UInteger)(StringComparer.OrdinalIgnoreCase) From {
+    Private ReadOnly _blendMap As New Dictionary(Of String, UInteger)(StringComparer.Ordinal) From {
         {"Default", 0UI}, {"Multiply", 1UI}, {"Overlay", 2UI}, {"SoftLight", 3UI}, {"HardLight", 4UI}}
 
     ' name → engine flag bit (CharGenTint.cpp:16-21 g_flagMap + BGSCharacterTint flags).
-    Private ReadOnly _flagMap As New Dictionary(Of String, UShort)(StringComparer.OrdinalIgnoreCase) From {
+    Private ReadOnly _flagMap As New Dictionary(Of String, UShort)(StringComparer.Ordinal) From {
         {"OnOff", 1US}, {"ChargenDetail", 2US}, {"TakesSkinTone", 4US}}
 
     Private ReadOnly _lock As New Object()
@@ -215,16 +215,18 @@ Public Module LmCustomTintLoader
                 If Not String.IsNullOrEmpty(dataPath) Then
                     Dim baseDir = Path.Combine(dataPath, "F4SE", "Plugins", "F4EE", "Tints")
                     If Directory.Exists(baseDir) Then
+                        ' GetRaceByName (Utilities.cpp:169-185): a race by EditorID, case-insensitive (F4EEFixedString).
+                        Dim razas = LmHairColorLutLoader.BuildRaceEditorIdIndex(pluginManager)
                         ' Pass 1 — categories.json (all plugins, load order). categoryId → name per race.
                         Dim catNames As New Dictionary(Of String, Dictionary(Of UInteger, String))(StringComparer.OrdinalIgnoreCase)
                         For Each plugin In pluginManager.Plugins
                             Dim cp = Path.Combine(baseDir, plugin.FileName, "categories.json")
-                            If File.Exists(cp) Then LoadCategoriesFile(cp, catNames)
+                            If File.Exists(cp) Then LoadCategoriesFile(cp, razas, catNames)
                         Next
                         ' Pass 2 — templates.json (all plugins, load order).
                         For Each plugin In pluginManager.Plugins
                             Dim tp = Path.Combine(baseDir, plugin.FileName, "templates.json")
-                            If File.Exists(tp) Then LoadTemplatesFile(tp, plugin.FileName, pluginManager, catNames, idx)
+                            If File.Exists(tp) Then LoadTemplatesFile(tp, plugin.FileName, pluginManager, razas, catNames, idx)
                         Next
                     End If
                 End If
@@ -237,92 +239,128 @@ Public Module LmCustomTintLoader
         End SyncLock
     End Sub
 
-    Private ReadOnly _jsonOpts As New JsonDocumentOptions With {
-        .CommentHandling = JsonCommentHandling.Skip,
-        .AllowTrailingCommas = True}
-
-    ''' <summary>Parse a categories.json: array of { Race, Entries:[{ Type:"Category", Gender, Id, Name }] }.
-    ''' Records categoryId → name per race so templates that reference a category by numeric id can be
-    ''' bucketed into the right (named) group. Mirrors CharGenInterface::LoadTintCategories.</summary>
-    Private Sub LoadCategoriesFile(path As String, catNames As Dictionary(Of String, Dictionary(Of UInteger, String)))
+    ''' <summary>A Tints file's bytes (BSReadAll) through f4ee's Json::Reader (Jsoncpp.LeerF4ee). Nothing when it does not parse: f4ee
+    ''' returns without loading anything of the file (CharGenInterface.cpp:701-703 / :758-760) - a trailing comma, a BOM.</summary>
+    Private Function LeerArchivoDeTintes(path As String) As Jsoncpp.JsonValor
         Try
-            Using doc = JsonDocument.Parse(File.ReadAllText(path), _jsonOpts)
-                If doc.RootElement.ValueKind <> JsonValueKind.Array Then Return
-                For Each item In doc.RootElement.EnumerateArray()
-                    Dim raceName = GetStr(item, "Race")
-                    If String.IsNullOrEmpty(raceName) Then Continue For
-                    Dim entries As JsonElement
-                    If Not item.TryGetProperty("Entries", entries) OrElse entries.ValueKind <> JsonValueKind.Array Then Continue For
-                    Dim map As Dictionary(Of UInteger, String) = Nothing
-                    If Not catNames.TryGetValue(raceName, map) Then
-                        map = New Dictionary(Of UInteger, String)()
-                        catNames(raceName) = map
-                    End If
-                    For Each entry In entries.EnumerateArray()
-                        If Not String.Equals(GetStr(entry, "Type"), "Category", StringComparison.OrdinalIgnoreCase) Then Continue For
-                        Dim id = GetUInt(entry, "Id")
-                        Dim nm = GetStr(entry, "Name")
-                        If Not String.IsNullOrEmpty(nm) Then map(id) = nm
-                    Next
-                Next
-            End Using
+            Dim transcodificado As Boolean, motivo As String = Nothing
+            Dim raiz = Jsoncpp.LeerF4ee(Jsoncpp.BytesComoLosVeJsoncpp(File.ReadAllBytes(path), transcodificado), motivo)
+            If raiz Is Nothing Then Logger.LogLazy(Function() $"[LM-TINT] '{path}': Json::Reader rejects it ({motivo}); f4ee loads nothing of the file.")
+            Return raiz
         Catch ex As Exception
-            Logger.LogLazy(Function() $"[LM-TINT] categories.json parse failed '{path}': {ex.Message}")
+            Dim msg = ex.Message
+            Logger.LogLazy(Function() $"[LM-TINT] '{path}' could not be read: {msg}")
+            Return Nothing
         End Try
+    End Function
+
+    ''' <summary>_strnicmp(text, prefix, Len(prefix)) = 0 (CharGenInterface.cpp:731 / :792 / :801 / :810): the first Len(prefix)
+    ''' characters equal, ignoring ASCII case ("Masks" is a Mask).</summary>
+    Private Function EmpiezaCon(texto As String, prefijo As String) As Boolean
+        Return texto.Length >= prefijo.Length AndAlso String.Compare(texto, 0, prefijo, 0, prefijo.Length, StringComparison.OrdinalIgnoreCase) = 0
+    End Function
+
+    ''' <summary>The head of every entry of both files (CharGenInterface.cpp:712-726 / :775-789): entry["Type"].asString(),
+    ''' entry["Gender"].asUInt() into a UInt8, entry["Id"].asUInt(), and a gender outside 0..2 throws. False = a throw: f4ee's ONE try
+    ''' around the whole traversal (:704/:738, :767/:825) ends the file there - what was applied before stays.</summary>
+    Private Function CabeceraDeEntrada(entry As Jsoncpp.JsonValor, ByRef tipo As String, ByRef genero As UInteger, ByRef id As UInteger) As Boolean
+        Dim ok As Boolean
+        tipo = Jsoncpp.AsString(Jsoncpp.Miembro(entry, "Type", ok), ok) : If Not ok Then Return False
+        genero = Jsoncpp.AsUInt(Jsoncpp.Miembro(entry, "Gender", ok), ok) And &HFFUI : If Not ok Then Return False
+        id = Jsoncpp.AsUInt(Jsoncpp.Miembro(entry, "Id", ok), ok) : If Not ok Then Return False
+        Return genero <= 2UI                                   ' throw std::exception("Invalid gender specified")
+    End Function
+
+    ''' <summary>A categories.json as CharGenInterface::LoadTintCategories (:686-743) reads it: for each item (the root's elements or
+    ''' values) its "Race" (asString; a race the load order does not have is skipped without reading its entries), then each of its
+    ''' "Entries"; a "Category" entry registers its Id under its "Name" (CharGenTintObject::Parse, CharGenTint.cpp:270-285: Name
+    ''' asString when a member - a throw there drops only that category; Apply needs a name for an id the race lacks, :245-251).
+    ''' Records categoryId → name per race so templates that reference a category by numeric id can be bucketed into the right
+    ''' (named) group.</summary>
+    Private Sub LoadCategoriesFile(path As String, razas As Dictionary(Of String, Boolean()), catNames As Dictionary(Of String, Dictionary(Of UInteger, String)))
+        Dim raiz = LeerArchivoDeTintes(path)
+        If raiz Is Nothing Then Return
+        Dim ok As Boolean
+        For Each item In Jsoncpp.Valores(raiz)
+            Dim raceName = Jsoncpp.AsString(Jsoncpp.Miembro(item, "Race", ok), ok)
+            If Not ok Then Return
+            If Not razas.ContainsKey(raceName) Then Continue For
+            Dim entries = Jsoncpp.Miembro(item, "Entries", ok)
+            If Not ok Then Return
+            Dim map As Dictionary(Of UInteger, String) = Nothing
+            If Not catNames.TryGetValue(raceName, map) Then
+                map = New Dictionary(Of UInteger, String)()
+                catNames(raceName) = map
+            End If
+            For Each entry In Jsoncpp.Valores(entries)
+                Dim tipo As String = Nothing, genero, id As UInteger
+                If Not CabeceraDeEntrada(entry, tipo, genero, id) Then Return
+                If Not EmpiezaCon(tipo, "Category") Then Continue For
+                Dim nombre = ""
+                If Jsoncpp.EsMiembro(entry, "Name", ok) Then
+                    nombre = Jsoncpp.AsString(Jsoncpp.Miembro(entry, "Name", ok), ok)
+                    If Not ok Then Continue For
+                End If
+                If Not String.IsNullOrEmpty(nombre) Then map(id) = nombre
+            Next
+        Next
     End Sub
 
-    ''' <summary>Parse a templates.json: array of { Race, Entries:[{ Type, Gender, Id, Slot, Flags,
-    ''' BlendOp, Category|FixedCategory, + Mask:Texture / Palette:Texture+Colors / TextureSet:Diffuse/
-    ''' Normal/Specular }] } into custom groups keyed by (race, gender, categoryName). Mirrors
-    ''' CharGenInterface::LoadTintTemplates + CharGenTint::*::Parse.</summary>
+    ''' <summary>A templates.json as CharGenInterface::LoadTintTemplates (:745-830) reads it: the same head as categories.json, then by
+    ''' "Type" prefix a Mask (4), a Palette (7) or a TextureSet (10) - any other type is not loaded - parsed as CharGenTint.cpp parses
+    ''' it (<see cref="BuildOption"/>), into custom groups keyed by (race, gender, categoryName). The category, as Apply looks it up
+    ''' (CharGenTint.cpp:330-334): by id when "Category" is not 0, else by the "FixedCategory" name.</summary>
     Private Sub LoadTemplatesFile(path As String, pluginFileName As String, pluginManager As PluginManager,
+                                  razas As Dictionary(Of String, Boolean()),
                                   catNames As Dictionary(Of String, Dictionary(Of UInteger, String)),
                                   idx As Dictionary(Of String, RaceCustomTints))
-        Try
-            Using doc = JsonDocument.Parse(File.ReadAllText(path), _jsonOpts)
-                If doc.RootElement.ValueKind <> JsonValueKind.Array Then Return
-                For Each item In doc.RootElement.EnumerateArray()
-                    Dim raceName = GetStr(item, "Race")
-                    If String.IsNullOrEmpty(raceName) Then Continue For
-                    Dim entries As JsonElement
-                    If Not item.TryGetProperty("Entries", entries) OrElse entries.ValueKind <> JsonValueKind.Array Then Continue For
+        Dim raiz = LeerArchivoDeTintes(path)
+        If raiz Is Nothing Then Return
+        Dim ok As Boolean
+        For Each item In Jsoncpp.Valores(raiz)
+            Dim raceName = Jsoncpp.AsString(Jsoncpp.Miembro(item, "Race", ok), ok)
+            If Not ok Then Return
+            If Not razas.ContainsKey(raceName) Then Continue For
+            Dim entries = Jsoncpp.Miembro(item, "Entries", ok)
+            If Not ok Then Return
+            For Each entry In Jsoncpp.Valores(entries)
+                Dim typeStr As String = Nothing, gender, id As UInteger
+                If Not CabeceraDeEntrada(entry, typeStr, gender, id) Then Return
+                Dim clase As ClaseDeTinte
+                If EmpiezaCon(typeStr, "Mask") Then
+                    clase = ClaseDeTinte.Mask
+                ElseIf EmpiezaCon(typeStr, "Palette") Then
+                    clase = ClaseDeTinte.Palette
+                ElseIf EmpiezaCon(typeStr, "TextureSet") Then
+                    clase = ClaseDeTinte.TextureSet
+                Else
+                    Continue For
+                End If
+                Dim categoryId As UInteger = 0UI, fixedCategory As String = ""
+                Dim opt = BuildOption(entry, clase, id, pluginManager, categoryId, fixedCategory)
+                If opt Is Nothing Then Continue For
 
-                    For Each entry In entries.EnumerateArray()
-                        Dim typeStr = GetStr(entry, "Type")
-                        Dim opt = BuildOption(entry, typeStr, pluginManager)
-                        If opt Is Nothing Then Continue For
+                Dim catName As String = Nothing
+                If categoryId <> 0UI Then
+                    Dim raceMap As Dictionary(Of UInteger, String) = Nothing
+                    If catNames.TryGetValue(raceName, raceMap) Then raceMap.TryGetValue(categoryId, catName)
+                Else
+                    catName = fixedCategory
+                End If
+                If String.IsNullOrEmpty(catName) Then
+                    Logger.LogLazy(Function() $"[LM-TINT] '{pluginFileName}' template Id={opt.Index} has no resolvable category — skipped")
+                    Continue For
+                End If
 
-                        ' Resolve the owning category NAME: FixedCategory (name) wins; else Category id
-                        ' looked up in categories.json for this race. No resolution → drop (engine drops
-                        ' a template whose category is absent, CharGenTint.cpp:345 guards on tintData).
-                        Dim catName = GetStr(entry, "FixedCategory")
-                        If String.IsNullOrEmpty(catName) Then
-                            Dim catId As UInteger = 0UI
-                            Dim hasCat As Boolean = TryGetUInt(entry, "Category", catId)
-                            Dim raceMap As Dictionary(Of UInteger, String) = Nothing
-                            If hasCat AndAlso catNames.TryGetValue(raceName, raceMap) Then
-                                raceMap.TryGetValue(catId, catName)
-                            End If
-                        End If
-                        If String.IsNullOrEmpty(catName) Then
-                            Logger.LogLazy(Function() $"[LM-TINT] '{pluginFileName}' template Id={opt.Index} has no resolvable category — skipped")
-                            Continue For
-                        End If
-
-                        Dim gender = GetUInt(entry, "Gender")
-                        Dim rct As RaceCustomTints = Nothing
-                        If Not idx.TryGetValue(raceName, rct) Then
-                            rct = New RaceCustomTints()
-                            idx(raceName) = rct
-                        End If
-                        If gender = 0UI OrElse gender = 2UI Then AddOptionToGender(rct.Male, catName, opt)
-                        If gender = 1UI OrElse gender = 2UI Then AddOptionToGender(rct.Female, catName, opt)
-                    Next
-                Next
-            End Using
-        Catch ex As Exception
-            Logger.LogLazy(Function() $"[LM-TINT] templates.json parse failed '{path}': {ex.Message}")
-        End Try
+                Dim rct As RaceCustomTints = Nothing
+                If Not idx.TryGetValue(raceName, rct) Then
+                    rct = New RaceCustomTints()
+                    idx(raceName) = rct
+                End If
+                If gender = 0UI OrElse gender = 2UI Then AddOptionToGender(rct.Male, catName, opt)
+                If gender = 1UI OrElse gender = 2UI Then AddOptionToGender(rct.Female, catName, opt)
+            Next
+        Next
     End Sub
 
     Private Sub AddOptionToGender(g As GenderCustomTints, catName As String, opt As OpcionDeTinteEfectiva)
@@ -336,69 +374,102 @@ Public Module LmCustomTintLoader
         If Not grp.Options.Any(Function(o) o.Index = opt.Index) Then grp.Options.Add(CloneOption(opt))
     End Sub
 
-    ''' <summary>Arma una opción de tinte a partir de una entrada de templates.json. El "Type" decide qué
-    ''' campos se leen Y la CLASE de la opción: acá la clase la DECLARA el archivo, no se deduce de la
-    ''' estructura -que es lo único que distingue un TextureSet que sólo trae Diffuse de una Mask.
-    ''' Devuelve Nothing si la entrada está mal formada (sin Id, o sin una textura usable).</summary>
-    Private Function BuildOption(entry As JsonElement, typeStr As String, pluginManager As PluginManager) As OpcionDeTinteEfectiva
-        Dim id As UInteger = 0UI
-        If Not TryGetUInt(entry, "Id", id) Then Return Nothing
+    ''' <summary>One template entry as CharGenTint.cpp parses it, into the compositor's option. The base fields
+    ''' (CharGenTintObject::Parse :270-285 and CharGenTintBase::Parse :287-317): Name, Category (asUInt), FixedCategory, Slot (asString
+    ''' through the slot map; unknown → FaceDetail, :62-75) and Flags (each element asString through the flag map) - each Parse in
+    ''' its own try: a throw ends THAT Parse, the fields set before stay, and the class's Parse runs anyway (it ignores
+    ''' __super's result). The class's own fields: Mask (:375-397) Texture and BlendOp; Palette (:428-461) Texture and the Colors
+    ''' (Id asUInt, Form asString → a CLFM or the colour is dropped, Alpha asFloat, BlendOp); TextureSet (:503-541) Diffuse,
+    ''' Normal, Specular, BlendOp and Default (asFloat). A throw in the class's Parse makes it return false: the template is not
+    ''' applied (Nothing). Nothing too when the option has no texture to draw (the app's model: an entry without one is not
+    ''' composed).</summary>
+    Private Function BuildOption(entry As Jsoncpp.JsonValor, clase As ClaseDeTinte, id As UInteger, pluginManager As PluginManager,
+                                 ByRef categoryId As UInteger, ByRef fixedCategory As String) As OpcionDeTinteEfectiva
+        Dim ok As Boolean
+        Dim opt As New OpcionDeTinteEfectiva With {.Index = CUShort(id And &HFFFFUI), .Name = "", .Slot = 22US, .EntryType = clase, .EsDeLooksMenu = True}
 
-        Dim opt As New OpcionDeTinteEfectiva With {
-            .Index = CUShort(id And &HFFFFUI),
-            .Name = GetStr(entry, "Name"),
-            .Slot = ParseSlot(GetStr(entry, "Slot")),
-            .Flags = ParseFlags(entry),
-            .EsDeLooksMenu = True}
-
-        Dim blendStr = GetStr(entry, "BlendOp")
-        If Not String.IsNullOrEmpty(blendStr) Then
-            opt.BlendOperation = ParseBlend(blendStr)
-            opt.HasBlendOperation = True
-        End If
-
-        Dim defVal As Single
-        If TryGetSingle(entry, "Default", defVal) Then
-            opt.DefaultValue = defVal
-            opt.HasDefaultValue = True
-        End If
-
-        If String.Equals(typeStr, "Palette", StringComparison.OrdinalIgnoreCase) Then
-            opt.EntryType = ClaseDeTinte.Palette
-            Dim tex = GetStr(entry, "Texture")
-            If Not String.IsNullOrEmpty(tex) Then opt.Textures.Add(tex)
-            Dim colors As JsonElement
-            If entry.TryGetProperty("Colors", colors) AndAlso colors.ValueKind = JsonValueKind.Array Then
-                For Each c In colors.EnumerateArray()
-                    Dim cd As New ColorDeTinteEfectivo With {
-                        .TemplateIndex = CUShort(GetUInt(c, "Id") And &HFFFFUI),
-                        .Alpha = GetSingle(c, "Alpha"),
-                        .ColorFormID = LooksmenuLoader.ResolveFormIdentifier(GetStr(c, "Form"), pluginManager)}
-                    Dim cBlend = GetStr(c, "BlendOp")
-                    cd.BlendOperation = If(String.IsNullOrEmpty(cBlend), 0UI, ParseBlend(cBlend))
-                    opt.TemplateColors.Add(cd)
-                Next
+        ' CharGenTintObject::Parse: Name.
+        Dim nombre As String = ""
+        If Cadena(entry, "Name", nombre) Then opt.Name = nombre
+        ' CharGenTintBase::Parse: Category, FixedCategory, Slot, Flags - in this order, a throw ends it.
+        Do
+            If Jsoncpp.EsMiembro(entry, "Category", ok) Then
+                categoryId = Jsoncpp.AsUInt(Jsoncpp.Miembro(entry, "Category", ok), ok)
+                If Not ok Then Exit Do
             End If
-            If opt.Textures.Count = 0 Then Return Nothing
+            If Not Cadena(entry, "FixedCategory", fixedCategory) Then Exit Do
+            Dim slot As String = Nothing
+            If Jsoncpp.EsMiembro(entry, "Slot", ok) Then
+                If Not Cadena(entry, "Slot", slot) Then Exit Do
+                opt.Slot = ParseSlot(slot)
+            End If
+            If Jsoncpp.EsMiembro(entry, "Flags", ok) Then
+                Dim flags As UShort = 0US
+                Dim lanzo = False
+                For Each f In Jsoncpp.Valores(Jsoncpp.Miembro(entry, "Flags", ok))
+                    Dim s = Jsoncpp.AsString(f, ok)
+                    If Not ok Then lanzo = True : Exit For
+                    Dim bit As UShort
+                    If _flagMap.TryGetValue(s, bit) Then flags = flags Or bit
+                Next
+                If lanzo Then Exit Do
+                opt.Flags = flags
+            End If
+        Loop While False
 
-        ElseIf String.Equals(typeStr, "TextureSet", StringComparison.OrdinalIgnoreCase) Then
-            opt.EntryType = ClaseDeTinte.TextureSet
-            ' Diffuse always; Normal/Specular optional (many custom sets ship diffuse-only).
-            Dim d = GetStr(entry, "Diffuse")
-            If String.IsNullOrEmpty(d) Then Return Nothing
-            opt.Textures.Add(d)
-            opt.Textures.Add(GetStr(entry, "Normal"))     ' "" placeholder keeps triple layout; loader skips empties
-            opt.Textures.Add(GetStr(entry, "Specular"))
-            TrimTrailingEmptyTextures(opt.Textures)
-
-        Else
-            ' Mask (default): single grayscale texture tinted by the applied TEND colour.
-            opt.EntryType = ClaseDeTinte.Mask
-            Dim tex = GetStr(entry, "Texture")
-            If String.IsNullOrEmpty(tex) Then Return Nothing
-            opt.Textures.Add(tex)
-        End If
-
+        ' The class's Parse.
+        Dim blend As String = Nothing
+        Select Case clase
+            Case ClaseDeTinte.Mask
+                Dim tex As String = Nothing
+                If Not Cadena(entry, "Texture", tex) Then Return Nothing
+                If Not Cadena(entry, "BlendOp", blend) Then Return Nothing
+                If blend IsNot Nothing Then opt.BlendOperation = ParseBlend(blend) : opt.HasBlendOperation = True
+                If String.IsNullOrEmpty(tex) Then Return Nothing
+                opt.Textures.Add(tex)
+            Case ClaseDeTinte.Palette
+                Dim tex As String = Nothing
+                If Not Cadena(entry, "Texture", tex) Then Return Nothing
+                ' auto entries = entry["Colors"] (:436) on a const Value: a non-object entry throws; each colour's conversions in the same try.
+                Dim colores = Jsoncpp.Miembro(entry, "Colors", ok)
+                If Not ok Then Return Nothing
+                For Each c In Jsoncpp.Valores(colores)
+                    Dim cId = Jsoncpp.AsUInt(Jsoncpp.Miembro(c, "Id", ok), ok) : If Not ok Then Return Nothing
+                    Dim forma = Jsoncpp.AsString(Jsoncpp.Miembro(c, "Form", ok), ok) : If Not ok Then Return Nothing
+                    Dim alfa = Jsoncpp.AsFloat(Jsoncpp.Miembro(c, "Alpha", ok), Jsoncpp.Dialecto.F4eeSkee64, ok) : If Not ok Then Return Nothing
+                    Dim cBlend As UInteger = 0UI
+                    If Jsoncpp.EsMiembro(c, "BlendOp", ok) Then
+                        Dim b = Jsoncpp.AsString(Jsoncpp.Miembro(c, "BlendOp", ok), ok) : If Not ok Then Return Nothing
+                        cBlend = ParseBlend(b)
+                    End If
+                    ' DYNAMIC_CAST(GetFormFromIdentifier(...), TESForm, BGSColorForm): only a colour form is kept (:452-455).
+                    Dim fid = LooksmenuLoader.ResolveFormIdentifier(forma, pluginManager)
+                    Dim rec = If(fid = 0UI, Nothing, pluginManager.GetRecord(fid))
+                    If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Continue For
+                    opt.TemplateColors.Add(New ColorDeTinteEfectivo With {
+                        .TemplateIndex = CUShort(cId And &HFFFFUI), .Alpha = alfa, .ColorFormID = fid, .BlendOperation = cBlend})
+                Next
+                If String.IsNullOrEmpty(tex) Then Return Nothing
+                opt.Textures.Add(tex)
+            Case ClaseDeTinte.TextureSet
+                Dim d As String = Nothing, n As String = Nothing, s As String = Nothing
+                If Not Cadena(entry, "Diffuse", d) Then Return Nothing
+                If Not Cadena(entry, "Normal", n) Then Return Nothing
+                If Not Cadena(entry, "Specular", s) Then Return Nothing
+                If Not Cadena(entry, "BlendOp", blend) Then Return Nothing
+                If blend IsNot Nothing Then opt.BlendOperation = ParseBlend(blend) : opt.HasBlendOperation = True
+                If Jsoncpp.EsMiembro(entry, "Default", ok) Then
+                    Dim dv = Jsoncpp.AsFloat(Jsoncpp.Miembro(entry, "Default", ok), Jsoncpp.Dialecto.F4eeSkee64, ok)
+                    If Not ok Then Return Nothing
+                    opt.DefaultValue = dv : opt.HasDefaultValue = True
+                End If
+                ' Diffuse always; Normal/Specular optional (many custom sets ship diffuse-only).
+                If String.IsNullOrEmpty(d) Then Return Nothing
+                opt.Textures.Add(d)
+                opt.Textures.Add(If(n, ""))     ' "" placeholder keeps triple layout; loader skips empties
+                opt.Textures.Add(If(s, ""))
+                TrimTrailingEmptyTextures(opt.Textures)
+        End Select
         Return opt
     End Function
 
@@ -425,79 +496,25 @@ Public Module LmCustomTintLoader
         Return c
     End Function
 
+    ''' <summary>if(entry.isMember(key)) value = entry[key].asString() - CharGenTint.cpp's pattern for every string field. False = asString
+    ''' threw (an array or an object); <paramref name="valor"/> untouched when the key is not a member.</summary>
+    Private Function Cadena(entry As Jsoncpp.JsonValor, clave As String, ByRef valor As String) As Boolean
+        Dim ok As Boolean
+        If Not Jsoncpp.EsMiembro(entry, clave, ok) Then Return True
+        valor = Jsoncpp.AsString(Jsoncpp.Miembro(entry, clave, ok), ok)
+        Return ok
+    End Function
+
     Private Function ParseSlot(name As String) As UShort
-        If String.IsNullOrEmpty(name) Then Return 22US   ' FaceDetail default (CharGenTint.cpp:72)
         Dim v As UShort
-        If _slotMap.TryGetValue(name, v) Then Return v
-        Return 22US
+        If name IsNot Nothing AndAlso _slotMap.TryGetValue(name, v) Then Return v
+        Return 22US   ' FaceDetail (CharGenTint.cpp:74)
     End Function
 
     Private Function ParseBlend(name As String) As UInteger
         Dim v As UInteger
-        If _blendMap.TryGetValue(name, v) Then Return v
-        Return 0UI
-    End Function
-
-    Private Function ParseFlags(entry As JsonElement) As UShort
-        Dim flags As UShort = 0US
-        Dim arr As JsonElement
-        If entry.TryGetProperty("Flags", arr) AndAlso arr.ValueKind = JsonValueKind.Array Then
-            For Each f In arr.EnumerateArray()
-                If f.ValueKind = JsonValueKind.String Then
-                    Dim bit As UShort
-                    If _flagMap.TryGetValue(f.GetString(), bit) Then flags = flags Or bit
-                End If
-            Next
-        End If
-        Return flags
-    End Function
-
-    ' --- small JSON helpers (System.Text.Json) ---
-
-    Private Function GetStr(e As JsonElement, name As String) As String
-        Dim p As JsonElement
-        If e.ValueKind = JsonValueKind.Object AndAlso e.TryGetProperty(name, p) AndAlso p.ValueKind = JsonValueKind.String Then
-            Return p.GetString()
-        End If
-        Return ""
-    End Function
-
-    Private Function TryGetUInt(e As JsonElement, name As String, ByRef value As UInteger) As Boolean
-        value = 0UI
-        Dim p As JsonElement
-        If e.ValueKind = JsonValueKind.Object AndAlso e.TryGetProperty(name, p) AndAlso p.ValueKind = JsonValueKind.Number Then
-            Dim l As Long
-            If p.TryGetInt64(l) AndAlso l >= 0 AndAlso l <= UInteger.MaxValue Then
-                value = CUInt(l)
-                Return True
-            End If
-        End If
-        Return False
-    End Function
-
-    Private Function GetUInt(e As JsonElement, name As String) As UInteger
-        Dim v As UInteger
-        TryGetUInt(e, name, v)
-        Return v
-    End Function
-
-    Private Function TryGetSingle(e As JsonElement, name As String, ByRef value As Single) As Boolean
-        value = 0.0F
-        Dim p As JsonElement
-        If e.ValueKind = JsonValueKind.Object AndAlso e.TryGetProperty(name, p) AndAlso p.ValueKind = JsonValueKind.Number Then
-            Dim d As Double
-            If p.TryGetDouble(d) Then
-                value = CSng(d)
-                Return True
-            End If
-        End If
-        Return False
-    End Function
-
-    Private Function GetSingle(e As JsonElement, name As String) As Single
-        Dim v As Single
-        TryGetSingle(e, name, v)
-        Return v
+        If name IsNot Nothing AndAlso _blendMap.TryGetValue(name, v) Then Return v
+        Return 0UI    ' Default (CharGenTint.cpp:101)
     End Function
 
 End Module

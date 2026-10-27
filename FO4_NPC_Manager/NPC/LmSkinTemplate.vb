@@ -1,5 +1,4 @@
 Imports System.IO
-Imports System.Text.Json
 Imports FO4_Base_Library
 
 ''' <summary>F4SE LooksMenu skin template — bundle of (skin ARMO + per-gender face TXST + per-gender
@@ -39,13 +38,11 @@ Public Class LmSkinTemplate
     End Function
 End Class
 
-''' <summary>Loader for LM skin template JSONs. Parser shape mirrors
-''' <c>SkinInterface::LoadSkinTemplates</c> (SkinInterface.cpp:490-621): top-level array of objects
-''' with optional id/name/gender/sort/maleFace/femaleFace/maleHead/femaleHead/maleHeadRear/
-''' femaleHeadRear/skin. "PluginFile|FORMID" identifiers are resolved against the active load
-''' order via LooksmenuLoader.ResolveFormIdentifier (same convention LM uses for actor presets).
-''' Unresolved templates / unresolvable identifiers are skipped silently (LM does the same:
-''' <c>if(form)</c> guards in SkinInterface.cpp:534-608).</summary>
+''' <summary>Loader for LM skin template JSONs, as <c>SkinInterface::LoadSkinTemplates</c> (SkinInterface.cpp:490-621) reads them:
+''' f4ee's Json::Reader (Jsoncpp.LeerF4ee) and its conversions on the tree (<see cref="LoadFromFile"/>). "PluginFile|FORMID"
+''' identifiers are resolved against the active load order via LooksmenuLoader.ResolveFormIdentifier (Utilities.cpp:133-155); an
+''' unresolvable one, or a form of another type, leaves the field as it was (the <c>if(form)</c> / DYNAMIC_CAST guards,
+''' SkinInterface.cpp:534-608).</summary>
 Public Module LmSkinTemplateLoader
 
     ''' <summary>Discover and parse every F4SE LooksMenu skin template reachable from
@@ -65,10 +62,14 @@ Public Module LmSkinTemplateLoader
             Dim p = Path.Combine(baseSkinDir, plugin.FileName, "skin.json")
             If File.Exists(p) Then LoadFromFile(p, pluginManager, result)
         Next
-        ' Loose templates: Skin\Loose\*.json
+        ' Loose templates: Skin\Loose\*.json, in f4ee's order - a std::set<std::string> of the full paths (SkinInterface.cpp:476-487;
+        ' its std::transform to lower case runs over an empty range, path.begin()..path.begin(), so the paths keep their case): byte
+        ' order (strcmp). The order counts: a later file MODIFIES a template an earlier one registered.
         Dim looseDir = Path.Combine(baseSkinDir, "Loose")
         If Directory.Exists(looseDir) Then
-            For Each p In Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly)
+            Dim sueltos = Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly).ToList()
+            sueltos.Sort(Jsoncpp.ComparadorStrcmp.Instancia)
+            For Each p In sueltos
                 LoadFromFile(p, pluginManager, result)
             Next
         End If
@@ -123,93 +124,85 @@ Public Module LmSkinTemplateLoader
                End Function
     End Function
 
-    ''' <summary>Parse one JSON file and append every successfully-resolved template to <paramref name="sink"/>.
-    ''' Templates with the same Id from later files DO NOT replace earlier entries (we keep first-loaded
-    ''' to mirror C++ <c>m_skinTemplates.emplace</c> which only inserts when the key is missing —
-    ''' SkinInterface.cpp:518-525). Returns the number of templates appended in this call.</summary>
+    ''' <summary>One skin template file as <c>SkinInterface::LoadSkinTemplates</c> (SkinInterface.cpp:490-621) reads it: the file's bytes
+    ''' (BSReadAll) through f4ee's <c>Json::Reader</c> (<see cref="Jsoncpp.LeerF4ee"/>) - a file that does not parse (a trailing comma, a
+    ''' BOM) loads nothing (:507-510) -, then <c>for(auto &amp; item : root)</c> (an array's elements, an object's values), each item in its
+    ''' own try (:515/:614): <c>id</c> asCString (a non-string throws: the item is skipped); an id already registered - by an earlier
+    ''' file or item - is MODIFIED (m_skinTemplates.find :519-524), a new one is registered right away (emplace :526-527), so a
+    ''' conversion that throws later leaves the fields set before it. Fields, in f4ee's order: name (asCString), gender (asUInt into a
+    ''' UInt8), maleFace / femaleFace (TXST), maleHead / femaleHead / maleHeadRear / femaleHeadRear (HDPT), skin (ARMO) - each only when a
+    ''' member and not null, asString, GetFormFromIdentifier, set only when the form is of that type -, sort (asInt). Returns the number
+    ''' of templates this file registered.</summary>
     Public Function LoadFromFile(filePath As String, pluginManager As PluginManager,
                                   sink As List(Of LmSkinTemplate)) As Integer
         If Not File.Exists(filePath) Then Return 0
-        Dim added As Integer = 0
+        Dim raiz As Jsoncpp.JsonValor
         Try
-            Dim raw = File.ReadAllText(filePath)
-            ' jsoncpp (the C++ parser LM uses) accepts // and /* */ comments and trailing
-            ' commas by default; .NET's JsonDocument rejects both unless told otherwise.
-            ' Real-world skin.json files (e.g. RB_basicskins) ship with // field annotations,
-            ' so without these flags the parse throws and we silently end up with 0 templates.
-            Dim opts As New JsonDocumentOptions With {
-                .CommentHandling = JsonCommentHandling.Skip,
-                .AllowTrailingCommas = True
-            }
-            Using doc = JsonDocument.Parse(raw, opts)
-                If doc.RootElement.ValueKind <> JsonValueKind.Array Then Return 0
-                For Each item In doc.RootElement.EnumerateArray()
-                    Dim tpl = ParseTemplate(item, pluginManager)
-                    If tpl Is Nothing Then Continue For
-                    ' First-loaded wins (C++ parity). Skip if a template with the same Id is already in the sink.
-                    Dim duplicate As Boolean = False
-                    For Each existing In sink
-                        If String.Equals(existing.Id, tpl.Id, StringComparison.Ordinal) Then
-                            duplicate = True
-                            Exit For
-                        End If
-                    Next
-                    If duplicate Then Continue For
-                    sink.Add(tpl)
-                    added += 1
-                Next
-            End Using
+            Dim transcodificado As Boolean
+            raiz = Jsoncpp.LeerF4ee(Jsoncpp.BytesComoLosVeJsoncpp(File.ReadAllBytes(filePath), transcodificado))
         Catch
+            Return 0
         End Try
+        If raiz Is Nothing Then Return 0
+        Dim added As Integer = 0
+        For Each item In Jsoncpp.Valores(raiz)
+            If LeerPlantilla(item, pluginManager, sink) Then added += 1
+        Next
         Return added
     End Function
 
-    Private Function ParseTemplate(item As JsonElement, pluginManager As PluginManager) As LmSkinTemplate
-        If item.ValueKind <> JsonValueKind.Object Then Return Nothing
-
-        Dim idEl As JsonElement
-        If Not item.TryGetProperty("id", idEl) OrElse idEl.ValueKind <> JsonValueKind.String Then
-            Return Nothing
+    ''' <summary>One item of the file (the body of SkinInterface.cpp:515-613). True when it registered a NEW template. A conversion that
+    ''' throws ends the item where it is: what was set before stays (the template is already in the map).</summary>
+    Private Function LeerPlantilla(item As Jsoncpp.JsonValor, pluginManager As PluginManager, sink As List(Of LmSkinTemplate)) As Boolean
+        Dim ok As Boolean
+        ' item["id"].asCString() (:519): on an item that is not an object (or null) operator[] throws; a value that is not a string throws.
+        Dim id = Jsoncpp.AsCString(Jsoncpp.Miembro(item, "id", ok), ok)
+        If Not ok Then Return False
+        Dim nuevo = False
+        Dim tpl As LmSkinTemplate = Nothing
+        For Each existing In sink
+            If String.Equals(existing.Id, id, StringComparison.Ordinal) Then tpl = existing : Exit For
+        Next
+        If tpl Is Nothing Then
+            ' DisplayName starts as the id: the app's combo shows it when the file gives no name (f4ee's name starts empty).
+            tpl = New LmSkinTemplate With {.Id = id, .DisplayName = id}
+            sink.Add(tpl)
+            nuevo = True
         End If
-        Dim id = idEl.GetString()
-        If String.IsNullOrEmpty(id) Then Return Nothing
-
-        Dim tpl As New LmSkinTemplate With {.Id = id, .DisplayName = id}
-
-        Dim el As JsonElement
-        If item.TryGetProperty("name", el) AndAlso el.ValueKind = JsonValueKind.String Then
-            tpl.DisplayName = el.GetString()
+        If Jsoncpp.EsMiembro(item, "name", ok) Then
+            Dim nombre = Jsoncpp.AsCString(Jsoncpp.Miembro(item, "name", ok), ok)
+            If Not ok Then Return nuevo
+            tpl.DisplayName = nombre
         End If
-        If item.TryGetProperty("gender", el) AndAlso el.ValueKind = JsonValueKind.Number Then
-            Dim g As Integer
-            If el.TryGetInt32(g) AndAlso g >= 0 AndAlso g <= 255 Then tpl.Gender = CByte(g)
+        If Jsoncpp.EsMiembro(item, "gender", ok) Then
+            Dim g = Jsoncpp.AsUInt(Jsoncpp.Miembro(item, "gender", ok), ok)
+            If Not ok Then Return nuevo
+            tpl.Gender = CByte(g And &HFFUI)                                  ' UInt8 gender (SkinInterface.h:41)
         End If
-        If item.TryGetProperty("sort", el) AndAlso el.ValueKind = JsonValueKind.Number Then
-            Dim s As Integer
-            If el.TryGetInt32(s) Then tpl.Sort = s
+        For Each campo In {(Clave:="maleFace", Firma:="TXST", Poner:=Sub(f As UInteger) tpl.FaceTxstFormID(0) = f),
+                           (Clave:="femaleFace", Firma:="TXST", Poner:=Sub(f As UInteger) tpl.FaceTxstFormID(1) = f),
+                           (Clave:="maleHead", Firma:="HDPT", Poner:=Sub(f As UInteger) tpl.HeadHdptFormID(0) = f),
+                           (Clave:="femaleHead", Firma:="HDPT", Poner:=Sub(f As UInteger) tpl.HeadHdptFormID(1) = f),
+                           (Clave:="maleHeadRear", Firma:="HDPT", Poner:=Sub(f As UInteger) tpl.HeadRearHdptFormID(0) = f),
+                           (Clave:="femaleHeadRear", Firma:="HDPT", Poner:=Sub(f As UInteger) tpl.HeadRearHdptFormID(1) = f),
+                           (Clave:="skin", Firma:="ARMO", Poner:=Sub(f As UInteger) tpl.SkinArmoFormID = f)}
+            Dim v = Jsoncpp.Miembro(item, campo.Clave, ok)
+            If v Is Nothing OrElse v.Tipo = Jsoncpp.JsonTipo.Nulo Then Continue For   ' isMember && !isNull
+            Dim identificador = Jsoncpp.AsString(v, ok)
+            If Not ok Then Return nuevo
+            ' GetFormFromIdentifier (Utilities.cpp:133-155) and the DYNAMIC_CAST to the field's type: a form of another type is not set.
+            Dim fid = LooksmenuLoader.ResolveFormIdentifier(identificador, pluginManager)
+            If fid = 0UI Then Continue For
+            Dim rec = pluginManager.GetRecord(fid)
+            If rec Is Nothing OrElse rec.Header.Signature <> campo.Firma Then Continue For
+            campo.Poner(fid)
+        Next
+        If Jsoncpp.EsMiembro(item, "sort", ok) Then
+            Dim s = Jsoncpp.AsInt(Jsoncpp.Miembro(item, "sort", ok), ok)
+            If Not ok Then Return nuevo
+            tpl.Sort = s
         End If
-
-        ' "maleFace" / "femaleFace" → TXST FormID. C++ DYNAMIC_CAST to BGSTextureSet, but we
-        ' don't validate the record signature here — the consumer can guard before use.
-        tpl.FaceTxstFormID(0) = ResolveOptionalIdentifier(item, "maleFace", pluginManager)
-        tpl.FaceTxstFormID(1) = ResolveOptionalIdentifier(item, "femaleFace", pluginManager)
-        tpl.HeadHdptFormID(0) = ResolveOptionalIdentifier(item, "maleHead", pluginManager)
-        tpl.HeadHdptFormID(1) = ResolveOptionalIdentifier(item, "femaleHead", pluginManager)
-        tpl.HeadRearHdptFormID(0) = ResolveOptionalIdentifier(item, "maleHeadRear", pluginManager)
-        tpl.HeadRearHdptFormID(1) = ResolveOptionalIdentifier(item, "femaleHeadRear", pluginManager)
-        tpl.SkinArmoFormID = ResolveOptionalIdentifier(item, "skin", pluginManager)
-
-        Return tpl
-    End Function
-
-    Private Function ResolveOptionalIdentifier(item As JsonElement, propName As String,
-                                                pluginManager As PluginManager) As UInteger
-        Dim el As JsonElement
-        If Not item.TryGetProperty(propName, el) Then Return 0UI
-        If el.ValueKind <> JsonValueKind.String Then Return 0UI
-        Dim s = el.GetString()
-        If String.IsNullOrEmpty(s) Then Return 0UI
-        Return LooksmenuLoader.ResolveFormIdentifier(s, pluginManager)
+        Return nuevo
     End Function
 
 End Module
