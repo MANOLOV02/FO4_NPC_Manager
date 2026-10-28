@@ -602,6 +602,16 @@ Friend NotInheritable Class NpcMaterialResolver
         Return candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace
     End Function
 
+    ''' <summary>El head part es la CARA del NPC: HDPT PNAM = Face (el tipo PROPIO del record, <c>HeadPartTypeRaw</c>, no el efectivo:
+    ''' los sub-parts Misc que heredan Face por HNAM —MouthShadow, lashes/AO/wet— conservan su material) y hay NPC. Es la condición con
+    ''' la que el motor mira FTST y RACE.DFT: Fallout4.exe 1.11.240 ATTACH 0x1406EE3C6 y REGEN 0x1406EEBB8 (<c>[hdpt+0x74] == 1</c>, con
+    ''' NPC). Una sola definición: la usan <see cref="ResolveTextureSet"/> (qué set es el de la cara) y
+    ''' <see cref="ApplyShapeMaterialOverrides"/> (qué rama le toca a cada shape).</summary>
+    Friend Shared Function EsCabezaDeCara(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState) As Boolean
+        Return candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart AndAlso
+               candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing
+    End Function
+
     ' PROXY REFUTADO — no reintroducir un flag "el NPC declara su cara por FTST": coincidía con
     ' Valentine/DiMA por casualidad sobre un corpus de 2 casos. El árbitro real es el flag ACBS "Diffuse
     ' Alpha Test" (0x01000000) — RE CreationKit 0x140ED41F6, gate [npc+0x9b]&1 — consumido como
@@ -612,9 +622,9 @@ Friend NotInheritable Class NpcMaterialResolver
         Return ResolveColorFormColor(candidate.HeadPartColorFormID)
     End Function
 
-    ''' <param name="isFaceTextureSource">Solo FO4: el TXST retornado es el NPC.FTST del camino Face y el
-    ''' caller lo aplica DIFFUSE-ONLY (el attach del motor aplica solo el slot 0 de la cadena FTST>body>TNAM).
-    ''' Siempre False en SSE. Ver 30-fo4-pipeline-textura-de-cara.</param>
+    ''' <param name="isFaceTextureSource">Solo SSE: hay capa aux (el resuelto difiere del TNAM) y el caller aplica la base TNAM
+    ''' DIFFUSE-ONLY, y sólo a las shapes de clase Face (ApplyShapeMaterialOverrides). Siempre False en FO4: allá la rama de cada shape
+    ''' la decide su clase (EsCabezaDeCara + IsEngineFace).</param>
     ''' <param name="sseFaceAuxTextureSet">Solo SSE + head part de cara: el set resuelto (FTST ?? DFT ?? TNAM)
     ''' que aporta unicamente Normal + <c>_sk</c> + detail POR ENCIMA de la base TNAM, gateado por material Face;
     ''' el diffuse jamas se toca. Ley por capas: 50-facetint-leyes-y-compositor B.3.</param>
@@ -661,9 +671,12 @@ Friend NotInheritable Class NpcMaterialResolver
             ' composite FaceCustomization. SIN MEDIR: el RE del CK 0x140ED4244 sugiere DFT>TNAM también con
             '   TNAM presente; no aplicado, cero casos vanilla para validarlo contra un bake.
             '   SSE — modelo POR CAPAS: base = TNAM (D y S siempre del TNAM) y capa aux con solo N/_sk/detail.
-            ' El guard usa HeadPartTypeRaw, no el efectivo: protege los sub-parts Misc heredados como Face
+            ' El guard (EsCabezaDeCara) usa HeadPartTypeRaw, no el efectivo: protege los sub-parts Misc heredados como Face
             ' (MouthShadow/AO/lashes/wet), que conservan su propio material.
-            If candidate.Kind = MainForm.MeshCandidateKind.HeadPart AndAlso candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing Then
+            ' ⛔ En FO4 este set es el de las shapes que el motor dibuja con la clase FACE: la rama de cada shape la decide
+            ' ApplyShapeMaterialOverrides por la clase de su material (REGEN 0x1406EED07); a una shape de otra clase el motor le
+            ' escribe sólo el diffuse del ATTACH (y, si es SkinTint, N/S del resuelto): AplicarCabezaNoFaceFo4.
+            If EsCabezaDeCara(candidate, state) Then
                 Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
                 If isSse Then
                     ' SSE — MODELO POR CAPAS, validado byte contra el corpus completo de facegeom vanilla:
@@ -763,21 +776,18 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As Canon.ITxst, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional npcDiffuseAlphaTest As Boolean = False)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As Canon.ITxst, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
         Dim material = relatedMaterial.material
         If material Is Nothing Then Return
 
-        ' ACÁ ARRIBA Y SIN CONDICIÓN, A PROPÓSITO. Es un HECHO del record del NPC (flag ACBS Diffuse Alpha
-        ' Test), no una decisión sobre texturas, así que no puede depender de nada de lo que sigue.
-        ' Antes se asignaba DENTRO de la rama del MNAM, más abajo: si el TXST no traía
-        ' MaterialPath, el dato que el call-site había calculado bien NUNCA llegaba al material. Medido:
-        ' 1.757 NPC en FO4, y el 100% de SSE — el TXST de Skyrim no tiene subrecord MNAM, así que allá el
-        ' portador era estructuralmente inalcanzable. El único síntoma visible era nulo (ver la nota de
-        ' NpcDiffuseAlphaTest), pero el bake no podía confiar en su propio dato.
-        material.NpcDiffuseAlphaTest = npcDiffuseAlphaTest
+        ' El HECHO del record para el escritor de alfa de la cabeza (NpcDiffuseAlphaTest) NO se asigna acá: lo asigna
+        ' ApplyShapeMaterialOverrides en UN solo lugar, común a las dos ramas de la cabeza de cara (ver ahí). Historia: vivió
+        ' dentro de la rama del MNAM, de donde se evaporaba sin MNAM (1.757 NPC en FO4 y todo SSE), y después arriba de este
+        ' Sub sin condición. El preview del picker / editor de HDPT (PreviewDeHeadPart) no tiene NPC: queda sin informar
+        ' (Nothing, "no hay record"), y ahí sólo se lee por GetValueOrDefault (FaceGenAlphaWriterApplies): mismo cuadro.
 
         ' forceDiffuseOnly (RE): la fuente FTST del camino Face aplica SOLO el slot 0 — el ATTACH del engine,
         ' GetTexturePath(slot 0) (Fallout4.exe 1.11.240 0x1406EE3C2..4A2: FTST si el head part es Face, si no el
@@ -795,7 +805,7 @@ Friend NotInheritable Class NpcMaterialResolver
 
         Dim mnamMaterialApplied As Boolean = False
         If textureSet.MaterialDe() <> "" Then
-            Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialDe(), material, shap, nif)
+            Dim overrideMaterial = MaterialDelMnam(textureSet, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
                 mnamMaterialApplied = True
                 ' TEXTURES-ONLY + ALPHA: el MNAM del TXST aporta SOLO sus paths de textura más el alpha. El
@@ -842,6 +852,76 @@ Friend NotInheritable Class NpcMaterialResolver
             Dim tsFid = textureSet.FormID
             Logger.LogLazy(Function() $"[TXST-MNAM] txst=0x{tsFid:X8} → TX## del TXST NO aplicados (el material del MNAM es la única fuente; regla BAKETEST2 N_S/N_S2)")
         End If
+    End Sub
+
+    ''' <summary>El material del MNAM de un TXST, cargado como lo carga el motor DENTRO del TXST (Fallout4.exe 1.11.240 0x140596E50: copia
+    ''' sus 8 rutas de textura a los slots del TXST), o Nothing si el TXST no tiene MNAM o el archivo no carga (entonces los slots son
+    ''' los TX## del record). Con MNAM cargado el material es la ÚNICA fuente de rutas (REGLA 2, bake controlado BAKETEST2 N_S/N_S2).
+    ''' Una sola sede de esa lectura: <see cref="ApplyTextureSetOverrides"/> y <see cref="RutaDelSlotDelTxst"/>.</summary>
+    Private Shared Function MaterialDelMnam(textureSet As Canon.ITxst, material As FO4UnifiedMaterial_Class, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo) As FO4UnifiedMaterial_Class
+        If textureSet Is Nothing OrElse textureSet.MaterialDe() = "" Then Return Nothing
+        Return MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialDe(), material, shap, nif)
+    End Function
+
+    ''' <summary>La ruta que el TXST del motor tiene en el slot <paramref name="slot"/> (GetTexturePath 0x140597100): la del material del
+    ''' MNAM si carga (<see cref="MaterialDelMnam"/>), si no el TX## del record. Sólo los slots que leen los escritores de la cabeza
+    ''' (ATTACH 0x1406EE3E9 slot 0; REGEN 0x1406EED57 / 0x1406EED74 slots 1 y 7): 0 diffuse, 1 normal, 7 smooth-spec.</summary>
+    Private Shared Function RutaDelSlotDelTxst(textureSet As Canon.ITxst, slot As Integer, material As FO4UnifiedMaterial_Class, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo) As String
+        Dim mnam = MaterialDelMnam(textureSet, material, shap, nif)
+        If mnam Is Nothing Then Return textureSet.Ranura(slot)
+        Select Case slot
+            Case 0 : Return mnam.Diffuse_or_Base_Texture
+            Case 1 : Return mnam.NormalTexture
+            Case 7 : Return mnam.SmoothSpecTexture
+        End Select
+        Throw New ArgumentOutOfRangeException(NameOf(slot), slot, "the head writers read slots 0, 1 and 7 only")
+    End Function
+
+    ''' <summary>FO4, shape de un head part de CARA (<see cref="EsCabezaDeCara"/>) que el motor NO dibuja con la clase Face: lo que el motor
+    ''' le escribe, y nada más. La clase la decide <see cref="ApplyShapeMaterialOverrides"/> (IsEngineFace / IsEngineSkinTint, factory
+    ''' 0x14216B610). Fallout4.exe 1.11.240:
+    ''' <list type="bullet">
+    ''' <item>ATTACH 0x1406EE3A9..0x1406EE4A2, toda clase (gate sólo RTTI 0x1406EE3B9): escribe SÓLO el diffuse (material+0x48,
+    ''' 0x1406EE4A2). Set = con DATA 0x20 (Uses Body Texture, 0x1406EE3F4) la textura del cuerpo 0x140655B80, que PISA al FTST, y si es
+    ''' nula salta al TNAM (0x1406EE413); si no, el NPC.FTST (PNAM = Face 0x1406EE3C6, la precondición); sin set, el TNAM (0x1406EE42C);
+    ''' sin TNAM no escribe. Con set, ruta vacía (0x1406EE455) o textura que no carga (0x1406EE48F) => no escribe y NO cae al TNAM
+    ''' (GetTexturePath 0x140597100 nunca devuelve nulo para slot &lt; 8).</item>
+    ''' <item>REGEN 0x1406EEA90, despacho 0x1406EED07: clase SkinTint (5) => tono (0x140655910, lo pone el código común por
+    ''' material.SkinTint) + slots 1 y 7 del RESUELTO (0x1406DEA10 0x1406EED57 / 0x1406EED74; ruta vacía o que no carga => no escribe).
+    ''' Resuelto = con DATA 0x20 el cuerpo, que PISA a FTST/DFT (0x1406EEC9E) y si es nulo cae al TNAM; si no FTST ?? RACE.DFT[sexo]
+    ''' (0x1406EEBCB / 0x1406EEBF7) ?? TNAM (0x1406EECAB). Cualquier otra clase (Envmap, Glowmap, Eye, Hair, Default...): nada.</item>
+    ''' </list>
+    ''' Diffuse-only POR CONSTRUCCIÓN: no pasa por <see cref="ApplyTextureSetToMaterial"/>, cuyo heurístico de flag 0x2 aplicaría N/S de
+    ''' un TNAM; y no renombra <c>relatedMaterial.path</c>: el motor nunca aplica el MNAM de un TXST como material (ver REGLA B).
+    ''' ⛔ HUECO DECLARADO (rev-08): el ATTACH renombra la raíz del modelo (0x1406EE388 -&gt; SetName 0x1416BD250 con [hdpt+0x170]) y lee
+    ''' SU +0x138: actúa sobre UNA geometría por head part; la app aplica a cada shape del candidato. 17 de 17 NIF de cara del load
+    ''' order (censo 28-oct, D:\WinTmp\rc\shverif) tienen una sola shape: no medible hoy, no se inventa regla para el caso de varias.</summary>
+    Private Sub AplicarCabezaNoFaceFo4(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, material As FO4UnifiedMaterial_Class,
+                                       esSkinTint As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo)
+        ' El hecho del record para el escritor de alfa NO va acá: ApplyShapeMaterialOverrides lo asigna en un solo lugar para las dos
+        ' ramas (el escritor 0x1406EEBB8 / 0x1406EEC0D no mira la clase del material).
+        Dim cuerpo As Canon.ITxst = If(candidate.UsesBodyTexture, ResolveActorSkinTextureSet(state, MainForm.SkinRegion.Body), Nothing)
+        Dim tnam As Canon.ITxst = If(candidate.TextureSetFormID <> 0UI, _ctx.HeadParts.Txst(candidate.TextureSetFormID), Nothing)
+        Dim ftst As Canon.ITxst = If(state.ExplicitHeadTextureFormID <> 0UI, _ctx.HeadParts.Txst(state.ExplicitHeadTextureFormID), Nothing)
+
+        Dim attach As Canon.ITxst = If(If(candidate.UsesBodyTexture, cuerpo, ftst), tnam)
+        If attach IsNot Nothing Then
+            Dim d = RutaDelSlotDelTxst(attach, 0, material, shap, nif)
+            If TxstSlotDecision(attach.FormID, "Diffuse", d, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = d
+        End If
+        If Logger.Enabled Then
+            Dim aFid = If(attach Is Nothing, 0UI, attach.FormID), ubt = candidate.UsesBodyTexture, st = esSkinTint
+            Logger.LogLazy(Function() $"[FACE-NOFACE-FO4] attach=0x{aFid:X8} usesBodyTexture={ubt} skinTint={st} (ATTACH 0x1406EE3A9 diffuse; REGEN 0x1406EED07)")
+        End If
+        If Not esSkinTint Then Return
+
+        Dim dft As Canon.ITxst = If(state.ExplicitHeadTextureFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI, _ctx.HeadParts.Txst(state.HeadTextureFormID), Nothing)
+        Dim resuelto As Canon.ITxst = If(If(candidate.UsesBodyTexture, cuerpo, If(ftst, dft)), tnam)
+        If resuelto Is Nothing Then Return
+        Dim n = RutaDelSlotDelTxst(resuelto, 1, material, shap, nif)
+        If TxstSlotDecision(resuelto.FormID, "Normal", n, material.NormalTexture, gatedSlot:=False, diffuseOnly:=False) Then material.NormalTexture = n
+        Dim s = RutaDelSlotDelTxst(resuelto, 7, material, shap, nif)
+        If TxstSlotDecision(resuelto.FormID, "SmoothSpec", s, material.SmoothSpecTexture, gatedSlot:=False, diffuseOnly:=False) Then material.SmoothSpecTexture = s
     End Sub
 
     ''' <param name="fo4FaceComposeInputsOnly">SOLO FO4, texture set del head part de CARA — venga de
@@ -1624,35 +1704,51 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' SSE —que no tiene .bgsm— no se mueve un bit.
                 Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.IsEngineSkinTint())
                 ' SYNC: RENDER == BAKE (el bake entra por este mismo Sub vía delegate).
-                ' Gate engine-faithful de cara, RE en los dos binarios: el motor aplica el texture set de cara
-                ' (NPC.FTST / RACE.DFTM-DFTF) SOLO a shapes con material shader-type Face(4) — SSE 0x14042BF0C,
-                ' FO4 CK 0x140ED437D. Un HDPT Face cuyo shape NO es material Face conserva sus texturas
-                ' autoradas (ManakinRace: sin el gate se le pisaba la madera con FemaleHead.dds del DFTF).
-                ' mat.Facegen es el predicado game-aware. El HDPT.TNAM NO se gatea: el motor lo aplica al
-                ' attachear el modelo, independiente del shader.
-                Dim shaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)
-                If isFaceTxstSource AndAlso textureSet IsNot Nothing AndAlso Not shaderIsFace Then
+                ' ⛔ UN SOLO DUEÑO DE LA DECISIÓN DE CARA, POR SHAPE: la CLASE con la que el motor dibuja la shape (IsEngineFace, factory
+                ' 0x14216B610 sobre los flags del material), NO el tipo del head part ni el byte Facegen del .bgsm. La decisión del motor
+                ' es por geometría (REGEN 0x1406EEA90: material->GetType 0x1406EECC5, despacho 0x1406EED07); ResolveTextureSet es por
+                ' candidato. Medido (28-oct, D:\WinTmp\rc\shverif): Shadowheart (Head.bgsm Facegen=True + EnvironmentMapping=True =
+                ' Envmap), SynthHeadGen1..5 (gen1a.bgsm, Envmap) y DLC04MaleHeadGhoulGlowing (Glowmap) son PNAM = Face y NO clase Face.
+                '   FO4: clase Face -> la rama de cara (el set de ResolveTextureSet, compose); otra clase -> AplicarCabezaNoFaceFo4
+                '        (sólo lo que el motor le escribe: diffuse del ATTACH y, si es SkinTint, N/S del resuelto).
+                '   SSE: el set de cara (capa aux presente, isFaceTxstSource) no va a una shape que no es clase Face (RegenerateHead
+                '        0x14042BF0C; ManakinRace: sin esto se le pisaba la madera con el FemaleHead.dds del DFTF). En SSE la clase es el
+                '        enum inline del bloque = Facegen (IsTypeFaceTint), así que el predicado da lo mismo que daba.
+                Dim esCaraDelMotor As Boolean = (matPre IsNot Nothing AndAlso matPre.IsEngineFace())
+                Dim esSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+                Dim npcDiffuseAlphaTest As Boolean = state IsNot Nothing AndAlso
+                                                    state.HeadDiffuseAlphaTest AndAlso
+                                                    IsFaceHeadPartFor(candidate)
+                Dim ramaNoFaceFo4 As Boolean = Not esSse AndAlso EsCabezaDeCara(candidate, state) AndAlso Not esCaraDelMotor
+                Dim saltoSse As Boolean = Not ramaNoFaceFo4 AndAlso isFaceTxstSource AndAlso textureSet IsNot Nothing AndAlso Not esCaraDelMotor
+                Dim aplicaSet As Boolean = Not ramaNoFaceFo4 AndAlso Not saltoSse AndAlso ((Not isSkinCand) OrElse shaderIsSkinTint)
+                ' ⛔ EL HECHO DEL RECORD PARA EL ESCRITOR DE ALFA DE LA CABEZA, UN SOLO LUGAR para la rama de cara y la rama nueva
+                ' (decisión del usuario 28-oct, rev-12): el escritor (0x1406EEBB8 head part Face + 0x1406EEC0D ACBS) no mira la clase
+                ' del material, así que las dos ramas dan lo mismo para el mismo record. Condición = la de siempre de la rama de cara:
+                ' hay set de la cabeza (textureSet de ResolveTextureSet). Sin set queda sin informar (Nothing), en las dos ramas.
+                If matPre IsNot Nothing AndAlso textureSet IsNot Nothing AndAlso (ramaNoFaceFo4 OrElse aplicaSet) Then matPre.NpcDiffuseAlphaTest = npcDiffuseAlphaTest
+                If ramaNoFaceFo4 Then
+                    If matPre IsNot Nothing Then
+                        AplicarCabezaNoFaceFo4(candidate, state, matPre, shaderIsSkinTint, shape.NifShape, shape.NifContent)
+                    End If
+                ElseIf saltoSse Then
                     If logEnabled Then
                         Dim shN2 = shape.ShapeName
                         Dim shTy2 = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
-                        Logger.LogLazy(Function() $"[FACE-SHADER-GATE] face TXST source (FTST): shape='{shN2}' shader={shTy2} Facegen=False → face texture set NOT applied (keeps authored material).")
+                        Logger.LogLazy(Function() $"[FACE-SHADER-GATE] SSE face texture set: shape='{shN2}' shader={shTy2} not Face class → face texture set NOT applied (keeps authored material).")
                     End If
-                ElseIf (Not isSkinCand) OrElse shaderIsSkinTint Then
-                    ' isFaceTxstSource (solo FO4, =FTST): diffuse-only per RE del attach (slot 0).
+                ElseIf aplicaSet Then
+                    ' isFaceTxstSource (solo SSE, capa aux presente): la base TNAM diffuse-only (ley por capas).
                     ' HECHO del record + anatomía = la condición del escritor de alfa de la cabeza (Fallout4.exe 0x1406EEA90):
                     ' head part tipo Face (0x1406EEBB8) de un NPC con ACBS\Diffuse Alpha Test 0x01000000 (0x1406EEC0D). Con eso
                     ' ResolveEngineAlpha da el bloque NUEVO 0x02EC/0 y Save_To_Shader prende SF2 Alpha_Test (FaceGenAlphaWriterApplies).
                     ' El False explícito sólo limpia el bit SF2 (ley del CK); ya no hay veto de creación del bloque.
                     ' Los ojos Gen1 (SynthGen1Eyes, sin uso en vanilla) tienen shader INLINE con su NiAlphaProperty 0x12EC/128
                     ' en el NIF: el alpha-test es del NIF, no del MNAM (Gen1Eyes.BGSM, test 128), y ya no se toca.
-                    Dim npcDiffuseAlphaTest As Boolean = state IsNot Nothing AndAlso
-                                                        state.HeadDiffuseAlphaTest AndAlso
-                                                        IsFaceHeadPartFor(candidate)
                     ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
                                              isHeadPartTextureSet:=IsHeadPartTextureSetFor(candidate),
                                              forceDiffuseOnly:=isFaceTxstSource,
-                                             fo4FaceComposeInputsOnly:=fo4FaceComposeOnly,
-                                             npcDiffuseAlphaTest:=npcDiffuseAlphaTest)
+                                             fo4FaceComposeInputsOnly:=fo4FaceComposeOnly)
                 ElseIf logEnabled Then
                     Dim shN = shape.ShapeName
                     Dim shTy = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
@@ -1663,13 +1759,12 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' CAPA AUX SSE (modelo por capas, ver doc en ResolveTextureSet): sobre la base TNAM ya aplicada,
                 ' el set resuelto aporta SOLO Normal(TX01) + _sk(TX03→LightingTexture: en material Face el TX03
                 ' es subsurface, no emisivo) + detail(TX04→DisplacementTexture, el que consume el fold del
-                ' facetint). Ni diffuse ni SmoothSpec. Gate por mat.Facegen, igual que RegenerateHead
+                ' facetint). Ni diffuse ni SmoothSpec. Gate por la clase Face (esCaraDelMotor, el mismo dueño), igual que RegenerateHead
                 ' 0x14042BF0C. Slot vacío del aux ⇒ conserva el de la base: el motor solo carga la textura si
                 ' el path del slot resuelve.
                 If sseFaceAux IsNot Nothing AndAlso relatedMaterial.material IsNot Nothing Then
                     Dim mAux = relatedMaterial.material
-                    Dim auxShaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)
-                    If auxShaderIsFace Then
+                    If esCaraDelMotor Then
                         Dim appliedN = False, appliedSk = False, appliedDet = False
                         If Not String.IsNullOrEmpty(sseFaceAux.Ranura(1)) Then
                             mAux.NormalTexture = sseFaceAux.Ranura(1) : appliedN = True
@@ -1688,7 +1783,7 @@ Friend NotInheritable Class NpcMaterialResolver
                     ElseIf logEnabled Then
                         Dim shNA2 = shape.ShapeName
                         Dim shTyA = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
-                        Logger.LogLazy(Function() $"[FACE-AUX-TXST] shape='{shNA2}' shader={shTyA} Facegen=False → capa aux NO aplicada (gate Face).")
+                        Logger.LogLazy(Function() $"[FACE-AUX-TXST] shape='{shNA2}' shader={shTyA} not Face class → capa aux NO aplicada (gate Face).")
                     End If
                 End If
             End If
