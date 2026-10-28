@@ -6729,6 +6729,20 @@ Public Class MainForm
         Return (elegida.SampledArmorFormIDs, elegida.SampledArmorContextKeywords)
     End Function
 
+    ''' <summary>⛔⛔ LA SEDE UNICA de "vestir el estado como lo dibuja el render": la realizacion de <see cref="PrendasParaRender"/>
+    ''' entra al loadout del estado (las prendas) y a su contexto de keywords. La llaman el render (RenderCurrentStateAsync) y los
+    ''' arneses que reproducen ese render (Tools\OclusionRenderGate: el barrido y los casos vestidos); ola 8, sv-03: estaba copiada
+    ''' en dos lugares y un tercero no la llamaba (el NPC salia desnudo en el arnes). Devuelve la realizacion aplicada.</summary>
+    Friend Function VestirParaRender(state As NPCVisualState, host As NpcRenderHost) _
+            As (Armos As List(Of UInteger), Keywords As Dictionary(Of UInteger, List(Of UInteger)))
+        Dim prendas = PrendasParaRender(state, host)
+        state.LoadoutArmorFormIDs.AddRange(prendas.Armos)
+        For Each kvCtx In prendas.Keywords
+            state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
+        Next
+        Return prendas
+    End Function
+
     Private Async Function RenderCurrentStateAsync(requestVersion As Integer, Optional host As NpcRenderHost = Nothing) As Task
         If host Is Nothing Then host = _renderHost
         If host.CurrentBaseState Is Nothing Then Return
@@ -6742,13 +6756,9 @@ Public Class MainForm
 
         ' Build final state with selected outfit
         Dim state = _stateResolver.CloneVisualState(host.CurrentBaseState)
-        ' ⛔⛔ UNA sola resolucion del atuendo, la de `PrendasParaRender`. Ver su doc: leer solo la entrada
-        ' seleccionada dejaba al NPC desnudo cuando en ese instante no habia ninguna.
-        Dim prendasDelRender = PrendasParaRender(state, host)
-        state.LoadoutArmorFormIDs.AddRange(prendasDelRender.Armos)
-        For Each kvCtx In prendasDelRender.Keywords
-            state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
-        Next
+        ' ⛔⛔ UNA sola resolucion del atuendo, la de `PrendasParaRender`, aplicada por su sede `VestirParaRender`. Ver su doc: leer
+        ' solo la entrada seleccionada dejaba al NPC desnudo cuando en ese instante no habia ninguna.
+        VestirParaRender(state, host)
 
         ' Gate de FaceGen = RACE.DATA bit 0x2 "FaceGen Head", el discriminador canónico de 0 excepciones
         ' (RaceUtil.RaceSupportsFaceGen) — el MISMO que habilita el botón Edit Face (UpdateEditFaceEnabled),
