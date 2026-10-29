@@ -1453,7 +1453,7 @@ Public Module FaceGenBuilder
                                     Dim tTexF = Stopwatch.GetTimestamp()
                                     Try
                                         BakeFaceTextures(nif, cloned, srcNif, srcShape,
-                                                         hdpt, effectiveHeadPartType, applyMaterialOverrides,
+                                                         hdpt, effectiveHeadPartType, applyMaterialOverrides, resHeadParts,
                                                          npcFormID, originPlugin,
                                                          pluginManager, lectura, appliedPresets, host,
                                                          state, npcData, willBePacked, result,
@@ -3598,6 +3598,7 @@ Public Module FaceGenBuilder
                                  hdpt As Canon.IHdpt,
                                  effectiveHeadPartType As Integer,
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
+                                 headParts As ResolucionDeHeadParts,
                                  npcFormID As UInteger,
                                  originPlugin As String,
                                  pluginManager As PluginManager,
@@ -3628,6 +3629,9 @@ Public Module FaceGenBuilder
         End If
 
         Dim mat = ResolveRenderResolvedShapeMaterial(srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
+        ' Las ENTRADAS del compose son las de la capa 0 del CK (FTST ?? RACE.DFT[sexo]) sea cual sea la clase de la shape: para una shape que
+        ' no es clase Face su material resuelto lleva el diffuse del ATTACH, que el compose no lee (NpcMaterialResolver.MaterialDeEntradasDelComposeFo4).
+        If mat IsNot Nothing Then mat = NpcMaterialResolver.MaterialDeEntradasDelComposeFo4(mat, state, If(headParts Is Nothing, Nothing, New Func(Of UInteger, Canon.ITxst)(AddressOf headParts.Txst)), srcShape, srcNif)
         If mat Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: resolved source material is Nothing (npcFormID=0x{npcFormID:X8})")
             RecordTextureFailure(result, "could not resolve the face material (no D/N/S texture paths)")
@@ -3637,7 +3641,11 @@ Public Module FaceGenBuilder
         Dim diffusePath = mat.Diffuse_or_Base_Texture
         Dim normalPath = mat.NormalTexture
         Dim specPath = mat.SmoothSpecTexture
-        If String.IsNullOrEmpty(diffusePath) Then
+        ' SIN BASE (ley de la cara de FO4, el hecho lo pone NpcMaterialResolver.ApplyShapeMaterialOverrides): no hay set del que salgan
+        ' D/N/S; el compose parte de la base nula (FaceTintCpuCompositor.ComposeCpuPipelineSinBase) y escribe los TRES mapas, como el
+        ' motor copia los tres RT (0x1406F41AC..) y el exportador del CK escribe _d/_msn/_s (0x140ABE0F0).
+        Dim sinBase As Boolean = mat.ComposeDeCaraSinBase
+        If Not sinBase AndAlso String.IsNullOrEmpty(diffusePath) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffusePath empty (npcFormID=0x{npcFormID:X8})")
             RecordTextureFailure(result, "the face material has no diffuse texture path")
             Return
@@ -3656,8 +3664,8 @@ Public Module FaceGenBuilder
             ' El diffuse ya se declaro al entrar. Normal y specular se declaran ACA, porque su predicado es
             ' "el material declara ese canal" y recien ahora se sabe.
             Dim declaradas As FaceGenPaths.SalidaDeTexturaDeCara = FaceGenPaths.SalidaDeTexturaDeCara.Ninguna
-            If Not String.IsNullOrEmpty(normalPath) Then declaradas = declaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal
-            If Not String.IsNullOrEmpty(specPath) Then declaradas = declaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Specular
+            If sinBase OrElse Not String.IsNullOrEmpty(normalPath) Then declaradas = declaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal
+            If sinBase OrElse Not String.IsNullOrEmpty(specPath) Then declaradas = declaradas Or FaceGenPaths.SalidaDeTexturaDeCara.Fo4Specular
             result.SalidasDeTexturaDeclaradas = result.SalidasDeTexturaDeclaradas Or declaradas
         End If
 
@@ -3718,10 +3726,10 @@ Public Module FaceGenBuilder
         Dim normalKey = FO4UnifiedMaterial_Class.CorrectTexturePath(normalPath)
         Dim specKey = FO4UnifiedMaterial_Class.CorrectTexturePath(specPath)
 
-        Dim diffuseBytes = TryGetFilesDictionaryBytes(diffuseKey)
-        Dim normalBytesArr = TryGetFilesDictionaryBytes(normalKey)
-        Dim specBytesArr = TryGetFilesDictionaryBytes(specKey)
-        If diffuseBytes Is Nothing Then
+        Dim diffuseBytes = If(sinBase, Nothing, TryGetFilesDictionaryBytes(diffuseKey))
+        Dim normalBytesArr = If(sinBase, Nothing, TryGetFilesDictionaryBytes(normalKey))
+        Dim specBytesArr = If(sinBase, Nothing, TryGetFilesDictionaryBytes(specKey))
+        If Not sinBase AndAlso diffuseBytes Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse bytes not resolved key='{diffuseKey}' (npcFormID=0x{npcFormID:X8})")
             RecordTextureFailure(result, $"face diffuse texture not found on disk / in archives: '{diffuseKey}'")
             Return
@@ -3740,8 +3748,12 @@ Public Module FaceGenBuilder
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult = Nothing
 
         Try
-            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey,
-                                                           headDiffuseAlphaTest:=(npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.Record.ConfigurationFlags And &H1000000UI) <> 0UI)
+            If sinBase Then
+                cpu = FaceTintCpuCompositor.ComposeCpuPipelineSinBase(built.Layers, built.RegionSwaps, OutputSettings)
+            Else
+                cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey,
+                                                               headDiffuseAlphaTest:=(npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.Record.ConfigurationFlags And &H1000000UI) <> 0UI)
+            End If
         Catch ex As Exception
             ' F1: la EXCEPCION se reporta aca con tipo y mensaje. Antes solo iba al log y el fallo se INFERIA rio
             ' abajo ("no hubo diffuse"), inferencia que ademas solo corria en la rama CPU-only: en DebugMode
@@ -3762,7 +3774,25 @@ Public Module FaceGenBuilder
         Dim normEntry As PreviewModel.Texture_Loaded_Class = Nothing
         Dim specEntry As PreviewModel.Texture_Loaded_Class = Nothing
         Dim w As Integer, h As Integer
-        If needGl Then
+        If needGl AndAlso sinBase Then
+            ' --- GL path sin base: las tres fuentes son la base nula como textura plana al lado del lienzo (el GPU siembra desde una
+            ' textura; la misma ley que el CPU, FaceTintCpuCompositor.SemillaSinBase). ---
+            Dim sem = NpcFaceTintResolver.SubirSemillasSinBase(OutputSettings)
+            w = sem.LadoD
+            h = w
+            Dim idD = sem.IdD, idN = sem.IdN, idS = sem.IdS
+            For Each id In {idD, idN, idS}
+                If id <> 0 Then tempIds.Add(id)
+            Next
+            If idD = 0 Then
+                RecordTextureFailure(result, "the null base (no FTST / RACE.DFT) could not be uploaded to GL (id 0)")
+                DeleteGlTextures(tempIds)
+                Return
+            End If
+            diffEntry = New PreviewModel.Texture_Loaded_Class With {.Texture_ID = idD}
+            normEntry = If(idN <> 0, New PreviewModel.Texture_Loaded_Class With {.Texture_ID = idN}, Nothing)
+            specEntry = If(idS <> 0, New PreviewModel.Texture_Loaded_Class With {.Texture_ID = idS}, Nothing)
+        ElseIf needGl Then
             ' --- GL path (DebugMode): upload source D/N/S a GL para correr el GPU pipeline (escribe _2). ---
             Dim uploadPaths As New List(Of String)
             Dim uploadBytes As New List(Of Byte())

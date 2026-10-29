@@ -10498,10 +10498,9 @@ persist:
     ''' de la RACE por genero. Mismo source que el fallback Face del render (record-puro).</summary>
     Private Sub ResolveFaceSkin(npcData As NPC_Data, race As Canon.IRace, pm As PluginManager,
                                 ByRef d As String, ByRef n As String, ByRef s As String)
-        Dim txstId = npcData.Record.HeadTexture
-        If txstId = 0UI AndAlso race IsNot Nothing Then
-            txstId = race.DefaultFaceTextureDe(npcData.Record.ConfigurationFlagsFemale)
-        End If
+        ' La base del compose de la cara: la sede de la ley (NpcMaterialResolver.BaseDelComposeDeCaraFo4, FTST ?? RACE.DFT[sexo]).
+        Dim txstId = FO4_NPC_Manager.NpcMaterialResolver.BaseDelComposeDeCaraFo4(npcData.Record.HeadTexture,
+                                                                                  If(race IsNot Nothing, race.DefaultFaceTextureDe(npcData.Record.ConfigurationFlagsFemale), 0UI))
         If txstId = 0UI Then Return
         Dim rec = pm.GetRecord(txstId)
         If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then Return

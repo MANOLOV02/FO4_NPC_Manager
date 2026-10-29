@@ -596,20 +596,63 @@ Friend NotInheritable Class NpcMaterialResolver
         Return candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart
     End Function
 
-    ''' <summary>Ver <see cref="IsHeadPartTextureSetFor"/>: misma proyección compartida render-completo /
-    ''' fast path, para el flag isFaceHeadPart.</summary>
-    Friend Shared Function IsFaceHeadPartFor(candidate As MainForm.MeshCandidate) As Boolean
-        Return candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace
-    End Function
-
     ''' <summary>El head part es la CARA del NPC: HDPT PNAM = Face (el tipo PROPIO del record, <c>HeadPartTypeRaw</c>, no el efectivo:
     ''' los sub-parts Misc que heredan Face por HNAM —MouthShadow, lashes/AO/wet— conservan su material) y hay NPC. Es la condición con
     ''' la que el motor mira FTST y RACE.DFT: Fallout4.exe 1.11.240 ATTACH 0x1406EE3C6 y REGEN 0x1406EEBB8 (<c>[hdpt+0x74] == 1</c>, con
-    ''' NPC). Una sola definición: la usan <see cref="ResolveTextureSet"/> (qué set es el de la cara) y
-    ''' <see cref="ApplyShapeMaterialOverrides"/> (qué rama le toca a cada shape).</summary>
+    ''' NPC). Una sola definición: la usan <see cref="ResolveTextureSet"/> (qué set es el de la cara),
+    ''' <see cref="ApplyShapeMaterialOverrides"/> (qué rama le toca a cada shape) y el hecho del record para el escritor de alfa de la
+    ''' cabeza, que compara el MISMO campo (0x1406EEBB4 <c>mov r13d,[rbp+0x74]</c> / 0x1406EEBB8 <c>cmp r13d,1</c>): una parte extra Misc
+    ''' que la app promueve a Face por herencia (HeadPartResolver.ResolveEffectivePartType) no lo pasa nunca.</summary>
     Friend Shared Function EsCabezaDeCara(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState) As Boolean
         Return candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart AndAlso
                candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing
+    End Function
+
+    ''' <summary>LA BASE DEL COMPOSE DE LA CARA DE FALLOUT 4: el FormID del TXST del que el compose de FaceCustomization arma su capa 0
+    ''' (slots 0/1/7), o 0 si no hay ninguno. Una sede para el render, el bake y el CLI.
+    ''' <list type="bullet">
+    ''' <item>Juego (vivo): 0x1406EC0D0, <c>[npc+0x248]+0x10</c> (FTST, 0x1406EC191) y si no <c>[race+0x698+sexo*8]+0x10</c>
+    ''' (RACE.DFT[sexo], 0x1406EC202..214).</item>
+    ''' <item>CK (bake, exportador 0x140ABE0F0 -&gt; 0x140ED6820): <c>[npc+0x2E0]+0x10</c> (FTST; cargador 0x140A91068..910AA) y si no
+    ''' <c>[race+0xBA8+sexo*8]+0x10</c> (RACE.DFT[sexo]; 0x140ED69D0..69F3). La misma ley.</item>
+    ''' </list>
+    ''' El TNAM NO entra (ninguno de los dos lo lee para la base) y el cuerpo (DATA 0x20) tampoco. Sin ninguno de los dos no hay capa 0:
+    ''' el compose parte de la base nula (FaceTintCpuCompositor.ComposeCpuPipelineSinBase), juego 0x1406EC23D -&gt; 0x1406EC3F1, CK
+    ''' 0x140ED69ED / 0x140ED69FA -&gt; 0x140ED6C3C. <paramref name="dftFid"/> = RACE.DFT del sexo del NPC (en el estado de la app,
+    ''' <c>HeadTextureFormID</c> cuando no hay FTST).
+    ''' <para>El MISMO par es el resuelto del REGEN sin cuerpo (0x1406EEBCB FTST / 0x1406EEBF7 RACE.DFT[sexo], antes del TNAM de
+    ''' 0x1406EECAB): <see cref="AplicarCabezaNoFaceFo4"/> lo toma de acá, no lo recalcula.</para></summary>
+    Friend Shared Function BaseDelComposeDeCaraFo4(ftstFid As UInteger, dftFid As UInteger) As UInteger
+        Return If(ftstFid <> 0UI, ftstFid, dftFid)
+    End Function
+
+    ''' <summary>LAS ENTRADAS DEL COMPOSE de la cara de Fallout 4 (D/N/S de la capa 0) sobre el material de la shape de la cabeza de cara que
+    ''' el bake hornea. El exportador del CK (0x140ABE0F0 -&gt; 0x140ED65C0 -&gt; 0x140ED6820) arma la capa 0 con FTST ?? RACE.DFT[sexo]
+    ''' (0x140ED69C2..69F3, slots 0/1/7) SIN mirar la clase del material de la shape: la clase sólo gatea la ASIGNACIÓN de los slots al NIF
+    ''' (0x140ED9020). Por eso:
+    ''' <list type="bullet">
+    ''' <item>clase Face: el material resuelto YA es eso (la rama de cara de <see cref="ApplyShapeMaterialOverrides"/>) y se devuelve
+    ''' tal cual;</item>
+    ''' <item>otra clase (Envmap, Glowmap, SkinTint...): su material resuelto lleva el diffuse del ATTACH (y, SkinTint, N/S del resuelto
+    ''' del REGEN), que el compose no lee. Se le aplica el set base (<see cref="BaseDelComposeDeCaraFo4"/>) con la MISMA aplicación
+    ''' que la rama de cara (<see cref="ApplyTextureSetOverrides"/> con fo4FaceComposeInputsOnly) sobre un CLON: el material de la
+    ''' shape no cambia;</item>
+    ''' <item>sin base (<c>ComposeDeCaraSinBase</c>): tal cual; el compose no lee sus texturas.</item>
+    ''' </list>
+    ''' El vivo no la necesita: el REGEN del juego compone sólo la clase Face (despacho 0x1406EED07), y para esa clase el material
+    ''' resuelto ya es la entrada.</summary>
+    Friend Shared Function MaterialDeEntradasDelComposeFo4(material As FO4UnifiedMaterial_Class, state As MainForm.NPCVisualState,
+                                                           txst As Func(Of UInteger, Canon.ITxst), shap As NiflySharp.INiShape,
+                                                           nif As Nifcontent_Class_Manolo) As FO4UnifiedMaterial_Class
+        If material Is Nothing OrElse state Is Nothing OrElse txst Is Nothing OrElse material.ComposeDeCaraSinBase OrElse material.IsEngineFace() Then Return material
+        Dim baseFid = BaseDelComposeDeCaraFo4(state.ExplicitHeadTextureFormID, state.HeadTextureFormID)
+        Dim baseSet As Canon.ITxst = If(baseFid <> 0UI, txst(baseFid), Nothing)
+        If baseSet Is Nothing Then Return material
+        Dim rel As New Nifcontent_Class_Manolo.RelatedMaterial_Class With {.material = material.Clone(), .path = ""}
+        ' usesBodyTexture no participa: con fo4FaceComposeInputsOnly el MNAM ya aporta D/N/S, y el compose no mira el cuerpo.
+        ApplyTextureSetOverrides(baseSet, rel, usesBodyTexture:=False, shap:=shap, nif:=nif, isHeadPartTextureSet:=True,
+                                 fo4FaceComposeInputsOnly:=True)
+        Return rel.material
     End Function
 
     ' PROXY REFUTADO — no reintroducir un flag "el NPC declara su cara por FTST": coincidía con
@@ -644,9 +687,12 @@ Friend NotInheritable Class NpcMaterialResolver
         ' Caso Face sin TNAM: fallback a NPC.FTST. Se gatea por HeadPartTypeRaw, NO por el efectivo: los
         ' sub-parts Misc que heredan Face vía HNAM (MouthShadow, lashes/AO/wet) conservan su material propio.
         ' Sólo aplica a HeadPart; skin y outfit tienen su propio flujo.
+        Dim esCabezaDeCaraFo4 As Boolean = EsCabezaDeCara(candidate, state) AndAlso
+                                           Not (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         If candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart Then
-            ' Caso C: UsesBodyTexture=True gana sobre TNAM.
-            If candidate.UsesBodyTexture AndAlso state IsNot Nothing Then
+            ' Caso C: UsesBodyTexture=True gana sobre TNAM. NO en la cara de FO4: la base del compose no mira el cuerpo
+            ' (BaseDelComposeDeCaraFo4); el diffuse del cuerpo de una shape que no es clase Face lo pone AplicarCabezaNoFaceFo4.
+            If candidate.UsesBodyTexture AndAlso state IsNot Nothing AndAlso Not esCabezaDeCaraFo4 Then
                 Dim bodyTxst = ResolveActorSkinTextureSet(state, MainForm.SkinRegion.Body)
                 If bodyTxst IsNot Nothing Then
                     If logEnabled Then
@@ -667,9 +713,9 @@ Friend NotInheritable Class NpcMaterialResolver
             textureSetFormID = candidate.TextureSetFormID
             If textureSetFormID <> 0UI Then txstSource = "HDPT.TNAM"
             ' Resolución Face por JUEGO, dos leyes medidas (ver doc del parámetro sseFaceAuxTextureSet):
-            '   FO4 — el set resuelto (FTST > TNAM > DFTM si no hay TNAM) reemplaza la BASE COMPLETA D/N/S del
-            ' composite FaceCustomization. SIN MEDIR: el RE del CK 0x140ED4244 sugiere DFT>TNAM también con
-            '   TNAM presente; no aplicado, cero casos vanilla para validarlo contra un bake.
+            '   FO4 — la BASE del composite FaceCustomization = FTST ?? RACE.DFT[sexo] (BaseDelComposeDeCaraFo4: juego 0x1406EC191 /
+            '   0x1406EC214, CK 0x140ED6932..69F3); el TNAM no entra. Sin ninguno, no hay set y el compose parte de la base nula.
+            '   Medido (ola 9, 28-oct): 876 cabezas de cara del load order con TNAM y sin FTST, todas con TNAM = DFT[sexo].
             '   SSE — modelo POR CAPAS: base = TNAM (D y S siempre del TNAM) y capa aux con solo N/_sk/detail.
             ' El guard (EsCabezaDeCara) usa HeadPartTypeRaw, no el efectivo: protege los sub-parts Misc heredados como Face
             ' (MouthShadow/AO/lashes/wet), que conservan su propio material.
@@ -713,33 +759,17 @@ Friend NotInheritable Class NpcMaterialResolver
                     ' Antes era True SIEMPRE ⇒ descartaba el TX03 del TNAM aunque no hubiera aux (bug del _sk del mod).
                     isFaceTextureSource = (sseFaceAuxTextureSet IsNot Nothing)
                 Else
-                    ' FO4 — precedencia FTST > TNAM > DFTM(si TNAM=0). El SET RESUELTO se aplica, pero
-                    ' cuando viene de la cadena FTST se aplica SOLO TX00/TX01/TX07 (ver la regla medida
-                    ' en ApplyTextureSetToMaterial, parámetro fo4FaceComposeInputsOnly).
+                    ' FO4 — la base del compose (BaseDelComposeDeCaraFo4): FTST ?? RACE.DFT[sexo]. Se aplica SOLO TX00/TX01/TX07
+                    ' (ver la regla medida en ApplyTextureSetToMaterial, parámetro fo4FaceComposeInputsOnly).
                     ' isFaceTextureSource (= forceDiffuseOnly, "slot 0 únicamente") va False acá A
                     ' PROPÓSITO: es una hipótesis REFUTADA por bake controlado — rompería el _msn y el _s
                     ' de 874 NPCs, porque TX01 y TX07 SÍ alimentan el compose. La regla medida es la
                     ' intermedia: TX00/TX01/TX07 al compose, TX02-TX06 inertes.
-                    If state.ExplicitHeadTextureFormID <> 0UI Then
-                        textureSetFormID = state.ExplicitHeadTextureFormID
-                        txstSource = "NPC.FTST(Face-override)"
-                        fo4FaceComposeInputsOnly = True
-                    ElseIf textureSetFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI Then
-                        textureSetFormID = state.HeadTextureFormID
-                        txstSource = "RACE.DFTM(Face-fallback)"
-                        fo4FaceComposeInputsOnly = True
-                    ElseIf textureSetFormID <> 0UI Then
-                        ' El TNAM del propio head part de CARA también es "input del compose": la ley no
-                        ' depende de qué record aportó el set, sino de que ESTE sea el texture set de la
-                        ' cara. Sus D/N/S alimentan el compose de FaceCustomization y ningún otro slot del
-                        ' TXST participa (los slots 4 y 5 del facegeom del CK salen del MATERIAL, verbatim).
-                        ' NO normalizar esos paths: el CK escribe el string tal cual lo tipeó el autor del
-                        ' material, y el femenino usa '.DDS' en mayúscula. Normalizar rompería las cabezas
-                        ' femeninas, que hoy coinciden.
-                        ' textureSetFormID ya ES el TNAM: no se reasigna nada, sólo se MARCA como input.
-                        txstSource = "HDPT.TNAM(Face-compose)"
-                        fo4FaceComposeInputsOnly = True
-                    End If
+                    ' NO normalizar los paths del set: el CK escribe el string tal cual lo tipeó el autor del material, y el femenino
+                    ' usa '.DDS' en mayúscula.
+                    textureSetFormID = BaseDelComposeDeCaraFo4(state.ExplicitHeadTextureFormID, state.HeadTextureFormID)
+                    txstSource = If(state.ExplicitHeadTextureFormID <> 0UI, "NPC.FTST(Face-base)", If(textureSetFormID <> 0UI, "RACE.DFT(Face-base)", "none(Face: compose sin base)"))
+                    fo4FaceComposeInputsOnly = (textureSetFormID <> 0UI)
                 End If
             End If
         End If
@@ -915,8 +945,10 @@ Friend NotInheritable Class NpcMaterialResolver
         End If
         If Not esSkinTint Then Return
 
-        Dim dft As Canon.ITxst = If(state.ExplicitHeadTextureFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI, _ctx.HeadParts.Txst(state.HeadTextureFormID), Nothing)
-        Dim resuelto As Canon.ITxst = If(If(candidate.UsesBodyTexture, cuerpo, If(ftst, dft)), tnam)
+        ' FTST ?? RACE.DFT[sexo] del resuelto (0x1406EEBCB / 0x1406EEBF7) = la base del compose: una sola sede (BaseDelComposeDeCaraFo4).
+        Dim baseFid = BaseDelComposeDeCaraFo4(state.ExplicitHeadTextureFormID, state.HeadTextureFormID)
+        Dim ftstODft As Canon.ITxst = If(baseFid <> 0UI, _ctx.HeadParts.Txst(baseFid), Nothing)
+        Dim resuelto As Canon.ITxst = If(If(candidate.UsesBodyTexture, cuerpo, ftstODft), tnam)
         If resuelto Is Nothing Then Return
         Dim n = RutaDelSlotDelTxst(resuelto, 1, material, shap, nif)
         If TxstSlotDecision(resuelto.FormID, "Normal", n, material.NormalTexture, gatedSlot:=False, diffuseOnly:=False) Then material.NormalTexture = n
@@ -1658,7 +1690,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' Hecho del record del escritor de alfa de la cabeza (Fallout4.exe 0x1406EEA90: head part Face 0x1406EEBB8 + ACBS 0x01000000
             ' 0x1406EEC0D): el motor no exige TXST, así que no depende de que la cara resuelva uno. Sólo el True: el False sigue llegando por
             ' ApplyTextureSetOverrides (clear del bit SF2, ley del CK).
-            If matPre IsNot Nothing AndAlso state IsNot Nothing AndAlso state.HeadDiffuseAlphaTest AndAlso IsFaceHeadPartFor(candidate) Then matPre.NpcDiffuseAlphaTest = True
+            If matPre IsNot Nothing AndAlso state IsNot Nothing AndAlso state.HeadDiffuseAlphaTest AndAlso EsCabezaDeCara(candidate, state) Then matPre.NpcDiffuseAlphaTest = True
             If logEnabled AndAlso matPre IsNot Nothing Then
                 Dim palOnPre = matPre.GrayscaleToPaletteColor
                 Dim palScalePre = matPre.GrayscaleToPaletteScale
@@ -1718,7 +1750,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim esSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
                 Dim npcDiffuseAlphaTest As Boolean = state IsNot Nothing AndAlso
                                                     state.HeadDiffuseAlphaTest AndAlso
-                                                    IsFaceHeadPartFor(candidate)
+                                                    EsCabezaDeCara(candidate, state)
                 Dim ramaNoFaceFo4 As Boolean = Not esSse AndAlso EsCabezaDeCara(candidate, state) AndAlso Not esCaraDelMotor
                 Dim saltoSse As Boolean = Not ramaNoFaceFo4 AndAlso isFaceTxstSource AndAlso textureSet IsNot Nothing AndAlso Not esCaraDelMotor
                 Dim aplicaSet As Boolean = Not ramaNoFaceFo4 AndAlso Not saltoSse AndAlso ((Not isSkinCand) OrElse shaderIsSkinTint)
@@ -1727,6 +1759,14 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' del material, así que las dos ramas dan lo mismo para el mismo record. Condición = la de siempre de la rama de cara:
                 ' hay set de la cabeza (textureSet de ResolveTextureSet). Sin set queda sin informar (Nothing), en las dos ramas.
                 If matPre IsNot Nothing AndAlso textureSet IsNot Nothing AndAlso (ramaNoFaceFo4 OrElse aplicaSet) Then matPre.NpcDiffuseAlphaTest = npcDiffuseAlphaTest
+                ' ⛔ EL HECHO "LA CARA SE COMPONE SIN BASE", UN SOLO LUGAR para el bake y el vivo: toda shape de la cabeza de cara de FO4
+                ' cuyo NPC no tiene FTST ni RACE.DFT[sexo] (textureSet = BaseDelComposeDeCaraFo4 resuelta = Nothing). El compose no arma
+                ' capa 0 (juego 0x1406EC23D -> 0x1406EC3F1; CK 0x140ED69ED/69FA -> 0x140ED6C3C) y parte de la base nula. Es un hecho del
+                ' NPC, no de la clase de la shape: cada consumidor aplica SU ley de clase. El vivo compone sólo la clase Face (REGEN,
+                ' despacho 0x1406EED07; NpcFaceTintResolver filtra IsEngineFace); el bake compone y escribe para el NPC sea cual sea la
+                ' clase, como el exportador del CK (0x140ABE0F0 -> 0x140ED65C0, sin gate de clase; la clase sólo gatea la ASIGNACION de
+                ' los slots al NIF, 0x140ED9020).
+                If matPre IsNot Nothing Then matPre.ComposeDeCaraSinBase = (Not esSse AndAlso EsCabezaDeCara(candidate, state) AndAlso textureSet Is Nothing)
                 If ramaNoFaceFo4 Then
                     If matPre IsNot Nothing Then
                         AplicarCabezaNoFaceFo4(candidate, state, matPre, shaderIsSkinTint, shape.NifShape, shape.NifContent)

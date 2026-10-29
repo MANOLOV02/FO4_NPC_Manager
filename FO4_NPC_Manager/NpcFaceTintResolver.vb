@@ -280,9 +280,15 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' SON DOS PUERTAS, NO UNA: `sin NPC/raza` (built.npcData Is Nothing) y `sin capas` (FO4). La primera
         ' se alcanza en edicion viva cuando el rebuild no resuelve el NPC, justo despues del restore a
         ' pristine -- mismo modo de falla. Las dos comparten el mismo bajado de flag.
+        ' SIN BASE (NpcMaterialResolver: el NPC no tiene FTST ni RACE.DFT[sexo]): sin capas el motor compone IGUAL, la base nula sola
+        ' (el ejecutor 0x1406ED320 dibuja la pasada aunque no haya capas; el bake hace lo mismo, ComposeCpuPipelineSinBase). Una malla
+        ' de clase Face sin base no deja "nada que componer".
+        Dim haySinBase As Boolean = model.meshes.Any(Function(m) m IsNot Nothing AndAlso m.MeshData IsNot Nothing AndAlso m.MeshData.Material IsNot Nothing AndAlso
+                                                                 m.MeshData.Material.MaterialBase IsNot Nothing AndAlso m.MeshData.Material.MaterialBase.ComposeDeCaraSinBase AndAlso
+                                                                 m.MeshData.Material.MaterialBase.IsEngineFace())
         Dim nothingToCompose As Boolean =
             built.npcData Is Nothing OrElse
-            (layerInputs.Count = 0 AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim)
+            (layerInputs.Count = 0 AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim AndAlso Not haySinBase)
         ' (SSE compone el facetint desde el record del NPC, sin capas de plantilla FO4, asi que una lista
         '  vacia NO puede cortar en Skyrim: tiene que caer al loop donde corre la rama SSE.)
         If nothingToCompose Then
@@ -472,6 +478,12 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Continue For
             End If
 
+            ' SIN BASE: la misma ley que el bake, sin depender de las texturas propias del material (ver ComponerCaraSinBase).
+            If materialBase.ComposeDeCaraSinBase Then
+                mesh.MeshData.Material.SkinToneBaked = ComponerCaraSinBase(model, materialBase, npcData.FormID, layerInputs, regionSwaps, host, seenFaceMeshes)
+                Continue For
+            End If
+
             Dim diffusePath = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
             If String.IsNullOrEmpty(diffusePath) Then Continue For
             If seenFaceMeshes.Contains(diffusePath) Then Continue For
@@ -522,8 +534,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' camino vivo el diffuse SIEMPRE sale nuevo (el cambio de espacio ya crea la textura). En CPU sí
             ' puede dar False, así que ahí se conserva el booleano real.
             Dim meshDiffuseBaked As Boolean = False
-            If Config_App.Current.Setting_GPUSkinning Then
-                ' FaceGenBuilder.OutputSettings = la MISMA resolución/compresión por canal que usa el bake
+            If Config_App.Current.Setting_GPUSkinning Then                ' FaceGenBuilder.OutputSettings = la MISMA resolución/compresión por canal que usa el bake
                 ' (BakeFaceTextures se la pasa a este mismo ApplyFaceTintPipeline). Acá NO se pasaba, así que
                 ' caía al default (Inherit = nativo) y el preview ignoraba CharGen Options: con un tamaño
                 ' explícito el bake escribía D/N/S a ESE tamaño y el preview mostraba el compose a resolución
@@ -1171,7 +1182,20 @@ Friend NotInheritable Class NpcFaceTintResolver
 
     ''' <summary>Upload a BGRA byte buffer to a fresh GL Rgba8 (linear, non-sRGB) 2D texture. Mirrors the
     ''' pristine-restore upload; BGRA source order + PixelFormat.Bgra so the driver stores RGBA correctly.</summary>
-    Private Shared Function UploadRgba8Linear(bgra As Byte(), w As Integer, h As Integer) As Integer
+    ''' <summary>SIN BASE: las tres semillas de la base nula (<see cref="FaceTintCpuCompositor.BgraSemillaSinBase"/>) subidas a GL, cada una
+    ''' al lado de su canal (<see cref="FaceTintCpuCompositor.LadoDelCanalSinBase"/>). Una sola sede para el bake GL
+    ''' (FaceGenBuilder.BakeFaceTextures) y el vivo GPU (<see cref="ComponerCaraSinBase"/>). Id 0 = la subida falló; el que llama es dueño
+    ''' de las texturas y las borra.</summary>
+    Friend Shared Function SubirSemillasSinBase(settings As FaceTintConvention.FaceTintResolutionSettings) As (IdD As Integer, LadoD As Integer, IdN As Integer, LadoN As Integer, IdS As Integer, LadoS As Integer)
+        Dim ladoD = FaceTintCpuCompositor.LadoDelCanalSinBase(settings, FaceTintChannel.Diffuse)
+        Dim ladoN = FaceTintCpuCompositor.LadoDelCanalSinBase(settings, FaceTintChannel.Normal)
+        Dim ladoS = FaceTintCpuCompositor.LadoDelCanalSinBase(settings, FaceTintChannel.Specular)
+        Return (UploadRgba8Linear(FaceTintCpuCompositor.BgraSemillaSinBase(ladoD), ladoD, ladoD), ladoD,
+                UploadRgba8Linear(FaceTintCpuCompositor.BgraSemillaSinBase(ladoN), ladoN, ladoN), ladoN,
+                UploadRgba8Linear(FaceTintCpuCompositor.BgraSemillaSinBase(ladoS), ladoS, ladoS), ladoS)
+    End Function
+
+    Friend Shared Function UploadRgba8Linear(bgra As Byte(), w As Integer, h As Integer) As Integer
         Dim id = OpenTK.Graphics.OpenGL4.GL.GenTexture()
         If id = 0 Then Return 0
         OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, id)
@@ -1337,6 +1361,108 @@ Friend NotInheritable Class NpcFaceTintResolver
         End If
     End Sub
 
+    ''' <summary>SIN BASE (el hecho de NpcMaterialResolver.ApplyShapeMaterialOverrides: el NPC no tiene FTST ni RACE.DFT[sexo]): el compose
+    ''' de la cara en vivo con la MISMA ley que el bake (FaceGenBuilder.BakeFaceTextures). El motor compone los TRES RT desde la base
+    ''' nula y las capas (ejecutor 0x1406ED320, PS de Shaders011.fxp registro 3582) y los instala en el material Face (0x1406F4180..:
+    ''' FaceCustomizationDiffuse / Normals / SmoothSpec) sin leer ninguna textura propia del material. Por eso acá:
+    ''' <list type="number">
+    ''' <item>no se exige que el D propio haya cargado: la entrada del diccionario es sólo el LUGAR del resultado;</item>
+    ''' <item>los tres canales se componen siempre, traiga o no el material N o S;</item>
+    ''' <item>el canal al que ninguna capa contribuye ES la base nula (el compositor GPU lo devuelve sin pasar, IsFresh = False, con
+    ''' la semilla), y se instala igual: es lo que deja el motor en ese RT.</item>
+    ''' </list>
+    ''' Cada resultado va a la ruta que el material declara para ese slot; si no declara ninguna, a la que el bake escribe en el slot
+    ''' 0/1/7 del FaceGeom (<see cref="FaceGenPaths.CustomizacionDds"/>), que pasa a ser la del material, como en el motor. Devuelve True
+    ''' si el diffuse quedó compuesto (alimenta SkinToneBaked).</summary>
+    Private Function ComponerCaraSinBase(model As PreviewModel, materialBase As FO4UnifiedMaterial_Class, npcFormID As UInteger,
+                                         layerInputs As IList(Of FaceTintLayerInput), regionSwaps As IList(Of FaceRegionSwapInput),
+                                         host As NpcRenderHost, seenFaceMeshes As HashSet(Of String)) As Boolean
+        Dim claveD = ClaveDelCanalSinBase(materialBase, FaceGenPaths.SalidasFo4(0), npcFormID)
+        Dim claveN = ClaveDelCanalSinBase(materialBase, FaceGenPaths.SalidasFo4(1), npcFormID)
+        Dim claveS = ClaveDelCanalSinBase(materialBase, FaceGenPaths.SalidasFo4(2), npcFormID)
+        ' Otra malla Face del mismo NPC con el mismo lugar del diffuse ya lo compuso: la textura es la misma.
+        If Not seenFaceMeshes.Add(claveD) Then Return True
+        Dim entD = EntradaDelCanalSinBase(model, claveD)
+        Dim entN = EntradaDelCanalSinBase(model, claveN)
+        Dim entS = EntradaDelCanalSinBase(model, claveS)
+        Dim compuesto As Boolean = False
+        If Config_App.Current.Setting_GPUSkinning Then
+            Dim sem = SubirSemillasSinBase(FaceGenBuilder.OutputSettings)
+            Dim ladoD = sem.LadoD, ladoN = sem.LadoN, ladoS = sem.LadoS
+            Dim semD = sem.IdD, semN = sem.IdN, semS = sem.IdS
+            Dim instalados As New HashSet(Of Integer)
+            Try
+                If semD = 0 OrElse semN = 0 OrElse semS = 0 Then Return False
+                ' baseDiffuseIsLinearOnGpu = True: es el camino VIVO (el diffuse sale en lineal, que es lo que samplea el render). La
+                ' semilla es el cero, que es el mismo en cualquier espacio, así que sembrarla "como lineal" no cambia el acumulador.
+                Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(
+                    host.CompositorState, host.TintGpuCache,
+                    semD, semN, semS,
+                    ladoD, ladoD, layerInputs, regionSwaps,
+                    FaceTintCpuCompositor.AccumSpaceCapability,
+                    FaceGenBuilder.OutputSettings,
+                    baseDiffuseIsLinearOnGpu:=True,
+                    headDiffuseAlphaTest:=False)
+                Dim canales = {(Res:=pr.Diffuse, Ent:=entD, Lado:=ladoD), (Res:=pr.Normal, Ent:=entN, Lado:=ladoN), (Res:=pr.Specular, Ent:=entS, Lado:=ladoS)}
+                For Each c In canales
+                    ' Fresco = el compose; no fresco = el compositor devolvió la semilla de ese canal, que es el resultado.
+                    If c.Res Is Nothing OrElse c.Res.TextureId = 0 Then Continue For
+                    Dim w = If(c.Res.Width > 0, c.Res.Width, c.Lado), h = If(c.Res.Height > 0, c.Res.Height, c.Lado)
+                    SwapIntoDict(c.Ent, c.Res.TextureId, w, h)
+                    c.Ent.Loaded = True
+                    instalados.Add(c.Res.TextureId)
+                    If c.Ent Is entD Then compuesto = True
+                Next
+            Finally
+                For Each id In {semD, semN, semS}
+                    If id <> 0 AndAlso Not instalados.Contains(id) Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(id) : Catch : End Try
+                Next
+            End Try
+        Else
+            compuesto = ApplyCpuComposeToDict(model, claveD, entD, claveN, entN, claveS, entS, layerInputs, regionSwaps,
+                                              headDiffuseAlphaTest:=False, host:=host, sinBase:=True)
+            If compuesto Then
+                entD.Loaded = True : entN.Loaded = True : entS.Loaded = True
+            End If
+        End If
+        Return compuesto
+    End Function
+
+    ''' <summary>Sin base: la clave del diccionario donde va el compose de un canal = la ruta que el material declara para ese slot, o, si
+    ''' no declara ninguna, la del bake (<see cref="FaceGenPaths.CustomizacionDds"/>), que se le asigna al material (el motor le instala
+    ''' el RT de ese canal al material Face pase lo que pase con su ruta, 0x1406F4180..).</summary>
+    Private Function ClaveDelCanalSinBase(materialBase As FO4UnifiedMaterial_Class, salida As FaceGenPaths.SalidaFo4, npcFormID As UInteger) As String
+        Dim propia As String
+        Select Case salida.Salida
+            Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Diffuse : propia = materialBase.Diffuse_or_Base_Texture
+            Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal : propia = materialBase.NormalTexture
+            Case Else : propia = materialBase.SmoothSpecTexture
+        End Select
+        Dim clave = FO4UnifiedMaterial_Class.CorrectTexturePath(propia)
+        If Not String.IsNullOrEmpty(clave) Then Return clave
+        Dim origin As String = Nothing
+        If _ctx IsNot Nothing AndAlso _ctx.PluginManager IsNot Nothing Then origin = _ctx.PluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(origin) Then origin = "unknown"
+        Dim ruta = FaceGenPaths.CustomizacionDds(origin, PluginManager.ToFaceGenLocalFormID(npcFormID), salida, sandbox:=False)
+        Select Case salida.Salida
+            Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Diffuse : materialBase.Diffuse_or_Base_Texture = ruta
+            Case FaceGenPaths.SalidaDeTexturaDeCara.Fo4Normal : materialBase.NormalTexture = ruta
+            Case Else : materialBase.SmoothSpecTexture = ruta
+        End Select
+        Return FO4UnifiedMaterial_Class.CorrectTexturePath(ruta)
+    End Function
+
+    ''' <summary>Sin base: la entrada del diccionario de la clave, creada si el cargador no la tiene (el D propio que no cargó, o la ruta
+    ''' del bake): el compose no lee su contenido, sólo la usa de lugar.</summary>
+    Private Shared Function EntradaDelCanalSinBase(model As PreviewModel, clave As String) As PreviewModel.Texture_Loaded_Class
+        Dim e As PreviewModel.Texture_Loaded_Class = Nothing
+        If Not model.Textures_Dictionary.TryGetValue(clave, e) OrElse e Is Nothing Then
+            e = New PreviewModel.Texture_Loaded_Class With {.Path = clave}
+            model.Textures_Dictionary(clave) = e
+        End If
+        Return e
+    End Function
+
     ''' <summary>Composite CPU-skinning path (espejo del GL ApplyFaceTintPipeline): compone por CPU con los MISMOS
     ''' layers desde los bytes source (FilesDictionary), y sube cada canal a GL, swapeando el dict. El diffuse se
     ''' convierte g22→linear antes de subir (el render GL deja el output en linear; ver comentario del caller).
@@ -1348,11 +1474,12 @@ Friend NotInheritable Class NpcFaceTintResolver
                                            layerInputs As IList(Of FaceTintLayerInput),
                                            regionSwaps As IList(Of FaceRegionSwapInput),
                                            Optional headDiffuseAlphaTest As Boolean = False,
-                                           Optional host As NpcRenderHost = Nothing) As Boolean
-        Dim dB = FilesDictionary_class.GetBytes(diffusePath)
-        If dB Is Nothing Then Return False
-        Dim nB = If(Not String.IsNullOrEmpty(normalPath), FilesDictionary_class.GetBytes(normalPath), Nothing)
-        Dim sB = If(Not String.IsNullOrEmpty(specPath), FilesDictionary_class.GetBytes(specPath), Nothing)
+                                           Optional host As NpcRenderHost = Nothing,
+                                           Optional sinBase As Boolean = False) As Boolean
+        Dim dB = If(sinBase, Nothing, FilesDictionary_class.GetBytes(diffusePath))
+        If Not sinBase AndAlso dB Is Nothing Then Return False
+        Dim nB = If(Not sinBase AndAlso Not String.IsNullOrEmpty(normalPath), FilesDictionary_class.GetBytes(normalPath), Nothing)
+        Dim sB = If(Not sinBase AndAlso Not String.IsNullOrEmpty(specPath), FilesDictionary_class.GetBytes(specPath), Nothing)
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult
         Try
             ' `FaceGenBuilder.OutputSettings` en vez de `Nothing` (= Inherit/nativo): el bake le pasa
@@ -1363,8 +1490,11 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' Sin el, cada refresh de edicion viva re-decodificaba por DirectXTex TODAS las DDS (source D/N/S +
             ' cada capa + cada mascara de swap) mientras el camino GPU las tenia residentes desde el primer
             ' compose. Byte-inerte: el valor cacheado es funcion pura de (bytes, tamaño destino).
-            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, FaceGenBuilder.OutputSettings, diffusePath, normalPath, specPath, headDiffuseAlphaTest,
-                                                           decodeCache:=host?.TintCpuDecodeCache)
+            ' Sin base: la base nula (la misma ley que el bake, FaceTintCpuCompositor.ComposeCpuPipelineSinBase).
+            cpu = If(sinBase,
+                     FaceTintCpuCompositor.ComposeCpuPipelineSinBase(layerInputs, regionSwaps, FaceGenBuilder.OutputSettings, decodeCache:=host?.TintCpuDecodeCache),
+                     FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, FaceGenBuilder.OutputSettings, diffusePath, normalPath, specPath, headDiffuseAlphaTest,
+                                                              decodeCache:=host?.TintCpuDecodeCache))
         Catch ex As Exception
             Dim m = ex.Message
             Logger.LogLazy(Function() $"[FACETINT-CPU-RENDER] compose failed: {m}")
