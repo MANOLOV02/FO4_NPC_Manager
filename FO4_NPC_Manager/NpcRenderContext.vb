@@ -359,6 +359,7 @@ Friend NotInheritable Class NpcRenderContext
                 New List(Of String)(guardado.Warnings))
     End Function
 
+#If DEBUG Then
     ''' <summary>Cuántas entradas tienen las dos cachés de esqueleto. SÓLO LECTURA, para que un testigo
     ''' pueda comprobar que <see cref="InvalidateParseCaches"/> las VACÍA de verdad.
     ''' <para>⛔ Existe porque la propiedad "se vació" no se puede observar de afuera de ninguna otra
@@ -372,6 +373,7 @@ Friend NotInheritable Class NpcRenderContext
             Return (_bptdSkelBytesCache.Count, _actorSocketsCache.Count)
         End Get
     End Property
+#End If
 
     ''' <summary>Clear every parse cache. Call on load-order change (MainForm.ParseAllNPCs). Clears
     ''' ALL caches the context owns — consistent owner semantics (the old MainForm cleared RACE/HDPT/

@@ -3895,12 +3895,14 @@ Public Class MainForm
         Return _pluginManager.IsNpcManagerPlugin(rec.SourcePluginName)
     End Function
 
+#If DEBUG Then
     ''' <summary>¿Este FormID quedó marcado para quitar en el próximo guardado? Lo pregunta el testigo
     ''' de la baja: revertir un override sin esta marca deja que la fase 2a lo vuelva a preservar, y el
     ''' record revertido se sigue escribiendo al .esp.</summary>
     Friend Function RecordsToRemoveContiene(formID As UInteger) As Boolean
         Return formID <> 0UI AndAlso _recordsToRemove.Contains(formID)
     End Function
+#End If
 
     ''' <summary>Snapshot of the FormIDs marked for removal — passed to the save via SaveContext.RecordsToRemove.</summary>
     Friend Function RecordsToRemove() As HashSet(Of UInteger)
@@ -5029,30 +5031,38 @@ Public Class MainForm
         _resolverLmSkin = LmSkinTemplateLoader.Resolvedor(_lmSkinTemplates)
     End Sub
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 14, rev-35): instala un catalogo de plantillas de piel LM por la MISMA sede que
     ''' la carga (<see cref="InstalarCatalogoDePlantillasDePiel"/>). El Data del corpus FO4 no trae ninguna plantilla
     ''' (`F4SE\Plugins\F4EE\Skin` sin `skin.json`, medido 15-sep), asi que el testigo de Paste la siembra.</summary>
     Friend Sub InstalarPlantillasDePielParaArnes(lista As IEnumerable(Of LmSkinTemplate))
         InstalarCatalogoDePlantillasDePiel(lista)
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 14, rev-35): el snapshot de Copy Look (`BuildPresetFromState`) de un estado.</summary>
     ''' <summary>Harness hook: build the LooksMenu overlay template cache the form builds at load (the harness
     ''' constructs the form without showing it).</summary>
     Friend Sub CargarPlantillasDeOverlayParaArnes()
         BuildOverlayTemplateCache()
     End Sub
+#End If
 
+#If DEBUG Then
     Friend Function CopiarLookParaArnes(state As NPCVisualState) As LooksmenuLoader.LooksmenuPreset
         Return BuildPresetFromState(state)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>Harness hook: el trabajo que el render de la app hace en su <c>PostTextureUploadAction</c> —el tinte
     ''' de cara en vivo (FO4 compose, SSE facetint y pliegue)—, con el MISMO resolver. El arnés llama
     ''' <c>RenderShapes</c> directo y sin esto el facetint no se compone nunca: una paridad medida ahí no mide nada.</summary>
     Friend Sub AplicarTinteDeCaraParaArnes(state As NPCVisualState, renderData As PreviewResolutionResult, host As NpcRenderHost)
         _faceTintResolver.ApplyFaceTintOverlay(state, renderData, host)
     End Sub
+#End If
 
     ''' <summary>Build the LM body-overlay ("tattoo") template cache: <c>LoadOverlayMods</c> over the plugins this session
     ''' loaded, in the engine's <c>ForEachMod</c> order — full plugins in load order, then light plugins (Utilities.cpp:288-299)
@@ -5733,6 +5743,7 @@ Public Class MainForm
     ''' where the editor's own _editorHost isn't populated until its Shown handler runs.</summary>
     Friend _renderHost As NpcRenderHost = Nothing
 
+#If DEBUG Then
     ''' <summary>⛔ SEAM DE ARNÉS, no API de producto. Lo consume Tools\OclusionRenderGate, que necesita el
     ''' pipeline REAL —el mismo contexto, el mismo resolvedor de estado y el mismo colector que usa el
     ''' formulario— para renderizar un NPC completo y medir qué se ocultó. Reimplementar el cableado en el
@@ -5743,6 +5754,7 @@ Public Class MainForm
             Return (_ctx, _stateResolver, _meshCollector)
         End Get
     End Property
+#End If
 
     ' Friend (not Private) because OutfitComboEntry.SlotKind is exposed via NpcRenderHost.OutfitEntries.
     Friend Enum OutfitSlotKind
@@ -8438,12 +8450,14 @@ Public Class MainForm
         Return entries
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes: las entradas del combo son la PRIMERA de las dos resoluciones del
     ''' atuendo (la que samplea las listas niveladas). El render principal se viste con la seleccionada; sin
     ''' esto, un gate solo puede medir la SEGUNDA (el respaldo por DOFT crudo del colector) y no ve el hueco.</summary>
     Friend Function EntradasDeAtuendoParaArnes(state As NPCVisualState) As List(Of OutfitComboEntry)
         Return BuildOutfitComboEntries(state)
     End Function
+#End If
 
     ''' <summary>Envoltura de <see cref="AddOutfitEntryIfPresent"/> que aísla el fallo a UNA entrada.
     ''' <para>⛔ El aviso va con CAUSA y tipo: un catch que se traga la excepción es lo que esta tanda
@@ -8594,6 +8608,7 @@ Public Class MainForm
         Return hb.UpdateInputs(bs, sg, ac)
     End Function
 
+#If DEBUG Then
     ''' <summary>Arma el <c>BakeState</c> + la firma del head-bake HONRANDO LOS TOGGLES. Extraído para que
     ''' <see cref="BuildHeadBakeService"/> (render completo) y <see cref="BuildCompositeMorphResolver"/>
     ''' (los SEIS handlers de toggle) usen exactamente los mismos insumos — si divergieran, un toggle
@@ -8616,6 +8631,7 @@ Public Class MainForm
         If Not TryBuildHeadBakeInputs(state, host, bakeState, firma, chargen) Then Return False
         Return bakeState IsNot Nothing
     End Function
+#End If
 
     Private Function TryBuildHeadBakeInputs(state As NPCVisualState, host As NpcRenderHost,
                                              ByRef bakeState As FaceGenBuildPipeline.BakeState,
@@ -9219,13 +9235,20 @@ Public Class MainForm
     ''' que sobreviviera contestaria la hoja de un estado ya reemplazado (testigo `EstadoAbGate --memoria-hoja` (c)).</para>
     ''' <para>No cambia que hoja se elige: es la misma funcion con los mismos argumentos, llamada una vez en vez de N.</para></summary>
     Private Function HojaDelArmado(raiz As UInteger, lista As UInteger) As UInteger
-        If _profundidadDeArmado = 0 OrElse _memoriaDeHojaDelArmado Is Nothing OrElse MemoriaDeHojaApagadaParaArnes Then
+#If DEBUG Then
+        If MemoriaDeHojaApagadaParaArnes Then ContarConsultaDelPanelParaArnes(raiz, lista) : Return ResolveLvlnPick_Friend(raiz, lista)
+#End If
+        If _profundidadDeArmado = 0 OrElse _memoriaDeHojaDelArmado Is Nothing Then
+#If DEBUG Then
             ContarConsultaDelPanelParaArnes(raiz, lista)
+#End If
             Return ResolveLvlnPick_Friend(raiz, lista)
         End If
         Dim hoja As UInteger
         If _memoriaDeHojaDelArmado.TryGetValue((raiz, lista), hoja) Then Return hoja
+#If DEBUG Then
         ContarConsultaDelPanelParaArnes(raiz, lista)
+#End If
         hoja = ResolveLvlnPick_Friend(raiz, lista)
         _memoriaDeHojaDelArmado((raiz, lista)) = hoja
         Return hoja
@@ -9237,7 +9260,9 @@ Public Class MainForm
         _profundidadDeArmado += 1
         If _profundidadDeArmado > 1 Then Return False
         If _memoriaDeHojaDelArmado Is Nothing Then _memoriaDeHojaDelArmado = New Dictionary(Of (Raiz As UInteger, Lista As UInteger), UInteger)()
+#If DEBUG Then
         AmbitoDeArmadoParaArnes?.Invoke(True)
+#End If
         Return True
     End Function
 
@@ -9245,14 +9270,19 @@ Public Class MainForm
     Private Sub CerrarAmbitoDeArmado(abrio As Boolean)
         _profundidadDeArmado -= 1
         If Not abrio Then Return
+#If DEBUG Then
         AmbitoDeArmadoParaArnes?.Invoke(False)
+#End If
         _memoriaDeHojaDelArmado = Nothing
     End Sub
 
+#If DEBUG Then
     ''' <summary>Costura de arnes (rev-29): cuenta, por (raiz, lista), las consultas del PANEL que llegan a la politica (las
     ''' que la memoria no contesta). Nothing en produccion: la app no la asigna ni la lee.</summary>
     Friend ConsultasDelPanelALaPoliticaParaArnes As Dictionary(Of (Raiz As UInteger, Lista As UInteger), Integer) = Nothing
+#End If
 
+#If DEBUG Then
     Private Sub ContarConsultaDelPanelParaArnes(raiz As UInteger, lista As UInteger)
         Dim d = ConsultasDelPanelALaPoliticaParaArnes
         If d Is Nothing Then Return
@@ -9260,16 +9290,22 @@ Public Class MainForm
         d.TryGetValue((raiz, lista), n)
         d((raiz, lista)) = n + 1
     End Sub
+#End If
 
     Private _memoriaDeHojaDelArmado As Dictionary(Of (Raiz As UInteger, Lista As UInteger), UInteger) = Nothing
     Private _profundidadDeArmado As Integer = 0
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 9): True = el armado consulta la politica directa en cada pedido (la app de la
     ''' ronda 8). Solo la prende un arnes (`EstadoAbGate --memoria-hoja` / `--costo-panel`) para comparar; la app no.</summary>
     Friend MemoriaDeHojaApagadaParaArnes As Boolean = False
+#End If
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 9): se invoca al abrir (True) y al cerrar (False) el ambito de armado MAS EXTERNO.
     ''' Solo la engancha un arnes para contar consultas por ambito; la app la deja en Nothing.</summary>
     Friend AmbitoDeArmadoParaArnes As Action(Of Boolean) = Nothing
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 9): lo que el CONTROL del panel muestra, aplanado en preorden (profundidad, Tag
     ''' y texto de cada nodo), con el titulo del panel como primera linea.</summary>
     Friend Function PanelMostradoAplanadoParaArnes() As List(Of String)
@@ -9288,18 +9324,21 @@ Public Class MainForm
         End While
         Return filas
     End Function
+#End If
 
     ''' <summary>El NPC y el modo con los que se armo el panel por ultima vez, y las hojas que la politica le devolvio.</summary>
     Private _panelNpc As NPC_Data = Nothing
     Private _panelTraitsYaResuelto As Boolean = False
     Private ReadOnly _panelHojasUsadas As New Dictionary(Of (Raiz As UInteger, Lista As UInteger), UInteger)
     Private _grabandoHojasDelPanel As Boolean = False
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 5, rev-20): cuantas veces se armo el panel (lo cuenta `PopulateRecordDetails`).</summary>
     Friend ReadOnly Property ArmadosDelPanelParaArnes As Integer
         Get
             Return _armadosDelPanel
         End Get
     End Property
+#End If
     Private _armadosDelPanel As Integer = 0
 
     ''' <summary>⛔ RONDA 4 (rev-16): rehace la entrada de <see cref="_nombresHeredados"/> de la raiz y, si el nombre
@@ -9335,11 +9374,14 @@ Public Class MainForm
         TreeViewNPCs.Invalidate()
     End Sub
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (rev-16): el panel por la MISMA `PopulateRecordDetails` de la app.</summary>
     Friend Sub PoblarPanelParaArnes(npc As NPC_Data)
         PopulateRecordDetails(npc)
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (rev-16): lo que el CONTROL del panel muestra — el FormID que nombra el encabezado
     ''' de la seccion (Tag del nodo; 0 = propia), por el prefijo de su texto. -1 si la seccion no esta.</summary>
     Friend Function FuenteEnElPanelMostradoParaArnes(prefijo As String) As Long
@@ -9350,7 +9392,9 @@ Public Class MainForm
         Next
         Return -1L
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 6, rev-20 resto): los pasos de la CARGA sobre <paramref name="npcs"/> que dejan
     ''' la lista y el arbol en sincronia: nombres heredados (`ResolveInheritedFullNames`), los caches derivados de cada uno
     ''' por su sede (`RefrescarCachesDerivados`, sin ordenar de a uno), UN `OrdenarNpcs` y las filas del arbol en el orden
@@ -9370,7 +9414,9 @@ Public Class MainForm
         Next
         modelo.Aplanar()
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 6): los FormID de `_allNPCs` en su orden, y los de las filas NPC del arbol en el suyo.</summary>
     Friend Function OrdenDeListaYArbolParaArnes() As (Lista As List(Of UInteger), Arbol As List(Of UInteger))
         Dim lista = _allNPCs.Where(Function(n) n IsNot Nothing).Select(Function(n) n.FormID).ToList()
@@ -9384,44 +9430,58 @@ Public Class MainForm
         End If
         Return (lista, arbol)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (rev-16): la etiqueta de la fila del NPC en el modelo del arbol (Nothing si no hay).</summary>
     Friend Function EtiquetaEnElArbolParaArnes(fid As UInteger) As String
         Dim modelo = If(TreeViewNPCs Is Nothing, Nothing, TreeViewNPCs.Modelo)
         Dim f = If(modelo Is Nothing, Nothing, modelo.PorClave($"NPC_{fid:X8}"))
         Return If(f Is Nothing, Nothing, f.Texto)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (1-oct-2026): la etiqueta que el arbol le pone a la fila de este NPC (`EtiquetaDeNpc`, la
     ''' del cache), sin necesitar el modelo poblado.</summary>
     Friend Function EtiquetaDeLaFilaParaArnes(npc As NPC_Data) As String
         Return EtiquetaDeNpc(npc)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (1-oct-2026): las LVLN finales de la seccion 2 (`_finalLVLNFormIDs`).</summary>
     Friend Function LvlnFinalesParaArnes() As List(Of UInteger)
         Return New List(Of UInteger)(_finalLVLNFormIDs)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (1-oct-2026): las hojas que la seccion 2 cuelga de una LVLN (`_lvlnLeavesCache`), o
     ''' Nothing si no tiene entrada.</summary>
     Friend Function HojasDeSeccion2ParaArnes(lvlnFormID As UInteger) As List(Of UInteger)
         Dim hs As List(Of UInteger) = Nothing
         Return If(_lvlnLeavesCache.TryGetValue(lvlnFormID, hs), hs, Nothing)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (1-oct-2026, rev-NM-13): la poblacion "en el juego" (`_npcsInGameWorld`): ACHR colocados
     ''' mas las hojas de toda LVLN. La leen la seccion 1 (`IsTemplateOnly`, categorias Unused/Template).</summary>
     Friend Function PoblacionEnElJuegoParaArnes() As HashSet(Of UInteger)
         Return New HashSet(Of UInteger)(_npcsInGameWorld)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 11, aud-02): lo que contesta el BUSCADOR del arbol para este NPC y este texto, por
     ''' la MISMA funcion del repoblado (`MatchesNpcFilter`, sin arista de dependencias).</summary>
     Friend Function CoincideConElBuscadorParaArnes(npc As NPC_Data, texto As String) As Boolean
         Return MatchesNpcFilter(npc, Nothing, texto)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (T3): publica un estado mostrado en el preview principal por la MISMA
     ''' <see cref="PublicarEstadoMostrado"/> del render. Un MainForm de arnes no tiene preview: se le arma un host sin
     ''' control (el ctor de `NpcRenderHost` solo guarda la referencia).</summary>
@@ -9429,22 +9489,29 @@ Public Class MainForm
         If _renderHost Is Nothing Then _renderHost = New NpcRenderHost(Nothing)
         PublicarEstadoMostrado(_renderHost, state)
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (T3): deja el MainForm de arnes como estaba (sin preview).</summary>
     Friend Sub QuitarPreviewDeArnes()
         _renderHost = Nothing
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (T2/T3): la fuente de la categoria que contesta el FILTRO avanzado, por el mismo
     ''' `EnsureFilterIndex` de la app.</summary>
     Friend Function FuenteDelFiltroParaArnes(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
         Return EnsureFilterIndex().FuenteParaArnes(npc, category)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (T2/T3): la fuente de la seccion que muestra el PANEL de detalle.</summary>
     Friend Function FuenteDelPanelParaArnes(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
         Return _detailsTree.ResolverFuenteDeSeccion(npc, category).FormID
     End Function
+#End If
 
     ''' <summary>Open the advanced editor on whatever is in the box, and write back what it composes.
     ''' The dialog holds no state of its own: it parses the box on open and returns a query string, so
@@ -9547,11 +9614,14 @@ Public Class MainForm
         Return (nodos, $"  {texto} [{npc.PluginName}] FormID:{npc.FormID:X8}")
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (R2): el detalle y el titulo EXACTOS de `PopulateRecordDetails`, sin controles.</summary>
     Friend Function DetalleYTituloParaArnes(npc As NPC_Data) As (Nodos As List(Of DetalleNodo), Titulo As String)
         Return ArmarDetalle(npc, False)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (R2): corre `ResolveInheritedFullNames` -- la MISMA funcion de la carga-- sobre
     ''' los NPC dados. Un MainForm de arnes no pasa por `ParseAllNPCs`, asi que sin esto el nombre del arbol no existe.</summary>
     Friend Sub ResolverNombresHeredadosParaArnes(npcs As IEnumerable(Of NPC_Data))
@@ -9559,24 +9629,32 @@ Public Class MainForm
         SembrarCacheConLaCarga()
         ResolveInheritedFullNames()
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 12, rev-32): la instancia que `_allNPCs` tiene para un FormID (Nothing = no esta).</summary>
     Friend Function InstanciaDeLaListaParaArnes(fid As UInteger) As NPC_Data
         Return _allNPCs.FirstOrDefault(Function(n) n IsNot Nothing AndAlso n.FormID = fid)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 12, rev-32): la marca de "cambiado" de un NPC (lo que Reset lee y escribe).</summary>
     Friend Function EstaSucioParaArnes(fid As UInteger) As Boolean
         Return _dirtyNpcs.Contains(fid)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 12, rev-33): la CARGA de NPC de la app (`ParseAllNPCs`, entera) y el desglose que
     ''' deja para el texto de estado (`_tiemposDeCarga`, el de "names … ms").</summary>
     Friend Function CargarNpcsComoLaAppParaArnes() As String
         ParseAllNPCs()
         Return _tiemposDeCarga
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 12, rev-33): cronometra UNA corrida de la sede del refresco de la sesion
     ''' (`RefrescarSesionTrasCambioDeRecords`, lo que se agrego por OK del editor) y UNA del refresco completo del commit del
     ''' NPC Editor (`RefrescarArbolTrasEditarNpc`: sede + derivados + repoblado + foco), sobre el NPC dado. En ms.</summary>
@@ -9589,6 +9667,7 @@ Public Class MainForm
         Dim commit = sw.Elapsed.TotalMilliseconds
         Return (sede, commit)
     End Function
+#End If
 
     ''' <summary>Doble click en un renglón del detalle: si nombra un NPC_ o una LVLN, el árbol de la
     ''' izquierda salta a esa fila.
@@ -10185,6 +10264,7 @@ Public Class MainForm
         Await RenderCurrentStateAsync(requestVersion, host)
     End Function
 
+#If DEBUG Then
     ''' <summary>El MISMO overlay, pero para GUARDAR: en modo estricto.
     ''' <para>⛔ La diferencia no es cosmética. Si el preset dice «usá la piel de la raza» y la raza no
     ''' resuelve —falta su plugin—, el guardado RECHAZA en vez de elegir por el usuario cuál de las dos
@@ -10206,6 +10286,7 @@ Public Class MainForm
                                               Optional ctx As NpcOverrideSaver.SaveContext = Nothing) As NPC_Data
         Return ApplyPresetOverlayParaGuardado(raw, fid, If(ctx, NuevoContextoDeGuardado()))
     End Function
+#End If
 
     Private Function ApplyPresetOverlayParaGuardado(raw As NPC_Data, selectedNpcFormID As UInteger,
                                                     ctx As NpcOverrideSaver.SaveContext) As NPC_Data
@@ -10337,10 +10418,12 @@ Public Class MainForm
         Return Function(lista As UInteger) ResolveLvlnPick_Friend(raizPedida, lista)
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Contador de arnes (RONDA 20b, D2): copias congeladas que armo <see cref="LecturaDeHorneado"/>. Lo lee y lo
     ''' pone en cero un arnes (`EstadoAbGate --g18`): tiene que sumar EXACTAMENTE los NPC con edicion en la sesion por
     ''' lectura (congelar la cache entera no cambia la salida y costaria una copia por NPC cargado). La app no lo consulta.</summary>
     Friend CopiasDeLecturaDeHorneadoParaArnes As Long = 0L
+#End If
 
     ''' <summary>⛔⛔⛔ RONDA 20b (D2): LA LECTURA CON LA QUE HORNEA LA APP. Los tres horneados de la GUI (Build CharGen de uno,
     ''' de la seleccion y el del guardado) y la reconstruccion de morfos de SSE resuelven el NPC y su cadena con ESTO, asi que
@@ -10357,7 +10440,9 @@ Public Class MainForm
             Dim copia = _ctx.GetParsedNpc(fid)?.Copia()
             If copia Is Nothing Then Continue For
             congeladas(fid) = copia
+#If DEBUG Then
             Threading.Interlocked.Increment(CopiasDeLecturaDeHorneadoParaArnes)
+#End If
         Next
         Dim pm = _pluginManager
         Return New LecturaDeCadena With {
@@ -10370,9 +10455,11 @@ Public Class MainForm
             .HojaPara = AddressOf HojaDeListaPara}
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Contador de arnes (RONDA 8, rev-26): llamadas a <see cref="ResolveLvlnPick_Friend"/>. Solo lo lee y
     ''' lo pone en cero un arnes (`EstadoAbGate --costo-panel`); la app no lo consulta.</summary>
     Friend LlamadasResolveLvlnPickParaArnes As Long = 0L
+#End If
 
     ''' <param name="raizPedida">⛔⛔ EL NPC CUYA CADENA SE ESTA CAMINANDO (punto 10, DECISIONES 14-sep). Antes esta
     ''' funcion no lo recibia y tomaba la raiz del PREVIEW PRINCIPAL para cualquier pedido: el horneado por lote,
@@ -10380,7 +10467,9 @@ Public Class MainForm
     ''' mostraba para OTRO actor si casualmente era entrada de la misma lista. La hoja en pantalla vale solo para
     ''' el NPC en pantalla; los demas, su camino de siempre (`leaves(0)`).</param>
     Friend Function ResolveLvlnPick_Friend(raizPedida As UInteger, lvlnFormID As UInteger) As UInteger
+#If DEBUG Then
         LlamadasResolveLvlnPickParaArnes += 1
+#End If
         If lvlnFormID = 0UI Then Return 0UI
 
         Dim leaves = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFormID, _pluginManager)
@@ -10449,6 +10538,7 @@ Public Class MainForm
     ''' es un aviso que nadie vuelve a ver nunca.</summary>
     Private _noAvisarDesprendimiento As Boolean = False
 
+#If DEBUG Then
     ''' <summary>⛔ LA COSTURA DE CONFIRMACIÓN del desprendimiento. Devuelve True = «sí, desprendelo».
     ''' <para>Existe porque sin ella <see cref="AutorearOverlay"/> —que es la sede de TODA la ley del
     ''' desprendimiento— no se puede ejercitar: abre un modal y un arnés se queda colgado. Con eso, `G15` (el
@@ -10459,6 +10549,7 @@ Public Class MainForm
     ''' conducta haría que el gate midiera otra cosa.</para>
     ''' <para>Nothing = el diálogo real. Es el default y el único valor que usa la app.</para></summary>
     Friend ConfirmarDesprendimientoParaArnes As Func(Of String, Boolean) = Nothing
+#End If
 
     ''' <summary>⛔⛔ LA PUERTA DEL DESPRENDIMIENTO, y es UNA. Instala el overlay que el usuario authoreó y, si
     ''' con eso cambió alguna categoría que este NPC HEREDA, lo desprende: materializa el bucket Traits sobre la
@@ -10633,15 +10724,19 @@ Public Class MainForm
         If Not _noAvisarDesprendimiento Then
             Dim etiqueta = NpcLabelParaAviso(npc, npcFormID)
             Dim siguio As Boolean
+#If DEBUG Then
             If ConfirmarDesprendimientoParaArnes IsNot Nothing Then
                 ' Camino del ARNES: la misma ley, sin UI. Ver la costura.
                 siguio = ConfirmarDesprendimientoParaArnes(etiqueta)
             Else
+#End If
                 Using dlg As New DetachWarningDialog(etiqueta)
                     siguio = (dlg.ShowDialog(Me) = DialogResult.Yes)
                     If siguio AndAlso dlg.NoVolverAAvisar Then _noAvisarDesprendimiento = True
                 End Using
+#If DEBUG Then
             End If
+#End If
             If Not siguio Then
                 RestaurarOverlay(npcFormID, anterior)
                 Return "detachment cancelled by the user"
@@ -11038,7 +11133,9 @@ Public Class MainForm
         If _noAvisarDesprendimiento Then Return True
 
         Dim etiqueta = NpcLabelParaAviso(npc, npcFormID)
+#If DEBUG Then
         If ConfirmarDesprendimientoParaArnes IsNot Nothing Then Return ConfirmarDesprendimientoParaArnes(etiqueta)
+#End If
         Using dlg As New DetachWarningDialog(etiqueta)
             Dim siguio = (dlg.ShowDialog(Me) = DialogResult.Yes)
             If siguio AndAlso dlg.NoVolverAAvisar Then _noAvisarDesprendimiento = True
@@ -11046,6 +11143,7 @@ Public Class MainForm
         End Using
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes: EL TONO DEL CUERPO tal como lo resuelve el render.
     ''' <para>⛔ ACA HABIA TRES `summary` APILADOS sobre esta unica funcion --uno de `SombraDelTerminal`,
     ''' otro de `TintesDeLaCaraParaArnes` y este--, con lo cual esas dos quedaron SIN doc y esta quedo
@@ -11057,7 +11155,9 @@ Public Class MainForm
     Friend Function TonoDelCuerpoParaArnes(state As NPCVisualState) As Color?
         Return _materialResolver.ResolveNpcBodySkinToneColor(state)
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes: el compositor de tintes DEL RENDER, entrando por su llamador.
     ''' <para>Existe porque el caso que mide la cara del heredero le pasaba el modelo A MANO, asi que
     ''' media el interior de `FaceTintLayerBuilder` y no la ELECCION del modelo -- que fue el defecto
@@ -11065,6 +11165,7 @@ Public Class MainForm
     Friend Function TintesDeLaCaraParaArnes(state As NPCVisualState) As NPC_Data
         Return _faceTintResolver.BuildFaceTintLayerInputs(state).npcData
     End Function
+#End If
 
     Friend Function SombraDelTerminal(terminal As NPC_Data) As NPC_Data
         Return NpcRecordOverlay.SombraDelTerminal(terminal, _appliedPresets, _pluginManager,
@@ -11717,9 +11818,11 @@ Public Class MainForm
                End Sub
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 6, rev-22): reemplaza el re-render del commit del NPC Editor (Nothing = el real,
     ''' <c>LoadNPCOnDemandAsyncFromExisting</c>). Un arnes la usa para FORZAR la excepcion y medir el deshacer.</summary>
     Friend ReRenderDelEditorDeNpcParaArnes As Func(Of NPC_Data, Task) = Nothing
+#End If
 
     ''' <summary>El COMMIT del NPC Editor tras un OK con cambios: caches derivados, filtro, arbol y re-render. Si el
     ''' re-render tira, corre <paramref name="deshacer"/> (la foto de <see cref="FotoParaDeshacerElEditorDeNpc"/>) y
@@ -11729,12 +11832,16 @@ Public Class MainForm
         ' OK with real changes: the live NPC_Data was mutated in place — re-render + mark dirty.
         RefrescarArbolTrasEditarNpc(npc, npcFormID)
         Try
+#If DEBUG Then
             If ReRenderDelEditorDeNpcParaArnes IsNot Nothing Then
                 Await ReRenderDelEditorDeNpcParaArnes(npc)
             Else
+#End If
                 Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+#If DEBUG Then
             End If
+#End If
             MarkNpcDirty(npcFormID)
             Return Nothing
         Catch ex As Exception
@@ -12956,6 +13063,7 @@ Public Class MainForm
         End If
     End Function
 
+#If DEBUG Then
     ''' <summary>El `SaveContext` del guardado de la app. ⛔ RONDA 4 (rev-18 iii): salio de `LaunchSaveDialogAsync` SIN
     ''' cambios para que un arnes pueda leer el MISMO cableado (`ContextoDeGuardadoParaArnes`): antes el mutante "sin
     ''' `HojaDeListaPara`/`GetParsedNpc`" no tenia testigo, porque los gates arman su propio contexto.</summary>
@@ -12967,9 +13075,12 @@ Public Class MainForm
     ''' N copias y la salida sale IDENTICA, o sea verde. En produccion cuesta un incremento de entero.</para>
     ''' <para>No se resetea sola — la pone en cero quien mide.</para></summary>
     Friend ContextosDeGuardadoArmadosParaArnes As Long = 0L
+#End If
 
     Private Function NuevoContextoDeGuardado() As NpcOverrideSaver.SaveContext
+#If DEBUG Then
         Threading.Interlocked.Increment(ContextosDeGuardadoArmadosParaArnes)
+#End If
         ' ⛔ `.HeadParts` = LA MISMA INSTANCIA que el render y el bake, no una nueva: la Fase 1c compone
         ' el PNAM y la composición descarta lo que no resuelve, así que una sede sin borradores dejaría
         ' caer el head part propio del usuario sin un error. (El comentario va ACÁ y no adentro del
@@ -13024,10 +13135,12 @@ Public Class MainForm
         Return NpcOverrideSaver.SexoEfectivoParaGuardado(npc, If(ctx, NuevoContextoDeGuardado()))
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (rev-18 iii): el contexto de guardado con el cableado EXACTO de la app.</summary>
     Friend Function ContextoDeGuardadoParaArnes() As NpcOverrideSaver.SaveContext
         Return NuevoContextoDeGuardado()
     End Function
+#End If
 
     ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>, under
     ''' Data\ keyed by the record's ORIGIN plugin + FaceGen-local FormID. GAME-AWARE via
@@ -13181,10 +13294,12 @@ Public Class MainForm
         End If
     End Sub
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (1-oct-2026, aud-B-01): la Part 2 del guardado sobre los FormID dados.</summary>
     Friend Sub QuitarDelModeloLosRecordsCaidosParaArnes(fids As List(Of UInteger))
         QuitarDelModeloLosRecordsCaidos(fids)
     End Sub
+#End If
 
     ''' <summary>Post-save re-read (Step 6). Mounts the just-written plugin as the top override so
     ''' GetRecord returns the saved state, then RE-PARSES each written NPC into _ctx.NpcCache / _allNPCs.
@@ -13427,12 +13542,16 @@ Public Class MainForm
                     ' ⛔ La costura recibe la INSTANCIA, no el FormID: lo que este bloque tiene que probar es que
                     ' el re-render sale del parse RECIEN refrescado (`_ctx.NpcCache(fid) = freshNpc`, arriba). Con
                     ' el FormID el arnes volveria a pedirlo por su cuenta y mediria su propia consulta.
+#If DEBUG Then
                     If RenderPostSaveParaArnes IsNot Nothing Then
                         Await RenderPostSaveParaArnes(npc)
                     Else
+#End If
                         Dim version = Interlocked.Increment(_previewRequestVersion)
                         Await LoadNPCOnDemandAsyncFromExisting(npc, version)
+#If DEBUG Then
                     End If
+#End If
                 Catch ex As Exception
                     Logger.LogLazy(Function() $"[SAVE-READBACK] re-render failed: {ex.Message}")
                 End Try
@@ -13440,6 +13559,7 @@ Public Class MainForm
         End If
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes: el re-render del readback. Un MainForm de arnes no tiene preview --
     ''' `LoadNPCOnDemandAsyncFromExisting` no puede correr sin control-- y sin nada en su lugar un testigo del
     ''' readback PASARIA EN VACIO: con `_renderHost` en Nothing, `reloadFid` es 0, no hay estado publicado y
@@ -13447,7 +13567,9 @@ Public Class MainForm
     ''' <para>El arnes la implementa publicando un estado armado desde la instancia que recibe, que es lo que el
     ''' render hace con ella. Nothing (produccion) = el camino real, sin una sola rama de mas.</para></summary>
     Friend RenderPostSaveParaArnes As Func(Of NPC_Data, Task) = Nothing
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes: si el debounce del render esta armado. La necesita el testigo del readback
     ''' para NO leer un falso rojo: el re-render explicito se saltea cuando el debounce ya va a renderizar
     ''' (arriba), y en un arnes NO HAY BOMBA DE MENSAJES, asi que si algo levanta `SeleccionCambiada` el timer
@@ -13458,7 +13580,9 @@ Public Class MainForm
             Return _selectionDebounceTimer IsNot Nothing AndAlso _selectionDebounceTimer.Enabled
         End Get
     End Property
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes: la entrada al readback del Save, que es `Private`. Los valores por defecto
     ''' son los de un guardado sin borradores y sin sidecar; el testigo que mide el re-render no los necesita.</summary>
     Friend Function ReadbackParaArnes(writtenFormIDs As List(Of UInteger), savedPluginPath As String,
@@ -13467,6 +13591,7 @@ Public Class MainForm
         Return ApplyPostSaveReadback(writtenFormIDs, savedPluginPath,
                                      If(draftFormIdMap, New Dictionary(Of UInteger, UInteger)), sidecarWritten)
     End Function
+#End If
 
     ''' <summary>Promote the OTFT/LVLI drafts just written into the saved plugin to real records. For each
     ''' (provisional → file-local real) the writer reported, resolve the GLOBAL FormID of the now-mounted

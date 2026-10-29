@@ -379,30 +379,38 @@ Public Class NpcEditor_Form
     ' Un gate que reimplementara OnOk mediria una copia. El formulario se construye sin mostrarse --la carga
     ' corre en el ctor-- y la confirmacion del desprendimiento pasa por la costura de MainForm, sin modal.
 
+#If DEBUG Then
     Friend ReadOnly Property BorradorParaArnes As Canon.INpc
         Get
             Return _borrador
         End Get
     End Property
+#End If
 
+#If DEBUG Then
     Friend ReadOnly Property BaseDeAtuendosParaArnes As (Defecto As UInteger, Dormir As UInteger)
         Get
             Return (_baseDefaultOutfit, _baseSleepOutfit)
         End Get
     End Property
+#End If
 
+#If DEBUG Then
     ''' <summary>El mismo OK que el boton. ⛔ Si la cadena no resuelve, OnOk muestra un MessageBox modal:
     ''' el gate tiene que elegir sujetos resolubles.</summary>
     Friend Sub AceptarParaArnes()
         OnOk(Nothing, EventArgs.Empty)
     End Sub
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ LA COSTURA DEL RECHAZO de una bandera ACBS derivada (R6, ronda 2), mismo patron que
     ''' <c>MainForm.ConfirmarDesprendimientoParaArnes</c>: se sustituye la VENTANA, no la ley. Con la costura puesta,
     ''' <see cref="OnOk"/> la llama con el texto del aviso en vez de abrir el MessageBox modal, y hace el MISMO
     ''' `Return` que en produccion. Sin ella un gate no podia ejercitar el rechazo del 0x100 (el modal colgaba el arnes).
     ''' <para>Nothing = el MessageBox real. Es el default y el unico valor que usa la app.</para></summary>
     Friend AvisarRechazoDeBanderaParaArnes As Action(Of String) = Nothing
+#End If
 
     Private Sub LoadNpcIntoPanels(fallbackRaceFormID As UInteger)
         _loading = True
@@ -1246,11 +1254,15 @@ Public Class NpcEditor_Form
                                         Select(Function(fc) fc.Chk.Text))
             Dim avisoRechazo = $"Cannot change {flagNames} (0x{unsupportedChangedFlagBits:X8}) while this NPC inherits template categories." &
                                Environment.NewLine & "Revert those checkboxes to continue. That bit is derived from whether the NPC ends up with its own sounds, so a hand-picked value would contradict the sound data."
+#If DEBUG Then
             If AvisarRechazoDeBanderaParaArnes IsNot Nothing Then
                 AvisarRechazoDeBanderaParaArnes(avisoRechazo)
             Else
+#End If
                 MessageBox.Show(Me, avisoRechazo, "Unsupported templated flag edit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+#If DEBUG Then
             End If
+#End If
             Return
         End If
         Dim baseDataChanged = (changedFlagBits And NpcTemplateHelpers.BaseDataAcbsFlagsMask(_isSkyrim)) <> 0UI OrElse

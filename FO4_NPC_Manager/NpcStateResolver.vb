@@ -714,12 +714,14 @@ Friend NotInheritable Class NpcStateResolver
         Return NpcStateFactory.CreateOwnInventoryState(If(fuente, npc))
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (rev-10): abre una resolucion NUEVA (cache de hojas por LVLN vacia), como la abre
     ''' <see cref="ResolveNPCBaseState"/>. Un arnes que llama a `ResolveTraitsStateFromNPC` suelto hereda la cache de la
     ''' ultima resolucion del hilo.</summary>
     Friend Sub NuevaResolucionParaArnes()
         _lvlnPickCache = New Dictionary(Of UInteger, UInteger)()
     End Sub
+#End If
 
     ''' <summary>El ancla y el rotulo de la politica de hoja del render, POR BUCKET. Solo Traits e Inventory tienen ancla
     ''' (`LeveledLeafPin`); el resto no tiene: cache de la resolucion o sorteo.</summary>
@@ -1048,6 +1050,7 @@ Friend NotInheritable Class NpcStateResolver
         Return 0UI
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (rev-10): <see cref="TerminalDe"/> dentro de una resolucion cuya cache de hojas por
     ''' LVLN es <paramref name="cacheDeLaResolucion"/> (la que `ResolveSingleLeveledTemplate` ya lleno).</summary>
     Friend Function TerminalDeParaArnes(formID As UInteger, category As NPC_TemplateCategory,
@@ -1055,13 +1058,16 @@ Friend NotInheritable Class NpcStateResolver
         ' ⛔ RONDA 6 (rev-23): la cache viaja por parametro; esta costura ya no pisa la del hilo.
         Return _ctx.PluginManager.RunUnderRecordsReadLock(Function() TerminalDe(formID, category, cacheDeLaResolucion))
     End Function
+#End If
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (RONDA 6, rev-23): COPIA de la cache de hojas por LVLN que dejo en este hilo la ultima
     ''' resolucion (Nothing si no hubo). Solo para que un testigo compruebe que la sembro.</summary>
     Friend Function HojasDelHiloParaArnes() As Dictionary(Of UInteger, UInteger)
         If _lvlnPickCache Is Nothing Then Return Nothing
         Return New Dictionary(Of UInteger, UInteger)(_lvlnPickCache)
     End Function
+#End If
 
     ''' <summary>Costura Friend de <see cref="TerminalDeTraits"/> para
     ''' <c>MainForm.ResolveLvlnPick_Friend</c>: la ley del ancla vive en UN solo sitio y el Save la
@@ -1095,7 +1101,9 @@ Friend NotInheritable Class NpcStateResolver
                                       traitsPublicado As UInteger, inventoryPublicado As UInteger,
                                       cacheDeHojas As Dictionary(Of UInteger, UInteger),
                                       Optional supuestas As Dictionary(Of UInteger, UInteger) = Nothing) As UInteger
+#If DEBUG Then
         LlamadasHojaQueReproduceParaArnes += 1
+#End If
         If raiz Is Nothing OrElse raiz.Record Is Nothing OrElse hojas Is Nothing OrElse hojas.Count = 0 OrElse
            traitsPublicado = 0UI OrElse inventoryPublicado = 0UI Then Return 0UI
         Dim reproduce = Function(h As UInteger) As Boolean
@@ -1131,7 +1139,9 @@ Friend NotInheritable Class NpcStateResolver
                                    traitsPublicado As UInteger, inventoryPublicado As UInteger,
                                    cacheDeHojas As Dictionary(Of UInteger, UInteger),
                                    supuestas As Dictionary(Of UInteger, UInteger)) As ResultadoDeCadena
+#If DEBUG Then
         LlamadasCadenaConHojaParaArnes += 1
+#End If
         If Not NpcTemplateHelpers.HasTemplateFlag(raiz.Record.ConfigurationTemplateFlags, category) Then Return ResultadoDeCadena.NoRestringe
         Dim publicado = If(category = NPC_TemplateCategory.Traits, traitsPublicado, inventoryPublicado)
         Dim pidioLista = False
@@ -1163,12 +1173,16 @@ Friend NotInheritable Class NpcStateResolver
     ''' <para>⛔ RONDA 6 (rev-23): FUERA de toda resolucion ⇒ cache EXPLICITA VACIA, nunca la del hilo.</para></summary>
     Friend Function HojaQueReproducePublico(raizFormID As UInteger, lista As UInteger, traitsPublicado As UInteger,
                                             inventoryPublicado As UInteger) As UInteger
+#If DEBUG Then
         LlamadasHojaQueReproducePublicoParaArnes += 1
+#End If
+#If DEBUG Then
         If LlamadasHojaQueReproducePublicoPorClaveParaArnes IsNot Nothing Then
             Dim n As Integer
             LlamadasHojaQueReproducePublicoPorClaveParaArnes.TryGetValue((raizFormID, lista), n)
             LlamadasHojaQueReproducePublicoPorClaveParaArnes((raizFormID, lista)) = n + 1
         End If
+#End If
         Dim sinResolucion As New Dictionary(Of UInteger, UInteger)()
         Return _ctx.PluginManager.RunUnderRecordsReadLock(
             Function() HojaQueReproduce(_ctx.GetParsedNpc(raizFormID), lista,
@@ -1176,14 +1190,22 @@ Friend NotInheritable Class NpcStateResolver
                                         traitsPublicado, inventoryPublicado, sinResolucion))
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Contadores de arnes (RONDA 8, rev-26): llamadas a <see cref="HojaQueReproducePublico"/>, a
     ''' <see cref="HojaQueReproduce"/> (con su recursion) y a <see cref="CadenaConHoja"/> (una `ResolverCadena` cada una).
     ''' Solo los lee y los pone en cero un arnes (`EstadoAbGate --costo-panel`); la app no los consulta.</summary>
     Friend LlamadasHojaQueReproducePublicoParaArnes As Long = 0L
+#End If
+#If DEBUG Then
     Friend LlamadasHojaQueReproduceParaArnes As Long = 0L
+#End If
+#If DEBUG Then
     Friend LlamadasCadenaConHojaParaArnes As Long = 0L
+#End If
+#If DEBUG Then
     ''' <summary>⛔ Contador de arnes (RONDA 9): llamadas a <see cref="HojaQueReproducePublico"/> por (raiz, lista). Nothing =
     ''' no se cuenta (la app). Lo engancha y lo vacia `EstadoAbGate --memoria-hoja` / `--costo-panel`.</summary>
     Friend LlamadasHojaQueReproducePublicoPorClaveParaArnes As Dictionary(Of (Raiz As UInteger, Lista As UInteger), Integer) = Nothing
+#End If
 
 End Class

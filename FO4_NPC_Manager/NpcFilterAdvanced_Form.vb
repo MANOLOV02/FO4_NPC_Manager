@@ -48,6 +48,7 @@ Public Class NpcFilterAdvanced_Form
         MinimumSize = New Size(MinimumSize.Width, chrome + needed)
     End Sub
 
+#If DEBUG Then
     ''' <summary>Headless layout probe for the build gate (Tools/NpcFilterGate). Runs the REAL Load sequence (fill the
     ''' fields, then FitToContent) on the REAL Designer layout and reports where the lowest control
     ''' ends up, so "the buttons are sliced in half" becomes something a build can catch instead of
@@ -77,6 +78,7 @@ Public Class NpcFilterAdvanced_Form
         Next
         Return (ClientSize.Height, PanelRoot.PreferredSize.Height, lowest, lowestName)
     End Function
+#End If
 
     Private Sub LoadFromQuery(query As NpcFilterQuery)
         _loading = True

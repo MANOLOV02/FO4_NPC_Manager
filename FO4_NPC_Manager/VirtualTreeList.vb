@@ -778,6 +778,7 @@ Public Class VirtualTreeList
         Return True
     End Function
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnés: deja esa clave EN LA SELECCIÓN sin tocar `SelectedIndices` y sin anunciar
     ''' nada.
     ''' <para>Existe por UNA razón medible: el testigo del readback del Save
@@ -794,6 +795,7 @@ Public Class VirtualTreeList
         _seleccionadas.Add(clave)
         _claveEnfocada = clave
     End Sub
+#End If
 
     ''' <summary>Expande o colapsa una fila y deja la vista mostrando ESA fila.</summary>
     Public Sub AlternarFila(fila As FilaDeArbol)

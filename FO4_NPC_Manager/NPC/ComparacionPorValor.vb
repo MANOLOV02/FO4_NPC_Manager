@@ -184,6 +184,7 @@ Friend Module ComparacionPorValor
     ''' exclusion muerta y no hay que confundirlo con uno.</para></summary>
     Friend ReadOnly ENTRADAS_NO_VALORES As String() = {"RecordBase", "BaseArmadaDesde", "BaseArmadaDesdeTerminal"}
 
+#If DEBUG Then
     ''' <summary>Devuelve el nombre de la entrada declarada que el estado YA NO TIENE, o Nothing. Lo llama el
     ''' gate: sin esto, el dia que `RecordBase` se renombre la exclusion queda tapando un campo que no existe
     ''' y el comparador vuelve a comparar el grafo entero sin que nadie se entere.</summary>
@@ -195,6 +196,7 @@ Friend Module ComparacionPorValor
         Next
         Return Nothing
     End Function
+#End If
 
     ''' <param name="entradasPorIdentidad">True --lo normal-- compara las ENTRADAS con `ReferenceEquals`:
     ''' es la pregunta del CLON, "¿es la misma instancia?". False las SALTEA, y hace falta cuando los dos

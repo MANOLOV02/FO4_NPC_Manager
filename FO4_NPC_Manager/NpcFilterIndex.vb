@@ -127,6 +127,7 @@ Friend NotInheritable Class NpcFilterIndex
         Next
     End Sub
 
+#If DEBUG Then
     ''' <summary>⛔ Costura de arnes (T2/T3): la fuente de la categoria que usa el filtro para este NPC -- la MISMA
     ''' `ResolveSource` con su cache, sin atajo.</summary>
     Friend Function FuenteParaArnes(npc As NPC_Data, category As NPC_TemplateCategory) As UInteger
@@ -136,6 +137,7 @@ Friend NotInheritable Class NpcFilterIndex
         End Select
         Throw New ArgumentOutOfRangeException(NameOf(category), "el filtro solo resuelve Traits e Inventory")
     End Function
+#End If
 
     ''' <summary>True when this NPC satisfies the term (negation included).</summary>
     Public Function Matches(npc As NPC_Data, term As NpcFilterTerm) As Boolean

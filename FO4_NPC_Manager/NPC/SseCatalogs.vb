@@ -517,9 +517,13 @@ Friend Module SseCatalogs
 
     ''' <summary>Defaults HARDCODEADOS de skee para los dos knobs de <c>[FaceGen]</c> (main.cpp:156-157). Es lo
     ''' que vale sin ini, con la key ausente, o con un valor que no parsea — los tres casos en que
-    ''' <c>SKEE64GetConfigValue</c> devuelve false y no asigna (main.cpp:301-310).</summary>
-    Private Const DefaultSliderMultiplier As Double = 1.0R
-    Private Const DefaultSliderInterval As Double = 0.01R
+    ''' <c>SKEE64GetConfigValue</c> devuelve false y no asigna (main.cpp:301-310). Son <c>float</c> en skee
+    ''' (<c>1.0f</c>, <c>0.01f</c>): acá van los MISMOS float ensanchados, no los decimales (0.01R es otro número).</summary>
+    Private Const DefaultSliderMultiplier As Double = CDbl(1.0F)
+    Private Const DefaultSliderInterval As Double = CDbl(0.01F)
+
+    ''' <summary>El piso de los dos clamps de skee, <c>= 0.01f</c> (main.cpp:845-848): el float, ensanchado.</summary>
+    Private Const SkeeClampFloor As Double = CDbl(0.01F)
 
     ''' <summary>Lo que hace <c>sscanf(s, "%f", &amp;out)</c>, que es <c>strtof</c> (C11 7.22.1.3): saltea espacios,
     ''' acepta signo opcional, dígitos con punto decimal opcional y un exponente opcional. Es PREFIJO —
@@ -595,9 +599,9 @@ Friend Module SseCatalogs
         Dim v As Double
         If ScanFloatLike(raw(RawSliderMultiplierSlot), v) Then mult = v
         If ScanFloatLike(raw(RawSliderIntervalSlot), v) Then interval = v
-        If mult <= 0.0R Then mult = 0.01R
-        If interval <= 0.0R Then interval = 0.01R
-        If interval > 1.0R Then interval = 1.0R
+        If mult <= 0.0R Then mult = SkeeClampFloor
+        If interval <= 0.0R Then interval = SkeeClampFloor
+        If interval > 1.0R Then interval = CDbl(1.0F)   ' skee: `> 1.0` (double) y `= 1.0` en el float; 1 es exacto en los dos
         Return (mult, interval)
     End Function
 
