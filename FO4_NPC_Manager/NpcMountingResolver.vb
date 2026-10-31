@@ -1092,7 +1092,7 @@ Friend NotInheritable Class NpcMountingResolver
 
     ''' <summary>SSE: attach de items biped RÍGIDOS (sin skin) al nodo del skeleton nombrado por su
     ''' NiStringExtraData "Prn" — el escudo (slot 39, Prn='SHIELD') y cualquier rígido con Prn
-    ''' (WeaponBack/WeaponSword/…). Engine (byte, GetObjectByName 0x140E18620 + tabla interned "Prn"@+0xa8
+    ''' (WeaponBack/WeaponSword/…). Engine (byte, GetObjectByName 0x140FDDAC0 + tabla interned "Prn"@+0xa8
     ''' "Shield"@+0xd8): el root del NIF rígido lleva Prn=nombreNodo; el engine lo busca por nombre en el
     ''' skeleton y lo cuelga ahí con bind = su transform NIF-local. Sin esto el shape rígido cae al ORIGEN
     ''' del actor (SkinningHelper Case Else → GetGlobalTransform NIF-local = (0,0,0) = suelo). Clona el

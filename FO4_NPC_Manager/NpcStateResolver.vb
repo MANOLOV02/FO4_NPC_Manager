@@ -629,8 +629,8 @@ Friend NotInheritable Class NpcStateResolver
         ' FemaleHeadParts + Male/FemaleDefaultFaceTexture; RaceSSE.HeadParts/HeadParts2 +
         ' MaleHeadDataDefaultFaceTextureMale/FemaleHeadDataDefaultFaceTextureFemale).
         ' DFTM/DFTF: SOLO el género propio — el motor NO cruza al otro género (RE 2026-07-16,
-        ' AMBOS binarios byte-verificados): SSE runtime RegenerateHead 0x14042BEDB y FO4 CK
-        ' resolver 0x140ED4244 hacen UNA sola lectura race.faceRelatedData[GetSex(npc)]
+        ' AMBOS binarios byte-verificados): SSE runtime RegenerateHead 0x14043326B y FO4 CK
+        ' resolver 0x140ED9C24 hacen UNA sola lectura race.faceRelatedData[GetSex(npc)]
         ' (SSE race+0x4A8+sex*8 → frd+0xA0; FO4 CK race+0xBA8+sex*8 → frd+0x10); si es null
         ' caen a HDPT.TNAM, jamás al DFT del otro sexo. El fallback cruzado que había acá
         ' pintaba SkinHeadFemaleNord (DFTF) en el maniquí masculino de ManakinRace (sin DFTM).

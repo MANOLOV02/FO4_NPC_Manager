@@ -1180,7 +1180,7 @@ Module Program
 
         ' --meshcollide: ¿en cuántos NPCs hay DOS O MÁS head parts que resuelven a la MISMA malla? Es el
         ' alcance exacto de la ley del motor "cada head part aplica su propio TNAM sobre el mismo nodo, gana
-        ' el último" (SkyrimSE BSFaceGenManager::PrepareHeadPartForShaders 0x14042BD90 + el bucle 0x14042BCC0).
+        ' el último" (SkyrimSE BSFaceGenManager::PrepareHeadPartForShaders 0x140433120 + el bucle 0x140433050).
         ' Sin este número, "arreglarlo" seria fitear los 2 casos que el comparador encontró.
         If opt.MeshCollide Then
             Dim tot = 0, colNpc = 0
@@ -1498,7 +1498,7 @@ Module Program
     ''' <summary>GATE de la ley de alfa de raiz (propuesta-alfa-raiz v2), sobre los records y NIF reales:
     ''' (1) PREVIEW: el material que el resolver deja en cada forma, por ResolveEngineAlpha;
     ''' (2) BAKE: el NiAlphaProperty de la forma de cara en el NIF horneado (escrito en outDir, no en el Data) contra el del
-    ''' FaceGeom del CK (BA2 shipped). Valentine: cara 0x02EC/0 (escritor 0x1406EEA90), head-rear sin bloque. DiMA: cara sin bloque.
+    ''' FaceGeom del CK (BA2 shipped). Valentine: cara 0x02EC/0 (escritor Fallout4.exe 0x1406EEA90), head-rear sin bloque. DiMA: cara sin bloque.
     ''' Caso 3: Valentine SIN TXST de cara (FTST y DFT anulados en el estado): el escritor no depende del TXST, la cara sigue 0x02EC/0.</summary>
     Private Sub AlfaRaizGateRun(pm As PluginManager, outDir As String, dataPath As String)
         Dim fails As New List(Of String)
@@ -1958,7 +1958,7 @@ Module Program
 
             ' ---- SKIN INSTANCE (solo FO4: `BSSkin::Instance` es el unico tipo con NumScales/Scales, un
             '      Vector3 POR HUESO; en el schema el bloque es #FO4# #F76#). Ese array es EL MISMO que
-            '      escribe el applier de body-weight del CK (0x140A8CFD0, reserva nBones*16 inicializado
+            '      escribe el applier de body-weight del CK (0x140A92960, reserva nBones*16 inicializado
             '      en 1.0) y que el exportador de FaceGeom RE-ESCRIBE con la escala en NULL para los
             '      shapes que traen `CustomizationRemapNewBonesData` — ver la ley del body-weight.
             '      Se volcaba todo el shape menos esto, asi que la categoria `skinInstance.Scales` del
@@ -2245,7 +2245,7 @@ Module Program
                 Dim minePath = IO.Path.Combine(outDir, $"{fgL:X8}{suffix}{If(dbg, "_2", "")}.dds")
                 If Not IO.File.Exists(minePath) Then
                     ' NO es necesariamente un defecto: el CK tampoco escribe slots si el material del shape no
-                    ' es Face/FaceTint (ley RE CK 0x140ed9020). Se informa sin clasificar.
+                    ' es Face/FaceTint (ley RE CK 0x140edea00). Se informa sin clasificar.
                     DdsStat(statKey).Absent += 1
                     Console.WriteLine($"  [DDS/{chLabel}] baked ABSENT ({minePath})")
                     Continue For
@@ -2537,8 +2537,8 @@ Module Program
         Dim failByRoute As New Dictionary(Of String, Integer)(StringComparer.Ordinal)
         ' EXCLUIDOS != FALLOS. Un NPC cuya RAZA no tiene FaceGen (RACE.DATA flags bit 0x2 claro) no es un
         ' fallo del bake: el motor tampoco le arma cabeza. Verificado por RE en LOS DOS binarios —
-        ' CreationKit.exe 0x140AAE521-52B aborta el driver del bake, y Fallout4.exe 0x1406E22AB-B9 sale del
-        ' armado de cabeza antes de las DOS ramas (FaceGeom 0x1406ED9F0 y fallback por head-parts 0x1406ED4D0).
+        ' CreationKit.exe 0x140AB3EB1-EBB aborta el driver del bake, y Fallout4.exe 0x1406E25BB-C9 sale del
+        ' armado de cabeza antes de las DOS ramas (FaceGeom 0x1406EDD00 y fallback por head-parts 0x1406ED7E0).
         ' FaceGenBuilder ya lo marca con Skipped=True (FaceGenBuilder.vb, gate RaceSupportsFaceGen); lo que
         ' faltaba era que el batch lo LEYERA en vez de mirar solo Success.
         ' Van a su propio cubo, NO al corpus comparado: no se bakean ni se comparan, asi que no pueden
@@ -3450,7 +3450,7 @@ persist:
             If (cl Is Nothing) <> (ml Is Nothing) Then real.Add($"shape '{nm}': shader presence CK={cl IsNot Nothing} baked={ml IsNot Nothing}")
             Return
         End If
-        ' shader TYPE: gobierna la ley de composición del bake (CK SSE 0x141d0ea00 dispatcha por este valor:
+        ' shader TYPE: gobierna la ley de composición del bake (CK SSE 0x141d5c1a0 dispatcha por este valor:
         ' 4 FaceTint / 5 SkinTint / 6 HairTint / else = no escribe nada). Sin esto un cambio de tipo pasaba
         ' invisible aunque cambie qué slots se escriben.
         If cl.ShaderType_SK_FO4 <> ml.ShaderType_SK_FO4 Then real.Add($"shape '{nm}' shader.TYPE CK={cl.ShaderType_SK_FO4} baked={ml.ShaderType_SK_FO4}")
@@ -5357,7 +5357,7 @@ persist:
                 swAdd.Stop() : msAdded += swAdd.Elapsed.TotalMilliseconds
 
                 ' Apareo shape plana ↔ `_faceBones` por nombre + conteo de vértices: la MISMA regla del
-                ' driver del motor (0x140AA31B0) que usa BuildHeadBakeService.
+                ' driver del motor (0x140AA8B40) que usa BuildHeadBakeService.
                 Dim fbnsByName As New Dictionary(Of String, NiflySharp.INiShape)(StringComparer.OrdinalIgnoreCase)
                 For Each fs In fbnsNif.GetShapes()
                     Dim fn = FO4_NPC_Manager.NameUtils.StripFaceBonesSuffix(If(fs.Name?.String, ""))
@@ -7811,7 +7811,7 @@ persist:
     ''' <summary>VALIDACIÓN No-Anim-Sync (engine-exact). Para un chunk NIF montado, hace FK del árbol de bones
     ''' dos veces sobre un frame del clip: (BUGGY) = local del clip COMPLETO (rot+T+S) = lo que hace hoy la app;
     ''' (HONORED) = rotación del clip pero traslación/escala ESTRUCTURAL (del bind) para las componentes con el
-    ''' flag NiAVObject No Anim Sync X/Y/Z/S (bits 16-19 de Flags_ui) = lo que hace el motor (pose-writer 0x1413995D0).
+    ''' flag NiAVObject No Anim Sync X/Y/Z/S (bits 16-19 de Flags_ui) = lo que hace el motor (pose-writer 0x1413998F0).
     ''' Reporta, por bone: flags, |clipT−bindT| (lo que el flag ignora), y el TEAR mundial (BUGGY vs HONORED).
     ''' Verifica que HONORED preserva el bone-length (=bind) ⇒ brazo rígido ⇒ conectado. El T-pose (sin clip) es
     ''' bindWorld en ambos (localFn=bindLocal) ⇒ el fix NO lo toca. spec="&lt;chunkNif&gt;|&lt;rigHkx&gt;|&lt;clipHkx&gt;[|frame][|boneFilter]".</summary>

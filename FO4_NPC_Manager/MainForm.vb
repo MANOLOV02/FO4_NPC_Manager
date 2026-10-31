@@ -492,9 +492,9 @@ Public Class MainForm
         ''' drop. 0 for non-ARMA candidates (heads/chunks/attachments).</summary>
         Public ArmaOwnSlotMask As UInteger
         ''' <summary>BOD2 del ARMO dueño, crudo. SSE: es la máscara que el engine usa para el conflicto de
-        ''' EQUIP entre ítems del outfit — `0x1403BD39E` castea el ítem con `AsBipedObjectForm` (ARMO+0x1B0)
-        ''' y compara con `SlotsOverlap 0x1401CCA90` (any-bit) contra lo ya equipado; si solapa, no lo equipa.
-        ''' También es la que alimenta `GetWornMask 0x140225CB0` (OR de `[ARMO+0x1B8]`). NO confundir con
+        ''' EQUIP entre ítems del outfit — `0x1403C462B` castea el ítem con `AsBipedObjectForm` (ARMO+0x1B0)
+        ''' y compara con `SlotsOverlap 0x1401D2160` (any-bit) contra lo ya equipado; si solapa, no lo equipa.
+        ''' También es la que alimenta `GetWornMask 0x14022B5A0` (OR de `[ARMO+0x1B8]`). NO confundir con
         ''' <see cref="ArmaOwnSlotMask"/> (los bits del armature, que gobiernan particiones) ni con
         ''' <see cref="SlotMask"/> (la mezcla de ambos). 0 para candidates sin ARMO.</summary>
         Public ArmoOwnSlotMask As UInteger
@@ -807,8 +807,8 @@ Public Class MainForm
         Public ReadOnly ShapeOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
         ''' <summary>Per-shape BOD2 del ARMATURE (ARMA) dueño, sin los bits que sólo declara el ARMO. SSE:
         ''' es la máscara que gobierna qué particiones de cabeza oculta el ítem del slot de pelo — el writer
-        ''' de la tabla del biped (0x1402134E0) guarda el ARMA en `entry+0x18` recorriendo los bits del ARMA,
-        ''' y la fase 2 de 0x140218200 agrupa por ese puntero. Ver NpcMeshCollector.HeadPartHideMask.</summary>
+        ''' de la tabla del biped (0x140218DB0) guarda el ARMA en `entry+0x18` recorriendo los bits del ARMA,
+        ''' y la fase 2 de 0x14021DAE0 agrupa por ese puntero. Ver NpcMeshCollector.HeadPartHideMask.</summary>
         Public ReadOnly ShapeArmaOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
         ''' <summary>Per-shape BOD2 del ARMO dueño, CRUDO. Hace falta junto con <see cref="ShapeArmaOwnSlots"/>
         ''' para reproducir el one-shot del writer del attach: <c>0x1403597E0</c> barre los slots ascendente
@@ -839,7 +839,7 @@ Public Class MainForm
         ''' montan por socket).</para></summary>
         Public ReadOnly ShapeKind As New Dictionary(Of IRenderableShape, MeshCandidateKind)
         ''' <summary>Per-shape DNAM priority (Male/Female, gender-resuelto) del ARMA dueño. SSE: en empate de
-        ''' biped-slot decide qué ítem lo POSEE para la oclusión per-partición (fase 1 de 0x140218200 — el
+        ''' biped-slot decide qué ítem lo POSEE para la oclusión per-partición (fase 1 de 0x14021DAE0 — el
         ''' owner de cada slot en `entry+0x18`). Seteado para worn items (Kind=Outfit) Y para la PIEL
         ''' (Kind=Skin), igual que ShapeArmaOwnSlots: en el motor el ARMA de la piel se adjunta como
         ''' cualquier otra y también gana slots. Ver NpcRenderHost.ApplyRenderToggleVisibility (mapa de
@@ -869,11 +869,11 @@ Public Class MainForm
         ' per-segmento sale de NpcMeshCollector.HeadPartChannelMask (FO4) y de HeadPartHideMask (SSE), y el
         ' whole-hide del face-cull A lo resuelve SelectWinningCandidates. Un campo que ya nadie lee pero
         ' sigue actualizandose es exactamente el carril paralelo que se desincroniza.
-        ''' <summary>A: face-cull biped object [race+0x12C] (RACE DATA+0x44, engine master 0x1403BB880). Si el
+        ''' <summary>A: face-cull biped object [race+0x12C] (RACE DATA+0x44, engine master SSE 0x1403C2940). Si el
         ''' worn set cubre este slot ⇒ whole-node cull de la cabeza (`or [headNode+0xF4],1`) — cascadea a TODO
         ''' head-part. NO es per-partición, así que NO forma parte de la máscara CoveredSlotsMask del render.</summary>
         Public HeadFaceCullMask As UInteger = 0UI
-        ''' <summary>B: hair biped object [race+0x130] (RACE DATA+0x48, engine 0x1403BB880 / attach 0x140218200
+        ''' <summary>B: hair biped object [race+0x130] (RACE DATA+0x48, engine SSE 0x1403C2940 / attach SSE 0x14021DAE0
         ''' fase 2). Es el slot de pelo (bit único en SSE). El ítem que ocupa este slot oculta, en el subárbol
         ''' de la cabeza, las particiones de TODO su BOD2 (ver NpcMeshCollector.HeadPartHideMask). Se combina
         ''' render-time con los BOD2 de los ítems renderizados para producir la máscara per-partición.</summary>
@@ -1031,7 +1031,7 @@ Public Class MainForm
         Public ExplicitHeadTextureFormID As UInteger
         ''' <summary>FO4 SÓLO. ACBS\Flags bit 0x01000000 "Diffuse Alpha Test" del
         ''' NPC. Es el ÁRBITRO record-driven del alpha de la cabeza: el CK fabrica el NiAlphaProperty (0x2EC) sii
-        ''' este flag (RE CreationKit 0x140ED41F6 → gate [npc+0x9b]&1 = bit 24 de ACBS). Reemplaza el proxy
+        ''' este flag (RE CreationKit 0x140ED9BD6 → gate [npc+0x9b]&1 = bit 24 de ACBS). Reemplaza el proxy
         ''' isNpcExplicitFaceTextureSet, que fallaba para Valentine (su material con alpha viene por MSWP, no por
         ''' el TXST del FTST, así que el FormID no coincidía) y daba falso-positivo si el RACE.DFTM apuntaba a un
         ''' material con alpha (DiMA: DFTM=SkinHeadValentine con alpha, PERO sin este flag ⇒ sólido, como el CK).

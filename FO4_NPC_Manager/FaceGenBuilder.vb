@@ -1526,10 +1526,10 @@ Public Module FaceGenBuilder
                                     End If
                                 Next
                                 If fbnsShape Is Nothing Then
-                                    ' Tier 2, AHORA IGUAL AL CK. FUENTE: CreationKit.exe 0x14093C030 busca
-                                    ' "_faceBones" (string @RVA 0x3017F30) como SUBSTRING CASE-INSENSITIVE en
+                                    ' Tier 2, AHORA IGUAL AL CK. FUENTE: CreationKit.exe 0x1409419C0 busca
+                                    ' "_faceBones" (string @RVA 0x30285A0) como SUBSTRING CASE-INSENSITIVE en
                                     ' CUALQUIER POSICIÓN del nombre de la shape FBNS, y hace un splice de 10
-                                    ' chars (constante @RVA 0x3B9DE50) para recuperar el nombre base; compara
+                                    ' chars (constante @RVA 0x3BB1D40) para recuperar el nombre base; compara
                                     ' ESE resultado contra el nombre de la shape ORIG.
                                     ' Lo anterior CONSTRUÍA el nombre esperado insertando "_faceBones" justo
                                     ' antes del ":N" final — o sea, sólo reconocía UNA posición. Cualquier NIF
@@ -1547,7 +1547,7 @@ Public Module FaceGenBuilder
                                     Next
                                 End If
                                 ' Tier 3 ("si el FBNS tiene una sola shape, usala") — SIN CONTRAPARTE EN EL CK:
-                                ' el 0x14093C030 sólo hace el match por nombre de arriba, no tiene fallback por
+                                ' el 0x1409419C0 sólo hace el match por nombre de arriba, no tiene fallback por
                                 ' cardinalidad. Sólo puede SOBRE-matchear (emparejar shapes que el CK dejaría sin
                                 ' morphear). Medido: 0 de 501 casos vanilla lo usan ⇒ no aporta cobertura real.
                                 ' Se DEJA por ahora para no cambiar dos cosas a la vez en la misma corrida, pero
@@ -2424,8 +2424,8 @@ Public Module FaceGenBuilder
     ''' que es lo que vuelve al NIF autocontenido.
     ''' <para>El corte del nombre no es cosmético y no es opcional: verificado en Fallout4.exe, con
     ''' <c>prop+0x10</c> NO vacío los 3 call-sites de carga propia SÍ cargan el BGSM y
-    ''' <c>ApplyMaterialToGeometry 0x142169BB0</c> reemplaza el <b>texture set ENTERO</b>
-    ''' (<c>prop+0x1d0 ← mat+0x78</c>, 0x142163B70). Con el nombre vacío bailan en la guarda de largo
+    ''' <c>ApplyMaterialToGeometry 0x1421715E0</c> reemplaza el <b>texture set ENTERO</b>
+    ''' (<c>prop+0x1d0 ← mat+0x78</c>, 0x14216B5A0). Con el nombre vacío bailan en la guarda de largo
     ''' y el shader inline pasa a ser la ley.</para>
     ''' <para>⛔ LA VA DE ESA GUARDA SE RETIRÓ (2026-08-22). Decía <c>0x14167C300 → je al epílogo</c>, y en
     ''' el <c>Fallout4.exe</c> instalado esa dirección es un <c>ret</c> suelto, fuera de toda función que
@@ -2657,7 +2657,7 @@ Public Module FaceGenBuilder
                 Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
                 If lsp IsNot Nothing AndAlso lsp.TextureSetRef IsNot Nothing AndAlso lsp.TextureSetRef.Index >= 0 Then
                     Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
-                    ' El slot 6 sigue la MISMA ley que el resto (bake CK 0x141d0ea00): sólo lo escribe el
+                    ' El slot 6 sigue la MISMA ley que el resto (bake CK SSE 0x141d5c1a0): sólo lo escribe el
                     ' branch type 4 FaceTint. El gate del call site es por HDPT.PartType=Face, que NO es
                     ' equivalente: un head part de cara puede tener un shape autorado con otro shader type.
                     ' MEDIDO: 'MaleHeadManekin' (HDPT 0x1078799, PartType=Face, TNAM=0, MODL=ManekinHead.nif)
@@ -2669,7 +2669,7 @@ Public Module FaceGenBuilder
                         ' CADA shape de CADA NPC aunque el log esté apagado. Convención del codebase.
                         If Logger.Enabled Then
                             Dim stL6 = lsp.ShaderType_SK_FO4
-                            Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot6 NO escrito: shape shType={stL6} (≠FaceTint) — ley CK 0x141d0ea00")
+                            Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot6 NO escrito: shape shType={stL6} (≠FaceTint) — ley CK SSE 0x141d5c1a0")
                         End If
                     ElseIf ts IsNot Nothing AndAlso ts.Textures IsNot Nothing AndAlso ts.Textures.Count > 6 Then
                         ts.Textures(6).Content = EmbeddedEngineTexPath(tintDir & $"{fgLocal:X8}{embeddedSuffix}")
@@ -3980,16 +3980,16 @@ Public Module FaceGenBuilder
         Dim redirectSlotsToFaceCustomization As Boolean =
             (shapeShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint)
         If Not redirectSlotsToFaceCustomization Then
-            ' F2 — EL PREDICADO NO SE TOCA (replica cmp eax,4 del CK 0x140ed9020 sobre el tipo DERIVADO de los
+            ' F2 — EL PREDICADO NO SE TOCA (replica cmp eax,4 del CK 0x140edea00 sobre el tipo DERIVADO de los
             ' bools del material; validado sobre 14.136 shapes). Lo que cambia es que deja de ser INVISIBLE.
             ' Y NO ES UN FALLO: que la DDS se componga, se escriba y se empaquete SIN que el NIF la referencie es
             ' EXACTAMENTE lo que hace el CK — medido en el bloque de la ley de arriba: el CK shippeo 0001763B_d.DDS
-            ' en el BA2 para DLC04Oswald sin una sola referencia en su NIF (export SIN gate 0x140ab8760 vs asignacion
-            ' CON gate 0x140ed9020). Por eso NO se llama a RecordTextureFailure: seria un falso positivo que marcaria
+            ' en el BA2 para DLC04Oswald sin una sola referencia en su NIF (export SIN gate 0x140abe0f0 vs asignacion
+            ' CON gate 0x140edea00). Por eso NO se llama a RecordTextureFailure: seria un falso positivo que marcaria
             ' el save como Warning. Solo se REGISTRA, y sin el gate de Logger.Enabled (es un evento raro, una vez por
             ' NPC, no un log por shape).
             Dim stG = shapeShaderType
-            Logger.LogLazy(Function() $"[FACEBAKE] slots 0/1/7 NO redirigidos (= comportamiento del CK): shape shType={stG} (≠FaceTint), ley CK 0x140ed9020. La DDS se compone y empaqueta igual, sin referencia en el NIF (npcFormID=0x{npcFormID:X8})")
+            Logger.LogLazy(Function() $"[FACEBAKE] slots 0/1/7 NO redirigidos (= comportamiento del CK): shape shType={stG} (≠FaceTint), ley CK 0x140edea00. La DDS se compone y empaqueta igual, sin referencia en el NIF (npcFormID=0x{npcFormID:X8})")
         End If
 
         ' --- 6. Per-slot: readback → encode → write → rewrite slot path → diff vs CK. ---
@@ -4178,7 +4178,7 @@ Public Module FaceGenBuilder
                 End Try
             End If
 
-            ' Gate por shader-type del material (ver bloque de la ley arriba, RE CK 0x140ed9020): si el
+            ' Gate por shader-type del material (ver bloque de la ley arriba, RE CK 0x140edea00): si el
             ' shape no es Face/FaceTint el CK NO asigna NINGÚN slot ⇒ el shape conserva las texturas ya
             ' transcriptas por ApplyRenderResolvedMaterialToShape. El DDS de arriba SÍ se compuso y
             ' escribió, igual que el CK (que shippeó 0001763B_d.DDS para Oswald sin referenciarlo).

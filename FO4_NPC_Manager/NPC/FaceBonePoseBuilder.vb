@@ -25,8 +25,8 @@ Public Module FaceBonePoseBuilder
         If npcFo4 Is Nothing OrElse npcFo4.FaceMorphs.Count = 0 Then Return Nothing
 
         ' CK accumulates the raw 9-float FMRS deltas ADDITIVELY across regions (decompiled
-        ' FUN_140419a30 = pure dst[i]+=src[i], per region in FUN_140a8f530), then builds ONE
-        ' transform at the end (FUN_140a96f20: Euler→matrix from the SUMMED rotation, summed
+        ' FUN_14041af70 = pure dst[i]+=src[i], per region in FUN_140a94ec0), then builds ONE
+        ' transform at the end (FUN_140a9c8b0: Euler→matrix from the SUMMED rotation, summed
         ' translation, summed scale). Do NOT compose rotation matrices or multiply scale per
         ' region — that diverges (non-commutative / product vs sum) for multi-region bones.
         Dim accPos As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
@@ -99,7 +99,7 @@ Public Module FaceBonePoseBuilder
                     LerpFmrs(sc, boneEntry.MinimaScale.Y, boneEntry.MaximaScale.Y) * fmin,
                     LerpFmrs(sc, boneEntry.MinimaScale.Z, boneEntry.MaximaScale.Z) * fmin)
 
-                ' Accumulate the raw 9-float deltas ADDITIVELY across regions (CK FUN_140419a30:
+                ' Accumulate the raw 9-float deltas ADDITIVELY across regions (CK FUN_14041af70:
                 ' dst[i] += src[i]). No matrix build, no ComposeTransforms, no scale product here —
                 ' the single transform is built once after the loop from the summed deltas.
                 Dim existingPos As System.Numerics.Vector3
@@ -126,7 +126,7 @@ Public Module FaceBonePoseBuilder
             Dim sumRot = accRot(kv.Key)
             Dim sumScale = accScale(kv.Key)
 
-            ' Build ONE transform from the SUMMED deltas (CK FUN_140a96f20). Negate all three
+            ' Build ONE transform from the SUMMED deltas (CK FUN_140a9c8b0). Negate all three
             ' rotation angles to undo EulerXYZToMatrix33's J·R·J permutation (FMRS JSON uses
             ' standard convention; the function expects pre-inverted angles). Same negation as
             ' before — only the accumulation moved from compose/product to sum.
@@ -194,15 +194,15 @@ Public Module FaceBonePoseBuilder
     End Function
 
     ''' <summary>DIAGNOSTICO de alcance del clamp (no altera el resultado): cuantas veces el clamp
-    ''' EFECTIVAMENTE cambio el valor. El motor NO clampea (no hay minss/maxss en FUN_1403fd920 ni en
-    ''' FUN_140419CD0), asi que este clamp es una divergencia nuestra; si el contador da 0 sobre el corpus,
+    ''' EFECTIVAMENTE cambio el valor. El motor NO clampea (no hay minss/maxss en FUN_1403fdc40 ni en
+    ''' FUN_14041B210), asi que este clamp es una divergencia nuestra; si el contador da 0 sobre el corpus,
     ''' la divergencia es demostrablemente inerte ahi (los FMRS de vanilla estan en rango) y solo puede
     ''' morder con mods. Medirlo asi evita una corrida A/B para una rama que quiza nunca se toma.</summary>
     Public ClampHits As Long = 0
     Public ReadOnly ClampSamples As New List(Of String)
 
     ''' <summary>EL CLAMP SE QUITO (2026-07-29). El motor NO clampea — ya estaba verificado por RE
-    ''' (sin <c>minss</c>/<c>maxss</c> en <c>FUN_1403fd920</c> ni <c>FUN_140419CD0</c>) y el comentario
+    ''' (sin <c>minss</c>/<c>maxss</c> en <c>FUN_1403fdc40</c> ni <c>FUN_14041B210</c>) y el comentario
     ''' original dejaba el clamp puesto BAJO LA CONDICION de que el contador diera 0 sobre el corpus
     ''' ("si el contador da 0 ... la divergencia es demostrablemente inerte").
     ''' <para><b>Da 2, no 0.</b> Barrido vanilla+DLC de 1509 NPCs: 2 hits, los DOS de

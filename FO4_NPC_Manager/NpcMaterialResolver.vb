@@ -439,7 +439,7 @@ Friend NotInheritable Class NpcMaterialResolver
             Dim arma = SelectArmatureForShape(s, If(requireRaceMatch, shapeSlotMask, 0UI))
 
             ' EL ARMATURE ELEGIDO **ES** EL SELECTOR: acá se DECIDE, no se sigue
-            ' buscando. Ley del motor (getter de skin TXST 0x140a90790 / thunk 0x14004e693, ver
+            ' buscando. Ley del motor (CreationKit.exe: getter de skin TXST 0x140a96120 / thunk 0x14004e6a7, ver
             ' 23-armor-arma-skin-txst): itera los addons worn, se queda con el que matchea la región y lee
             ' SU `[arma+sex*8+0x240]`; si ese slot es null, el shape conserva SU PROPIA textura
             ' (`[prop+0xb0]`). El motor NUNCA cae a OTRO armature buscando uno que sí tenga TXST.
@@ -459,7 +459,7 @@ Friend NotInheritable Class NpcMaterialResolver
             ' combinaciones (raza × región × sexo), 64 diferencias, y las 64 son del ARMO de UBE ⇒
             ' INERTE sobre vanilla.
             '
-            ' Fallback EXACTO del motor (getter 0x140a90790: [arma+sex*8+0x240], null→índice0=NAM0/male):
+            ' Fallback EXACTO del motor (CreationKit.exe getter 0x140a96120: [arma+sex*8+0x240], null→índice0=NAM0/male):
             ' female → NAM1, si vacío → NAM0 (male). male → NAM0 (sin fallback a female).
             ' Confirmado por el bake: BAKETEST2_N_G (0x846) tiene ARMA_G con SÓLO NAM0 y NPC femenino
             ' → el CK horneó OldHumanMaleHead_* (o sea female cae a NAM0).
@@ -617,10 +617,10 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' <c>[race+0xBA8+sexo*8]+0x10</c> (RACE.DFT[sexo]; 0x140ED69D0..69F3). La misma ley.</item>
     ''' </list>
     ''' El TNAM NO entra (ninguno de los dos lo lee para la base) y el cuerpo (DATA 0x20) tampoco. Sin ninguno de los dos no hay capa 0:
-    ''' el compose parte de la base nula (FaceTintCpuCompositor.ComposeCpuPipelineSinBase), juego 0x1406EC23D -&gt; 0x1406EC3F1, CK
+    ''' el compose parte de la base nula (FaceTintCpuCompositor.ComposeCpuPipelineSinBase), juego Fallout4.exe 0x1406EC23D -&gt; 0x1406EC3F1, CK
     ''' 0x140ED69ED / 0x140ED69FA -&gt; 0x140ED6C3C. <paramref name="dftFid"/> = RACE.DFT del sexo del NPC (en el estado de la app,
     ''' <c>HeadTextureFormID</c> cuando no hay FTST).
-    ''' <para>El MISMO par es el resuelto del REGEN sin cuerpo (0x1406EEBCB FTST / 0x1406EEBF7 RACE.DFT[sexo], antes del TNAM de
+    ''' <para>El MISMO par es el resuelto del REGEN sin cuerpo (Fallout4.exe 0x1406EEBCB FTST / 0x1406EEBF7 RACE.DFT[sexo], antes del TNAM de
     ''' 0x1406EECAB): <see cref="AplicarCabezaNoFaceFo4"/> lo toma de acá, no lo recalcula.</para></summary>
     Friend Shared Function BaseDelComposeDeCaraFo4(ftstFid As UInteger, dftFid As UInteger) As UInteger
         Return If(ftstFid <> 0UI, ftstFid, dftFid)
@@ -629,7 +629,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' <summary>LAS ENTRADAS DEL COMPOSE de la cara de Fallout 4 (D/N/S de la capa 0) sobre el material de la shape de la cabeza de cara que
     ''' el bake hornea. El exportador del CK (0x140ABE0F0 -&gt; 0x140ED65C0 -&gt; 0x140ED6820) arma la capa 0 con FTST ?? RACE.DFT[sexo]
     ''' (0x140ED69C2..69F3, slots 0/1/7) SIN mirar la clase del material de la shape: la clase sólo gatea la ASIGNACIÓN de los slots al NIF
-    ''' (0x140ED9020). Por eso:
+    ''' (0x140EDEA00). Por eso:
     ''' <list type="bullet">
     ''' <item>clase Face: el material resuelto YA es eso (la rama de cara de <see cref="ApplyShapeMaterialOverrides"/>) y se devuelve
     ''' tal cual;</item>
@@ -657,7 +657,7 @@ Friend NotInheritable Class NpcMaterialResolver
 
     ' PROXY REFUTADO — no reintroducir un flag "el NPC declara su cara por FTST": coincidía con
     ' Valentine/DiMA por casualidad sobre un corpus de 2 casos. El árbitro real es el flag ACBS "Diffuse
-    ' Alpha Test" (0x01000000) — RE CreationKit 0x140ED41F6, gate [npc+0x9b]&1 — consumido como
+    ' Alpha Test" (0x01000000) — RE CreationKit 0x140ED9BD6, gate [npc+0x9b]&1 — consumido como
     ' HeadDiffuseAlphaTest. Ver 40-bake-leyes-fo4.
 
     Friend Function ResolveHeadPartSolidTintColor(candidate As MainForm.MeshCandidate) As Nullable(Of Color)
@@ -822,7 +822,7 @@ Friend NotInheritable Class NpcMaterialResolver
         ' forceDiffuseOnly (RE): la fuente FTST del camino Face aplica SOLO el slot 0 — el ATTACH del engine,
         ' GetTexturePath(slot 0) (Fallout4.exe 1.11.240 0x1406EE3C2..4A2: FTST si el head part es Face, si no el
         ' bodyTex, si no el TNAM; GetTexturePath 0x140597100 con xor edx,edx; escribe sólo material+0x48 /
-        ' CK 0x140ED3830).
+        ' CK 0x140ED9210).
         '
         ' NO agregar acá una rama que cargue el MNAM: sería código muerto. forceDiffuseOnly sólo se
         ' enciende en la rama SSE, y el TXST de Skyrim no tiene subrecord MNAM (a diferencia de FO4)
@@ -981,7 +981,7 @@ Friend NotInheritable Class NpcMaterialResolver
         If fo4FaceComposeInputsOnly Then diffuseOnly = False   ' D/N/S sí; los 5 inertes se cortan abajo
 
         ' SSE HEAD PART: el discriminante es el SHADER TYPE AUTORADO del shape, NO el flag DNAM del TXST.
-        ' Bake CK 0x141d0ea00, switch @0x141d0ed89:
+        ' Bake CK SSE 0x141d5c1a0, switch @0x141d5c529:
         '     type 4 FaceTint : N(TX01) + _sk(TX03→LightingTexture) + detail(TX04→DisplacementTexture)
         '     type 5 SkinTint : N(TX01) y nada más   ·   type 6 HairTint y cualquier otro: cero escrituras
         ' Nunca escribe SmoothSpec (el TX07 sólo alimenta un SetShaderFlag). El bit facegen del DNAM no lo lee
@@ -1002,7 +1002,7 @@ Friend NotInheritable Class NpcMaterialResolver
             End Select
             If logEnabled Then
                 Dim stL = material.NifShaderType, aN = allowNormal, aSkL = allowSk, aD = allowDetail, fidL = textureSet.FormID
-                Logger.LogLazy(Function() $"[TXST-APPLY] SSE head part shType={stL} → ley CK 0x141d0ea00: N={aN} _sk={aSkL} detail={aD} S=never (txst=0x{fidL:X8})")
+                Logger.LogLazy(Function() $"[TXST-APPLY] SSE head part shType={stL} → ley CK SSE 0x141d5c1a0: N={aN} _sk={aSkL} detail={aD} S=never (txst=0x{fidL:X8})")
             End If
         End If
         Dim txstFid = textureSet.FormID
@@ -1019,7 +1019,7 @@ Friend NotInheritable Class NpcMaterialResolver
         If TxstSlotDecision(txstFid, "Diffuse", textureSet.Ranura(0), material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=diffuseOnly) Then material.Diffuse_or_Base_Texture = textureSet.Ranura(0)
         ' En SSE head part la ley del CK manda sobre el heurístico diffuseOnly (ver bloque de arriba).
         If TxstSlotDecision(txstFid, "Normal", textureSet.Ranura(1), material.NormalTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowNormal, diffuseOnly)) Then material.NormalTexture = textureSet.Ranura(1)
-        ' Wrinkles / Envmap / InnerLayer: la ley del CK (0x141d0ea00) no los escribe para NINGÚN shader type ⇒
+        ' Wrinkles / Envmap / InnerLayer: la ley del CK SSE (0x141d5c1a0) no los escribe para NINGÚN shader type ⇒
         ' en head part SSE quedan siempre del material inline del mesh.
         If TxstSlotDecision(txstFid, "Wrinkles", textureSet.Ranura(2), material.WrinklesTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.WrinklesTexture = textureSet.Ranura(2)
         ' Glow slot (TXST TX03). FO4 = emissive glow. SSE = "Glow/Detail Map" que
@@ -1037,8 +1037,8 @@ Friend NotInheritable Class NpcMaterialResolver
         If TxstSlotDecision(txstFid, "Height", textureSet.Ranura(4), material.DisplacementTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowDetail, If(fo4FaceComposeInputsOnly, True, diffuseOnly))) Then material.DisplacementTexture = textureSet.Ranura(4)
         If TxstSlotDecision(txstFid, "Envmap", textureSet.Ranura(5), material.EnvmapTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.EnvmapTexture = textureSet.Ranura(5)
         If TxstSlotDecision(txstFid, "InnerLayer", textureSet.Ranura(6), material.InnerLayerTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.InnerLayerTexture = textureSet.Ranura(6)
-        ' SSE head part: el TX07 NO es un slot de textura — nadie escribe el slot 7 (bake CK 0x141d0ea00,
-        ' attach 0x14042BAA0, regen 0x14042BD90). El specular que usa el motor es el INLINE del mesh, así que
+        ' SSE head part: el TX07 NO es un slot de textura — nadie escribe el slot 7 (bake CK SSE 0x141d5c1a0,
+        ' SSE attach 0x140432E30, regen 0x140433120). El specular que usa el motor es el INLINE del mesh, así que
         ' pisarlo con el TX07 cambiaba el specular real en render Y bake; por eso el gate vive en este resolver
         ' compartido y no en el escritor del NIF. Sólo SSE y sólo head parts: en FO4 el slot 7 es el _s de
         ' FaceCustomization que el CK sí escribe. Ver 40-bake-leyes-sse.
@@ -1744,7 +1744,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 '   FO4: clase Face -> la rama de cara (el set de ResolveTextureSet, compose); otra clase -> AplicarCabezaNoFaceFo4
                 '        (sólo lo que el motor le escribe: diffuse del ATTACH y, si es SkinTint, N/S del resuelto).
                 '   SSE: el set de cara (capa aux presente, isFaceTxstSource) no va a una shape que no es clase Face (RegenerateHead
-                '        0x14042BF0C; ManakinRace: sin esto se le pisaba la madera con el FemaleHead.dds del DFTF). En SSE la clase es el
+                '        0x14043329C; ManakinRace: sin esto se le pisaba la madera con el FemaleHead.dds del DFTF). En SSE la clase es el
                 '        enum inline del bloque = Facegen (IsTypeFaceTint), así que el predicado da lo mismo que daba.
                 Dim esCaraDelMotor As Boolean = (matPre IsNot Nothing AndAlso matPre.IsEngineFace())
                 Dim esSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
@@ -1763,9 +1763,9 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' cuyo NPC no tiene FTST ni RACE.DFT[sexo] (textureSet = BaseDelComposeDeCaraFo4 resuelta = Nothing). El compose no arma
                 ' capa 0 (juego 0x1406EC23D -> 0x1406EC3F1; CK 0x140ED69ED/69FA -> 0x140ED6C3C) y parte de la base nula. Es un hecho del
                 ' NPC, no de la clase de la shape: cada consumidor aplica SU ley de clase. El vivo compone sólo la clase Face (REGEN,
-                ' despacho 0x1406EED07; NpcFaceTintResolver filtra IsEngineFace); el bake compone y escribe para el NPC sea cual sea la
+                ' despacho Fallout4.exe 0x1406EED07; NpcFaceTintResolver filtra IsEngineFace); el bake compone y escribe para el NPC sea cual sea la
                 ' clase, como el exportador del CK (0x140ABE0F0 -> 0x140ED65C0, sin gate de clase; la clase sólo gatea la ASIGNACION de
-                ' los slots al NIF, 0x140ED9020).
+                ' los slots al NIF, 0x140EDEA00).
                 If matPre IsNot Nothing Then matPre.ComposeDeCaraSinBase = (Not esSse AndAlso EsCabezaDeCara(candidate, state) AndAlso textureSet Is Nothing)
                 If ramaNoFaceFo4 Then
                     If matPre IsNot Nothing Then
@@ -1800,7 +1800,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' el set resuelto aporta SOLO Normal(TX01) + _sk(TX03→LightingTexture: en material Face el TX03
                 ' es subsurface, no emisivo) + detail(TX04→DisplacementTexture, el que consume el fold del
                 ' facetint). Ni diffuse ni SmoothSpec. Gate por la clase Face (esCaraDelMotor, el mismo dueño), igual que RegenerateHead
-                ' 0x14042BF0C. Slot vacío del aux ⇒ conserva el de la base: el motor solo carga la textura si
+                ' 0x14043329C. Slot vacío del aux ⇒ conserva el de la base: el motor solo carga la textura si
                 ' el path del slot resuelve.
                 If sseFaceAux IsNot Nothing AndAlso relatedMaterial.material IsNot Nothing Then
                     Dim mAux = relatedMaterial.material

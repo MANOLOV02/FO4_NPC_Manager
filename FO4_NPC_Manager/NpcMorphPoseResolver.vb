@@ -61,7 +61,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
         ' No morph data at all? Skip — FO4 ONLY (face morphs live in MorphValues; empty ⇒ empty plan).
         ' SSE has NO early-out: un NPC sin chargen (NAM9/NAMA ausentes — p.ej. Dremora) igual recibe el
         ' RACE base morph y el "SkinnyMorph" del weight (el engine aplica ambos sin mirar el chargen:
-        ' applier 0x1403B90D0 lee actor+0x1FC incondicionalmente), y el bake (BuildFaceMorphPlan) tampoco
+        ' applier 0x1403C0190 lee actor+0x1FC incondicionalmente), y el bake (BuildFaceMorphPlan) tampoco
         ' gatea por NAM9. Gatear acá dejaba la cabeza en peso neutro mientras el cuerpo _0/_1 sí lerpaeaba
         ' ⇒ costura de cuello en todo weight ≠ 100 (render≠bake y render≠engine). BuildFaceMorphPlanFromNam9
         ' no-opea por canal cuando falta el dato, así que el resolver SSE "vacío" es naturalmente barato.
@@ -218,7 +218,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ' The SSE HEAD/HAIR weight morph (formerly BuildSseHeadWeightResolver + SseHeadWeightMorphResolver +
     ' the hardcoded SseHeadWeightDelta table) is now applied inside the FACE morph plan: BuildFaceMorphPlanFromNam9
     ' adds a "SkinnyMorph" channel at frac = 1 - clamp(NAM7/100,0,1), read from each shape's own mesh .tri (merged
-    ' by LoadTriForShape). Engine-derived (SkyrimSE.exe applier 0x1403B90D0 → 0x140430190), agnostic and race-aware
+    ' by LoadTriForShape). Engine-derived (SkyrimSE.exe applier 0x1403C0190 → 0x140437520), agnostic and race-aware
     ' (femalehead/argonian/khajiit/hairNN each ship their own SkinnyMorph), and shared by render + bake.
 
     ''' <summary>Resuelve los overlays de cuerpo ("tatuajes") del preset aplicado a

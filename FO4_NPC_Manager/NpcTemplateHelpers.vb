@@ -35,8 +35,8 @@ Friend NotInheritable Class NpcTemplateHelpers
 
     ''' <summary>⛔ El bit *tiene sonidos propios* (FO4 lo nombra **Has Base Sound Data**). NO es un
     ''' bit copiable: es el TITULO DE PROPIEDAD del contenedor de sonidos, y lo prenden y apagan las
-    ''' propias rutinas del canal — `sub_1403C6250` / `sub_14065FC10` lo ponen (`0x1403C6288` /
-    ''' `0x14065FC3F`), `sub_14065FB60` lo apaga (`0x14065FBD7`). Por eso no esta en ninguna mascara:
+    ''' propias rutinas del canal — SSE `sub_1403C6250` / FO4 `sub_14065FC10` lo ponen (SSE `0x1403C6288` /
+    ''' FO4 `0x14065FC3F`), `sub_14065FB60` lo apaga (`0x14065FBD7`). Por eso no esta en ninguna mascara:
     ''' se DERIVA de si el heredero termino con sonidos propios o compartidos.</summary>
     Friend Const AcbsBitSonidosPropios As UInteger = &H100UI
 

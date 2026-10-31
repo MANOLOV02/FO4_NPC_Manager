@@ -274,7 +274,7 @@ Friend Class NpcRenderHost
         Dim renderHeadwear = Toggles.RenderHeadwear
         Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         ' --- Per-segment worn-slot occlusion, recomputed from the items CURRENTLY rendered ---
-        ' Engine-faithful ORDER / other-items rule (resolver 0x14035E090, owner-slot branch 0x14035E22B),
+        ' Engine-faithful ORDER / other-items rule (resolver 0x14035E3B0, owner-slot branch 0x14035E54B),
         ' made toggle-aware: an item hidden by a render toggle (e.g. the Pipboy when "Render armor" is OFF)
         ' contributes NO slots, so the segments it was covering re-appear (a rolled-up sleeve drops back
         ' down). The occluder set is NOT the static load-time union — it is rebuilt here every apply.
@@ -285,7 +285,7 @@ Friend Class NpcRenderHost
         Dim groupSlots As New Dictionary(Of Integer, UInteger)
         ' SSE: máscaras crudas por-armature de los ítems renderizados (input de HeadPartHideMask). Vacía en FO4.
         Dim sseWornOwnMasks As New List(Of UInteger)
-        ' SSE per-partición por-dueño (fase 1 de 0x140218200): el engine mantiene, por biped-slot, el ARMA que
+        ' SSE per-partición por-dueño (fase 1 de 0x14021DAE0): el engine mantiene, por biped-slot, el ARMA que
         ' GANÓ ese slot (owner en `entry+0x18` = puntero al ARMATURE). Aquí lo replicamos como un mapa slot→
         ' (model, priority) construido SÓLO desde los worn items ACTUALMENTE renderizados (toggle-aware). El
         ' `model` es el path del NIF del ítem (DictKey); en el attach el engine lo lee de vf+0x20 del bipedModel.
@@ -428,7 +428,7 @@ Friend Class NpcRenderHost
             ' El BOD2 del ARMATURE, no la SlotMask (que trae además los bits headwear del ARMO).
             Dim armaOwn As UInteger = 0UI
             If rd.ShapeArmaOwnSlots.TryGetValue(sh, armaOwn) AndAlso armaOwn <> 0UI Then
-                ' Mecanismo (b) de HeadPartHideMask, SSE-only: la fase 2 de 0x140218200 agrupa por el
+                ' Mecanismo (b) de HeadPartHideMask, SSE-only: la fase 2 de 0x14021DAE0 agrupa por el
                 ' puntero de ARMA guardado en `entry+0x18`, y ese writer sólo recorre los bits del ARMA.
                 If isSse Then sseWornOwnMasks.Add(armaOwn)
                 ' Registrar el dueño de cada slot que este worn item declara en su ARMA. Corre en los DOS
@@ -485,7 +485,7 @@ Friend Class NpcRenderHost
         Dim occupiedVisible As UInteger = 0UI
         For Each kv In groupSlots : occupiedVisible = occupiedVisible Or kv.Value : Next
 
-        ' SSE head-part occlusion (engine attach 0x140218200 fase 2): la máscara per-partición de head-parts
+        ' SSE head-part occlusion (engine attach 0x14021DAE0 fase 2): la máscara per-partición de head-parts
         ' NO es occupiedVisible ∩ HeadOcclusionMask sino el BOD2 COMPLETO del ítem que ocupa el slot de pelo
         ' (30+B). Se recomputa desde los grupos ACTUALMENTE renderizados (respeta los toggles) con la MISMA
         ' regla que SelectWinningCandidates → NpcMeshCollector.HeadPartHideMask (un único sitio con la regla).
@@ -517,7 +517,7 @@ Friend Class NpcRenderHost
         ' ⛔ Sólo HIDE: 0x1416C34B0 hace add byte [rec+0x10],1 y con 0xFF sigue al próximo segmento; no hay
         ' fallback a SetAppCulled, así que la fase 2 nunca oculta un nodo entero.
 
-        ' SSE oclusión per-partición por-dueño (fase 1 de 0x140218200): la máscara de slots CUBIERTOS de una
+        ' SSE oclusión per-partición por-dueño (fase 1 de 0x14021DAE0): la máscara de slots CUBIERTOS de una
         ' malla = todos los slots cuyo dueño es un ítem con OTRO NIF. Una partición se oculta ⟺ su slot lo
         ' posee un ítem cuyo model path (DictKey) difiere del de esta malla. El engine compara con `_stricmp`
         ' (case-insensitive, import de api-ms-win-crt-string) el model del owner(slot) contra el model M de la
@@ -600,7 +600,7 @@ Friend Class NpcRenderHost
             Dim grpDbg = grpSb.ToString().TrimEnd()
             Dim hmDbg = sseHeadMask
             Dim rhDbg = renderHeadwear : Dim raDbg = renderArmor : Dim ruDbg = renderUnderarmor : Dim rbDbg = renderBody : Dim rgDbg = renderGore
-            ' SSE: dump del mapa de dueños por-slot (fase 1 de 0x140218200). owner(slot).model = DictKey del ARMA
+            ' SSE: dump del mapa de dueños por-slot (fase 1 de 0x14021DAE0). owner(slot).model = DictKey del ARMA
             ' que ganó ese slot; sólo el basename para compactar. Vacío en FO4 (arrays sin poblar).
             Dim ownSb As New System.Text.StringBuilder()
             If isSse Then
@@ -620,7 +620,7 @@ Friend Class NpcRenderHost
             LastRenderData.ShapeCategory.TryGetValue(shape, cat)
             ' Push the per-segment occlusion mask the render index filter (EnsureZapIndexBuffer) consumes.
             ' Head parts, GATED by Render headwear ("Render headwear" OFF ⇒ mask 0 ⇒ head parts revealed whole):
-            '   • SSE: engine attach 0x140218200 fase 2 — el BOD2 COMPLETO del ítem que ocupa el slot de pelo
+            '   • SSE: engine attach 0x14021DAE0 fase 2 — el BOD2 COMPLETO del ítem que ocupa el slot de pelo
             '     (30+B), recomputado por render desde los grupos renderizados (sseHeadMask =
             '     NpcMeshCollector.HeadPartHideMask). NO occupiedVisible ∩ HeadOcclusionMask (eso daba sólo el
             '     bit del slot de pelo, dejando visibles las demás particiones del casco).

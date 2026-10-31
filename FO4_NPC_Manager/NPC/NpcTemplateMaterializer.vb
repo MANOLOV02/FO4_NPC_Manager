@@ -573,7 +573,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' <para>FO4 no tiene colapso (el unico AND sobre las banderas, `0x14030A0CA`, es del bit 15): devuelve las
     ''' crudas.</para>
     ''' <para>⛔⛔ POR QUE `ResolverCadena` NO LO APLICA, Y NO ES UNA OMISION. El colapso corre DESPUES de la
-    ''' copia del mismo NPC, y cada eslabon inicializa su plantilla ANTES de copiar (`0x1403C1F97`..`0x1403C1FBC`),
+    ''' copia del mismo NPC, y cada eslabon inicializa su plantilla ANTES de copiar (SSE `0x1403C1F97`..`0x1403C1FBC`),
     ''' asi que lo que un NPC trae de un NPC_ de su cadena ya quedo copiado con sus bits CRUDOS. Las banderas
     ''' colapsadas solo gobiernan la copia del SPAWN desde la hoja, y un bucket k llega a la lista caminando por
     ''' bits crudos si y solo si todos los NPC_ hasta la lista tienen k, que es exactamente "k esta en el AND".
@@ -676,7 +676,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
         ' son BLOQUES — el motor los mueve enteros— asi que va `CopiarSubrecord`, que copia el NODO y
         ' se lleva tambien lo que ninguna propiedad modela; enumerar campos perderia justo eso.
         '   OBND  0x1403C225D sub_140276CC0, 12 bytes (TESForm+0x20). FO4 0x14065846E sub_1404579C0.
-        '   NAM9  sub_1403BDFC0 :0x1403BE165, bloque de 0x5C en +0x258 (0x4C de floats)
+        '   NAM9  SSE sub_1403BDFC0 :0x1403BE165, bloque de 0x5C en +0x258 (0x4C de floats)
         '   NAMA  el MISMO bloque, +0x4C (0x10 de uints)
         CopiarSonidos(d, s)
         d.CopiarSubrecord(s, "OBND")
@@ -995,7 +995,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ''' <para>⛔ Nada de eso es expresable en un ESP — no hay "puntero compartido" en un record— asi
     ''' que lo canonico es lo unico OBSERVABLE: el heredero termina con los ataques y la raza de
     ''' ataque del terminal. La asimetria queda dicha para que no se la busque de nuevo.</para>
-    ''' <para>Y el respaldo de <c>0x1403C25B2</c>/<c>0x1406588C9</c> (si quedo sin mapa, se le pone el
+    ''' <para>Y el respaldo de SSE <c>0x1403C25B2</c>/FO4 <c>0x1406588C9</c> (si quedo sin mapa, se le pone el
     ''' de SU PROPIA raza) tampoco entra: es reconstruccion en runtime desde la raza, que el motor
     ''' rehace en cada carga.</para></summary>
     ''' <summary>⛔ SIN llamador de PRODUCCIÓN, y NO es código muerto — el comentario está para que el
@@ -1011,7 +1011,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
         d.CopiarGrupo(s, "Attacks")
         ' ⛔ `ATKT` viaja con el grupo, y eso NO es copia de mas. El motor no hace NADA con `ATKT` en el
         ' camino de `NPC_`: llega al despacho (`0x1406508C2`), el handler cae al `jne 0x1406FF867` de
-        ' `0x1406FF69C` = ret, y se descarta **sin consumir payload**. Su otra aparicion, `0x140688F65`,
+        ' `0x1406FF69C` = ret, y se descarta **sin consumir payload**. Su otra aparicion, `0x140688F63`,
         ' es el `LoadForm` de RACE, no el de `NPC_`.
         ' ⇒ Sobre un campo que el motor NUNCA CARGA no existe la ley "no lo copies": el bucket 11 mueve un
         ' PUNTERO al mapa de attack data, y el mapa no tiene ranura para `ATKT`. Las dos formas de escribir
@@ -1126,7 +1126,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
     ' tres funciones. Reescribirlas alla serian dos leyes de "que tramo es de quien".
     Friend Shared Sub CopiarHabilidadesDelDnam(destino As Canon.INpc, origen As Canon.INpc)
         ' Solo SSE: FO4 no tiene habilidades en el DNAM (sus skills viajan como actor values del
-        ' PropertySheet). Citas de la copia: 0x1403C23CA (16 B) / 0x1403C23D8 / 0x1403C23E6 (16 B) /
+        ' PropertySheet). Citas de la copia: SSE 0x1403C23CA (16 B) / 0x1403C23D8 / 0x1403C23E6 (16 B) /
         ' 0x1403C23F4, todas dentro del bloque del bit 1.
         Dim ss = TryCast(origen, Canon.NpcSSE), ds = TryCast(destino, Canon.NpcSSE)
         If ss Is Nothing OrElse ds Is Nothing Then Return

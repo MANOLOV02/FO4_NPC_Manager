@@ -25,7 +25,7 @@ Friend NotInheritable Class PoseMath
     End Enum
 
     ''' <summary>Active body-weight clamp model, read per-bone in BuildBodyWeightPose. Set to Off: RE
-    ''' of Fallout4.exe's full body-weight apply chain (0x6E0820→0x652100→0x6517A0→0x664850, ver
+    ''' of Fallout4.exe's full body-weight apply chain (0x6E0B40→0x652420→0x651AC0→0x664B70, ver
     ''' 22-morphs-re-clamps-y-regiones) found NOT A SINGLE minss/maxss — the engine does not clamp the
     ''' scale to the RACE's RangeModifier; the "centrality" comes from the K term in Layer 1, not a
     ''' clamp. The other models stay in the enum so this can be changed in the future by editing this
@@ -33,8 +33,8 @@ Friend NotInheritable Class PoseMath
     ''' once the engine-faithful model was confirmed.)</summary>
     Private Shared ReadOnly _bodyWeightClampModel As BodyWeightClampModel = BodyWeightClampModel.Off
 
-    ''' <summary>Bone→MRSV-region map, EXACT from CreationKit.exe (fn 0xA95C70 builds this hardcoded
-    ''' table into a global map at RVA 0x3BA4330; see memory 22-morphs-re-clamps-y-regiones). The 48 body
+    ''' <summary>Bone→MRSV-region map, EXACT from CreationKit.exe (fn 0xA9B600 builds this hardcoded
+    ''' table into a global map at RVA 0x3BB8220; see memory 22-morphs-re-clamps-y-regiones). The 48 body
     ''' "_skin" bones each carry a hardcoded region index 0..4 (0=Head, 1=Upper Torso, 2=Arms,
     ''' 3=Lower Torso, 4=Legs), matching NPC_.MRSV[0..4]. Replaces the old name-substring heuristic,
     ''' which mis-assigned Pelvis*/ButtFat* (engine→Legs, heuristic→Lower Torso) and Neck1 (engine→
@@ -59,7 +59,7 @@ Friend NotInheritable Class PoseMath
     }
 
     ''' <summary>Map a skeleton bone to its MRSV region (0..4) using the EXACT engine table
-    ''' (CreationKit.exe fn 0xA95C70, see _mrsvRegionByBone). Direct lookup on the bone's own name;
+    ''' (CreationKit.exe fn 0xA9B600, see _mrsvRegionByBone). Direct lookup on the bone's own name;
     ''' falls back to walking the parent chain (for non-vanilla skeletons whose morph bone isn't
     ''' itself a mapped _skin node). Returns -1 if no ancestor is a mapped body-morph bone — the
     ''' engine applies no MRSV scaling to such bones.</summary>
@@ -220,7 +220,7 @@ Friend NotInheritable Class PoseMath
         ' Apply Body Weight, independiente de MWGT/sculpt) y su anti-propagación la hace el post-pase
         ' ApplyNeckNnamCompensation. "Neck" literal no tiene RACE.BoneData, así que no entra al loop.
 
-        ' --- Engine weight-triangle correction factor K (RE de Fallout4.exe, fn 0x6517A0/0x664850) ---
+        ' --- Engine weight-triangle correction factor K (RE de Fallout4.exe, fn 0x651AC0/0x664B70) ---
         ' El engine NO interpola linealmente: out_a = thin_a*wt + musc_a*wm + fat_a*wf - (mean_a-1)*K,
         ' con mean_a = (thin_a+musc_a+fat_a)/3 y K = "centralidad" del punto de peso (wt,wm,wf) en el
         ' triángulo equilátero Thin/Musc/Fat. Constantes √3/2, 1/√3, 2/√3 verificadas en el binario.
@@ -323,7 +323,7 @@ Friend NotInheritable Class PoseMath
             ' --- Layer 4: ARMA Bone Scale Delta — ADITIVO en Y/Z; X = 1.0 FIJO ---
             ' Fórmula: sx = 1.0 ; sy = race_sy + delta_y ; sz = race_sz + delta_z.
             ' FUENTE (Fallout4.exe, el build que usa la app): el constructor del bone-scale-array
-            ' [BSSkin::Instance+0x50] = FUN_140652230. Para cada entrada del mapa delta hace
+            ' [BSSkin::Instance+0x50] = FUN_140652550. Para cada entrada del mapa delta hace
             '   addss xmm6,[rcx+0xc]   ← Y
             '   addss xmm7,[rcx+0x10]  ← Z
             '   movaps xmm8,xmm9       ← X = 1.0, constante

@@ -112,7 +112,7 @@ Public Module PresetCategories
     ''' <para>⛔ `FaceTints` / `SkinToneOffset` (QNAM) -- hereda en LOS DOS. Medido: SSE `sub_1403BDFC0` copia
     ''' +0x246/+0x247/+0x248 en 0x1403BE09A, 0x1403BE0AE y 0x1403BE0BB, sin test; FO4 `sub_140651470` copia
     ''' +0x2EA-0x2ED en 0x140651552, 0x140651560, 0x14065156E y 0x14065157C. Las CAPAS, en cambio, solo las
-    ''' copia FO4: el censo de `sub_1403BDFC0` no toca +0x260 en ninguna instruccion.</para>
+    ''' copia FO4: el censo de SSE `sub_1403BDFC0` no toca +0x260 en ninguna instruccion.</para>
     '''
     ''' <para>⛔ `FaceBoneRegions` / `FacialMorphIntensity` (FMIN) -- NO hereda.</para>
     '''
@@ -123,7 +123,7 @@ Public Module PresetCategories
     ''' mismo materializador ya describe para el `ATKT`.</para>
     '''
     ''' <para>La pregunta que SI contesta es «¿alguien del camino del bit 0 toca la tabla?», y se midio
-    ''' por LLAMADORES de las tres funciones de la tabla: `sub_140654DC0` &lt;- solo 0x14064F230 (el loader
+    ''' por LLAMADORES de las tres funciones de la tabla: FO4 `sub_140654DC0` &lt;- solo 0x14064F230 (el loader
     ''' del `NPC_`); `sub_1406637B0` &lt;- 0x140650FE0 y el setter; `sub_140667430` &lt;- 0x14064EF50,
     ''' 0x140650FE0 y el setter. Por RTTI, 0x140650FE0 es el slot 54 de `TESNPC` (`Copy`) y 0x14064EF50
     ''' el slot 8 (un Clear). Interseccion con los callees de `sub_1406580A0` + `sub_140651470` a

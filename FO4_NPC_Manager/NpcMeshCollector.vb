@@ -97,7 +97,7 @@ Friend NotInheritable Class NpcMeshCollector
         Dim facialHairMask As UInteger = RaceUtil.RaceFacialHairMask(raceData)
         ' Los TRES canales crudos, por separado y sin unir: el render los combina por TIPO de head-part
         ' (HeadPartChannelMask), que es como los aplica el motor. SSE además reconstruye la máscara
-        ' per-partición desde los BOD2 de los ítems ACTUALMENTE renderizados (attach 0x140218200 fase 2).
+        ' per-partición desde los BOD2 de los ítems ACTUALMENTE renderizados (attach 0x14021DAE0 fase 2).
         result.HeadFaceCullMask = faceCullMask
         result.HeadHairSlotMask = hairMask
         result.HeadHairFirstBit = RaceUtil.RaceHairFirstBit(raceData)
@@ -385,7 +385,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' .SlotMask below was added to prevent — "broke hands"). For vanilla FO4/SSE races
         ' RaceHeadOcclusionMask is a subset of HeadwearMaskForGame(), so this union is a byte-for-byte
         ' no-op (verified: vanilla FO4 A/B/C use only slots {30,31,32,48}). Engine parity: Fallout4.exe
-        ' 0x14051F210 ORs the ARMO's full BOD2 and 0x140506140 tests it against the race's A/B/C fields —
+        ' 0x14051F530 ORs the ARMO's full BOD2 and 0x140506460 tests it against the race's A/B/C fields —
         ' this restores that data-driven behaviour without the full-union skin-coverage regression.
         Dim raceHeadOcclSlots As UInteger = 0UI
         If state.RaceFormID <> 0UI Then
@@ -1289,7 +1289,7 @@ Friend NotInheritable Class NpcMeshCollector
     ''' En Skyrim el maestro <c>0x1403C2940</c> hace lo mismo con un solo canal: <c>cmp dword [r8+0x6c],3</c>
     ''' elige EXCLUSIVAMENTE el tipo 3, y la raza no declara canal de vello facial.
     ''' <para>El canal se pide por el PartType <b>efectivo</b> (con herencia HNAM del padre) porque el motor
-    ''' arrastra a las extra parts con el tipo de su padre: el walker <c>0x14064E570</c> recibe el MISMO slot y
+    ''' arrastra a las extra parts con el tipo de su padre: el walker FO4 <c>0x14064E570</c> recibe el MISMO slot y
     ''' el MISMO flag que calculó el padre y se los aplica a cada extra.</para>
     ''' <para>El face-cull (A) NO sale de acá: no es per-segmento sino un cull de nodo completo que cascadea a
     ''' todos los head-parts, y en la app lo resuelve el whole-hide de <c>SelectWinningCandidates</c>.</para>
@@ -1805,7 +1805,7 @@ Friend NotInheritable Class NpcMeshCollector
         Next
         ' Máscaras que consume HeadPartHideMask (mecanismo b): el BOD2 del ARMA de cada pieza renderizada,
         ' NO su SlotMask (que es ARMA ∪ bits headwear del ARMO). El writer de la tabla del biped
-        ' (@0x1402134E0) guarda el ARMATURE en `entry+0x18` recorriendo los bits del ARMA; un bit que sólo
+        ' (SSE @0x140218DB0) guarda el ARMATURE en `entry+0x18` recorriendo los bits del ARMA; un bit que sólo
         ' declara el ARMO nunca escribe `+0x18` y por lo tanto no agrupa ni oculta nada.
         ' Cada candidate ya es un armature filtrado por raza/género = el que el engine adjuntaría.
         ' ⛔ Ya NO es una lista de BOD2 de ARMA: la fase 2 del motor pregunta por el ARMA que GANÓ el slot
@@ -1850,7 +1850,7 @@ Friend NotInheritable Class NpcMeshCollector
         Next
 
         ' Per-segment "covered by OTHER items" occlusion (ORDER / other-items rule, engine owner-slot
-        ' branch 0x14035E22B) is NOT precomputed here anymore: it is rebuilt every render by
+        ' branch 0x14035E54B) is NOT precomputed here anymore: it is rebuilt every render by
         ' ApplyRenderToggleVisibility from the items CURRENTLY rendered, so a render toggle that hides an
         ' item drops its slots from the occluding set. LoadNifShapes only records each shape's OWN slots +
         ' group id (ShapeOwnSlots / ShapeSlotGroup) — the inputs that recompute reads.
@@ -1862,7 +1862,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' Por tipo (0/1 y los extra parts nunca ocluyen):
         '   3 Hair       : per-segmento y uniforme; la pieza entera cae si se cubre el face-cull o todas sus
         '                  particiones. RENDER-ONLY: el bake tiene su propia regla fiel al CK.
-        '   4 FacialHair : misma ley que el pelo, con UNA sola llamada (0x140506863) y el canal C: cull de
+        '   4 FacialHair : misma ley que el pelo, con UNA sola llamada (Fallout4.exe 0x140506863) y el canal C: cull de
         '                  NODO si la malla no trae el tag C, per-segmento si lo trae, y face-cull por encima.
         '                  Sus extras HNAM reciben el MISMO slot y flag (0x140506898 call 0x14064E570).
         ' ⛔ LO QUE NO SE MODELA DE ESTE DRIVER, con número:
@@ -1946,7 +1946,7 @@ Friend NotInheritable Class NpcMeshCollector
                         ' A (Head, RACE +0x12C) cubierto → whole-node cull de la cabeza; eyes/brows/etc. cascadean.
                         occluded = True
                     ElseIf slotlessCandidate.HeadPartType = MainForm.HeadPartTypeHair Then
-                        ' Sólo el canal de pelo (B, RACE +0x130) pasa por el hider per-partición 0x1403C56B0.
+                        ' Sólo el canal de pelo (B, RACE +0x130) pasa por el hider per-partición SSE 0x1403CC770.
                         ' Las hairline vanilla llegan como HDPT rawType=0 (Misc) extras de un padre type=3;
                         ' effectivePartType las promueve a Hair, así que HeadPartTypeHair las agarra.
                         partitionMask = CandidatePartitionSlotMask(slotlessCandidate)
@@ -2193,7 +2193,7 @@ Friend NotInheritable Class NpcMeshCollector
 
     ''' <summary>Slot-30-relative mask (bit i = biped slot 30+i) of every BSDismemberSkinInstance partition
     ''' across all shapes of the candidate's mesh. Drives the Skyrim head-part occlusion rule: the engine's
-    ''' per-partition ApplyOcclusionToGeometry (0x1403C56B0) hides only the partition whose folded slot is
+    ''' per-partition ApplyOcclusionToGeometry (0x1403CC770) hides only the partition whose folded slot is
     ''' covered, so we need the mesh's full partition slot set to know whether ANY partition survives the
     ''' worn set. Cada BodyPart se pliega con <see cref="BipedSlots.FoldPartitionBodyPart"/> —⛔ la ley del
     ''' plegado NO se re-enuncia acá, ni en código ni en prosa— y se acepta sólo en [30,61]. In Skyrim meshes are BSTriShape/BSDynamicTriShape with a

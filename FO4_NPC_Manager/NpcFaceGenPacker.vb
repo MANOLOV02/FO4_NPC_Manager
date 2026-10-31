@@ -437,7 +437,7 @@ Public Module NpcFaceGenPacker
         ' MISMO NPC se empaquetaban igual. El bundle no contaba como committed, pero (a) PackResult.Success seguía
         ' True, (b) sus refs SÍ llegaban a `committedRefs` y por lo tanto (c) sus sueltos se BORRABAN en el paso 5.
         ' Caso concreto y medido en SSE: si WriteSseFacetintDds bailó, falta `FaceTint\<id>.dds` (spec REQUERIDO) y
-        ' el NIF entraba al BSA SIN su facetint ⇒ ApplyFaceTintToHeadMaterial (0x1403BC400) hace LoadTexture NULL,
+        ' el NIF entraba al BSA SIN su facetint ⇒ ApplyFaceTintToHeadMaterial (0x1403C34C0) hace LoadTexture NULL,
         ' [mat+0xA0]=NULL, CARA MARRÓN in-game. Y como los sueltos ya se borraron, tampoco se puede re-empacar.
         ' Ahora se resuelve la lista COMPLETA de specs primero y, si falta alguno requerido, el bundle entero se
         ' descarta ANTES de agregar un solo ref: el archive nunca queda a medias y los sueltos sobreviven para

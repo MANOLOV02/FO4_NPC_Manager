@@ -155,7 +155,7 @@ Public Class NpcMorphResolver
         ' 2) Face morph presets - GAME-AWARE:
         '  • FO4  = MSDK/MSDV sliders via RACE MSID→MSM0/MSM1 + MPPI presets (RACE-defined name map).
         '  • SSE  = NAM9 (18 signed sliders) + NAMA (Nose/Eyes/Mouth type) via a FIXED engine name
-        '           table (no RACE defs) — byte-verified from SkyrimSE.exe @0x1ff92a0. See
+        '           table (no RACE defs) — byte-verified from SkyrimSE.exe @0x209c690. See
         '           22-morphs-sse-nam9-map. Same chargen .tri, same TriHead.GetMorph mechanism.
         If triHead IsNot Nothing Then
             ' Single per-game builder — the SAME one the offline bake calls, so render and bake never diverge.
@@ -350,7 +350,7 @@ Public Class NpcMorphResolver
     End Function
 
     ''' <summary>SSE NAM9→chargen morph-name table, byte-verified from SkyrimSE.exe engine table
-    ''' @RVA 0x1ff92a0 (stride 0x18, record {flag,negName,posName}; accessor 0x1403B8360). Index =
+    ''' @RVA 0x209c690 (stride 0x18, record {flag,negName,posName}; accessor 0x1403BF420). Index =
     ''' NAM9 slider index (0..17); PosName applied when the signed slider value ≥ 0, NegName when &lt; 0,
     ''' both with weight = abs(value). Index 18 (VampireMorph) is unidirectional and handled separately.
     ''' See 22-morphs-sse-nam9-map. The pos/neg split matters because the .tri stores SEPARATE
@@ -393,7 +393,7 @@ Public Class NpcMorphResolver
         ' applyChargenMorphs=False ⇒ se suprimen los canales de FORMA (race base, NAM9, NAMA, custom,
         ' sculpt) y solo puede emitirse el SkinnyMorph del weight (2d). Usos: checkbox "Vertex morphs
         ' (TRI)" OFF con "Body weight" ON, y el preview "Show other gender". El weight es per-actor e
-        ' independiente del chargen (applier 0x1403B90D0), así que NO se apaga con los morphs de forma.
+        ' independiente del chargen (applier SSE 0x1403C0190), así que NO se apaga con los morphs de forma.
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
 
@@ -447,10 +447,10 @@ Public Class NpcMorphResolver
         End If
 
         ' 2) NAMA type presets. NAMA = {Nose, "Unknown", Eyes, Mouth} (u32×4). Byte-verified against
-        ' SkyrimSE.exe: the 4 fields map 1:1 to the engine's face-part family table @0x1ff9470
+        ' SkyrimSE.exe: the 4 fields map 1:1 to the engine's face-part family table @0x209c860
         ' {NoseType, BrowType, EyesType, LipType} — i.e. the "Unknown" field IS the BROW type.
-        ' The engine builds the morph name via sprintf("%s%d", family, N) (builder 0x1403B83F0) and
-        ' looks it up by NAME (the ordinal/valid-bitmask path 0x3e1420 is chargen-UI navigation, not the
+        ' The engine builds the morph name via sprintf("%s%d", family, N) (builder 0x1403BF4B0) and
+        ' looks it up by NAME (the ordinal/valid-bitmask path 0x3e84f0 is chargen-UI navigation, not the
         ' bake): N==0 → "Default", N>0 → family&N, 0xFFFFFFFF → no preset. Applied at full weight.
         Dim nama = npcData.Record.PartesDeCara()
         If applyChargenMorphs AndAlso nama IsNot Nothing AndAlso nama.Length >= SseNam9MorphMap.NamaFamilyCount Then
@@ -597,7 +597,7 @@ Public Class NpcMorphResolver
     End Sub
 
     ''' <summary>Apply a NAMA face-part type preset, engine-faithful (SkyrimSE.exe name builder
-    ''' 0x1403B83F0): 0xFFFFFFFF → no preset; 0 → the "Default" morph; N&gt;0 → "&lt;family&gt;&lt;N&gt;"
+    ''' 0x1403BF4B0): 0xFFFFFFFF → no preset; 0 → the "Default" morph; N&gt;0 → "&lt;family&gt;&lt;N&gt;"
     ''' (e.g. NoseType3, EyesType18, LipType11). Matched by name in the chargen .tri, at full weight.
     ''' A missing morph (e.g. the vanilla femaleheadchargen quirk with no "NoseType10") is silently
     ''' skipped — the engine's by-name lookup does the same.</summary>

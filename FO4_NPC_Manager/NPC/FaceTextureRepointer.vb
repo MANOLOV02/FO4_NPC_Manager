@@ -50,7 +50,7 @@ Public NotInheritable Class FaceTextureRepointer
     ''' <summary>
     ''' Reapunta la cara de <paramref name="shape"/> si corresponde. Devuelve qué pasó.
     ''' <para>EL GATE ES EL SHADER TYPE, NO EL HEAD PART. El CK sólo redirige los slots cuando el
-    ''' material del shape es <c>FaceTint</c> (RE CK 0x140ed9020 / 0x141d0ea00), y esto NO equivale a
+    ''' material del shape es <c>FaceTint</c> (RE CK 0x140edea00 / CK SSE 0x141d5c1a0), y esto NO equivale a
     ''' <c>HDPT.PartType=Face</c>: hay 8 NPCs vanilla medidos (MaleHeadManekin y compañía) con
     ''' PartType=Face cuyo shape está autorado con shader type Default, y ahí el CK deja los slots
     ''' como están. Gatear por PartType nos desviaría del CK justo en esos.</para></summary>
@@ -75,9 +75,9 @@ Public NotInheritable Class FaceTextureRepointer
                                 Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
 
         ' FO4: CORTAR EL LINK AL BGSM, o el repunte de abajo NO SE LEE NUNCA. Verificado en Fallout4.exe:
-        ' con `prop+0x10` no vacío el motor carga el material y ApplyMaterialToGeometry (0x142169BB0)
-        ' reemplaza el TEXTURE SET ENTERO (prop+0x1d0 ← mat+0x78, 0x142163B70); con el nombre vacío los 3
-        ' call-sites de carga propia bailan en la guarda de largo (0x14167C300) y el shader inline manda.
+        ' con `prop+0x10` no vacío el motor carga el material y ApplyMaterialToGeometry (0x1421715E0)
+        ' reemplaza el TEXTURE SET ENTERO (prop+0x1d0 ← mat+0x78, 0x14216B5A0); con el nombre vacío los 3
+        ' call-sites de carga propia bailan en la guarda de largo (0x14167C620) y el shader inline manda.
         ' Se llama al MISMO método que usa el bake — no una copia. Copiarlo se probó y se desincronizó al
         ' toque (faltaba el centinela de Emissive y apagaba el Emissive en las 9 cabezas de FO4).
         '

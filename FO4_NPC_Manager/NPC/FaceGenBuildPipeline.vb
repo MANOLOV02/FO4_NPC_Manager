@@ -60,7 +60,7 @@ Public Module FaceGenBuildPipeline
         ' 2b) Body-weight (MWGT + MRSV) — el CK SÍ lo hornea, en las shapes que NO traen
         ' CustomizationRemapNewBonesData. Ver 40-bake-leyes-fo4:
         ' el exportador vuelve a llamar al constructor del array per-hueso del skin instance
-        ' (CreationKit.exe 0x140A8CFD0) con los mapas en NULL para las shapes que sí la traen, y
+        ' (CreationKit.exe 0x140A92960) con los mapas en NULL para las shapes que sí la traen, y
         ' eso deja sus escalas en identidad. Medido sobre 16.438 shapes del corpus: los que pasan
         ' de 0,05 contra la referencia del CK bajan de 324 a 3.
         Dim bwPose As Poses_class = Nothing
@@ -465,7 +465,7 @@ Public Module FaceGenBuildPipeline
                 ' `Mtot += mat * peso` escala los 16 elementos, asi que M44 queda en Σpesos. El forward
                 ' no lo nota (TransformPosition ignora w) pero Invert SI hace algebra homogenea y mete
                 ' un 1/Σw que cancela justo el ε de la ley del motor. El CK mezcla un 3x4 y su fila 3
-                ' queda [0,0,0,1] (SkinBlend 0x142B73230). Ver Fo4EngineSkin.ReanchorAffine.
+                ' queda [0,0,0,1] (SkinBlend 0x142B822E0). Ver Fo4EngineSkin.ReanchorAffine.
                 Dim invMtot = Matrix4d.Invert(Fo4EngineSkin.ReanchorAffine(Mtot))
                 vBaked = Vector3d.TransformPosition(vWorld(i), invMtot)
             Catch

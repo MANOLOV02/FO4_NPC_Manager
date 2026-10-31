@@ -111,6 +111,10 @@ Module Program
         ' released with a step that failed (PreviewControl.Release; ola 7g round 2f, user decision r7g-04 - release and warn).
         ' The headless modes (--bake-all...) take it to stderr (EnsureConsole -> CrashReport.UseConsole).
         PreviewControl.UnexpectedErrorChannel = AddressOf CrashReport.ReportError
+#If DEBUG Then
+        ' Debug: FO4_DEBUG_FAIL_STAGE_ONCE shows the program error card and its Retry (PreviewControl.DebugFailStageOnceFromEnvironment).
+        PreviewControl.DebugFailStageOnceFromEnvironment()
+#End If
         ' NPC Manager es un VISOR: no dibuja helper shapes (colisiones, marcadores, emisores) salvo que
         ' el usuario prenda la casilla. UNA sola linea acá porque los CUATRO Config_App.LoadConfig del
         ' archivo y el --bake-all cuelgan todos de RealMain. Ver Config_App.DefaultShowHelperShapes:
