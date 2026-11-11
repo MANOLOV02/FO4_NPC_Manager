@@ -118,8 +118,36 @@ Public Class SkinTintPanel
         If ctl Is Nothing Then Return
         RemoveHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
         AddHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
+        ' F9 (r4 rev-15, r8 rev-21): the gate - picker and auto-calc only while the preview's last frame was complete and nothing compiles.
+        RemoveHandler ctl.ColorPickPending, AddressOf HostPreview_ColorPickPending
+        AddHandler ctl.ColorPickPending, AddressOf HostPreview_ColorPickPending
+        RemoveHandler ctl.CaptureBusyChanged, AddressOf HostPreview_CaptureBusyChanged
+        AddHandler ctl.CaptureBusyChanged, AddressOf HostPreview_CaptureBusyChanged
         RefreshSkinTintAvailability()
     End Sub
+
+    ''' <summary>F9 (r8 rev-21 (1)): the picker's click met a frame still compiling: no colour, the notice (the pick mode stays armed).</summary>
+    Private Sub HostPreview_ColorPickPending(sender As Object, e As PreviewControl.ColorPickPendingEventArgs)
+        LabelSkinTintStatus.Text = e.Message
+    End Sub
+
+    ''' <summary>F9 (r4 rev-15): the preview's readiness changed - the picker and the auto-calc follow it (not while the auto-calc runs:
+    ''' it keeps them off itself).</summary>
+    Private Sub HostPreview_CaptureBusyChanged(sender As Object, e As EventArgs)
+        If _stBusy Then Return
+        RefreshSkinTintAvailability()
+    End Sub
+
+    ''' <summary>F9 (r4 rev-15): the preview can be read now - its last frame was complete and no program is being built.</summary>
+    Private Function PreviewReadyForReads() As Boolean
+        Dim ctl = HostPreview
+        Return ctl IsNot Nothing AndAlso Not ctl.IsDisposed AndAlso Not ctl.CaptureBusy
+    End Function
+
+    ''' <summary>F9 (r7 rev-21): a read of this panel met a frame still compiling - the path stops here, and says so.</summary>
+    Private NotInheritable Class SkinTintReadPendingException
+        Inherits Exception
+    End Class
 
     ''' <summary>Reenvio del SelectedIndexChanged de TabsBody: el control ya no puede escuchar el TabControl
     ''' del formulario. <paramref name="mine"/> es True cuando el tab que quedo activo es el de este control.</summary>
@@ -146,7 +174,11 @@ Public Class SkinTintPanel
         ' dia el preview se reusara. Idempotente y a prueba de disposed.
         DisarmSkinTintPicker()
         Dim ctl = HostPreview
-        If ctl IsNot Nothing Then RemoveHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
+        If ctl IsNot Nothing Then
+            RemoveHandler ctl.ColorPicked, AddressOf HostPreview_ColorPicked
+            RemoveHandler ctl.ColorPickPending, AddressOf HostPreview_ColorPickPending
+            RemoveHandler ctl.CaptureBusyChanged, AddressOf HostPreview_CaptureBusyChanged
+        End If
         ' Las dos muestras son Bitmaps propios de este control.
         SetSkinTintPatchImage(_stSourcePatchImage, Nothing, Nothing)
         SetSkinTintPatchImage(_stTargetPatchImage, Nothing, Nothing)
@@ -292,6 +324,11 @@ Public Class SkinTintPanel
         If _stHasSource Then
             If String.Equals(_stSourceCameraSignature, SkinTintCameraSignature(), StringComparison.Ordinal) Then
                 Dim patch = ctl.ReadPixelPatch(_stSourcePoint.X, _stSourcePoint.Y, snapped, presentFrame:=False, wantImage:=True)
+                If patch.IsPending Then
+                    ' F9 (r7 rev-21): the frame is still compiling: the path stops, with the notice
+                    LabelSkinTintGate.Text = PreviewControl.ShadersCompilingNotice
+                    Return
+                End If
                 Dim c = patch.Mean
                 If Not c.IsEmpty Then
                     _stSourceColor = c
@@ -518,6 +555,11 @@ Public Class SkinTintPanel
         Dim patchImg As Bitmap = Nothing
         If HostPreview IsNot Nothing AndAlso Not HostPreview.IsDisposed Then
             Dim patch = HostPreview.ReadPixelPatch(e.X, e.Y, box, presentFrame:=False, wantImage:=True)
+            If patch.IsPending Then
+                ' F9 (r7 rev-21): the frame went back to compiling since the pick: nothing is recorded, the notice says why
+                LabelSkinTintStatus.Text = PreviewControl.ShadersCompilingNotice
+                Return
+            End If
             spread = patch.Spread
             patchImg = patch.Image
         End If
@@ -558,6 +600,11 @@ Public Class SkinTintPanel
         ' numero que se muestra podria ser el del ajuste ANTERIOR.
         Dim box As Integer = SkinTintSampleBox()
         Dim patch = ctl.ReadPixelPatch(_stTargetPoint.X, _stTargetPoint.Y, box, presentFrame:=False, wantImage:=True)
+        If patch.IsPending Then
+            ' F9 (r7 rev-21): the frame is still compiling: no sample, the notice (slider, reset, sample size and auto-calc paths)
+            LabelSkinTintGate.Text = PreviewControl.ShadersCompilingNotice
+            Return
+        End If
         Dim c = patch.Mean
         If c.IsEmpty Then Return
         _stLastTargetColor = c
@@ -901,6 +948,11 @@ Public Class SkinTintPanel
                 msg &= " Still high: the two spots probably don't have comparable lighting — pick spots with similar orientation and shading."
             End If
             LabelSkinTintStatus.Text = msg
+        Catch ex As SkinTintReadPendingException
+            ' F9 (r7 rev-21): interrupted by a frame still compiling - what the user had is put back, and the notice says why
+            LabelSkinTintGate.Text = PreviewControl.ShadersCompilingNotice
+            ApplySkinTintOffsetLive(priorOffset, deferredRepaint:=True)
+            SyncSkinTintSlidersFromOverlay()
         Catch ex As Exception
             Logger.LogLazy(Function() $"[SKINTINT] auto-calc failed for NPC 0x{HostNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
             LabelSkinTintGate.Text = "Auto-calc failed: " & ex.Message
@@ -1012,7 +1064,10 @@ Public Class SkinTintPanel
         If Not ApplySkinTintOffsetLive(cand, deferredRepaint:=False) Then Return Color.Empty
         Dim ctl = HostPreview
         If ctl Is Nothing OrElse ctl.IsDisposed Then Return Color.Empty
-        Dim c = ctl.ReadPixelDisplay(_stTargetPoint.X, _stTargetPoint.Y, SkinTintSampleBox(), presentFrame:=False)
+        Dim r = ctl.ReadPixelDisplay(_stTargetPoint.X, _stTargetPoint.Y, SkinTintSampleBox(), presentFrame:=False)
+        ' F9 (r7 rev-21): a frame still compiling stops the auto-calc (OnSkinTintAutoClick catches it and says so) - never a false sample
+        If r.IsPending Then Throw New SkinTintReadPendingException()
+        Dim c = r.Color
         If c.IsEmpty Then Return Color.Empty
         _stLastTargetColor = c
         Return c
@@ -1068,16 +1123,17 @@ Public Class SkinTintPanel
         SliderSkinTintG.Enabled = enabled
         SliderSkinTintB.Enabled = enabled
         SliderSkinTintIntensity.Enabled = enabled
-        ButtonSkinTintPickSource.Enabled = enabled
-        ButtonSkinTintPickTarget.Enabled = enabled
+        ' F9 (r4 rev-15): the pickers and the auto-calc read the preview: only while it can be read
+        ButtonSkinTintPickSource.Enabled = enabled AndAlso PreviewReadyForReads()
+        ButtonSkinTintPickTarget.Enabled = enabled AndAlso PreviewReadyForReads()
         ButtonSkinTintReset.Enabled = enabled
         SliderSkinTintQuality.Enabled = enabled
         SliderSkinTintSampleSize.Enabled = enabled
-        ButtonSkinTintAuto.Enabled = enabled AndAlso _stHasSource AndAlso _stHasTarget
+        ButtonSkinTintAuto.Enabled = enabled AndAlso _stHasSource AndAlso _stHasTarget AndAlso PreviewReadyForReads()
     End Sub
 
     Private Sub UpdateSkinTintStatus(Optional baseTone As Nullable(Of Color) = Nothing)
-        ButtonSkinTintAuto.Enabled = _stHasSource AndAlso _stHasTarget AndAlso Not _stBusy
+        ButtonSkinTintAuto.Enabled = _stHasSource AndAlso _stHasTarget AndAlso Not _stBusy AndAlso PreviewReadyForReads()
         Dim effective As Nullable(Of Color) = Nothing
         If HostMain IsNot Nothing AndAlso HostEditor IsNot Nothing Then
             effective = HostMain.ResolveBodySkinToneForHost(HostEditor)

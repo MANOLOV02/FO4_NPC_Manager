@@ -166,7 +166,7 @@ Friend Module BakeAllRunner
             Dim glCtl As PreviewControl = Nothing
             Dim glHost As NpcRenderHost = Nothing
 
-            ' La ley de pesos del motor no tiene compuerta propia: la decide el juego ACTIVO (Fo4EngineSkin.UsesEngineLaw), asi que
+            ' La ley de pesos del motor no tiene compuerta propia: la decide el juego ACTIVO (EngineSkin.UsesEngineLaw), asi que
             ' un --executable que cambie Current.Game arriba ya la deja bien.
             NPC_Config.ApplyGlDecodeSetting()
             NPC_Config.ApplyDownsizeFromMip0Setting()

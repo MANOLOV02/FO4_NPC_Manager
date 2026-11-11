@@ -2818,6 +2818,7 @@ Public Class MainForm
         ' cuando PanelActionsToolbar (FlowLayoutPanel, WrapContents) envuelve a una 2da fila, el TLP
         ' fija el ancho de columna antes de medir, así que la fila crece y el render baja sin solapar.
         _previewControl = New PreviewControl() With {.Dock = DockStyle.Fill}
+        _previewControl.Intent.EngineActorView = True   ' the NPC view: an actor's 3D (flag 40, s1_re.md 6)
         PanelPreviewHost.Controls.Add(_previewControl)
         _previewControl.ApplyResize(True)
 
@@ -2838,8 +2839,8 @@ Public Class MainForm
     ''' preview (main, editores y pickers).
     ''' <para>Problema: al togglear, la libreria solo re-corre la GEOMETRIA (skin + morphs, por su MarkDirty
     ''' interno) y NO re-aplica el face-tint ni el fold, asi que el diffuse plegado queda pegado en el
-    ''' diccionario de texturas mientras el MaterialData nuevo pierde su estado per-mesh (SkinToneBaked,
-    ''' FaceTintOverlay_ID) y la cara sale oscura. La libreria levanta SkinningModeToggled justo para que la app
+    ''' diccionario de texturas mientras el MaterialData nuevo pierde su estado per-mesh (SkinToneBaked)
+    ''' y la cara sale oscura. La libreria levanta SkinningModeToggled justo para que la app
     ''' re-corra SU pipeline, y no lo escuchaba nadie.</para>
     ''' <para>Fix: se re-arma el hook post-upload; cuando el re-render de geometria termina con las texturas
     ''' listas, la libreria lo dispara SYNC y ahi se restaura el pristine y se RE-COMPONE el face-tint sobre el
@@ -6305,24 +6306,34 @@ Public Class MainForm
             End If
         Next
 
-        ' Preview capture for the optional wizard screenshot: whatever the main viewport shows
-        ' right now (same front-buffer read the WM editor uses). Best-effort — Nothing (no GL
-        ' frame / capture failure) just disables the "Include screenshot" checkbox in the dialog.
+        ' Preview capture for the optional wizard screenshot: whatever the main viewport shows. Best-effort - Nothing (no GL frame /
+        ' capture failure) just disables the "Include screenshot" checkbox in the dialog. F9 (r3 rev-15): REQUESTED, not waited for - it
+        ' arrives from the next complete frame while the dialog is open (the checkbox stays disabled until then: SetPreviewImage).
         Dim previewShot As Bitmap = Nothing
-        Try
-            previewShot = _renderHost?.PreviewCtl?.CaptureBitmap()
-        Catch
-            previewShot = Nothing
-        End Try
-
+        Dim dialogOpen = True
         Try
             Using dlg As New FomodExport_Form(espFullPath, pluginName, Config_App.Current.Game,
-                                              _dataPath, _pluginManager, npcFormIDs, hasUnsaved, previewShot)
+                                              _dataPath, _pluginManager, npcFormIDs, hasUnsaved, Nothing)
+                Dim preview = _renderHost?.PreviewCtl
+                Dim requested = False
+                If preview IsNot Nothing AndAlso Not preview.IsDisposed Then
+                    requested = preview.RequestCapture(
+                        Sub(bmp As Bitmap, why As String)
+                            If Not dialogOpen OrElse dlg.IsDisposed Then
+                                bmp?.Dispose()
+                                Return
+                            End If
+                            previewShot = bmp
+                            dlg.SetPreviewImage(bmp)
+                        End Sub) = PreviewControl.CaptureRequestResult.Accepted
+                End If
+                dlg.PreviewPending = requested
                 If dlg.ShowDialog(Me) = DialogResult.OK Then
                     SetStatus($"FOMOD exported: {dlg.ExportedZipPath}")
                 End If
             End Using
         Finally
+            dialogOpen = False
             ' The dialog only borrows the bitmap (PictureBox + PNG encode happen while it's open).
             previewShot?.Dispose()
         End Try
@@ -7899,13 +7910,19 @@ Public Class MainForm
                         Dim viCap = vi
                         Dim vL = vLocal
                         Logger.LogLazy(Function() $"[VERTEX-TRACE]   v[{viCap}] v_local=({vL.X:F2},{vL.Y:F2},{vL.Z:F2})")
+                        ' D4: the weights the engine blends with (EngineSkin: FO4 w3 = 1 - sat, SSE the four halves raw) and their RAW sum
+                        ' (every slot, zero and negative included, no division: the factor the eye term takes, 1 - sumW).
+                        Dim engW(EngineSkin.Slots - 1) As Single
+                        Dim conLey = EngineSkin.UsesEngineLaw(wpv) AndAlso vi * wpv + EngineSkin.Slots <= skinning.BoneWeights.Length
+                        If conLey Then EngineSkin.EngineWeights(EngineSkin.LawGame(), CSng(skinning.BoneWeights(vi * wpv)), CSng(skinning.BoneWeights(vi * wpv + 1)),
+                                                                CSng(skinning.BoneWeights(vi * wpv + 2)), CSng(skinning.BoneWeights(vi * wpv + 3)), engW)
                         For j = 0 To wpv - 1
                             Dim baseSkin = vi * wpv + j
                             If baseSkin >= skinning.BoneIndices.Length Then Exit For
                             Dim boneIdx = CInt(skinning.BoneIndices(baseSkin))
-                            Dim w = CSng(skinning.BoneWeights(baseSkin))
-                            If w <= 0 OrElse boneIdx >= shapeBones.Count OrElse boneIdx >= shapeBoneT.Count Then Continue For
+                            Dim w = If(conLey, engW(j), CSng(skinning.BoneWeights(baseSkin)))
                             sumW += w
+                            If boneIdx >= shapeBones.Count OrElse boneIdx >= shapeBoneT.Count Then Continue For
 
                             Dim boneNode = TryCast(shapeBones(boneIdx), NiflySharp.Blocks.NiNode)
                             Dim boneName = If(boneNode?.Name?.String, "<null>")
@@ -8067,14 +8084,19 @@ Public Class MainForm
                     Dim s4Available As Boolean = (mS4 IsNot Nothing)
                     Dim s5Available As Boolean = (tChunkToActor IsNot Nothing)
                     Dim sumWSim As Single = 0
+                    ' D4: the engine's weights (EngineSkin) and their RAW sum, every slot (see [VERTEX-TRACE]).
+                    Dim engWSim(EngineSkin.Slots - 1) As Single
+                    Dim conLeySim = EngineSkin.UsesEngineLaw(wpvSim) AndAlso EngineSkin.Slots <= skinning2.BoneWeights.Length
+                    If conLeySim Then EngineSkin.EngineWeights(EngineSkin.LawGame(), CSng(skinning2.BoneWeights(0)), CSng(skinning2.BoneWeights(1)),
+                                                               CSng(skinning2.BoneWeights(2)), CSng(skinning2.BoneWeights(3)), engWSim)
 
                     For j = 0 To wpvSim - 1
                         Dim baseSkin = j
                         If baseSkin >= skinning2.BoneIndices.Length Then Exit For
                         Dim boneIdx = CInt(skinning2.BoneIndices(baseSkin))
-                        Dim w = CSng(skinning2.BoneWeights(baseSkin))
-                        If w <= 0 OrElse boneIdx >= shapeBones2.Count OrElse boneIdx >= shapeBoneT2.Count Then Continue For
+                        Dim w = If(conLeySim, engWSim(j), CSng(skinning2.BoneWeights(baseSkin)))
                         sumWSim += w
+                        If boneIdx >= shapeBones2.Count OrElse boneIdx >= shapeBoneT2.Count Then Continue For
 
                         Dim boneNode2 = TryCast(shapeBones2(boneIdx), NiflySharp.Blocks.NiNode)
                         Dim boneNameSim2 = If(boneNode2?.Name?.String, "<null>")
@@ -13764,19 +13786,34 @@ Public Class MainForm
             .DefaultExt = "png"
         }
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            Try
-                Using bmp = preview.CaptureBitmap()
+            Dim fileName = dlg.FileName
+            ' F9 (r3 rev-15): the capture is requested - it is read from the next complete frame (after the programs being built, the
+            ' card shows meanwhile) and saved in its callback; no wait on the UI thread. The button stays disabled until it arrives.
+            ButtonScreenshot.Enabled = False
+            Dim r = preview.RequestCapture(
+                Sub(bmp As Bitmap, why As String)
+                    If Not ButtonScreenshot.IsDisposed Then ButtonScreenshot.Enabled = True
+                    If why = "closed" Then Return
                     If bmp Is Nothing Then
-                        MessageBox.Show("Could not capture render preview.", "Screenshot",
+                        MessageBox.Show(If(why Is Nothing, "Could not capture render preview.", "Error saving render screenshot: " & why), "Screenshot",
                                         MessageBoxButtons.OK, MessageBoxIcon.Error)
                         Return
                     End If
-                    bmp.Save(dlg.FileName, System.Drawing.Imaging.ImageFormat.Png)
-                End Using
-            Catch ex As Exception
-                MessageBox.Show("Error saving render screenshot: " & ex.Message, "Screenshot",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error)
-            End Try
+                    Try
+                        bmp.Save(fileName, System.Drawing.Imaging.ImageFormat.Png)
+                    Catch ex As Exception
+                        MessageBox.Show("Error saving render screenshot: " & ex.Message, "Screenshot",
+                                        MessageBoxButtons.OK, MessageBoxIcon.Error)
+                    Finally
+                        bmp.Dispose()
+                    End Try
+                End Sub)
+            If r <> PreviewControl.CaptureRequestResult.Accepted Then
+                ButtonScreenshot.Enabled = True
+                If r = PreviewControl.CaptureRequestResult.Busy Then
+                    MessageBox.Show("A capture of the preview is already in progress.", "Screenshot", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                End If
+            End If
         End Using
     End Sub
 

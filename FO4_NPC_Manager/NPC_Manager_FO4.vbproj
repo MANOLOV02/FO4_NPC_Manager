@@ -215,6 +215,8 @@
   <!-- La configuracion Publish: es Release con carpeta propia. Sin esto compilaria SIN
        OPTIMIZAR, en verde. Ver el comentario del .targets. -->
   <Import Project="..\..\FO4_Base_Library\ConfiguracionPublish.targets" />
+  <!-- F9: the program catalog's manifest next to the library of this output (ProgramCatalog.targets). -->
+  <Import Project="..\..\FO4_Base_Library\ProgramCatalog.targets" />
   <!-- Avisa (Debug/Release) o CORTA (Publish) si el .vbproj se quedo sin el <EmbeddedResource> de los
        .pex de Papyrus. Lo borro el disenador de VS el 2026-08-18 y la app quedo 4 dias fallando el Save
        ESP despues de escribir el .esp, con el build en verde. Ver el comentario del .targets. -->

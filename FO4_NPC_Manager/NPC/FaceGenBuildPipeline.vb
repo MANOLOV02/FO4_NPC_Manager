@@ -451,8 +451,8 @@ Public Module FaceGenBuildPipeline
         ' Buffer reusable para la normalizacion de pesos del MOTOR (ver Fo4EngineSkin). Lado INVERSO
         ' (mundo → local del mesh destino) = el segundo SkinBlend del CK (invert=1, 142B6F91E), con
         ' la paleta del destino. El drift ε = s_src/s_dst − 1 sólo aparece si AMBOS lados (el forward
-        ' de SkinBakeMath y este inverso) corren la misma ley, y en Fallout 4 la corren siempre (Fo4EngineSkin.UsesEngineLaw; sin gate desde D21).
-        Dim ckW(Fo4EngineSkin.Slots - 1) As Single
+        ' de SkinBakeMath y este inverso) corren la misma ley, y en Fallout 4 la corren siempre (EngineSkin.UsesEngineLaw; sin gate desde D21).
+        Dim ckW(EngineSkin.Slots - 1) As Single
         ' Paleta plana para el blend vectorial: UNA vez por shape (20-60 matrices), no por vértice.
         Dim flatPal = FastGeom.BuildFlatPaletteS(precomputedOrig)
 
@@ -465,8 +465,8 @@ Public Module FaceGenBuildPipeline
                 ' `Mtot += mat * peso` escala los 16 elementos, asi que M44 queda en Σpesos. El forward
                 ' no lo nota (TransformPosition ignora w) pero Invert SI hace algebra homogenea y mete
                 ' un 1/Σw que cancela justo el ε de la ley del motor. El CK mezcla un 3x4 y su fila 3
-                ' queda [0,0,0,1] (SkinBlend 0x142B822E0). Ver Fo4EngineSkin.ReanchorAffine.
-                Dim invMtot = Matrix4d.Invert(Fo4EngineSkin.ReanchorAffine(Mtot))
+                ' queda [0,0,0,1] (SkinBlend 0x142B822E0). Ver EngineSkin.ReanchorAffine.
+                Dim invMtot = Matrix4d.Invert(EngineSkin.ReanchorAffine(Mtot))
                 vBaked = Vector3d.TransformPosition(vWorld(i), invMtot)
             Catch
                 ' Singular Mtot — keep ORIG vertex as fallback. Should be extremely rare.
@@ -582,7 +582,7 @@ Public Module FaceGenBuildPipeline
                                                WorstOld As Vector3d, WorstNew As Vector3d,
                                                NSingle As Integer, NMulti As Integer, NUsed As Integer)
         Dim nBones = shapeBones.Length
-        Dim ckW(Fo4EngineSkin.Slots - 1) As Single
+        Dim ckW(EngineSkin.Slots - 1) As Single
         ' Una paleta plana por cada una de las dos paletas, armadas una sola vez.
         Dim flatPalBind = FastGeom.BuildFlatPaletteS(precomputedBakeBind)
         Dim flatPalLive = FastGeom.BuildFlatPaletteS(precomputedLive)
@@ -602,9 +602,9 @@ Public Module FaceGenBuildPipeline
             Dim mBind = BlendMtot(precomputedBakeBind, skin, i, wpv, nBones, ckW, flatPalBind)
             Dim mLive = BlendMtot(precomputedLive, skin, i, wpv, nBones, ckW, flatPalLive)
             Try
-                Dim inv = Matrix4d.Invert(Fo4EngineSkin.ReanchorAffine(mBind))
+                Dim inv = Matrix4d.Invert(EngineSkin.ReanchorAffine(mBind))
                 Dim vLocal = Vector3d.TransformPosition(vWorld(i), inv)
-                Dim vGame = Vector3d.TransformPosition(vLocal, Fo4EngineSkin.ReanchorAffine(mLive))
+                Dim vGame = Vector3d.TransformPosition(vLocal, EngineSkin.ReanchorAffine(mLive))
                 Dim d = (vGame - vWorld(i)).Length
                 ssq += d * d
                 nUsed += 1

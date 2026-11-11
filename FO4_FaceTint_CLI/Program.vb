@@ -328,7 +328,7 @@ Module Program
         ' que lo pedido habia sido `--game sse`. Con los dos, un barrido rotulado con el juego
         ' equivocado se ve en la primera linea del log.
         Console.WriteLine($"[cfg] game={opt.Game}   (--game '{If(opt.GameRaw, "<no pasado; default>")}')")
-        Console.WriteLine($"[cfg]   skin weight law                        = {If(Fo4EngineSkin.UsesEngineLaw(Fo4EngineSkin.Slots), "engine (Fo4EngineSkin: w3 = 1 - sat(w0+w1+w2))", "normalized (not Fallout 4)")}")
+        Console.WriteLine($"[cfg]   skin weight law                        = {If(EngineSkin.UsesEngineLaw(EngineSkin.Slots), If(EngineSkin.LawGame() = Config_App.Game_Enum.Fallout4, "engine (Fo4EngineSkin: w3 = 1 - sat(w0+w1+w2))", "engine (EngineSkin: the four halves raw, D4)"), "normalized (another slot count)")}")
         Console.WriteLine($"[cfg]   ApplyGhoulHeadRearFix                  = {FO4_NPC_Manager.NPC_Config.Current.ApplyGhoulHeadRearFix}" &
                           " (afecta D/N/S de la nuca ghoul-female FO4)")
         ' GAME-AWARE: el bake ESCRIBE en Config_App.Current.DataPath, que es ReadOnly y deriva de FO4ExePath

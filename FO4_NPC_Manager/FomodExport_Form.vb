@@ -27,7 +27,12 @@ Public Class FomodExport_Form
     ''' <summary>Preview capture taken by MainForm right before opening this dialog (Nothing when
     ''' no GL frame was available). Owned by the CALLER — disposed after ShowDialog returns, never
     ''' here.</summary>
-    Private ReadOnly _previewImage As Image
+    Private _previewImage As Image
+    ''' <summary>F9 (r3 rev-15): the preview capture was requested and has not arrived yet (the checkbox waits, disabled).</summary>
+    Friend Property PreviewPending As Boolean
+    ''' <summary>The checkbox's own label and the sidecar's preference, kept for a capture that arrives after Load.</summary>
+    Private _screenshotLabel As String
+    Private _sidecarIncludeScreenshot As Boolean
 
     ''' <summary>Author-added assets (Data-relative paths). Seeded from the sidecar; the manifest
     ''' rebuild consumes this list, so add/remove just mutates it and refreshes.</summary>
@@ -59,6 +64,22 @@ Public Class FomodExport_Form
         _previewImage = previewImage
     End Sub
 
+    ''' <summary>F9 (r3 rev-15): the preview capture requested by the caller arrived (Nothing: it could not be taken). Before Load it is only
+    ''' kept (Load shows it); after, the screenshot and the checkbox are set as Load would have.</summary>
+    Friend Sub SetPreviewImage(img As Image)
+        PreviewPending = False
+        _previewImage = img
+        If _screenshotLabel Is Nothing Then Return            ' Load has not run: it shows what is here
+        If img IsNot Nothing Then
+            PictureBoxScreenshot.Image = img
+            CheckBoxIncludeScreenshot.Text = _screenshotLabel
+            CheckBoxIncludeScreenshot.Enabled = True
+            CheckBoxIncludeScreenshot.Checked = _sidecarIncludeScreenshot
+        Else
+            CheckBoxIncludeScreenshot.Text = "No preview available"
+        End If
+    End Sub
+
     Private Sub FomodExport_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         Dim gameName = If(_game = Config_App.Game_Enum.Skyrim, "Skyrim SE", "Fallout 4")
         LabelHeader.Text = $"FOMOD package for {_pluginFileName} ({gameName})"
@@ -68,13 +89,15 @@ Public Class FomodExport_Form
         End If
 
         ' Preview capture: shown as-is; without one the checkbox is off AND disabled so the
-        ' export can never reference a screenshot that does not exist.
+        ' export can never reference a screenshot that does not exist. F9: a capture still on its way keeps it disabled until it
+        ' arrives (SetPreviewImage).
+        _screenshotLabel = CheckBoxIncludeScreenshot.Text
         If _previewImage IsNot Nothing Then
             PictureBoxScreenshot.Image = _previewImage
         Else
             CheckBoxIncludeScreenshot.Checked = False
             CheckBoxIncludeScreenshot.Enabled = False
-            CheckBoxIncludeScreenshot.Text = "No preview available"
+            CheckBoxIncludeScreenshot.Text = If(PreviewPending, "Waiting for the preview...", "No preview available")
         End If
 
         BuildGridColumns()
@@ -93,7 +116,8 @@ Public Class FomodExport_Form
             TextBoxAuthor.Text = If(meta.Author, "")
             TextBoxWebsite.Text = If(meta.Website, "")
             TextBoxDescription.Text = If(meta.Description, "")
-            ' Persisted preference — only when a capture exists (otherwise forced off above).
+            ' Persisted preference — only when a capture exists (otherwise forced off above; kept for a capture that arrives later).
+            _sidecarIncludeScreenshot = meta.IncludeScreenshot
             If _previewImage IsNot Nothing Then CheckBoxIncludeScreenshot.Checked = meta.IncludeScreenshot
             _extraAssets.Clear()
             If meta.ExtraAssets IsNot Nothing Then
